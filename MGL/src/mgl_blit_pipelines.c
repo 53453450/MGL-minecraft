@@ -369,6 +369,41 @@ void *mglBlitClearRectPipeline(void *renderer, uint32_t colorFormat,
     return pipeline;
 }
 
+void *mglBlitClearIntegerPipeline(void *renderer, uint32_t colorFormat,
+                                  uint32_t colorWriteMask)
+{
+    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    MGLTextureDataKind dataKind = mglTextureDataKindForPixelFormat(colorFormat);
+    if (dataKind != MGLTextureDataKindUint && dataKind != MGLTextureDataKindSint) {
+        return NULL;
+    }
+    uint64_t variant = (uint64_t)colorFormat |
+                       ((uint64_t)(colorWriteMask & 0xfu) << 32) |
+                       (UINT64_C(1) << 40);
+    void *cached = mglBlitLookupAuxRenderPipeline(
+        MGL_RENDER_AUX_RENDER_SCALED_BLIT, variant,
+        colorFormat, mglRenderInvalidPixelFormat(), mglRenderInvalidPixelFormat(),
+        colorWriteMask, 1u);
+    if (cached) return cached;
+
+    char error[512] = {0};
+    void *pipeline = mglBlitCreateAuxRenderPipelineFromAsset(
+        "scaled_blit", "mgl_scaled_blit_vs",
+        dataKind == MGLTextureDataKindUint ? "mgl_scaled_blit_fs_uint"
+                                           : "mgl_scaled_blit_fs_int",
+        MGL_RENDER_AUX_RENDER_SCALED_BLIT, variant,
+        colorFormat, mglRenderInvalidPixelFormat(), mglRenderInvalidPixelFormat(),
+        colorWriteMask, 1u, error, sizeof(error));
+    if (!pipeline) {
+        fprintf(stderr,
+                "MGL ERROR: integer clear pipeline create failed pixelFormat=%lu error=%s\n",
+                (unsigned long)colorFormat, error[0] ? error : "(none)");
+        if (areas.ctx) mglDispatchError(areas.ctx, __func__, (GLenum)mglRenderErrorInvalidOperation());
+        return NULL;
+    }
+    return pipeline;
+}
+
 void *mglBlitClearRectDepthState(void *renderer)
 {
     MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);

@@ -37,6 +37,11 @@ void *mglRendererNewDrawBufferWithCustomSize(uint32_t pixelFormat,
 void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
                                unsigned int flags, unsigned int mask);
 
+struct MGLRendererClearValues;
+void mglRendererMTLClearBufferValues(void *renderer, GLMContext glm_ctx,
+                                     unsigned int mask,
+                                     const struct MGLRendererClearValues *values);
+
 #ifdef __cplusplus
 }
 #endif

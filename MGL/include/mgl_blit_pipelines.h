@@ -73,6 +73,11 @@ void *mglBlitClearRectPipeline(void *renderer, uint32_t color_format,
                                uint32_t depth_format, uint32_t stencil_format,
                                uint32_t color_write_mask, int writes_depth);
 
+/* Integer-format clear: the scaled-blit integer fragment entry reading a 1x1
+ * texture that holds the clear value, with the given write mask. */
+void *mglBlitClearIntegerPipeline(void *renderer, uint32_t color_format,
+                                  uint32_t color_write_mask);
+
 /* Nearest/linear scaled-blit sampler (cached in the backend blit cache). */
 void *mglBlitScaledSamplerForFilter(void *renderer, uint32_t filter);
 

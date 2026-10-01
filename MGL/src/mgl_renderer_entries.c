@@ -2675,6 +2675,18 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
     mglRendererBackendEnd(&backend_lease);
 }
 
+void mglRendererClearBufferValues(GLMContext glm_ctx, uint32_t mask,
+                                  const MGLRendererClearValues *values)
+{
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
+    if (renderer && glm_ctx && values) {
+        mglRendererMTLClearBufferValues((void *)renderer, glm_ctx, mask, values);
+    }
+    mglRendererBackendEnd(&backend_lease);
+}
+
 #pragma mark C interface to mtlBufferSubData
 
 

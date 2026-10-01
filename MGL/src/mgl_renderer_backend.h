@@ -295,6 +295,18 @@ void mglRendererInvalidateRenderPass(GLMContext context);
 /* Clear through a draw so the write masks apply; scissored clears always do. */
 #define MGL_RENDERER_CLEAR_MASKED 1u
 void mglRendererClearBuffer(GLMContext context, uint32_t flags, uint32_t mask);
+/* glClearBuffer*: clears one draw buffer (or depth / stencil) with the given
+ * values through a draw, honouring scissor and write masks. color_bits holds
+ * the raw values for integer color buffers. */
+typedef struct MGLRendererClearValues {
+    int draw_buffer;
+    float color[4];
+    uint32_t color_bits[4];
+    float depth;
+    uint32_t stencil;
+} MGLRendererClearValues;
+void mglRendererClearBufferValues(GLMContext context, uint32_t mask,
+                                  const MGLRendererClearValues *values);
 void mglRendererBlitFramebuffer(GLMContext context,
                                 int32_t src_x0, int32_t src_y0,
                                 int32_t src_x1, int32_t src_y1,

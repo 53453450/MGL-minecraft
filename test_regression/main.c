@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 149
+#define MAX_TESTS 150
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19296,6 +19296,191 @@ static int test_clear_write_mask(unsigned char *pixels, const char *out_path)
     return fail ? 1 : 0;
 }
 
+static int clear_buffer_rgba(GLenum att, int x, int y, const unsigned *want, int is_uint)
+{
+    glReadBuffer(att);
+    unsigned v[4] = {0};
+    if (is_uint) {
+        glReadPixels(x, y, 1, 1, GL_RGBA_INTEGER, GL_UNSIGNED_INT, v);
+    } else {
+        unsigned char b[4] = {0};
+        glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+        for (int i = 0; i < 4; i++) v[i] = b[i];
+    }
+    if (v[0] == want[0] && v[1] == want[1] && v[2] == want[2] && v[3] == want[3])
+        return 0;
+    fprintf(stderr, "clear_buffer_forms: att 0x%x (%d,%d) %u,%u,%u,%u want %u,%u,%u,%u\n",
+            att, x, y, v[0], v[1], v[2], v[3], want[0], want[1], want[2], want[3]);
+    return 1;
+}
+
+/* glClearBuffer* clears only the named draw buffer with the passed value,
+ * honours scissor and write masks, and leaves the glClear* values alone
+ * (GL 4.6 §17.4.3.1). */
+static int test_clear_buffer_forms(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint tex[4] = {0}, fbo = 0;
+    glGenTextures(4, tex);
+    const GLenum fmt[4] = {GL_RGBA8, GL_RGBA8, GL_RGBA32UI, GL_DEPTH24_STENCIL8};
+    for (int i = 0; i < 4; i++) {
+        glBindTexture(GL_TEXTURE_2D, tex[i]);
+        glTexStorage2D(GL_TEXTURE_2D, 1, fmt[i], 16, 16);
+    }
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    for (int i = 0; i < 3; i++)
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i,
+                               GL_TEXTURE_2D, tex[i], 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                           GL_TEXTURE_2D, tex[3], 0);
+    static const GLenum bufs[3] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1,
+                                   GL_COLOR_ATTACHMENT2};
+    glDrawBuffers(3, bufs);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        return 2;
+    glViewport(0, 0, 16, 16);
+
+    static const GLfloat zf[4] = {0, 0, 0, 0};
+    static const GLuint zu[4] = {0, 0, 0, 0};
+    glClearBufferfv(GL_COLOR, 0, zf);
+    glClearBufferfv(GL_COLOR, 1, zf);
+    glClearBufferuiv(GL_COLOR, 2, zu);
+    glClearColor(0, 0, 1, 1);
+    glClearStencil(3);
+    glClearDepth(0.75);
+
+    int fail = 0;
+    static const unsigned zero[4] = {0, 0, 0, 0};
+    static const unsigned red[4] = {255, 0, 0, 255};
+    static const unsigned green[4] = {0, 255, 0, 255};
+    static const unsigned yellow[4] = {255, 255, 0, 255};
+    static const unsigned uval[4] = {7, 8, 9, 10};
+
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, 16, 8);
+    static const GLfloat redf[4] = {1, 0, 0, 1};
+    glClearBufferfv(GL_COLOR, 1, redf);
+    if (clear_buffer_rgba(GL_COLOR_ATTACHMENT1, 2, 2, red, 0)) fail |= 0x1;
+    if (clear_buffer_rgba(GL_COLOR_ATTACHMENT1, 2, 13, zero, 0)) fail |= 0x2;
+    if (clear_buffer_rgba(GL_COLOR_ATTACHMENT0, 2, 2, zero, 0)) fail |= 0x4;
+    glClearBufferuiv(GL_COLOR, 2, uval);
+    if (clear_buffer_rgba(GL_COLOR_ATTACHMENT2, 2, 2, uval, 1)) fail |= 0x8;
+    if (clear_buffer_rgba(GL_COLOR_ATTACHMENT2, 2, 13, zero, 1)) fail |= 0x10;
+    glDisable(GL_SCISSOR_TEST);
+
+    static const GLfloat greenf[4] = {0, 1, 0, 1};
+    glClearBufferfv(GL_COLOR, 1, greenf);
+    if (clear_buffer_rgba(GL_COLOR_ATTACHMENT1, 2, 13, green, 0)) fail |= 0x20;
+    if (clear_buffer_rgba(GL_COLOR_ATTACHMENT0, 2, 13, zero, 0)) fail |= 0x40;
+    glColorMaski(1, GL_TRUE, GL_FALSE, GL_FALSE, GL_FALSE);
+    static const GLfloat onef[4] = {1, 1, 1, 1};
+    glClearBufferfv(GL_COLOR, 1, onef);
+    glColorMaski(1, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    if (clear_buffer_rgba(GL_COLOR_ATTACHMENT1, 2, 13, yellow, 0)) fail |= 0x80;
+
+    GLint sv = 0;
+    GLfloat dv = 0.0f, rd = 0.0f;
+    unsigned char rs = 0;
+    static const GLint five = 5;
+    glClearBufferiv(GL_STENCIL, 0, &five);
+    glGetIntegerv(GL_STENCIL_CLEAR_VALUE, &sv);
+    glReadPixels(2, 2, 1, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, &rs);
+    if (sv != 3) fail |= 0x100;
+    if (rs != 5) fail |= 0x200;
+    static const GLfloat quarter = 0.25f;
+    glClearBufferfv(GL_DEPTH, 0, &quarter);
+    glGetFloatv(GL_DEPTH_CLEAR_VALUE, &dv);
+    glReadPixels(2, 2, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &rd);
+    if (dv != 0.75f) fail |= 0x400;
+    if (rd - 0.25f > 1e-3f || 0.25f - rd > 1e-3f) fail |= 0x800;
+    glClearBufferfi(GL_DEPTH_STENCIL, 0, 0.5f, 6);
+    glGetIntegerv(GL_STENCIL_CLEAR_VALUE, &sv);
+    glGetFloatv(GL_DEPTH_CLEAR_VALUE, &dv);
+    glReadPixels(2, 2, 1, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, &rs);
+    glReadPixels(2, 2, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &rd);
+    if (sv != 3 || dv != 0.75f || rs != 6 || rd - 0.5f > 1e-3f || 0.5f - rd > 1e-3f)
+        fail |= 0x1000;
+
+    static const unsigned blue[4] = {0, 0, 255, 255};
+    static const unsigned white[4] = {255, 255, 255, 255};
+    glDrawBuffers(2, bufs);
+    glColorMaski(1, GL_FALSE, GL_FALSE, GL_TRUE, GL_TRUE);
+    glEnable(GL_SCISSOR_TEST);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMaski(1, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDrawBuffers(3, bufs);
+    if (clear_buffer_rgba(GL_COLOR_ATTACHMENT0, 2, 2, blue, 0) ||
+        clear_buffer_rgba(GL_COLOR_ATTACHMENT0, 2, 13, zero, 0)) fail |= 0x8000;
+    if (clear_buffer_rgba(GL_COLOR_ATTACHMENT1, 2, 2, white, 0) ||
+        clear_buffer_rgba(GL_COLOR_ATTACHMENT1, 2, 13, yellow, 0)) fail |= 0x10000;
+
+    /* Unscissored, only draw buffer 1 has a partial mask. */
+    static const unsigned cyan[4] = {0, 255, 255, 255};
+    glDrawBuffers(2, bufs);
+    glColorMaski(1, GL_TRUE, GL_FALSE, GL_FALSE, GL_FALSE);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glColorMaski(1, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDrawBuffers(3, bufs);
+    if (clear_buffer_rgba(GL_COLOR_ATTACHMENT0, 2, 13, blue, 0) ||
+        clear_buffer_rgba(GL_COLOR_ATTACHMENT1, 2, 2, cyan, 0) ||
+        clear_buffer_rgba(GL_COLOR_ATTACHMENT1, 2, 13, green, 0)) fail |= 0x80000;
+
+    static const GLuint u1234[4] = {1, 2, 3, 4};
+    static const unsigned masked_lo[4] = {1, 8, 3, 10};
+    static const unsigned masked_hi[4] = {1, 0, 3, 0};
+    glColorMaski(2, GL_TRUE, GL_FALSE, GL_TRUE, GL_FALSE);
+    glClearBufferuiv(GL_COLOR, 2, u1234);
+    glColorMaski(2, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    if (clear_buffer_rgba(GL_COLOR_ATTACHMENT2, 2, 2, masked_lo, 1) ||
+        clear_buffer_rgba(GL_COLOR_ATTACHMENT2, 2, 13, masked_hi, 1)) fail |= 0x20000;
+
+    /* Scissored clear into an attachment that only holds uploaded rows. */
+    static unsigned char up[16 * 16 * 4], img[16 * 16 * 4];
+    for (int y = 0; y < 16; y++)
+        memset(up + y * 16 * 4, y * 10, 16 * 4);
+    GLuint tup = 0, fup = 0;
+    glGenTextures(1, &tup);
+    glBindTexture(GL_TEXTURE_2D, tup);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, up);
+    glGenFramebuffers(1, &fup);
+    glBindFramebuffer(GL_FRAMEBUFFER, fup);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tup, 0);
+    glEnable(GL_SCISSOR_TEST);
+    glClearBufferfv(GL_COLOR, 0, redf);
+    glDisable(GL_SCISSOR_TEST);
+    static const unsigned row13[4] = {130, 130, 130, 130};
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, img);
+    if (clear_buffer_rgba(GL_COLOR_ATTACHMENT0, 2, 2, red, 0) ||
+        clear_buffer_rgba(GL_COLOR_ATTACHMENT0, 2, 13, row13, 0) ||
+        img[(2 * 16 + 4) * 4] != 255 || img[(2 * 16 + 4) * 4 + 1] != 0 ||
+        img[(13 * 16 + 4) * 4] != 130) fail |= 0x40000;
+    glDeleteFramebuffers(1, &fup);
+    glDeleteTextures(1, &tup);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glClearBufferfv(GL_DEPTH, 0, &quarter);
+    glClearBufferfi(GL_DEPTH_STENCIL, 0, 0.5f, 6);
+    glGetIntegerv(GL_STENCIL_CLEAR_VALUE, &sv);
+    glGetFloatv(GL_DEPTH_CLEAR_VALUE, &dv);
+    if (sv != 3 || dv != 0.75f) fail |= 0x2000;
+
+    if (glGetError() != GL_NO_ERROR) fail |= 0x4000;
+    glClearColor(0, 0, 0, 0);
+    glClearStencil(0);
+    glClearDepth(1.0);
+    glReadBuffer(GL_BACK);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(4, tex);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "clear_buffer_forms: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 typedef struct { float d; GLuint s; } PackedDS32;
 
 static void packed_ds_fill(int c, void *dst, int w, int y0, int h, float d, GLuint s)
@@ -22828,6 +23013,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("depth_stencil_rt_orientation", test_depth_stencil_rt_orientation),
     SELF_CHECK_TEST("color_write_mask", test_color_write_mask),
     SELF_CHECK_TEST("clear_write_mask", test_clear_write_mask),
+    SELF_CHECK_TEST("clear_buffer_forms", test_clear_buffer_forms),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
     SELF_CHECK_TEST("depth_blit_orientation", test_depth_blit_orientation),

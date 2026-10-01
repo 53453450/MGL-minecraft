@@ -235,6 +235,9 @@ extern Sampler *findSampler(GLMContext ctx, GLuint sampler);
 extern Shader *findShader(GLMContext ctx, GLuint shader);
 extern VertexArray *getVAO(GLMContext ctx, GLuint vao);
 extern int isSync(GLMContext ctx, GLsync sync);
+extern void mglClearBufferColor(GLMContext ctx, const MGLRendererClearValues *values);
+extern void mglClearBufferDepthStencilValues(GLMContext ctx, GLbitfield mask,
+                                             GLfloat depth, GLint stencil);
 
 typedef struct QueryObject_t {
 	GLuint name;
@@ -2003,51 +2006,26 @@ void mglClearBufferiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLi
 				ERROR_RETURN(GL_INVALID_VALUE);
 				return;
 			}
+		{
 			mglFlushCommandBuffer(ctx);
-			if (STATE(framebuffer))
+			MGLRendererClearValues values;
+			memset(&values, 0, sizeof(values));
+			values.draw_buffer = drawbuffer;
+			for (int i = 0; i < 4; i++)
 			{
-				Framebuffer *fbo = STATE(framebuffer);
-				GLenum drawBuffer = ((GLsizei)drawbuffer < STATE(draw_buffer_count))
-					? STATE(draw_buffers[drawbuffer])
-					: GL_NONE;
-				if (drawBuffer >= GL_COLOR_ATTACHMENT0 &&
-					drawBuffer < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments)) &&
-					drawBuffer < (GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS))
-				{
-					GLuint attachmentIndex = (GLuint)(drawBuffer - GL_COLOR_ATTACHMENT0);
-					if (fbo->color_attachment_bitfield & (1u << attachmentIndex))
-					{
-						FBOAttachment *att = &fbo->color_attachments[attachmentIndex];
-						att->clear_bitmask |= GL_COLOR_BUFFER_BIT;
-						att->clear_color[0] = (GLfloat)value[0];
-						att->clear_color[1] = (GLfloat)value[1];
-						att->clear_color[2] = (GLfloat)value[2];
-						att->clear_color[3] = (GLfloat)value[3];
-					}
-				}
+				values.color[i] = (GLfloat)value[i];
+				values.color_bits[i] = (uint32_t)value[i];
 			}
-			else if (drawbuffer == 0)
-			{
-				STATE(default_fbo_clear_bitmask) |= GL_COLOR_BUFFER_BIT;
-				STATE(default_clear_color[0]) = (GLfloat)value[0];
-				STATE(default_clear_color[1]) = (GLfloat)value[1];
-				STATE(default_clear_color[2]) = (GLfloat)value[2];
-				STATE(default_clear_color[3]) = (GLfloat)value[3];
-			}
-			mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO | DIRTY_STATE);
-			/* Integer clear values are stored on the attachment above, but the
-			 * caller may immediately rebind the texture through another FBO.
-			 * Materialize the clear now, matching glClearBufferfv/glClear. */
-			mglRendererClearBuffer(ctx, 0, GL_COLOR_BUFFER_BIT);
+			mglClearBufferColor(ctx, &values);
 			break;
+		}
 		case GL_STENCIL:
 			if (drawbuffer != 0)
 			{
 				ERROR_RETURN(GL_INVALID_VALUE);
 				return;
 			}
-			mglClearStencil(ctx, value[0]);
-			mglClear(ctx, GL_STENCIL_BUFFER_BIT);
+			mglClearBufferDepthStencilValues(ctx, GL_STENCIL_BUFFER_BIT, 0.0f, value[0]);
 			break;
 		default:
 			ERROR_RETURN(GL_INVALID_ENUM);
@@ -2074,38 +2052,15 @@ void mglClearBufferuiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GL
 			return;
 		}
 		mglFlushCommandBuffer(ctx);
-		if (STATE(framebuffer))
+		MGLRendererClearValues values;
+		memset(&values, 0, sizeof(values));
+		values.draw_buffer = drawbuffer;
+		for (int i = 0; i < 4; i++)
 		{
-			Framebuffer *fbo = STATE(framebuffer);
-			GLenum drawBuffer = ((GLsizei)drawbuffer < STATE(draw_buffer_count))
-				? STATE(draw_buffers[drawbuffer])
-				: GL_NONE;
-			if (drawBuffer >= GL_COLOR_ATTACHMENT0 &&
-				drawBuffer < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments)) &&
-				drawBuffer < (GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS))
-			{
-				GLuint attachmentIndex = (GLuint)(drawBuffer - GL_COLOR_ATTACHMENT0);
-				if (fbo->color_attachment_bitfield & (1u << attachmentIndex))
-				{
-					FBOAttachment *att = &fbo->color_attachments[attachmentIndex];
-					att->clear_bitmask |= GL_COLOR_BUFFER_BIT;
-					att->clear_color[0] = (GLfloat)value[0];
-					att->clear_color[1] = (GLfloat)value[1];
-					att->clear_color[2] = (GLfloat)value[2];
-					att->clear_color[3] = (GLfloat)value[3];
-				}
-			}
+			values.color[i] = (GLfloat)value[i];
+			values.color_bits[i] = value[i];
 		}
-		else if (drawbuffer == 0)
-		{
-			STATE(default_fbo_clear_bitmask) |= GL_COLOR_BUFFER_BIT;
-			STATE(default_clear_color[0]) = (GLfloat)value[0];
-			STATE(default_clear_color[1]) = (GLfloat)value[1];
-			STATE(default_clear_color[2]) = (GLfloat)value[2];
-			STATE(default_clear_color[3]) = (GLfloat)value[3];
-		}
-		mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO | DIRTY_STATE);
-		mglRendererClearBuffer(ctx, 0, GL_COLOR_BUFFER_BIT);
+		mglClearBufferColor(ctx, &values);
 		return;
 	}
 	ERROR_RETURN(GL_INVALID_ENUM);

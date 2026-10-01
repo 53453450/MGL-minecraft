@@ -481,24 +481,33 @@ static GLboolean mglColorMaskAllowsAnyWrite(GLMContext ctx, GLuint drawBufferInd
            STATE(var).color_writemask[drawBufferIndex][3];
 }
 
-/* Load-action clears write every bit of a single draw buffer; partial write
- * masks need the draw-based clear, which handles one color buffer. */
+static GLboolean mglColorMaskIsPartial(GLMContext ctx, GLuint slot)
+{
+    if (!STATE(caps).use_color_mask[slot])
+        return GL_FALSE;
+    int channels = 0;
+    for (int i = 0; i < 4; i++)
+        channels += STATE(var).color_writemask[slot][i] ? 1 : 0;
+    return (channels != 0 && channels != 4) ? GL_TRUE : GL_FALSE;
+}
+
+/* Load-action clears write every bit; partial write masks need the
+ * draw-based clear. */
 static GLboolean mglClearNeedsMaskedDraw(GLMContext ctx, GLbitfield mask)
 {
-    if ((mask & GL_COLOR_BUFFER_BIT) && mglDrawBufferCount(ctx) > 1)
-        return GL_FALSE;
-
     if (mask & GL_STENCIL_BUFFER_BIT) {
         GLuint stencilMask = STATE(var).stencil_writemask & 0xffu;
         if (stencilMask != 0u && stencilMask != 0xffu)
             return GL_TRUE;
     }
-    if ((mask & GL_COLOR_BUFFER_BIT) && STATE(caps).use_color_mask[0]) {
-        int channels = 0;
-        for (int i = 0; i < 4; i++)
-            channels += STATE(var).color_writemask[0][i] ? 1 : 0;
-        if (channels != 0 && channels != 4)
-            return GL_TRUE;
+    if (mask & GL_COLOR_BUFFER_BIT) {
+        GLsizei count = mglDrawBufferCount(ctx);
+        if (count < 1)
+            count = 1;
+        for (GLsizei slot = 0; slot < count; slot++) {
+            if (mglColorMaskIsPartial(ctx, (GLuint)slot))
+                return GL_TRUE;
+        }
     }
     return GL_FALSE;
 }
@@ -510,12 +519,15 @@ static GLubyte mglClearComponentToByte(GLfloat value)
     return (GLubyte)(value * 255.0f + 0.5f);
 }
 
-static void mglUpdateRGB10A2ShadowForClear(GLMContext ctx)
+/* only_slot < 0 updates every draw buffer. */
+static void mglUpdateRGB10A2ShadowForClear(GLMContext ctx, GLint only_slot,
+                                           const GLfloat color[4])
 {
     Framebuffer *fbo = ctx ? STATE(framebuffer) : NULL;
     if (!fbo) return;
     GLsizei drawBufferCount = mglDrawBufferCount(ctx);
     for (GLsizei slot = 0; slot < drawBufferCount; slot++) {
+        if (only_slot >= 0 && slot != only_slot) continue;
         GLuint attachmentIndex = 0u;
         if (!mglResolveDrawBufferToColorAttachment(ctx, mglDrawBufferAt(ctx, (GLuint)slot),
                                                    &attachmentIndex) ||
@@ -533,10 +545,10 @@ static void mglUpdateRGB10A2ShadowForClear(GLMContext ctx)
                 y1 = STATE(var).scissor_box[1] + STATE(var).scissor_box[3];
         }
         GLubyte clear[4] = {
-            mglClearComponentToByte(STATE(color_clear_value)[2]),
-            mglClearComponentToByte(STATE(color_clear_value)[1]),
-            mglClearComponentToByte(STATE(color_clear_value)[0]),
-            mglClearComponentToByte(STATE(color_clear_value)[3])
+            mglClearComponentToByte(color[2]),
+            mglClearComponentToByte(color[1]),
+            mglClearComponentToByte(color[0]),
+            mglClearComponentToByte(color[3])
         };
         for (GLint y = y0; y < y1; y++) {
             for (GLint x = x0; x < x1; x++) {
@@ -641,7 +653,7 @@ void mglClear(GLMContext ctx, GLbitfield mask)
         STATE(query_depth_known) = GL_TRUE;
     }
     if (mask & GL_COLOR_BUFFER_BIT) {
-        mglUpdateRGB10A2ShadowForClear(ctx);
+        mglUpdateRGB10A2ShadowForClear(ctx, -1, STATE(color_clear_value));
     }
 
     const GLboolean maskedDraw = mglClearNeedsMaskedDraw(ctx, mask);
@@ -851,12 +863,62 @@ void mglClearDepth(GLMContext ctx, GLdouble depth)
 
 }
 
+/* glClearBuffer{f,i,ui}v(GL_COLOR): only values->draw_buffer, with the passed
+ * value (values->color, or the raw values->color_bits for integer buffers),
+ * inside the scissor box and through that buffer's write mask (§17.4.3.1). */
+void mglClearBufferColor(GLMContext ctx, const MGLRendererClearValues *values)
+{
+    const GLint slot = values->draw_buffer;
+    if (!mglColorMaskAllowsAnyWrite(ctx, (GLuint)slot))
+        return;
+    if (STATE(caps).scissor_test || mglColorMaskIsPartial(ctx, (GLuint)slot)) {
+        mglRendererClearBufferValues(ctx, GL_COLOR_BUFFER_BIT, values);
+        return;
+    }
+
+    Framebuffer *fbo = STATE(framebuffer);
+    GLfloat *clearColor = NULL;
+    if (fbo) {
+        GLuint attachmentIndex = 0u;
+        if (!mglResolveDrawBufferSlotToColorAttachment(ctx, slot, &attachmentIndex) ||
+            attachmentIndex >= STATE(max_color_attachments) ||
+            !(fbo->color_attachment_bitfield & (1u << attachmentIndex)))
+            return;
+        FBOAttachment *att = &fbo->color_attachments[attachmentIndex];
+        att->clear_bitmask |= GL_COLOR_BUFFER_BIT;
+        clearColor = att->clear_color;
+    } else {
+        if (slot != 0)
+            return;
+        STATE(default_fbo_clear_bitmask) |= GL_COLOR_BUFFER_BIT;
+        clearColor = STATE(default_clear_color);
+    }
+    for (int i = 0; i < 4; i++)
+        clearColor[i] = values->color[i];
+    mglMarkRendererDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE);
+    mglRendererClearBuffer(ctx, 0, GL_COLOR_BUFFER_BIT);
+}
+
+/* glClearBuffer* for depth / stencil: glClear with the passed values standing
+ * in for the glClear* values, which ClearBuffer leaves unchanged
+ * (§17.4.3.1). */
+void mglClearBufferDepthStencilValues(GLMContext ctx, GLbitfield mask,
+                                      GLfloat depth, GLint stencil)
+{
+    const GLdouble savedDepth = STATE(var).depth_clear_value;
+    const GLuint savedStencil = STATE(var).stencil_clear_value;
+    STATE(var).depth_clear_value = mglClampDepthClearValue(depth);
+    STATE(var).stencil_clear_value = (GLuint)stencil;
+    mglClear(ctx, mask);
+    STATE(var).depth_clear_value = savedDepth;
+    STATE(var).stencil_clear_value = savedStencil;
+}
+
 void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLfloat *value)
 {
     static uint64_t s_mglClearBufferfvCallCount = 0;
     uint64_t callCount = ++s_mglClearBufferfvCallCount;
     Framebuffer * fbo = STATE(framebuffer);
-    FBOAttachment * fboa;
 
     if (!value)
     {
@@ -866,67 +928,37 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
 
     switch (buffer) {
         case GL_COLOR:
+        {
             if (drawbuffer < 0 || drawbuffer >= (GLint)mglMaxDrawBuffers(ctx))
             {
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
             mglFlushCommandBuffer(ctx);
-            if (fbo) {
-                GLuint attachmentIndex = 0u;
-                if (mglResolveDrawBufferSlotToColorAttachment(ctx, drawbuffer, &attachmentIndex) &&
-                    attachmentIndex < STATE(max_color_attachments) &&
-                    (fbo->color_attachment_bitfield & (1u << attachmentIndex)))
-                {
-                    fboa = &fbo->color_attachments[attachmentIndex];
-                    fboa->clear_bitmask |= GL_COLOR_BUFFER_BIT;
-                    fboa->clear_color[0] = value[0];
-                    fboa->clear_color[1] = value[1];
-                    fboa->clear_color[2] = value[2];
-                    fboa->clear_color[3] = value[3];
-                }
-            } else {
-                if (drawbuffer != 0)
-                    break;
-                STATE(default_fbo_clear_bitmask) |= GL_COLOR_BUFFER_BIT;
-                STATE(default_clear_color)[0] = value[0];
-                STATE(default_clear_color)[1] = value[1];
-                STATE(default_clear_color)[2] = value[2];
-                STATE(default_clear_color)[3] = value[3];
+            mglUpdateRGB10A2ShadowForClear(ctx, drawbuffer, value);
+            MGLRendererClearValues values;
+            memset(&values, 0, sizeof(values));
+            values.draw_buffer = drawbuffer;
+            for (int i = 0; i < 4; i++) {
+                values.color[i] = value[i];
+                values.color_bits[i] = (uint32_t)(int32_t)value[i];
             }
+            mglClearBufferColor(ctx, &values);
             break;
+        }
         case GL_DEPTH:
             if (drawbuffer != 0)
             {
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            mglFlushCommandBuffer(ctx);
-            if (fbo) {
-                fboa = &fbo->depth;
-                fboa->clear_bitmask |= GL_DEPTH_BUFFER_BIT;
-                fboa->clear_color[0] = (GLfloat)mglClampDepthClearValue(value[0]);
-            } else {
-                STATE(default_fbo_clear_bitmask) |= GL_DEPTH_BUFFER_BIT;
-                STATE(var).depth_clear_value = mglClampDepthClearValue(value[0]);
-            }
-            /* Keep the depth-shadow CPU readback buffer in sync with this
-             * clear, exactly as mglClear() does — glClearBufferfv(GL_DEPTH)
-             * must be visible to subsequent glReadPixels(GL_DEPTH_COMPONENT)
-             * and glGetTexImage(DEPTH_COMPONENT) reads. */
-            if (STATE(var).depth_writemask) {
-                mglUpdateDepthShadowForClear(ctx);
-                STATE(query_depth_value) = (GLfloat)STATE(var).depth_clear_value;
-                STATE(query_depth_known) = GL_TRUE;
-            }
+            mglClearBufferDepthStencilValues(ctx, GL_DEPTH_BUFFER_BIT, value[0], 0);
             break;
         default:
             fprintf(stderr, "MGL Error: mglClearBufferfv: invalid buffer 0x%x\n", buffer);
             ERROR_RETURN(GL_INVALID_ENUM);
             return;
     }
-
-    mglMarkRendererDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE);
 
     if (mglShouldTraceClearCall(callCount)) {
         mglTraceLogExternal("CLEAR_BUFFERFV call=%llu buffer=0x%x drawbuffer=%d fbo=%u scissor(test=%d box=%d,%d,%d,%d) value=(%.6f,%.6f,%.6f,%.6f) depthWrite=%d dirty=0x%x",
@@ -946,14 +978,6 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
                             STATE(var).depth_writemask ? 1 : 0,
                             (unsigned)STATE(dirty_bits));
     }
-
-    GLbitfield clearMask = 0;
-    if (buffer == GL_COLOR) {
-        clearMask = GL_COLOR_BUFFER_BIT;
-    } else if (buffer == GL_DEPTH) {
-        clearMask = GL_DEPTH_BUFFER_BIT;
-    }
-    mglMaterializeImmediateClear(ctx, clearMask, "glClearBufferfv", callCount);
 }
 
 void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil)
@@ -961,7 +985,6 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
     static uint64_t s_mglClearBufferfiCallCount = 0;
     uint64_t callCount = ++s_mglClearBufferfiCallCount;
     Framebuffer * fbo = STATE(framebuffer);
-    FBOAttachment * fboa;
 
     switch (buffer) {
         case GL_DEPTH_STENCIL:
@@ -970,41 +993,15 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            mglFlushCommandBuffer(ctx);
-            if (fbo) {
-                fboa = &fbo->depth;
-                fboa->clear_bitmask |= GL_DEPTH_BUFFER_BIT;
-                fboa->clear_color[0] = (GLfloat)mglClampDepthClearValue(depth);
-
-                fboa = &fbo->stencil;
-                fboa->clear_bitmask |= GL_STENCIL_BUFFER_BIT;
-                fboa->clear_color[0] = (GLfloat)stencil;
-            } else {
-                STATE(default_fbo_clear_bitmask) |= GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT;
-                STATE(var).depth_clear_value = mglClampDepthClearValue(depth);
-                STATE(var).stencil_clear_value = (GLuint)stencil;
-            }
-            /* Keep the depth/stencil shadow CPU readback buffers in sync with
-             * this clear, exactly as mglClear() does — glClearBufferfi must
-             * be visible to subsequent glReadPixels(GL_DEPTH_STENCIL) and
-             * glGetTexImage(DEPTH_STENCIL) reads. */
-            if (STATE(var).depth_writemask) {
-                mglUpdateDepthShadowForClear(ctx);
-                STATE(query_depth_value) = (GLfloat)STATE(var).depth_clear_value;
-                STATE(query_depth_known) = GL_TRUE;
-            }
-            if (STATE(var).stencil_writemask != 0u ||
-                STATE(var).stencil_back_writemask != 0u) {
-                mglUpdateStencilShadowForClear(ctx);
-            }
+            mglClearBufferDepthStencilValues(ctx,
+                                             GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT,
+                                             depth, stencil);
             break;
         default:
             fprintf(stderr, "MGL Error: mglClearBufferfi: invalid buffer 0x%x\n", buffer);
             ERROR_RETURN(GL_INVALID_ENUM);
             return;
     }
-
-    mglMarkRendererDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE);
 
     if (mglShouldTraceClearCall(callCount)) {
         mglTraceLogExternal("CLEAR_BUFFERFI call=%llu buffer=0x%x drawbuffer=%d fbo=%u scissor(test=%d box=%d,%d,%d,%d) depth=%.6f stencil=%d depthWrite=%d dirty=0x%x",
@@ -1022,11 +1019,6 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
                             STATE(var).depth_writemask ? 1 : 0,
                             (unsigned)STATE(dirty_bits));
     }
-
-    mglMaterializeImmediateClear(ctx,
-                                 buffer == GL_DEPTH_STENCIL ? (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT) : 0,
-                                 "glClearBufferfi",
-                                 callCount);
 }
 
 void mglFinish(GLMContext ctx)
