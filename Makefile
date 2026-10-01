@@ -997,7 +997,7 @@ $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 	MGL/src/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
 	MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
 	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
-	MGL/src/mgl_ir.c
+	MGL/src/mgl_ir.c MGL/src/mgl_env_flag.c
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -gfull -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Cocoa -framework Foundation -framework Metal \
 		test_legacy_compat/test_mglair.mm \
@@ -1006,7 +1006,7 @@ $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 		MGL/src/mgl_frontend_session.c \
 		MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
 		MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
-		MGL/src/mgl_ir.c \
+		MGL/src/mgl_ir.c MGL/src/mgl_env_flag.c \
 		-o $@
 
 test-mglair: $(build_dir)/test_mglair
@@ -1016,7 +1016,7 @@ test-mglair: $(build_dir)/test_mglair
 # AIR backend.  C sources build as C (they are not valid C++).
 MCREPRO_CSRC := MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
 	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c \
-	MGL/src/mgl_legacy_compat.c MGL/src/mgl_frontend_session.c
+	MGL/src/mgl_legacy_compat.c MGL/src/mgl_frontend_session.c MGL/src/mgl_env_flag.c
 MCREPRO_COBJ := $(patsubst MGL/src/%.c,$(build_dir)/mcrepro_%.o,$(MCREPRO_CSRC))
 
 $(build_dir)/mcrepro_%.o: MGL/src/%.c
@@ -1130,7 +1130,7 @@ $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 	MGL/src/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
 	MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
 	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
-	MGL/src/mgl_ir.c \
+	MGL/src/mgl_ir.c MGL/src/mgl_env_flag.c \
 	$(GTEST_STAMP)
 	$(LLVM_CXX) -x c++ $(LLVM_CXXFLAGS) $(GTEST_CXXFLAGS) $(LLVM_LDFLAGS) \
 		test_legacy_compat/test_mglair_gtest.cpp \
@@ -1138,7 +1138,7 @@ $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 		MGL/src/mgl_legacy_compat.c MGL/src/mgl_frontend_session.c \
 		MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
 		MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
-		MGL/src/mgl_ir.c \
+		MGL/src/mgl_ir.c MGL/src/mgl_env_flag.c \
 		-x none $(GTEST_LIBS) -o $@
 
 test-mglair-gtest: $(build_dir)/test_mglair_gtest
