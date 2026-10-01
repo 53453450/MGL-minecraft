@@ -23,6 +23,7 @@
 #include "mgl_trace_log.h"
 #include "mgl_env_flag.h"
 #include "pixel_utils.h"
+#include "mgl_texture_compat.h"
 #include <stdlib.h>
 #include <stddef.h>
 #include <string.h>
@@ -1511,8 +1512,9 @@ void mglGetTexParameterfv(GLMContext ctx, GLenum target, GLenum pname, GLfloat *
         *params = (GLfloat)(tex->immutable_storage ? GL_TRUE : GL_FALSE);
         return;
     }
-    if (pname == GL_TEXTURE_IMMUTABLE_LEVELS) {
-        *params = (GLfloat)tex->num_levels;
+    GLint view_value = 0;
+    if (mglTextureViewParameter(tex, pname, &view_value)) {
+        *params = (GLfloat)view_value;
         return;
     }
     if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {
@@ -1548,8 +1550,7 @@ void mglGetTexParameteriv(GLMContext ctx, GLenum target, GLenum pname, GLint *pa
         *params = tex->immutable_storage ? GL_TRUE : GL_FALSE;
         return;
     }
-    if (pname == GL_TEXTURE_IMMUTABLE_LEVELS) {
-        *params = (GLint)tex->num_levels;
+    if (mglTextureViewParameter(tex, pname, params)) {
         return;
     }
     if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {

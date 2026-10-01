@@ -95,10 +95,99 @@ static uint32_t mglTextureBindUploadLevelCount(uint64_t metal_levels,
     return (uint32_t)(metal_levels < wanted ? metal_levels : wanted);
 }
 
+extern uint32_t mtlPixelFormatForGLTex(Texture *tex);
+
+/* §8.18: a view never owns storage.  Its Metal texture is a view of the
+ * owner's, rebuilt only when the owner's Metal texture is replaced. */
+static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
+{
+    Texture *root = tex->view_root;
+    void *source = tex->view_parent_mtl;
+    if (!root->view_root_deleted) {
+        if (!mglRendererBindMTLTexture(renderer, root) || !root->mtl_data) {
+            return false;
+        }
+        /* Any view may become an attachment, and a Metal view inherits its
+         * parent's usage.  is_render_target is raised only for the
+         * content-preserving rebuild: left set, later uploads would bump the
+         * render-target write version and mark never-rendered storage as
+         * Y-flipped. */
+        MGLRenderTextureInfo rootInfo = {0};
+        if (!root->is_render_target &&
+            mglRenderGetTextureInfo(root->mtl_data, &rootInfo) == 0 &&
+            (rootInfo.usage & (1ull << 2)) == 0 &&
+            mglRenderMetalCompressedBlockHeight(rootInfo.pixel_format) <= 1u) {
+            root->is_render_target = true;
+            const bool rebound = mglRendererBindMTLTexture(renderer, root);
+            root->is_render_target = false;
+            if (!rebound || !root->mtl_data) {
+                return false;
+            }
+        }
+        source = root->mtl_data;
+    }
+    if (tex->mtl_data && source == tex->view_parent_mtl) {
+        return true;
+    }
+
+    MGLRenderTextureInfo info = {0};
+    MGLRenderTextureTargetPlan plan = {0};
+    if (!source || mglRenderGetTextureInfo(source, &info) != 0 ||
+        mglRenderTextureTargetPlan((uint32_t)tex->target, (uint32_t)tex->samples,
+                                   &plan) != 0) {
+        return false;
+    }
+    uint32_t pixelFormat = info.pixel_format;
+    if (tex->internalformat != root->internalformat) {
+        int converted = 0;
+        pixelFormat = mglRenderAGXCompatiblePixelFormat(
+            mtlPixelFormatForGLTex(tex), &converted);
+    }
+    void *view = NULL;
+    if (mglRenderCreateTextureViewRange(source, pixelFormat, plan.texture_type,
+                                        tex->view_min_level, tex->view_num_levels,
+                                        tex->view_min_layer, tex->view_num_layers,
+                                        0, 0u, 0u, 0u, 0u, &view) != 0) {
+        fprintf(stderr,
+                "MGL ERROR: TextureView %u: Metal view creation failed "
+                "(format=%u type=%u levels=%u+%u layers=%u+%u)\n",
+                tex->name, pixelFormat, plan.texture_type, tex->view_min_level,
+                tex->view_num_levels, tex->view_min_layer, tex->view_num_layers);
+        return false;
+    }
+    mglSafeReleaseMetalObj((void **)&tex->mtl_data);
+    mglTextureReleaseGLSampledCopy(tex);
+    tex->mtl_data = view;
+    if (source != tex->view_parent_mtl) {
+        mglTextureBindReleaseAlias(tex->view_parent_mtl);
+        tex->view_parent_mtl = mglTextureBindRetainAlias(source);
+    }
+    return true;
+}
+
 bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
 {
     if (!renderer || !tex) {
         return false;
+    }
+
+    if (tex->view_root) {
+        if (!mglTextureBindViewStorage(renderer, tex)) {
+            return false;
+        }
+        tex->dirty_bits &= ~(DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA |
+                             DIRTY_TEXTURE_ACCESS);
+        if ((tex->dirty_bits & DIRTY_TEXTURE_PARAM) && tex->params.mtl_data) {
+            mglSafeReleaseMetalObj((void **)&tex->params.mtl_data);
+        }
+        if (!tex->params.mtl_data) {
+            tex->params.mtl_data =
+                mglTextureCreateSamplerForTexParam(&tex->params, tex->target);
+        }
+        if (tex->params.mtl_data) {
+            tex->dirty_bits &= ~DIRTY_TEXTURE_PARAM;
+        }
+        return true;
     }
 
     MGLRendererStateAreas areas;

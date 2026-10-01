@@ -206,6 +206,7 @@ void mglBatchRtMarkColorAttachmentWritten(void *renderer, GLMContext ctx,
                                 renderingProgram, "DiffuseSampler"));
     if (tex && yflip) {
         tex->mtl_render_yflip_authority |= 1u;
+        mglTextureViewFamilyWritten(tex);
     }
     if (mgl_batch_rt_should_diag_attachment0(
             attachment_index, mglTraceLogIsEnabled() ? 1 : 0,

@@ -35,6 +35,7 @@
 #include "mgl_extensions.h"
 #include "mgl_safety.h"
 #include "mgl_pixel_format.h"
+#include "mgl_texture_compat.h"
 #include "pixel_utils.h"
 
 void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data);
@@ -2524,46 +2525,6 @@ static GLint64 mglSaturatingMul64(GLint64 a, GLint64 b)
     return a * b;
 }
 
-static GLenum mglInternalFormatViewClass(GLenum internalformat)
-{
-    GLenum storage = mglCanonicalInternalFormat(internalformat);
-    if (mglInternalFormatIsCompressed(storage)) {
-        switch (storage) {
-            case GL_COMPRESSED_RED_RGTC1:
-            case GL_COMPRESSED_SIGNED_RED_RGTC1:
-                return GL_VIEW_CLASS_RGTC1_RED;
-            case GL_COMPRESSED_RG_RGTC2:
-            case GL_COMPRESSED_SIGNED_RG_RGTC2:
-                return GL_VIEW_CLASS_RGTC2_RG;
-            case GL_COMPRESSED_RGBA_BPTC_UNORM:
-            case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM:
-                return GL_VIEW_CLASS_BPTC_UNORM;
-            case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT:
-            case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT:
-                return GL_VIEW_CLASS_BPTC_FLOAT;
-            default:
-                return GL_NONE;
-        }
-    }
-
-    GLuint bits =
-        mglInternalFormatComponentBits(storage, GL_RED) +
-        mglInternalFormatComponentBits(storage, GL_GREEN) +
-        mglInternalFormatComponentBits(storage, GL_BLUE) +
-        mglInternalFormatComponentBits(storage, GL_ALPHA) +
-        mglInternalFormatComponentBits(storage, GL_DEPTH) +
-        mglInternalFormatComponentBits(storage, GL_STENCIL);
-
-    if (bits <= 8u) return GL_VIEW_CLASS_8_BITS;
-    if (bits <= 16u) return GL_VIEW_CLASS_16_BITS;
-    if (bits <= 24u) return GL_VIEW_CLASS_24_BITS;
-    if (bits <= 32u) return GL_VIEW_CLASS_32_BITS;
-    if (bits <= 48u) return GL_VIEW_CLASS_48_BITS;
-    if (bits <= 64u) return GL_VIEW_CLASS_64_BITS;
-    if (bits <= 96u) return GL_VIEW_CLASS_96_BITS;
-    return GL_VIEW_CLASS_128_BITS;
-}
-
 static GLint64 mglInternalFormatSupportValue(GLboolean supported)
 {
     return supported ? GL_FULL_SUPPORT : GL_NONE;
@@ -2815,10 +2776,12 @@ static GLsizei mglGetInternalformatValues(GLMContext ctx, GLenum target, GLenum 
             value = mglInternalFormatSupportValue(supported && mglInternalFormatIsRenderable(storage));
             break;
         case GL_TEXTURE_VIEW:
-            value = GL_NONE;
+            value = mglInternalFormatSupportValue(supported &&
+                                                  target != GL_RENDERBUFFER &&
+                                                  target != GL_TEXTURE_BUFFER);
             break;
         case GL_VIEW_COMPATIBILITY_CLASS:
-            value = supported ? mglInternalFormatViewClass(storage) : GL_NONE;
+            value = supported ? mglTextureViewClass(storage) : GL_NONE;
             break;
         case GL_SIMULTANEOUS_TEXTURE_AND_DEPTH_TEST:
         case GL_SIMULTANEOUS_TEXTURE_AND_STENCIL_TEST:

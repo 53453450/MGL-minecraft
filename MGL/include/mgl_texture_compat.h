@@ -160,6 +160,13 @@ void mglTextureReleaseGLSampledCopy(Texture *tex);
  * resolve it from here; the private copies were duplicates) */
 void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex, GLuint level,
                                                 const char *caller, int line);
+/* TextureView (§8.18): after `writer` changed the shared store, carry its
+ * Y-flipped storage state to the other textures that reference the store. */
+void mglTextureViewFamilyWritten(Texture *writer);
+/* Table 8.22 view class of `internalformat`, or GL_NONE when not listed. */
+GLenum mglTextureViewClass(GLenum internalformat);
+/* IMMUTABLE_LEVELS and TEXTURE_VIEW_* queries; false for other pnames. */
+bool mglTextureViewParameter(const Texture *tex, GLenum pname, GLint *out);
 bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex);
 bool mglTextureUploadNeedsSingleChannelSwizzleBake(Texture *tex);
 bool mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(Texture *tex);

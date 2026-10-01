@@ -246,6 +246,21 @@ typedef struct Texture_t {
     GLuint     mtl_base_level_view_swizzle_g;
     GLuint     mtl_base_level_view_swizzle_b;
     GLuint     mtl_base_level_view_swizzle_a;
+    /* §8.18/§8.19 state, meaningful only while immutable_storage is set.
+     * view_min_level/view_min_layer are absolute in the shared store. */
+    GLuint immutable_levels;
+    GLuint view_min_level;
+    GLuint view_num_levels;
+    GLuint view_min_layer;
+    GLuint view_num_layers;
+    /* TextureView family: views point at the texture that owns the store;
+     * the owner lists its views and outlives its name while any remain. */
+    struct Texture_t *view_root;
+    struct Texture_t **views;
+    GLuint view_count;
+    GLuint view_capacity;
+    GLboolean view_root_deleted;
+    void *view_parent_mtl;        /* view: retained owner id<MTLTexture> */
     char debug_label[MGL_MAX_LABEL_LENGTH];
 } Texture;
 

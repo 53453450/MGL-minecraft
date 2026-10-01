@@ -82,6 +82,7 @@ static void mglUpMarkTextureLevelMetalFilled(Texture *tex, GLuint level,
     if (tex->is_render_target) {
         tex->mtl_render_target_write_version++;
         mglMarkGLSampledCopyLevelDirty(tex, level);
+        mglTextureViewFamilyWritten(tex);
     }
 }
 

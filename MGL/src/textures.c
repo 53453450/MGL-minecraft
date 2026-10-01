@@ -58,6 +58,8 @@
 #include "mgl_render_api_lifecycle.h"
 #include "mgl_texture_debug.h"
 #include "mgl_texture_transfer.h"
+#include "mgl_texture_compat.h"
+#include "mgl_readback_policy.h"
 
 extern void *getBufferData(GLMContext ctx, Buffer *ptr);
 extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
@@ -1128,6 +1130,8 @@ static void mglDetachTextureFromFramebuffers(GLuint name, void *data, void *user
     }
 }
 
+static bool mglTextureViewUnlink(GLMContext ctx, Texture *tex);
+
 void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
 {
     if (!ctx || n <= 0 || !textures)
@@ -1185,6 +1189,7 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
                 }
             }
 
+            GLenum store_format = tex->internalformat;
             invalidateTexture(ctx, tex);
 
             /* OpenGL spec: when a texture is deleted, it is detached from any
@@ -1197,6 +1202,10 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
                                 mglDetachTextureFromFramebuffers, tex);
 
             deleteHashElement(&STATE(texture_table), name);
+            if (mglTextureViewUnlink(ctx, tex)) {
+                tex->internalformat = store_format;
+                continue;
+            }
             free(tex);
         }
     }
@@ -2197,6 +2206,11 @@ static bool mglTextureStorageMultisampleMetadata(GLMContext ctx,
     tex->samples = (GLuint)samples;
     tex->fixed_sample_locations = fixedsamplelocations ? GL_TRUE : GL_FALSE;
     tex->immutable_storage = BUFFER_IMMUTABLE_STORAGE_FLAG;
+    if (!tex->view_root) {
+        tex->immutable_levels = 1u;
+        tex->view_num_levels = 1u;
+        tex->view_num_layers = is_array ? (GLuint)depth : 1u;
+    }
     tex->mtl_requires_private_storage = GL_TRUE;
     tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
@@ -4253,6 +4267,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         lvl->last_src_ptr = resolved_src;
         lvl->last_src_hash = dst_hash;
         mglReleaseGLSampledTextureCopy(ctx, tex, "texSubImage-PBO");
+        mglTextureViewFamilyWritten(tex);
         mglRecordBoundSampled2DTextureIfReady(ctx, tex);
 
         if (trace_upload) {
@@ -4277,6 +4292,11 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
     lvl->last_src_ptr = resolved_src;
     lvl->last_src_hash = dst_hash;
 
+    /* A view family reads its shared store from Metal, so a deferred CPU
+     * upload would never be applied. */
+    if ((tex->view_root || tex->view_count) && !tex->mtl_data) {
+        mglRendererBindTexture(ctx, tex);
+    }
     bool uploaded_direct = false;
     bool had_pending_texture_data_before_direct = (tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0;
     if (!resolved_unpack_buf &&
@@ -4338,6 +4358,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
     if (!(uploaded_direct && tex->is_render_target && tex->mtl_gl_sampled_data)) {
         mglReleaseGLSampledTextureCopy(ctx, tex, resolved_unpack_buf ? "texSubImage-PBO" : "texSubImage-CPU");
     }
+    mglTextureViewFamilyWritten(tex);
     mglRecordBoundSampled2DTextureIfReady(ctx, tex);
 
     if (trace_upload) {
@@ -4682,6 +4703,13 @@ void texStorage(GLMContext ctx, Texture *tex, GLuint faces, GLsizei levels, GLbo
 
     // mark it immutable
     tex->immutable_storage = BUFFER_IMMUTABLE_STORAGE_FLAG;
+    if (!tex->view_root) {
+        tex->immutable_levels = (GLuint)levels;
+        tex->view_num_levels = (GLuint)levels;
+        tex->view_num_layers = tex->target == GL_TEXTURE_1D_ARRAY ? (GLuint)height
+                             : faces == 6u ? 6u
+                             : is_array ? (GLuint)depth : 1u;
+    }
 
     // bind it to metal
     mglRendererBindTexture(ctx, tex);
@@ -6382,10 +6410,273 @@ void mglGetCompressedTextureSubImage(GLMContext ctx, GLuint texture, GLint level
     }
 }
 
+GLenum mglTextureViewClass(GLenum internalformat)
+{
+    switch (internalformat) {
+        case GL_RGBA32F: case GL_RGBA32UI: case GL_RGBA32I:
+            return GL_VIEW_CLASS_128_BITS;
+        case GL_RGB32F: case GL_RGB32UI: case GL_RGB32I:
+            return GL_VIEW_CLASS_96_BITS;
+        case GL_RGBA16F: case GL_RG32F: case GL_RGBA16UI: case GL_RG32UI:
+        case GL_RGBA16I: case GL_RG32I: case GL_RGBA16: case GL_RGBA16_SNORM:
+            return GL_VIEW_CLASS_64_BITS;
+        case GL_RGB16: case GL_RGB16_SNORM: case GL_RGB16F: case GL_RGB16UI:
+        case GL_RGB16I:
+            return GL_VIEW_CLASS_48_BITS;
+        case GL_RG16F: case GL_R11F_G11F_B10F: case GL_R32F: case GL_RGB10_A2UI:
+        case GL_RGBA8UI: case GL_RG16UI: case GL_R32UI: case GL_RGBA8I:
+        case GL_RG16I: case GL_R32I: case GL_RGB10_A2: case GL_RGBA8:
+        case GL_RG16: case GL_RGBA8_SNORM: case GL_RG16_SNORM:
+        case GL_SRGB8_ALPHA8: case GL_RGB9_E5:
+            return GL_VIEW_CLASS_32_BITS;
+        case GL_RGB8: case GL_RGB8_SNORM: case GL_SRGB8: case GL_RGB8UI:
+        case GL_RGB8I:
+            return GL_VIEW_CLASS_24_BITS;
+        case GL_R16F: case GL_RG8UI: case GL_R16UI: case GL_RG8I: case GL_R16I:
+        case GL_RG8: case GL_R16: case GL_RG8_SNORM: case GL_R16_SNORM:
+            return GL_VIEW_CLASS_16_BITS;
+        case GL_R8UI: case GL_R8I: case GL_R8: case GL_R8_SNORM:
+            return GL_VIEW_CLASS_8_BITS;
+        case GL_COMPRESSED_RED_RGTC1: case GL_COMPRESSED_SIGNED_RED_RGTC1:
+            return GL_VIEW_CLASS_RGTC1_RED;
+        case GL_COMPRESSED_RG_RGTC2: case GL_COMPRESSED_SIGNED_RG_RGTC2:
+            return GL_VIEW_CLASS_RGTC2_RG;
+        case GL_COMPRESSED_RGBA_BPTC_UNORM:
+        case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM:
+            return GL_VIEW_CLASS_BPTC_UNORM;
+        case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT:
+        case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT:
+            return GL_VIEW_CLASS_BPTC_FLOAT;
+        default:
+            return GL_NONE;
+    }
+}
+
+bool mglTextureViewParameter(const Texture *tex, GLenum pname, GLint *out)
+{
+    GLuint value;
+    switch (pname) {
+        case GL_TEXTURE_IMMUTABLE_LEVELS: value = tex->immutable_levels; break;
+        case GL_TEXTURE_VIEW_MIN_LEVEL:   value = tex->view_min_level;   break;
+        case GL_TEXTURE_VIEW_NUM_LEVELS:  value = tex->view_num_levels;  break;
+        case GL_TEXTURE_VIEW_MIN_LAYER:   value = tex->view_min_layer;   break;
+        case GL_TEXTURE_VIEW_NUM_LAYERS:  value = tex->view_num_layers;  break;
+        default: return false;
+    }
+    *out = tex->immutable_storage ? (GLint)value : 0;
+    return true;
+}
+
+void mglTextureViewFamilyWritten(Texture *writer)
+{
+    Texture *root = writer ? (writer->view_root ? writer->view_root : writer) : NULL;
+    if (!root || root->view_count == 0u ||
+        !mglRenderTargetStorageYFlipped(writer->is_render_target,
+                                        writer->mtl_render_target_write_version)) {
+        return;
+    }
+    for (GLuint i = 0; i <= root->view_count; i++) {
+        Texture *member = i < root->view_count ? root->views[i] : root;
+        if (member == writer || (member == root && root->view_root_deleted)) {
+            continue;
+        }
+        member->is_render_target = GL_TRUE;
+        member->mtl_render_target_write_version++;
+        member->mtl_render_yflip_authority =
+            (member->mtl_render_target_write_version << 1) |
+            (writer->mtl_render_yflip_authority & 1u);
+        if (member->mtl_gl_sampled_data) {
+            member->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
+        }
+    }
+}
+
+/* Table 8.21. */
+static bool mglTextureViewTargetCompatible(GLenum orig, GLenum target)
+{
+    switch (orig) {
+        case GL_TEXTURE_1D:
+        case GL_TEXTURE_1D_ARRAY:
+            return target == GL_TEXTURE_1D || target == GL_TEXTURE_1D_ARRAY;
+        case GL_TEXTURE_2D:
+            return target == GL_TEXTURE_2D || target == GL_TEXTURE_2D_ARRAY;
+        case GL_TEXTURE_3D:
+        case GL_TEXTURE_RECTANGLE:
+            return target == orig;
+        case GL_TEXTURE_CUBE_MAP:
+        case GL_TEXTURE_2D_ARRAY:
+        case GL_TEXTURE_CUBE_MAP_ARRAY:
+            return target == GL_TEXTURE_2D || target == GL_TEXTURE_2D_ARRAY ||
+                   target == GL_TEXTURE_CUBE_MAP ||
+                   target == GL_TEXTURE_CUBE_MAP_ARRAY;
+        case GL_TEXTURE_2D_MULTISAMPLE:
+        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+            return target == GL_TEXTURE_2D_MULTISAMPLE ||
+                   target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+        default:
+            return false;
+    }
+}
+
+/* Returns true when `tex` owns a store that views still reference, in which
+ * case the struct must outlive its name. */
+static bool mglTextureViewUnlink(GLMContext ctx, Texture *tex)
+{
+    Texture *root = tex->view_root;
+    if (root) {
+        for (GLuint i = 0; i < root->view_count; i++) {
+            if (root->views[i] == tex) {
+                root->views[i] = root->views[--root->view_count];
+                break;
+            }
+        }
+        if (tex->view_parent_mtl) {
+            mglRendererDeleteMetalObject(ctx, tex->view_parent_mtl);
+            tex->view_parent_mtl = NULL;
+        }
+        if (root->view_root_deleted && root->view_count == 0u) {
+            free(root->views);
+            free(root);
+        }
+        return false;
+    }
+    if (tex->view_count) {
+        tex->view_root_deleted = GL_TRUE;
+        return true;
+    }
+    free(tex->views);
+    return false;
+}
+
 void mglTextureView(GLMContext ctx, GLuint texture, GLenum target, GLuint origtexture, GLenum internalformat, GLuint minlevel, GLuint numlevels, GLuint minlayer, GLuint numlayers)
 {
-    fprintf(stderr, "MGL WARNING: glTextureView called (stub) - texture views not supported\n");
-    ERROR_RETURN(GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(texture != 0u, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(texture <= STATE(texture_table).current_name &&
+                       !findTexture(ctx, texture), GL_INVALID_OPERATION);
+    Texture *orig = findTexture(ctx, origtexture);
+    ERROR_CHECK_RETURN(orig != NULL, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(orig->immutable_storage, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(mglTextureViewTargetCompatible(orig->target, target),
+                       GL_INVALID_OPERATION);
+    GLenum orig_class = mglTextureViewClass(orig->internalformat);
+    ERROR_CHECK_RETURN(orig_class != GL_NONE
+                           ? mglTextureViewClass(internalformat) == orig_class
+                           : (GLenum)orig->internalformat == internalformat,
+                       GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(minlevel < orig->view_num_levels &&
+                       minlayer < orig->view_num_layers, GL_INVALID_VALUE);
+
+    GLuint levels = orig->view_num_levels - minlevel;
+    if (numlevels < levels) levels = numlevels;
+    GLuint layers = orig->view_num_layers - minlayer;
+    if (numlayers < layers) layers = numlayers;
+
+    switch (target) {
+        case GL_TEXTURE_CUBE_MAP:
+            ERROR_CHECK_RETURN(layers == 6u, GL_INVALID_VALUE);
+            break;
+        case GL_TEXTURE_CUBE_MAP_ARRAY:
+            ERROR_CHECK_RETURN(layers % 6u == 0u, GL_INVALID_VALUE);
+            break;
+        case GL_TEXTURE_1D:
+        case GL_TEXTURE_2D:
+        case GL_TEXTURE_3D:
+        case GL_TEXTURE_RECTANGLE:
+        case GL_TEXTURE_2D_MULTISAMPLE:
+            ERROR_CHECK_RETURN(numlayers == 1u, GL_INVALID_VALUE);
+            break;
+        default:
+            break;
+    }
+
+    const TextureLevel *base = &orig->faces[0].levels[minlevel];
+    GLuint width = base->width;
+    GLuint height = (orig->target == GL_TEXTURE_1D ||
+                     orig->target == GL_TEXTURE_1D_ARRAY) ? 1u : base->height;
+    if (target == GL_TEXTURE_CUBE_MAP || target == GL_TEXTURE_CUBE_MAP_ARRAY) {
+        ERROR_CHECK_RETURN(width == height, GL_INVALID_OPERATION);
+        ERROR_CHECK_RETURN(width <= STATE(var).max_cube_map_texture_size,
+                           GL_INVALID_OPERATION);
+    }
+    ERROR_CHECK_RETURN(levels > 0u && layers > 0u, GL_INVALID_OPERATION);
+
+    mglFlushPendingDraws(ctx);
+
+    Texture *root = orig->view_root ? orig->view_root : orig;
+    if (!root->view_root_deleted) {
+        /* Pending CPU uploads must reach the shared store before every
+         * family member starts reading it back from Metal. */
+        mglRendererBindTexture(ctx, root);
+        ERROR_CHECK_RETURN(root->mtl_data && !root->mtl_data_is_fallback,
+                           GL_OUT_OF_MEMORY);
+        root->metal_data_authoritative = GL_TRUE;
+    }
+    if (root->view_count == root->view_capacity) {
+        GLuint capacity = root->view_capacity ? root->view_capacity * 2u : 4u;
+        Texture **views = realloc(root->views, capacity * sizeof(*views));
+        ERROR_CHECK_RETURN(views != NULL, GL_OUT_OF_MEMORY);
+        root->views = views;
+        root->view_capacity = capacity;
+    }
+
+    Texture *view = getTexture(ctx, target, texture);
+    if (!view) {
+        return;
+    }
+    root->views[root->view_count++] = view;
+    view->view_root = root;
+    view->view_min_level = orig->view_min_level + minlevel;
+    view->view_num_levels = levels;
+    view->view_min_layer = orig->view_min_layer + minlayer;
+    view->view_num_layers = layers;
+    view->immutable_levels = orig->immutable_levels;
+    if (mglRenderTargetStorageYFlipped(orig->is_render_target,
+                                       orig->mtl_render_target_write_version)) {
+        view->is_render_target = GL_TRUE;
+        view->mtl_render_target_write_version = 1u;
+        view->mtl_render_yflip_authority =
+            (1u << 1) | (orig->mtl_render_yflip_authority & 1u);
+    }
+
+    GLuint depth = orig->target == GL_TEXTURE_3D ? base->depth : 1u;
+    GLboolean is_array = GL_FALSE;
+    switch (target) {
+        case GL_TEXTURE_1D_ARRAY:
+            height = layers;
+            is_array = GL_TRUE;
+            break;
+        case GL_TEXTURE_2D_ARRAY:
+        case GL_TEXTURE_CUBE_MAP_ARRAY:
+        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+            depth = layers;
+            is_array = GL_TRUE;
+            break;
+        default:
+            break;
+    }
+
+    if (target == GL_TEXTURE_2D_MULTISAMPLE ||
+        target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+        if (!mglTextureStorageMultisampleMetadata(ctx, view, target,
+                                                  (GLsizei)orig->samples,
+                                                  internalformat,
+                                                  (GLsizei)width,
+                                                  (GLsizei)height,
+                                                  (GLsizei)depth,
+                                                  orig->fixed_sample_locations,
+                                                  GL_FALSE)) {
+            return;
+        }
+        mglRendererBindTexture(ctx, view);
+        ERROR_CHECK_RETURN(view->mtl_data != NULL, GL_OUT_OF_MEMORY);
+    } else {
+        texStorage(ctx, view, target == GL_TEXTURE_CUBE_MAP ? 6u : 1u,
+                   (GLsizei)levels, is_array, internalformat, (GLsizei)width,
+                   (GLsizei)height, (GLsizei)depth, GL_FALSE);
+    }
+    /* Set after storage: level creation resets it.  The view's CPU levels
+     * are never filled from the shared store. */
+    view->metal_data_authoritative = GL_TRUE;
 }
 
 static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum internalformat, GLuint buffer,
@@ -6845,8 +7136,8 @@ static bool mglTextureParameterGetTarget(GLMContext ctx, Texture *tex, GLenum pn
         if (uiparams) { *uiparams = (GLuint)val; return true; }
         return true;
     }
-    if (pname == GL_TEXTURE_IMMUTABLE_LEVELS) {
-        GLint val = (GLint)tex->num_levels;
+    GLint val = 0;
+    if (mglTextureViewParameter(tex, pname, &val)) {
         if (fparams) { *fparams = (GLfloat)val; return true; }
         if (iparams) { *iparams = val; return true; }
         if (uiparams) { *uiparams = (GLuint)val; return true; }

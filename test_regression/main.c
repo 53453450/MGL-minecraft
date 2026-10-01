@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 129
+#define MAX_TESTS 130
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -17335,6 +17335,247 @@ static int test_uniform_unset_reads_zero(unsigned char *pixels,
     return fail;
 }
 
+static GLint tv_param(GLuint tex, GLenum pname)
+{
+    GLint v = -1;
+    glGetTextureParameteriv(tex, pname, &v);
+    return v;
+}
+
+/* GL 4.6 §8.18: a texture view shares the data store of its origin; writes
+ * through either are visible through the other, and the store outlives the
+ * origin's name. */
+static int test_texture_view(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+    while (glGetError() != GL_NO_ERROR) { }
+
+    GLuint root = 0, mut = 0, bound = 0, v[8] = {0};
+    glGenTextures(1, &root);
+    glBindTexture(GL_TEXTURE_2D, root);
+    glTexStorage2D(GL_TEXTURE_2D, 3, GL_RGBA8, 16, 16);
+    glGenTextures(1, &mut);
+    glBindTexture(GL_TEXTURE_2D, mut);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 4, 4, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, NULL);
+    glCreateTextures(GL_TEXTURE_2D, 1, &bound);
+    glGenTextures(8, v);
+    if (tv_param(root, GL_TEXTURE_IMMUTABLE_LEVELS) != 3 ||
+        tv_param(root, GL_TEXTURE_VIEW_NUM_LEVELS) != 3 ||
+        tv_param(root, GL_TEXTURE_VIEW_NUM_LAYERS) != 1 ||
+        tv_param(root, GL_TEXTURE_VIEW_MIN_LEVEL) != 0 ||
+        tv_param(mut, GL_TEXTURE_IMMUTABLE_LEVELS) != 0 ||
+        tv_param(mut, GL_TEXTURE_VIEW_NUM_LEVELS) != 0)
+        fail |= 1;
+
+    const struct {
+        GLuint *name; GLenum target; GLuint *orig; GLenum fmt;
+        GLuint minlevel, numlevels, minlayer, numlayers; GLenum err;
+    } bad[] = {
+        { NULL,   GL_TEXTURE_2D, &root, GL_RGBA8,   0, 1, 0, 1, GL_INVALID_VALUE },
+        { &bound, GL_TEXTURE_2D, &root, GL_RGBA8,   0, 1, 0, 1, GL_INVALID_OPERATION },
+        { &v[7],  GL_TEXTURE_2D, &mut,  GL_RGBA8,   0, 1, 0, 1, GL_INVALID_OPERATION },
+        { &v[7],  GL_TEXTURE_3D, &root, GL_RGBA8,   0, 1, 0, 1, GL_INVALID_OPERATION },
+        { &v[7],  GL_TEXTURE_2D, &root, GL_RGBA16F, 0, 1, 0, 1, GL_INVALID_OPERATION },
+        { &v[7],  GL_TEXTURE_2D, &root, GL_RGBA8,   3, 1, 0, 1, GL_INVALID_VALUE },
+        { &v[7],  GL_TEXTURE_2D, &root, GL_RGBA8,   0, 1, 0, 2, GL_INVALID_VALUE },
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        glTextureView(bad[i].name ? *bad[i].name : 0u, bad[i].target,
+                      *bad[i].orig, bad[i].fmt, bad[i].minlevel,
+                      bad[i].numlevels, bad[i].minlayer, bad[i].numlayers);
+        GLenum e = glGetError();
+        if (e != bad[i].err) {
+            fprintf(stderr, "texture_view: error case %zu got 0x%x want 0x%x\n",
+                    i, e, bad[i].err);
+            fail |= 2;
+        }
+    }
+
+    /* Level views, a format cast, and a view of a view. */
+    glTextureView(v[0], GL_TEXTURE_2D, root, GL_RGBA8UI, 1, 2, 0, 1);
+    glTextureView(v[1], GL_TEXTURE_2D, v[0], GL_RGBA8, 1, 5, 0, 1);
+    GLint w0 = 0;
+    glBindTexture(GL_TEXTURE_2D, v[0]);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w0);
+    if (glGetError() != GL_NO_ERROR ||
+        tv_param(v[0], GL_TEXTURE_VIEW_MIN_LEVEL) != 1 ||
+        tv_param(v[0], GL_TEXTURE_VIEW_NUM_LEVELS) != 2 ||
+        tv_param(v[0], GL_TEXTURE_IMMUTABLE_LEVELS) != 3 ||
+        tv_param(v[0], GL_TEXTURE_IMMUTABLE_FORMAT) != GL_TRUE ||
+        tv_param(v[1], GL_TEXTURE_VIEW_MIN_LEVEL) != 2 ||
+        tv_param(v[1], GL_TEXTURE_VIEW_NUM_LEVELS) != 1 || w0 != 8) {
+        fprintf(stderr, "texture_view: view queries min=%d num=%d imm=%d "
+                "vv.min=%d vv.num=%d w0=%d\n",
+                tv_param(v[0], GL_TEXTURE_VIEW_MIN_LEVEL),
+                tv_param(v[0], GL_TEXTURE_VIEW_NUM_LEVELS),
+                tv_param(v[0], GL_TEXTURE_IMMUTABLE_LEVELS),
+                tv_param(v[1], GL_TEXTURE_VIEW_MIN_LEVEL),
+                tv_param(v[1], GL_TEXTURE_VIEW_NUM_LEVELS), w0);
+        fail |= 4;
+    }
+
+    unsigned char l1[8 * 8 * 4], l2[4 * 4 * 4], got[8 * 8 * 4];
+    for (int i = 0; i < 8 * 8; i++) {
+        l1[i * 4 + 0] = (unsigned char)i; l1[i * 4 + 1] = 7;
+        l1[i * 4 + 2] = 9;                l1[i * 4 + 3] = 255;
+    }
+    for (int i = 0; i < 4 * 4; i++) {
+        l2[i * 4 + 0] = (unsigned char)(100 + i); l2[i * 4 + 1] = 1;
+        l2[i * 4 + 2] = 2;                        l2[i * 4 + 3] = 3;
+    }
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glBindTexture(GL_TEXTURE_2D, root);
+    glTexSubImage2D(GL_TEXTURE_2D, 1, 0, 0, 8, 8, GL_RGBA, GL_UNSIGNED_BYTE, l1);
+    glTexSubImage2D(GL_TEXTURE_2D, 2, 0, 0, 4, 4, GL_RGBA, GL_UNSIGNED_BYTE, l2);
+    glBindTexture(GL_TEXTURE_2D, v[0]);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, got);
+    if (memcmp(got, l1, sizeof l1) != 0) {
+        fprintf(stderr, "texture_view: origin upload via view got (%u,%u)\n",
+                got[0], got[4 * 9]);
+        fail |= 8;
+    }
+    glGetTexImage(GL_TEXTURE_2D, 1, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, got);
+    glBindTexture(GL_TEXTURE_2D, v[1]);
+    unsigned char got2[4 * 4 * 4];
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, got2);
+    if (memcmp(got, l2, sizeof l2) != 0 || memcmp(got2, l2, sizeof l2) != 0)
+        fail |= 16;
+
+    unsigned char row[8 * 4];
+    memset(row, 200, sizeof row);
+    glBindTexture(GL_TEXTURE_2D, v[0]);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 2, 8, 1, GL_RGBA_INTEGER,
+                    GL_UNSIGNED_BYTE, row);
+    memcpy(l1 + 2 * 8 * 4, row, sizeof row);
+    glBindTexture(GL_TEXTURE_2D, root);
+    glGetTexImage(GL_TEXTURE_2D, 1, GL_RGBA, GL_UNSIGNED_BYTE, got);
+    if (memcmp(got, l1, sizeof l1) != 0) {
+        fprintf(stderr, "texture_view: view upload via origin row2=%u row3=%u\n",
+                got[2 * 8 * 4], got[3 * 8 * 4]);
+        fail |= 32;
+    }
+
+    /* Render into a layer view; read through the array and the view. */
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    GLuint pgrad = link_program(vs,
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(floor(gl_FragCoord.y) / 255.0, 0.0, 0.0, 1.0); }\n");
+    GLuint p2d = link_program(vs,
+        "#version 330 core\n"
+        "uniform sampler2D s;\n"
+        "out vec4 c;\n"
+        "void main() { c = texelFetch(s, ivec2(gl_FragCoord.xy), 0); }\n");
+    if (!pgrad || !p2d) return 3;
+    GLuint vao = 0, arr = 0, ttmp = 0, frt = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glViewport(0, 0, REG_W, REG_H);
+    GLuint fsample = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &ttmp);
+    if (!fsample) return 3;
+    glGenTextures(1, &arr);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, arr);
+    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_RGBA8, REG_W, REG_H, 3);
+    static unsigned char layer0[REG_W * REG_H * 4];
+    memset(layer0, 77, sizeof layer0);
+    glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, REG_W, REG_H, 1, GL_RGBA,
+                    GL_UNSIGNED_BYTE, layer0);
+    glTextureView(v[2], GL_TEXTURE_2D, arr, GL_RGBA8, 0, 1, 2, 1);
+    if (glGetError() != GL_NO_ERROR ||
+        tv_param(v[2], GL_TEXTURE_VIEW_MIN_LAYER) != 2 ||
+        tv_param(v[2], GL_TEXTURE_VIEW_NUM_LAYERS) != 1 ||
+        tv_param(arr, GL_TEXTURE_VIEW_NUM_LAYERS) != 3)
+        fail |= 64;
+    glGenFramebuffers(1, &frt);
+    glBindFramebuffer(GL_FRAMEBUFFER, frt);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           v[2], 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        fail |= 128;
+    glUseProgram(pgrad);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    unsigned char b[4][4];
+    static unsigned char full[REG_W * REG_H * 3 * 4];
+#define TV_ROWS(bit, what)                                                  \
+    do {                                                                    \
+        for (int i = 0; i < 4; i++) {                                       \
+            if (b[i][0] != 5 + i) {                                         \
+                fprintf(stderr, "texture_view: %s row %d got %u\n", what,   \
+                        5 + i, b[i][0]);                                    \
+                fail |= (bit);                                              \
+            }                                                               \
+        }                                                                   \
+    } while (0)
+#define TV_SAMPLE(prog, target, tex)                                        \
+    do {                                                                    \
+        glBindFramebuffer(GL_FRAMEBUFFER, fsample);                         \
+        glUseProgram(prog);                                                 \
+        glActiveTexture(GL_TEXTURE0);                                       \
+        glBindTexture((target), (tex));                                     \
+        glUniform1i(glGetUniformLocation((prog), "s"), 0);                  \
+        glDrawArrays(GL_TRIANGLES, 0, 3);                                   \
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fsample);                    \
+        glReadPixels(2, 5, 1, 4, GL_RGBA, GL_UNSIGNED_BYTE, b);             \
+    } while (0)
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, frt);
+    glReadPixels(2, 5, 1, 4, GL_RGBA, GL_UNSIGNED_BYTE, b);
+    TV_ROWS(256, "ReadPixels view");
+    TV_SAMPLE(p2d, GL_TEXTURE_2D, v[2]);
+    TV_ROWS(1024, "sample view");
+    glBindTexture(GL_TEXTURE_2D_ARRAY, arr);
+    glGetTexImage(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, GL_UNSIGNED_BYTE, full);
+    for (int i = 0; i < 4; i++)
+        b[i][0] = full[((2 * REG_H + 5 + i) * REG_W + 2) * 4];
+    TV_ROWS(2048, "GetTexImage origin layer");
+    if (full[(7 * REG_W + 3) * 4] != 77) {
+        fprintf(stderr, "texture_view: layer 0 clobbered (%u)\n",
+                full[(7 * REG_W + 3) * 4]);
+        fail |= 4096;
+    }
+
+    /* The store outlives the origin's name. */
+    glDeleteTextures(1, &arr);
+    TV_SAMPLE(p2d, GL_TEXTURE_2D, v[2]);
+    TV_ROWS(8192, "sample view after origin delete");
+    glBindTexture(GL_TEXTURE_2D, v[2]);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, full);
+    for (int i = 0; i < 4; i++)
+        b[i][0] = full[((5 + i) * REG_W + 2) * 4];
+    TV_ROWS(16384, "GetTexImage view after origin delete");
+#undef TV_ROWS
+#undef TV_SAMPLE
+
+    if (glGetError() != GL_NO_ERROR) fail |= 32768;
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(1, &frt);
+    glDeleteFramebuffers(1, &fsample);
+    glDeleteTextures(1, &ttmp);
+    glDeleteTextures(8, v);
+    glDeleteTextures(1, &root);
+    glDeleteTextures(1, &mut);
+    glDeleteTextures(1, &bound);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(pgrad);
+    glDeleteProgram(p2d);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "texture_view: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 extern uint32_t mglFrontendParseCount(void);
 
 /* Linking compiled VS/FS must reuse each shader's translation unit for the
@@ -20098,6 +20339,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("uniform_unset_reads_zero", test_uniform_unset_reads_zero),
     SELF_CHECK_TEST("uniform_matrix_array_element",
                     test_uniform_matrix_array_element),
+    SELF_CHECK_TEST("texture_view", test_texture_view),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),
     SELF_CHECK_TEST("no_attachment_layered_fbo",

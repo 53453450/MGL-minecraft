@@ -239,6 +239,7 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
      * this path frequently.
      */
     tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
+    mglTextureViewFamilyWritten(tex);
 }
 
 signed char mglRendererTextureLooksLikeSampledColor2D(GLMContext glctx,
