@@ -381,6 +381,36 @@ static void mglReturnPolygonMode(GLMContext ctx, GLuint type, void *data)
     }
 }
 
+/* GL 4.6 Table 8.14: the specific compressed formats every implementation
+ * supports (Table 23.55 requires at least 18). */
+static const GLenum kMglCompressedTextureFormats[] = {
+    GL_COMPRESSED_RED_RGTC1, GL_COMPRESSED_SIGNED_RED_RGTC1,
+    GL_COMPRESSED_RG_RGTC2, GL_COMPRESSED_SIGNED_RG_RGTC2,
+    GL_COMPRESSED_RGBA_BPTC_UNORM, GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM,
+    GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT, GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT,
+    GL_COMPRESSED_RGB8_ETC2, GL_COMPRESSED_SRGB8_ETC2,
+    GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2,
+    GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2,
+    GL_COMPRESSED_RGBA8_ETC2_EAC, GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC,
+    GL_COMPRESSED_R11_EAC, GL_COMPRESSED_SIGNED_R11_EAC,
+    GL_COMPRESSED_RG11_EAC, GL_COMPRESSED_SIGNED_RG11_EAC,
+};
+#define MGL_NUM_COMPRESSED_TEXTURE_FORMATS \
+    (sizeof(kMglCompressedTextureFormats) / sizeof(kMglCompressedTextureFormats[0]))
+
+static void mglReturnCompressedTextureFormats(GLuint type, void *data)
+{
+    for (size_t i = 0; i < MGL_NUM_COMPRESSED_TEXTURE_FORMATS; i++) {
+        GLenum f = kMglCompressedTextureFormats[i];
+        switch(type) {
+            case kBool: ((GLboolean *)data)[i] = f ? GL_TRUE : GL_FALSE; break;
+            case kInt: ((GLint *)data)[i] = (GLint)f; break;
+            case kFloat: ((GLfloat *)data)[i] = (GLfloat)f; break;
+            case kDouble: ((GLdouble *)data)[i] = (GLdouble)f; break;
+        }
+    }
+}
+
 // set value based on type from STATE(var)
 #define RET_TYPE_VAR(__TYPE__, __VALUE__) \
 switch(type) {  \
@@ -686,8 +716,8 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x80AB: RET_TYPE_VAR(type, sample_coverage_invert); break; // GL_SAMPLE_COVERAGE_INVERT
         case 0x8514: RET_TYPE_VAR_DERIVED(mglActiveUnitTextureBinding(ctx, pname)); break; // GL_TEXTURE_BINDING_CUBE_MAP
         case 0x851C: RET_TYPE_VAR(type, max_cube_map_texture_size); break; // GL_MAX_CUBE_MAP_TEXTURE_SIZE
-        case 0x86A2: RET_TYPE_VAR(type, num_compressed_texture_formats); break; // GL_NUM_COMPRESSED_TEXTURE_FORMATS
-        case 0x86A3: RET_TYPE_VAR(type, compressed_texture_formats); break; // GL_COMPRESSED_TEXTURE_FORMATS
+        case 0x86A2: RET_TYPE_VAR_DERIVED((GLuint)MGL_NUM_COMPRESSED_TEXTURE_FORMATS); break; // GL_NUM_COMPRESSED_TEXTURE_FORMATS
+        case 0x86A3: mglReturnCompressedTextureFormats(type, data); break; // GL_COMPRESSED_TEXTURE_FORMATS
 
         case 0x80C8: RET_TYPE_VAR(type, blend_dst_rgb[0]); break; // GL_BLEND_DST_RGB
         case 0x80C9: RET_TYPE_VAR(type, blend_src_rgb[0]); break; // GL_BLEND_SRC_RGB

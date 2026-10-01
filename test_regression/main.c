@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 104
+#define MAX_TESTS 105
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14572,6 +14572,165 @@ static int test_discard_stub_integer_targets(unsigned char *pixels,
     return result;
 }
 
+static void pack_bits_le(unsigned char *dst, unsigned *bit, unsigned value,
+                         unsigned count)
+{
+    for (unsigned i = 0; i < count; i++, (*bit)++) {
+        if (value & (1u << i)) dst[*bit / 8] |= (unsigned char)(1u << (*bit % 8));
+    }
+}
+
+/* One hand-encoded constant-colour 4x4 block per compressed family
+ * (GL 4.6 Appendix C): upload with CompressedTexImage2D, sample, read back. */
+static int test_compressed_texture_sampling(unsigned char *pixels,
+                                            const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 330 core\n"
+        "uniform sampler2D t;\n"
+        "out vec4 c;\n"
+        "void main() { c = texture(t, vec2(0.5)); }\n";
+
+    /* BC7 mode 6: equal 7-bit endpoints with p-bit 0 give exactly 2*c7. */
+    unsigned char bc7[16] = {0};
+    unsigned bit = 0;
+    pack_bits_le(bc7, &bit, 1u << 6, 7);
+    const unsigned c7[4] = {50, 75, 100, 127};
+    for (int ch = 0; ch < 4; ch++) {
+        pack_bits_le(bc7, &bit, c7[ch], 7);
+        pack_bits_le(bc7, &bit, c7[ch], 7);
+    }
+    static const unsigned char bc4[8] = {200, 200, 0, 0, 0, 0, 0, 0};
+    static const unsigned char bc5[16] = {200, 200, 0, 0, 0, 0, 0, 0,
+                                          50, 50, 0, 0, 0, 0, 0, 0};
+    /* ETC2 individual mode: base 4-bit colours x17, table 0, index 0 => +2. */
+    static const unsigned char etc2[8] = {0x88, 0x44, 0xCC, 0x00, 0, 0, 0, 0};
+    /* EAC R11 with multiplier 0: base*8 + 4 + modifier(-3) over 2047. */
+    static const unsigned char eac[8] = {200, 0x00, 0, 0, 0, 0, 0, 0};
+    const struct {
+        GLenum format;
+        const unsigned char *data;
+        GLsizei size;
+        int expect[4];
+        const char *label;
+    } kCases[] = {
+        {GL_COMPRESSED_RED_RGTC1, bc4, 8, {200, 0, 0, 255}, "RGTC1"},
+        {GL_COMPRESSED_RG_RGTC2, bc5, 16, {200, 50, 0, 255}, "RGTC2"},
+        {GL_COMPRESSED_RGBA_BPTC_UNORM, bc7, 16, {100, 150, 200, 254}, "BPTC"},
+        {GL_COMPRESSED_RGB8_ETC2, etc2, 8, {138, 70, 206, 255}, "ETC2"},
+        {GL_COMPRESSED_R11_EAC, eac, 8, {199, 0, 0, 255}, "EAC_R11"},
+    };
+
+    GLuint prog = link_program(vs, fs);
+    if (!prog) return 2;
+    GLuint vao = 0, target = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint fbo = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &target);
+    if (!fbo) return 2;
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(prog);
+    glUniform1i(glGetUniformLocation(prog, "t"), 0);
+    glActiveTexture(GL_TEXTURE0);
+
+    int result = 0;
+    for (size_t i = 0; i < sizeof(kCases) / sizeof(kCases[0]); i++) {
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glCompressedTexImage2D(GL_TEXTURE_2D, 0, kCases[i].format, 4, 4, 0,
+                               kCases[i].size, kCases[i].data);
+        GLenum err = glGetError();
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        unsigned char px[4] = {0};
+        glReadPixels(REG_W / 2, REG_H / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        for (int ch = 0; ch < 4; ch++) {
+            if (err != GL_NO_ERROR || abs((int)px[ch] - kCases[i].expect[ch]) > 2) {
+                fprintf(stderr, "compressed_texture_sampling: %s err=0x%x got "
+                        "%u,%u,%u,%u want %d,%d,%d,%d\n", kCases[i].label, err,
+                        px[0], px[1], px[2], px[3], kCases[i].expect[0],
+                        kCases[i].expect[1], kCases[i].expect[2],
+                        kCases[i].expect[3]);
+                result = 1;
+                break;
+            }
+        }
+        glDeleteTextures(1, &tex);
+    }
+
+    /* §8.7: a block-aligned sub-update changes only its block; texel (4,4)
+     * of an 8x8 texture lies in the bottom-right block. */
+    {
+        unsigned char blocks[32];
+        for (int b = 0; b < 4; b++) memcpy(blocks + b * 8, bc4, 8);
+        static const unsigned char bc4_100[8] = {100, 100, 0, 0, 0, 0, 0, 0};
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_RED_RGTC1, 8, 8,
+                               0, 32, blocks);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glCompressedTexSubImage2D(GL_TEXTURE_2D, 0, 4, 4, 4, 4,
+                                  GL_COMPRESSED_RED_RGTC1, 8, bc4_100);
+        GLenum err = glGetError();
+        glCompressedTexSubImage2D(GL_TEXTURE_2D, 0, 2, 0, 4, 4,
+                                  GL_COMPRESSED_RED_RGTC1, 8, bc4_100);
+        GLenum misaligned = glGetError();
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        unsigned char px[4] = {0};
+        glReadPixels(REG_W / 2, REG_H / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        if (err != GL_NO_ERROR || misaligned != GL_INVALID_OPERATION ||
+            abs((int)px[0] - 100) > 2) {
+            fprintf(stderr, "compressed_texture_sampling: sub-image err=0x%x "
+                    "misaligned=0x%x got r=%u want 100\n", err, misaligned, px[0]);
+            result = 1;
+        }
+        glDeleteTextures(1, &tex);
+    }
+
+    GLint num_formats = 0;
+    GLint formats[64] = {0};
+    glGetIntegerv(GL_NUM_COMPRESSED_TEXTURE_FORMATS, &num_formats);
+    if (num_formats > 0 && num_formats <= 64) {
+        glGetIntegerv(GL_COMPRESSED_TEXTURE_FORMATS, formats);
+    }
+    for (size_t i = 0; i < sizeof(kCases) / sizeof(kCases[0]); i++) {
+        int listed = 0;
+        for (GLint k = 0; k < num_formats && k < 64; k++) {
+            if ((GLenum)formats[k] == kCases[i].format) listed = 1;
+        }
+        if (!listed) {
+            fprintf(stderr, "compressed_texture_sampling: %s missing from "
+                    "COMPRESSED_TEXTURE_FORMATS (n=%d)\n", kCases[i].label,
+                    num_formats);
+            result = 1;
+        }
+    }
+
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &target);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    return result;
+}
+
 /* Draws a full-screen triangle whose color comes from the `Color` input fed
  * at the location GetAttribLocation reports; `Position` likewise. */
 static int attrib_name_draw_check(const char *label, const char *vs,
@@ -17433,6 +17592,8 @@ static const TestCase TESTS[] = {
                     test_blit_integer_format_conversion),
     SELF_CHECK_TEST("discard_stub_integer_targets",
                     test_discard_stub_integer_targets),
+    SELF_CHECK_TEST("compressed_texture_sampling",
+                    test_compressed_texture_sampling),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
     SELF_CHECK_TEST("link_interface_check_no_reparse",

@@ -2041,8 +2041,22 @@ bool mglCompressedSubImageUpdate(GLMContext ctx,
      * implementation reports for this level.  MGL stores the generic compressed
      * internalformats uncompressed and reports GL_TEXTURE_COMPRESSED_IMAGE_SIZE
      * as the (page-aligned) level data_size, so a CompressedTexSubImage update
-     * whose imageSize differs from that reported size is inconsistent. */
-    if ((size_t)imageSize != lvl->data_size) {
+     * whose imageSize differs from that reported size is inconsistent.
+     * Block formats (Table 8.14, S3TC, ASTC) size the update from the region. */
+    GLuint bw = 0, bh = 0, bd = 1, bs = 0;
+    bool block_format = mglCompressedBlockInfoOf((GLenum)tex->internalformat,
+                                                 &bw, &bh, &bd, &bs) &&
+                        lvl->pitch != 0u;
+    size_t region_row_bytes = 0;
+    if (block_format) {
+        size_t region_bytes = 0;
+        region_row_bytes = (size_t)(((GLuint)width + bw - 1u) / bw) * bs;
+        if (!mglMulSizeT(region_row_bytes, (size_t)(((GLuint)height + bh - 1u) / bh), &region_bytes) ||
+            !mglMulSizeT(region_bytes, (size_t)depth, &region_bytes) ||
+            (size_t)imageSize != region_bytes) {
+            ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+        }
+    } else if ((size_t)imageSize != lvl->data_size) {
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
     }
 
@@ -2083,6 +2097,34 @@ bool mglCompressedSubImageUpdate(GLMContext ctx,
      * (which CTS probes with these same generic values) take precedence. */
     if (mglIsGenericCompressedFormat(format)) {
         ERROR_RETURN_VALUE(GL_INVALID_ENUM, false);
+    }
+
+    if (block_format) {
+        /* §8.7: edits must lie on block boundaries; a partial block is only
+         * allowed where the region reaches the edge of the level. */
+        if (((GLuint)xoffset % bw) != 0u || ((GLuint)yoffset % bh) != 0u ||
+            (((GLuint)width % bw) != 0u && (GLuint)(xoffset + width) != lvl->width) ||
+            (((GLuint)height % bh) != 0u && (GLuint)(yoffset + height) != lvl->height)) {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
+        const size_t level_image_bytes =
+            (size_t)lvl->pitch * ((lvl->height + bh - 1u) / bh);
+        const GLuint block_rows = ((GLuint)height + bh - 1u) / bh;
+        if (lvl->data && resolved_src && region_row_bytes != 0u &&
+            level_image_bytes * lvl->depth <= lvl->data_size) {
+            uint8_t *dst_base = (uint8_t *)(uintptr_t)lvl->data;
+            const uint8_t *src = resolved_src;
+            for (GLsizei z = 0; z < depth; z++) {
+                for (GLuint r = 0; r < block_rows; r++) {
+                    uint8_t *dst = dst_base +
+                        (size_t)(zoffset + z) * level_image_bytes +
+                        (size_t)((GLuint)yoffset / bh + r) * lvl->pitch +
+                        (size_t)((GLuint)xoffset / bw) * bs;
+                    memcpy(dst, src, region_row_bytes);
+                    src += region_row_bytes;
+                }
+            }
+        }
     }
 
     lvl->has_initialized_data = GL_TRUE;

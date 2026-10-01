@@ -3082,8 +3082,10 @@ uint32_t mtlPixelFormatForGLTex(Texture * tex)
      * (see mglCompressedInternalFormatToSizedUncompressed remap in
      * createTextureLevel). The Metal texture must match the uncompressed
      * data layout, not the compressed internalformat. glCompressedTexImage*
-     * stores data with pitch==0 and still needs the compressed Metal format. */
+     * stores block data (compressed_internalformat == internalformat) and
+     * still needs the compressed Metal format. */
     if (mglTexLevelInternalFormatCompressed((GLint)internal_format) &&
+        tex->compressed_internalformat != internal_format &&
         tex->faces[0].levels &&
         tex->faces[0].levels[0].pitch > 0u)
     {

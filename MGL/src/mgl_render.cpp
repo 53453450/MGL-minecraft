@@ -492,6 +492,16 @@ uint64_t mglRenderMetalCompressedBlockHeight(uint32_t pixel_format) {
         case MTL::PixelFormatBC6H_RGBUfloat:
         case MTL::PixelFormatBC7_RGBAUnorm:
         case MTL::PixelFormatBC7_RGBAUnorm_sRGB:
+        case MTL::PixelFormatEAC_R11Unorm:
+        case MTL::PixelFormatEAC_R11Snorm:
+        case MTL::PixelFormatEAC_RG11Unorm:
+        case MTL::PixelFormatEAC_RG11Snorm:
+        case MTL::PixelFormatEAC_RGBA8:
+        case MTL::PixelFormatEAC_RGBA8_sRGB:
+        case MTL::PixelFormatETC2_RGB8:
+        case MTL::PixelFormatETC2_RGB8_sRGB:
+        case MTL::PixelFormatETC2_RGB8A1:
+        case MTL::PixelFormatETC2_RGB8A1_sRGB:
         case MTL::PixelFormatASTC_4x4_sRGB:
         case MTL::PixelFormatASTC_4x4_LDR:
         case MTL::PixelFormatASTC_4x4_HDR:
@@ -1223,11 +1233,6 @@ uint32_t mglRenderAGXCompatiblePixelFormat(uint32_t pixel_format, int *converted
     case 162u: /* PVRTC_RGB_4BPP */
     case 164u: /* PVRTC_RGBA_2BPP */
     case 166u: /* PVRTC_RGBA_4BPP */
-    case 170u: /* EAC_R11Unorm */
-    case 174u: /* EAC_RG11Unorm */
-    case 178u: /* EAC_RGBA8 */
-    case 180u: /* ETC2_RGB8 */
-    case 182u: /* ETC2_RGB8A1 */
         conv = 1;
         pixel_format = 70u; /* RGBA8Unorm */
         break;

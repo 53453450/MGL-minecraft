@@ -315,8 +315,6 @@ typedef struct GLMParams_t {
     GLuint sample_coverage_invert;
     GLuint texture_binding_cube_map;
     GLuint max_cube_map_texture_size;
-    GLuint num_compressed_texture_formats;
-    GLuint compressed_texture_formats;
     GLuint array_buffer_binding;
     GLuint element_array_buffer_binding;
 

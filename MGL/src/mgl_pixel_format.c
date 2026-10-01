@@ -1642,49 +1642,8 @@ bool mglTexStorageInternalFormatValid(GLenum internalformat)
 GLuint mglCompressedBytesPerRowOf(GLenum internalformat, GLsizei width)
 {
     GLuint bw = 0, bsz = 0;
-    switch (internalformat) {
-        /* S3TC/DXT */
-        case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
-        case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
-        case 0x8c4c: /* GL_COMPRESSED_SRGB_S3TC_DXT1_EXT */
-        case 0x8c4d: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT */
-            bw = 4;  bsz = 8;  break;
-        case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
-        case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
-        case 0x8c4e: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT */
-        case 0x8c4f: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT */
-            bw = 4;  bsz = 16; break;
-        /* ASTC LDR: all 16 bytes/block, block size varies */
-        case GL_COMPRESSED_RGBA_ASTC_4x4_KHR:       bw = 4;  bsz = 16; break;
-        case GL_COMPRESSED_RGBA_ASTC_5x4_KHR:       bw = 5;  bsz = 16; break;
-        case GL_COMPRESSED_RGBA_ASTC_5x5_KHR:       bw = 5;  bsz = 16; break;
-        case GL_COMPRESSED_RGBA_ASTC_6x5_KHR:       bw = 6;  bsz = 16; break;
-        case GL_COMPRESSED_RGBA_ASTC_6x6_KHR:       bw = 6;  bsz = 16; break;
-        case GL_COMPRESSED_RGBA_ASTC_8x5_KHR:       bw = 8;  bsz = 16; break;
-        case GL_COMPRESSED_RGBA_ASTC_8x6_KHR:       bw = 8;  bsz = 16; break;
-        case GL_COMPRESSED_RGBA_ASTC_8x8_KHR:       bw = 8;  bsz = 16; break;
-        case GL_COMPRESSED_RGBA_ASTC_10x5_KHR:      bw = 10; bsz = 16; break;
-        case GL_COMPRESSED_RGBA_ASTC_10x6_KHR:      bw = 10; bsz = 16; break;
-        case GL_COMPRESSED_RGBA_ASTC_10x8_KHR:      bw = 10; bsz = 16; break;
-        case GL_COMPRESSED_RGBA_ASTC_10x10_KHR:     bw = 10; bsz = 16; break;
-        case GL_COMPRESSED_RGBA_ASTC_12x10_KHR:     bw = 12; bsz = 16; break;
-        case GL_COMPRESSED_RGBA_ASTC_12x12_KHR:     bw = 12; bsz = 16; break;
-        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR:   bw = 4;  bsz = 16; break;
-        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4_KHR:   bw = 5;  bsz = 16; break;
-        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5_KHR:   bw = 5;  bsz = 16; break;
-        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5_KHR:   bw = 6;  bsz = 16; break;
-        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR:   bw = 6;  bsz = 16; break;
-        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x5_KHR:   bw = 8;  bsz = 16; break;
-        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x6_KHR:   bw = 8;  bsz = 16; break;
-        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR:   bw = 8;  bsz = 16; break;
-        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x5_KHR:  bw = 10; bsz = 16; break;
-        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x6_KHR:  bw = 10; bsz = 16; break;
-        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x8_KHR:  bw = 10; bsz = 16; break;
-        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR: bw = 10; bsz = 16; break;
-        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR: bw = 12; bsz = 16; break;
-        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR: bw = 12; bsz = 16; break;
-        default:
-            return 0;
+    if (!mglCompressedBlockInfoOf(internalformat, &bw, NULL, NULL, &bsz)) {
+        return 0;
     }
     if (width <= 0 || bw == 0) return 0;
     /* Rounded-up block count per row x bytes per block. */
@@ -1708,6 +1667,27 @@ bool mglCompressedBlockInfoOf(GLenum internalformat,
         case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
         case 0x8c4e: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT */
         case 0x8c4f: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT */
+            bw = 4;  bh = 4;  bs = 16; break;
+        /* GL 4.6 Table 8.14 / Appendix C */
+        case GL_COMPRESSED_RED_RGTC1:
+        case GL_COMPRESSED_SIGNED_RED_RGTC1:
+        case GL_COMPRESSED_RGB8_ETC2:
+        case GL_COMPRESSED_SRGB8_ETC2:
+        case GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2:
+        case GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2:
+        case GL_COMPRESSED_R11_EAC:
+        case GL_COMPRESSED_SIGNED_R11_EAC:
+            bw = 4;  bh = 4;  bs = 8;  break;
+        case GL_COMPRESSED_RG_RGTC2:
+        case GL_COMPRESSED_SIGNED_RG_RGTC2:
+        case GL_COMPRESSED_RGBA_BPTC_UNORM:
+        case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM:
+        case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT:
+        case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT:
+        case GL_COMPRESSED_RGBA8_ETC2_EAC:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC:
+        case GL_COMPRESSED_RG11_EAC:
+        case GL_COMPRESSED_SIGNED_RG11_EAC:
             bw = 4;  bh = 4;  bs = 16; break;
         case GL_COMPRESSED_RGBA_ASTC_4x4_KHR:       bw = 4;  bh = 4;  bs = 16; break;
         case GL_COMPRESSED_RGBA_ASTC_5x4_KHR:       bw = 5;  bh = 4;  bs = 16; break;

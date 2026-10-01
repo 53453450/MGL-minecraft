@@ -263,9 +263,6 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_SAMPLE_COVERAGE_INVERT,&glm_ctx->active_state->var.sample_coverage_invert);
     glGetIntegerv(GL_TEXTURE_BINDING_CUBE_MAP,&glm_ctx->active_state->var.texture_binding_cube_map);
     glGetIntegerv(GL_MAX_CUBE_MAP_TEXTURE_SIZE,&glm_ctx->active_state->var.max_cube_map_texture_size);
-    glGetIntegerv(GL_NUM_COMPRESSED_TEXTURE_FORMATS,&glm_ctx->active_state->var.num_compressed_texture_formats);
-    glGetIntegerv(GL_COMPRESSED_TEXTURE_FORMATS,&glm_ctx->active_state->var.compressed_texture_formats);
-
     glGetIntegerv(GL_BLEND_DST_RGB,&glm_ctx->active_state->var.blend_dst_rgb[0]);
     glGetIntegerv(GL_BLEND_SRC_RGB,&glm_ctx->active_state->var.blend_src_rgb[0]);
     glGetIntegerv(GL_BLEND_DST_ALPHA,&glm_ctx->active_state->var.blend_dst_alpha[0]);
