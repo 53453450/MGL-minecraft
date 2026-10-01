@@ -18433,15 +18433,41 @@ static int test_sample_depth_texture(unsigned char *pixels, const char *out_path
                            rendered, 0);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         fail |= 1;
-    /* Window depth 0.25 from NDC z -0.5 with the default DepthRange. */
+    /* Window depth 0.25 / 0.75 from NDC z -0.5 / 0.5 with the default
+     * DepthRange; rows 8-15 (top) get 0.75. */
     glViewport(0, 0, 16, 16);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_ALWAYS);
     glUseProgram(pdepth);
     glUniform1f(glGetUniformLocation(pdepth, "z"), -0.5f);
     glDrawArrays(GL_TRIANGLES, 0, 3);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 8, 16, 8);
+    glUniform1f(glGetUniformLocation(pdepth, "z"), 0.5f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glDisable(GL_SCISSOR_TEST);
     glDisable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
+
+    float dz[2] = {0.0f, 0.0f};
+    glReadPixels(2, 2, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &dz[0]);
+    glReadPixels(2, 13, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &dz[1]);
+    if (dz[0] < 0.24f || dz[0] > 0.26f || dz[1] < 0.74f || dz[1] > 0.76f) {
+        fprintf(stderr, "sample_depth_texture: ReadPixels depth %.3f %.3f\n",
+                dz[0], dz[1]);
+        fail |= 64;
+    }
+    {
+        float img[16 * 16];
+        glBindTexture(GL_TEXTURE_2D, rendered);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_FLOAT, img);
+        if (img[2 * 16 + 2] < 0.24f || img[2 * 16 + 2] > 0.26f ||
+            img[13 * 16 + 2] < 0.74f || img[13 * 16 + 2] > 0.76f) {
+            fprintf(stderr, "sample_depth_texture: GetTexImage depth %.3f %.3f\n",
+                    img[2 * 16 + 2], img[13 * 16 + 2]);
+            fail |= 128;
+        }
+    }
 
     unsigned char b[4];
     GLuint progs[2] = {pd, pin};
@@ -18469,13 +18495,91 @@ static int test_sample_depth_texture(unsigned char *pixels, const char *out_path
             }
         }
         glBindTexture(GL_TEXTURE_2D, rendered);
-        glUniform1f(glGetUniformLocation(progs[i], "t"), 0.5f);
+        for (int k = 0; k < 2; k++) {
+            glUniform1f(glGetUniformLocation(progs[i], "t"), ts[k]);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+            if (b[0] < want[k] - 2 || b[0] > want[k] + 2 || b[1] != 0 ||
+                b[2] != 0 || b[3] != 255) {
+                fprintf(stderr, "sample_depth_texture: rendered %s t=%.2f got %u,%u,%u,%u\n",
+                        names[i], ts[k], b[0], b[1], b[2], b[3]);
+                fail |= 8 << i;
+            }
+        }
+    }
+
+    /* §8.23.1: LEQUAL compare against 0.5 gives 0 where D=0.25, 1 where D=0.75. */
+    GLuint pshadow = link_program(vs,
+        "#version 330 core\n"
+        "uniform sampler2DShadow ds;\n"
+        "uniform float t;\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(texture(ds, vec3(0.5, t, 0.5)), 0.0, 0.0, 1.0); }\n");
+    if (!pshadow) {
+        fail |= 512;
+    } else {
+        glBindTexture(GL_TEXTURE_2D, rendered);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE,
+                        GL_COMPARE_REF_TO_TEXTURE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+        glUseProgram(pshadow);
+        glUniform1i(glGetUniformLocation(pshadow, "ds"), 0);
+        glUniform1f(glGetUniformLocation(pshadow, "z"), 0.0f);
+        const int shadow_want[2] = {0, 255};
+        for (int k = 0; k < 2; k++) {
+            glUniform1f(glGetUniformLocation(pshadow, "t"), ts[k]);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+            if (b[0] != shadow_want[k]) {
+                fprintf(stderr, "sample_depth_texture: shadow t=%.2f got %u\n",
+                        ts[k], b[0]);
+                fail |= 512;
+            }
+        }
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+        glDeleteProgram(pshadow);
+    }
+
+    /* Uploaded rows keep their order once the texture is also rendered to:
+     * only the scissored corner changes. */
+    glBindFramebuffer(GL_FRAMEBUFFER, fdepth);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
+                           uploaded, 0);
+    glViewport(0, 0, 16, 16);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_ALWAYS);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, 4, 4);
+    glUseProgram(pdepth);
+    glUniform1f(glGetUniformLocation(pdepth, "z"), 0.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    {
+        float uz[3] = {0.0f, 0.0f, 0.0f};
+        glReadPixels(1, 1, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &uz[0]);
+        glReadPixels(8, 2, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &uz[1]);
+        glReadPixels(8, 13, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &uz[2]);
+        if (uz[0] < 0.49f || uz[0] > 0.51f || uz[1] < 0.24f || uz[1] > 0.26f ||
+            uz[2] < 0.74f || uz[2] > 0.76f) {
+            fprintf(stderr, "sample_depth_texture: uploaded+rendered depth %.3f %.3f %.3f\n",
+                    uz[0], uz[1], uz[2]);
+            fail |= 256;
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, fsample);
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(pd);
+    glBindTexture(GL_TEXTURE_2D, uploaded);
+    for (int k = 0; k < 2; k++) {
+        glUniform1f(glGetUniformLocation(pd, "t"), ts[k]);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
-        if (b[0] < 62 || b[0] > 66 || b[3] != 255) {
-            fprintf(stderr, "sample_depth_texture: rendered %s got %u,%u,%u,%u\n",
-                    names[i], b[0], b[1], b[2], b[3]);
-            fail |= 8 << i;
+        if (b[0] < want[k] - 2 || b[0] > want[k] + 2) {
+            fprintf(stderr, "sample_depth_texture: uploaded+rendered t=%.2f got %u\n",
+                    ts[k], b[0]);
+            fail |= 256;
         }
     }
 

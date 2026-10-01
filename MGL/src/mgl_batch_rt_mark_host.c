@@ -223,6 +223,25 @@ void mglBatchRtMarkCurrentFramebufferDrawAttachments(void *renderer,
         .rp_has_mtl = mglBatchRtMarkHostRpHas,
     };
     mgl_batch_rt_run_draw_attachments(&ops);
+
+    /* GL 4.6 §17.3.3/§17.3.4: draws write depth only with the depth test on
+     * (and DepthMask TRUE), and stencil only with the stencil test on. */
+    GLMState *state = ctx->active_state;
+    Texture *depth = NULL;
+    if (fbo->depth.texture && state->caps.depth_test &&
+        state->var.depth_writemask) {
+        depth = mglRendererAttachmentTextureFor(ctx, &fbo->depth);
+        mglMarkTextureLevelRenderTargetWrittenImpl(depth, fbo->depth.level,
+                                                  __func__, __LINE__);
+    }
+    if (fbo->stencil.texture && state->caps.stencil_test &&
+        (state->var.stencil_writemask || state->var.stencil_back_writemask)) {
+        Texture *stencil = mglRendererAttachmentTextureFor(ctx, &fbo->stencil);
+        if (stencil != depth) {
+            mglMarkTextureLevelRenderTargetWrittenImpl(stencil, fbo->stencil.level,
+                                                      __func__, __LINE__);
+        }
+    }
 }
 
 /* === Draw-submission records (former -[MGLRenderer recordArrayDrawSubmittedMode:

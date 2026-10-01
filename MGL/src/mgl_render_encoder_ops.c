@@ -827,6 +827,9 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
                                   depthPlan.load_action, depthPlan.store_action);
         fbo->depth.clear_bitmask = (GLbitfield)mglRenderClearMaskClearDepth(
             (uint32_t)fbo->depth.clear_bitmask);
+        mglMarkTextureLevelRenderTargetWrittenImpl(
+            mglRendererAttachmentTextureFor(ctx, &fbo->depth), fbo->depth.level,
+            __func__, __LINE__);
     } else {
         mglPdSetPersistentLoadAction(commandState,
                                      MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,

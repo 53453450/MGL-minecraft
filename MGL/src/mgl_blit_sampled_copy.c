@@ -46,6 +46,7 @@ int mglBlitTextureCanUseGLSampledRenderTargetCopy(Texture *tex, void *source)
     }
 
     const uint32_t sourceType = mglBlitSampledCopyTextureInfo(source).texture_type;
+    const uint32_t sourceFormat = mglBlitSampledCopyTextureInfo(source).pixel_format;
     if (tex->width == 0u ||
         tex->height == 0u ||
         (sourceType != MGLTextureType2D &&
@@ -54,18 +55,22 @@ int mglBlitTextureCanUseGLSampledRenderTargetCopy(Texture *tex, void *source)
          sourceType != MGLTextureTypeCubeArray) ||
         mglBlitSampledCopyTextureInfo(source).mipmap_level_count == 0u ||
         mglBlitSampledCopyTextureInfo(source).width == 0u ||
-        mglBlitSampledCopyTextureInfo(source).height == 0u ||
-        mglMetalPixelFormatIsDepthOrStencil(mglBlitSampledCopyTextureInfo(source).pixel_format)) {
+        mglBlitSampledCopyTextureInfo(source).height == 0u) {
         return 0;
     }
 
-    /* Float + integer color RTs need a GL-sampled copy for FBO feedback
-     * (same texture as attachment and sampler).  Depth/stencil stay out. */
-    MGLTextureDataKind kind =
-        mglTextureDataKindForPixelFormat(mglBlitSampledCopyTextureInfo(source).pixel_format);
-    if (kind != MGLTextureDataKindFloat &&
-        kind != MGLTextureDataKindUint &&
-        kind != MGLTextureDataKindSint) {
+    /* Color and depth-only RTs get the Y-flipped copy.  The depth copy is a
+     * depth blit, which cannot carry stencil, so stencil and packed
+     * depth-stencil formats stay out. */
+    MGLTextureDataKind kind = mglTextureDataKindForPixelFormat(sourceFormat);
+    if (kind == MGLTextureDataKindDepth) {
+        if (mglMetalPixelFormatIsPackedDepthStencil(sourceFormat)) {
+            return 0;
+        }
+    } else if (mglMetalPixelFormatIsDepthOrStencil(sourceFormat) ||
+               (kind != MGLTextureDataKindFloat &&
+                kind != MGLTextureDataKindUint &&
+                kind != MGLTextureDataKindSint)) {
         return 0;
     }
 
@@ -150,6 +155,8 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
     }
 
     const MGLRenderTextureInfo sourceInfo = mglBlitSampledCopyTextureInfo(source);
+    const int depthCopy = mglTextureDataKindForPixelFormat(sourceInfo.pixel_format) ==
+                          MGLTextureDataKindDepth;
     const MGLRenderTextureInfo oldCopyInfo =
         mglBlitSampledCopyTextureInfo(tex->mtl_gl_sampled_data);
     const int sameLayout = oldCopyInfo.texture_type == sourceInfo.texture_type &&
@@ -187,7 +194,10 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
         desc.mipmap_level_count = copyLevelCount;
         desc.sample_count = 1;
         desc.array_length = sourceInfo.array_length ? sourceInfo.array_length : 1u;
-        desc.usage = MGLTextureUsageShaderRead | MGLTextureUsageRenderTarget | MGLTextureUsageShaderWrite;
+        desc.usage = MGLTextureUsageShaderRead | MGLTextureUsageRenderTarget;
+        if (!depthCopy) {
+            desc.usage |= MGLTextureUsageShaderWrite;
+        }
         desc.storage_mode = MGLStorageModePrivate;
 
         void *copy = NULL;
@@ -383,8 +393,11 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
             return 0;
         }
 
-        void *pipeline = mglBlitScaledPipelineForPixelFormat(
-            renderer, mglBlitSampledCopyTextureInfo(destination).pixel_format);
+        void *pipeline = depthCopy
+            ? mglBlitScaledDepthPipelineForPixelFormat(
+                  renderer, mglBlitSampledCopyTextureInfo(destination).pixel_format)
+            : mglBlitScaledPipelineForPixelFormat(
+                  renderer, mglBlitSampledCopyTextureInfo(destination).pixel_format);
         if (!pipeline) {
             static uint64_t s_copySetupFailCount = 0;
             uint64_t hit = ++s_copySetupFailCount;
@@ -452,7 +465,7 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
 
             MGLRenderPassState copyState;
             mglRenderInitDefaultRenderPassState(&copyState);
-            copyState.color[0].attachment = (MGLRenderPassAttachmentState){
+            const MGLRenderPassAttachmentState copyAttachment = {
                 .texture = dstLvl,
                 .level = 0u,
                 .slice = 0u,
@@ -460,6 +473,11 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
                 .load_action = MGLLoadActionDontCare,
                 .store_action = MGLStoreActionStore,
             };
+            if (depthCopy) {
+                copyState.depth.attachment = copyAttachment;
+            } else {
+                copyState.color[0].attachment = copyAttachment;
+            }
             copyState.render_target_width = mglBlitSampledCopyTextureInfo(dstLvl).width;
             copyState.render_target_height = mglBlitSampledCopyTextureInfo(dstLvl).height;
 
@@ -482,6 +500,10 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
             }
 
             mglRenderSetRenderPipelineState(copyEncoder, pipeline);
+            if (depthCopy) {
+                mglRenderSetRenderDepthStencilState(
+                    copyEncoder, mglBlitClearRectDepthState(renderer));
+            }
             mglRenderSetRenderBytes(copyEncoder, &params, sizeof(params),
                                     MGL_RENDER_BINDING_STAGE_VERTEX, 0);
             mglRenderSetRenderBytes(copyEncoder, &params, sizeof(params),
