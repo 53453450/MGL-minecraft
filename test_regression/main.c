@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 109
+#define MAX_TESTS 110
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14967,6 +14967,75 @@ static int test_compressed_texture_sampling(unsigned char *pixels,
     return result;
 }
 
+/* GL 4.6 §8.6: CopyTexImage1D defines a 1D image from the read framebuffer. */
+static int test_copy_tex_image_1d(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 330 core\n"
+        "uniform sampler1D t;\n"
+        "out vec4 c;\n"
+        "void main() { c = texture(t, 0.5); }\n";
+
+    GLuint prog = link_program(vs, fs);
+    if (!prog) return 2;
+    GLuint vao = 0, target = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint fbo = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &target);
+    if (!fbo) return 2;
+    glViewport(0, 0, REG_W, REG_H);
+
+    glClearColor(0.2f, 0.4f, 0.6f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_1D, tex);
+    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_1D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glCopyTexImage1D(GL_TEXTURE_1D, 0, GL_RGBA8, 0, 0, 4, 0);
+    GLenum err = glGetError();
+    glCopyTexImage1D(GL_TEXTURE_2D, 0, GL_RGBA8, 0, 0, 4, 0);
+    GLenum bad_target = glGetError();
+    GLint width = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_1D, 0, GL_TEXTURE_WIDTH, &width);
+
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(prog);
+    glUniform1i(glGetUniformLocation(prog, "t"), 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    unsigned char px[4] = {0};
+    glReadPixels(REG_W / 2, REG_H / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+
+    int result = 0;
+    if (err != GL_NO_ERROR || bad_target != GL_INVALID_ENUM || width != 4 ||
+        abs((int)px[0] - 51) > 1 || abs((int)px[1] - 102) > 1 ||
+        abs((int)px[2] - 153) > 1 || px[3] != 255) {
+        fprintf(stderr, "copy_tex_image_1d: err=0x%x bad_target=0x%x width=%d "
+                "got %u,%u,%u,%u want 51,102,153,255\n", err, bad_target, width,
+                px[0], px[1], px[2], px[3]);
+        result = 1;
+    }
+
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteTextures(1, &tex);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &target);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    return result;
+}
+
 /* GL 4.6 §15.2.1: TEXTURE_SWIZZLE_* reorders the looked-up components. */
 static int test_texture_swizzle_sampling(unsigned char *pixels,
                                          const char *out_path)
@@ -18022,6 +18091,7 @@ static const TestCase TESTS[] = {
                     test_draw_mode_topology_switch),
     SELF_CHECK_TEST("texture_swizzle_sampling",
                     test_texture_swizzle_sampling),
+    SELF_CHECK_TEST("copy_tex_image_1d", test_copy_tex_image_1d),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
     SELF_CHECK_TEST("link_interface_check_no_reparse",

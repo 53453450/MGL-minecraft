@@ -5352,21 +5352,8 @@ void mglCompressedTexSubImage1D(GLMContext ctx, GLenum target, GLint level, GLin
 }
 
 
-void mglCopyTexImage1D(GLMContext ctx, GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLint border)
+static void mglCopyTexImageCommon(GLMContext ctx, GLenum target, GLuint face, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border)
 {
-    // Stub - not commonly used
-    fprintf(stderr, "MGL WARNING: glCopyTexImage1D called (stub)\n");
-    ERROR_RETURN(GL_INVALID_OPERATION);
-}
-
-void mglCopyTexImage2D(GLMContext ctx, GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border)
-{
-    GLuint face = 0u;
-
-    if (!mglCopyTex2DFaceForTarget(target, &face)) {
-        ERROR_RETURN(GL_INVALID_ENUM);
-        return;
-    }
     if (level < 0 || width < 0 || height < 0 || border != 0) {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
@@ -5468,6 +5455,27 @@ void mglCopyTexImage2D(GLMContext ctx, GLenum target, GLint level, GLenum intern
     }
 
     mglRendererCopyTexSubImage(ctx, tex, face, level, 0, 0, x, y, width, height);
+}
+
+/* GL 4.6 §8.6: CopyTexImage1D is CopyTexImage2D with a height of 1. */
+void mglCopyTexImage1D(GLMContext ctx, GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLint border)
+{
+    if (target != GL_TEXTURE_1D) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    mglCopyTexImageCommon(ctx, target, 0u, level, internalformat, x, y, width, 1, border);
+}
+
+void mglCopyTexImage2D(GLMContext ctx, GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border)
+{
+    GLuint face = 0u;
+
+    if (!mglCopyTex2DFaceForTarget(target, &face)) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    mglCopyTexImageCommon(ctx, target, face, level, internalformat, x, y, width, height, border);
 }
 
 void mglCopyTexSubImage1D(GLMContext ctx, GLenum target, GLint level, GLint xoffset, GLint x, GLint y, GLsizei width)
