@@ -445,24 +445,28 @@ static int air_block_flatten(const MGLIRType *st, uint32_t base_off,
     return 0;
 }
 
-static void apply_block_interface_name(MGLShaderResource *res,
-                                       const MGLIRType *type,
-                                       const char *instance_name)
+/* Returns 0 on success, -1 on allocation failure. */
+static int apply_block_interface_name(MGLShaderResource *res,
+                                      const MGLIRType *type,
+                                      const char *instance_name)
 {
     const MGLIRType *block_type = air_uniform_block_type(type);
     if (!block_type || !block_type->name || !block_type->name[0] ||
         !res->name || strcmp(res->name, block_type->name) == 0) {
-        return;
+        return 0;
     }
     char *renamed = strdup(block_type->name);
     if (!renamed) {
-        return;
+        return -1;
     }
     free((void *)res->name);
     res->name = renamed;
     if (instance_name && instance_name[0]) {
         res->ubo_instance_name = strdup(instance_name);
-        res->ubo_has_instance_name = res->ubo_instance_name ? GL_TRUE : GL_FALSE;
+        if (!res->ubo_instance_name) {
+            return -1;
+        }
+        res->ubo_has_instance_name = GL_TRUE;
     }
     /* GL 4.6 §7.3.1.1: when a block is declared with an instance name, the
      * uniforms inside are reported as "<blockName>.<member>"; anonymous
@@ -477,12 +481,13 @@ static void apply_block_interface_name(MGLShaderResource *res,
             }
             char *qn = air_format("%s.%s", block_type->name, u->name);
             if (!qn) {
-                continue;
+                return -1;
             }
             free((void *)u->query_name);
             u->query_name = qn;
         }
     }
+    return 0;
 }
 
 /* Returns 1 on success, 0 on realloc failure (partial `r` is freed). */
@@ -1167,7 +1172,14 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 MGLShaderResource *last =
                     &lists[_UNIFORM_BUFFER_RES].list[
                         lists[_UNIFORM_BUFFER_RES].count - 1];
-                apply_block_interface_name(last, t, s->name);
+                if (apply_block_interface_name(last, t, s->name) != 0) {
+                    if (err && errCap)
+                        snprintf(err, errCap, "out of memory");
+                    free(agg_types);
+                    free(agg_names);
+                    mglAirReflectDestroy(lists);
+                    return -1;
+                }
                 last->ubo_array_size = block_count;
                 last->ubo_is_array =
                     (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 0u)
@@ -1271,7 +1283,14 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             MGLShaderResource *ssbo_last =
                 &lists[_STORAGE_BUFFER_RES].list[
                     lists[_STORAGE_BUFFER_RES].count - 1];
-            apply_block_interface_name(ssbo_last, t, s->name);
+            if (apply_block_interface_name(ssbo_last, t, s->name) != 0) {
+                if (err && errCap)
+                    snprintf(err, errCap, "out of memory");
+                free(agg_types);
+                free(agg_names);
+                mglAirReflectDestroy(lists);
+                return -1;
+            }
             ssbo_last->ubo_array_size = block_count;
             ssbo_last->ubo_is_array =
                 (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 0u)
