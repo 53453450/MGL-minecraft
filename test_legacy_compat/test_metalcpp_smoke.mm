@@ -4989,6 +4989,51 @@ static int verifyIntegerReadbackClassify(void) {
     return 0;
 }
 
+static int verifyFallbackSampledClassTable(void) {
+    /* GL 4.6 §11.1.3.5: an incomplete texture samples as (0,0,0,1) for float
+     * samplers and 0 for shadow samplers; integer results are undefined. */
+    static const struct { uint32_t kind, format; } kFormats[] = {
+        {MGLTextureDataKindUnknown, 70u}, /* RGBA8Unorm */
+        {MGLTextureDataKindFloat, 70u},
+        {MGLTextureDataKindSint, 74u},    /* RGBA8Sint */
+        {MGLTextureDataKindUint, 73u},    /* RGBA8Uint */
+        {MGLTextureDataKindDepth, 252u},  /* Depth32Float */
+    };
+    for (size_t i = 0; i < sizeof(kFormats) / sizeof(kFormats[0]); i++) {
+        if (mglRenderFallbackSampledPixelFormat(kFormats[i].kind) !=
+            kFormats[i].format) {
+            fprintf(stderr, "FAIL: fallback format kind=%u\n", kFormats[i].kind);
+            return 1;
+        }
+    }
+    if (mglRenderFallbackSampledTextureType(0u) != MGLTextureType2D ||
+        mglRenderFallbackSampledTextureType(MGLTextureTypeCube) !=
+            MGLTextureTypeCube ||
+        mglRenderFallbackSampledTextureType(MGLTextureType2DArray) !=
+            MGLTextureType2DArray ||
+        mglRenderFallbackSampledTextureType(MGLTextureType2DMultisampleArray) !=
+            MGLTextureType2DMultisampleArray) {
+        fprintf(stderr, "FAIL: fallback texture type\n");
+        return 1;
+    }
+    for (uint32_t ta = 0; ta <= MGLTextureTypeTextureBuffer; ta++) {
+        for (uint32_t ka = 0; ka <= MGLTextureDataKindDepth; ka++) {
+            for (uint32_t tb = 0; tb <= MGLTextureTypeTextureBuffer; tb++) {
+                for (uint32_t kb = 0; kb <= MGLTextureDataKindDepth; kb++) {
+                    if ((ta != tb || ka != kb) &&
+                        mglRenderFallbackSampledCacheKey(ta, ka) ==
+                            mglRenderFallbackSampledCacheKey(tb, kb)) {
+                        fprintf(stderr, "FAIL: fallback cache key collision\n");
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+    printf("FALLBACK_SAMPLED_CLASS_TABLE_OK\n");
+    return 0;
+}
+
 static int verifyRasterizationIsEmpty(void) {
     /* P4.5 (item 1141/887): viewport/scissor/framebuffer intersection. */
     if (mglRenderRasterizationIsEmpty(0, 0, 0, 10, 100, 100, 0, 0, 0, 0, 0) != 1) {
@@ -9648,6 +9693,7 @@ int main(void) {
         if (verifyNativeTESInterfaceGuards() != 0) return 1;
         if (verifyRasterizationIsEmpty() != 0) return 1;
         if (verifyIntegerReadbackClassify() != 0) return 1;
+        if (verifyFallbackSampledClassTable() != 0) return 1;
         if (verifyGetTexImagePlan() != 0) return 1;
         if (verifyIntegerReadbackSourceClassify() != 0) return 1;
         if (verifyPackedTypeClassify() != 0) return 1;
