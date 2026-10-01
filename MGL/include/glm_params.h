@@ -412,7 +412,7 @@ typedef struct GLMParams_t {
     GLuint program_pipeline_binding;
     GLuint max_viewports;
     GLuint viewport_subpixel_bits;
-    GLuint viewport_bounds_range;
+    GLfloat viewport_bounds_range[2];
     GLuint layer_provoking_vertex;
     GLuint viewport_index_provoking_vertex;
     GLuint clip_origin;

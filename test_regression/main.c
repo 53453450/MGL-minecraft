@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 106
+#define MAX_TESTS 107
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14572,6 +14572,242 @@ static int test_discard_stub_integer_targets(unsigned char *pixels,
     return result;
 }
 
+/* GL 4.6 Tables 23.53-23.72: every implementation-dependent limit must meet
+ * its minimum (or, for the † alignments, not exceed the stated maximum).
+ * MAX_SUBROUTINES / MAX_SUBROUTINE_UNIFORM_LOCATIONS are left out: shader
+ * subroutines are not implemented, so MGL reports 0 rather than a capacity
+ * it cannot honour. */
+static int test_gl46_limit_minima(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const struct { GLenum pname; GLint min; const char *name; } kMin[] = {
+        {GL_MAX_CLIP_DISTANCES, 8, "MAX_CLIP_DISTANCES"},
+        {GL_MAX_CULL_DISTANCES, 8, "MAX_CULL_DISTANCES"},
+        {GL_MAX_COMBINED_CLIP_AND_CULL_DISTANCES, 8, "MAX_COMBINED_CLIP_AND_CULL_DISTANCES"},
+        {GL_SUBPIXEL_BITS, 4, "SUBPIXEL_BITS"},
+        {GL_MAX_3D_TEXTURE_SIZE, 2048, "MAX_3D_TEXTURE_SIZE"},
+        {GL_MAX_TEXTURE_SIZE, 16384, "MAX_TEXTURE_SIZE"},
+        {GL_MAX_ARRAY_TEXTURE_LAYERS, 2048, "MAX_ARRAY_TEXTURE_LAYERS"},
+        {GL_MAX_CUBE_MAP_TEXTURE_SIZE, 16384, "MAX_CUBE_MAP_TEXTURE_SIZE"},
+        {GL_MAX_RENDERBUFFER_SIZE, 16384, "MAX_RENDERBUFFER_SIZE"},
+        {GL_MAX_VIEWPORTS, 16, "MAX_VIEWPORTS"},
+        {GL_MAX_VERTEX_ATTRIB_RELATIVE_OFFSET, 2047, "MAX_VERTEX_ATTRIB_RELATIVE_OFFSET"},
+        {GL_MAX_VERTEX_ATTRIB_BINDINGS, 16, "MAX_VERTEX_ATTRIB_BINDINGS"},
+        {GL_MAX_VERTEX_ATTRIB_STRIDE, 2048, "MAX_VERTEX_ATTRIB_STRIDE"},
+        {GL_NUM_COMPRESSED_TEXTURE_FORMATS, 18, "NUM_COMPRESSED_TEXTURE_FORMATS"},
+        {GL_MAX_TEXTURE_BUFFER_SIZE, 65536, "MAX_TEXTURE_BUFFER_SIZE"},
+        {GL_MAX_RECTANGLE_TEXTURE_SIZE, 16384, "MAX_RECTANGLE_TEXTURE_SIZE"},
+        {GL_MIN_MAP_BUFFER_ALIGNMENT, 64, "MIN_MAP_BUFFER_ALIGNMENT"},
+        {GL_NUM_SHADING_LANGUAGE_VERSIONS, 3, "NUM_SHADING_LANGUAGE_VERSIONS"},
+        {GL_MAX_VERTEX_ATTRIBS, 16, "MAX_VERTEX_ATTRIBS"},
+        {GL_MAX_VERTEX_UNIFORM_COMPONENTS, 1024, "MAX_VERTEX_UNIFORM_COMPONENTS"},
+        {GL_MAX_VERTEX_UNIFORM_VECTORS, 256, "MAX_VERTEX_UNIFORM_VECTORS"},
+        {GL_MAX_VERTEX_UNIFORM_BLOCKS, 14, "MAX_VERTEX_UNIFORM_BLOCKS"},
+        {GL_MAX_VERTEX_OUTPUT_COMPONENTS, 64, "MAX_VERTEX_OUTPUT_COMPONENTS"},
+        {GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, 16, "MAX_VERTEX_TEXTURE_IMAGE_UNITS"},
+        {GL_MAX_TESS_GEN_LEVEL, 64, "MAX_TESS_GEN_LEVEL"},
+        {GL_MAX_PATCH_VERTICES, 32, "MAX_PATCH_VERTICES"},
+        {GL_MAX_TESS_CONTROL_UNIFORM_COMPONENTS, 1024, "MAX_TESS_CONTROL_UNIFORM_COMPONENTS"},
+        {GL_MAX_TESS_CONTROL_TEXTURE_IMAGE_UNITS, 16, "MAX_TESS_CONTROL_TEXTURE_IMAGE_UNITS"},
+        {GL_MAX_TESS_CONTROL_OUTPUT_COMPONENTS, 128, "MAX_TESS_CONTROL_OUTPUT_COMPONENTS"},
+        {GL_MAX_TESS_PATCH_COMPONENTS, 120, "MAX_TESS_PATCH_COMPONENTS"},
+        {GL_MAX_TESS_CONTROL_TOTAL_OUTPUT_COMPONENTS, 4096, "MAX_TESS_CONTROL_TOTAL_OUTPUT_COMPONENTS"},
+        {GL_MAX_TESS_CONTROL_INPUT_COMPONENTS, 128, "MAX_TESS_CONTROL_INPUT_COMPONENTS"},
+        {GL_MAX_TESS_CONTROL_UNIFORM_BLOCKS, 14, "MAX_TESS_CONTROL_UNIFORM_BLOCKS"},
+        {GL_MAX_TESS_EVALUATION_UNIFORM_COMPONENTS, 1024, "MAX_TESS_EVALUATION_UNIFORM_COMPONENTS"},
+        {GL_MAX_TESS_EVALUATION_TEXTURE_IMAGE_UNITS, 16, "MAX_TESS_EVALUATION_TEXTURE_IMAGE_UNITS"},
+        {GL_MAX_TESS_EVALUATION_OUTPUT_COMPONENTS, 128, "MAX_TESS_EVALUATION_OUTPUT_COMPONENTS"},
+        {GL_MAX_TESS_EVALUATION_INPUT_COMPONENTS, 128, "MAX_TESS_EVALUATION_INPUT_COMPONENTS"},
+        {GL_MAX_TESS_EVALUATION_UNIFORM_BLOCKS, 14, "MAX_TESS_EVALUATION_UNIFORM_BLOCKS"},
+        {GL_MAX_GEOMETRY_UNIFORM_COMPONENTS, 1024, "MAX_GEOMETRY_UNIFORM_COMPONENTS"},
+        {GL_MAX_GEOMETRY_UNIFORM_BLOCKS, 14, "MAX_GEOMETRY_UNIFORM_BLOCKS"},
+        {GL_MAX_GEOMETRY_INPUT_COMPONENTS, 64, "MAX_GEOMETRY_INPUT_COMPONENTS"},
+        {GL_MAX_GEOMETRY_OUTPUT_COMPONENTS, 128, "MAX_GEOMETRY_OUTPUT_COMPONENTS"},
+        {GL_MAX_GEOMETRY_OUTPUT_VERTICES, 256, "MAX_GEOMETRY_OUTPUT_VERTICES"},
+        {GL_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS, 1024, "MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS"},
+        {GL_MAX_GEOMETRY_TEXTURE_IMAGE_UNITS, 16, "MAX_GEOMETRY_TEXTURE_IMAGE_UNITS"},
+        {GL_MAX_GEOMETRY_SHADER_INVOCATIONS, 32, "MAX_GEOMETRY_SHADER_INVOCATIONS"},
+        {GL_MAX_VERTEX_STREAMS, 4, "MAX_VERTEX_STREAMS"},
+        {GL_MAX_FRAGMENT_UNIFORM_COMPONENTS, 1024, "MAX_FRAGMENT_UNIFORM_COMPONENTS"},
+        {GL_MAX_FRAGMENT_UNIFORM_VECTORS, 256, "MAX_FRAGMENT_UNIFORM_VECTORS"},
+        {GL_MAX_FRAGMENT_UNIFORM_BLOCKS, 14, "MAX_FRAGMENT_UNIFORM_BLOCKS"},
+        {GL_MAX_FRAGMENT_INPUT_COMPONENTS, 128, "MAX_FRAGMENT_INPUT_COMPONENTS"},
+        {GL_MAX_TEXTURE_IMAGE_UNITS, 16, "MAX_TEXTURE_IMAGE_UNITS"},
+        {GL_MAX_PROGRAM_TEXTURE_GATHER_OFFSET, 7, "MAX_PROGRAM_TEXTURE_GATHER_OFFSET"},
+        {GL_MAX_FRAGMENT_ATOMIC_COUNTER_BUFFERS, 1, "MAX_FRAGMENT_ATOMIC_COUNTER_BUFFERS"},
+        {GL_MAX_FRAGMENT_ATOMIC_COUNTERS, 8, "MAX_FRAGMENT_ATOMIC_COUNTERS"},
+        {GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS, 8, "MAX_FRAGMENT_SHADER_STORAGE_BLOCKS"},
+        {GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS, 1024, "MAX_COMPUTE_WORK_GROUP_INVOCATIONS"},
+        {GL_MAX_COMPUTE_UNIFORM_BLOCKS, 14, "MAX_COMPUTE_UNIFORM_BLOCKS"},
+        {GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS, 16, "MAX_COMPUTE_TEXTURE_IMAGE_UNITS"},
+        {GL_MAX_COMPUTE_ATOMIC_COUNTER_BUFFERS, 8, "MAX_COMPUTE_ATOMIC_COUNTER_BUFFERS"},
+        {GL_MAX_COMPUTE_ATOMIC_COUNTERS, 8, "MAX_COMPUTE_ATOMIC_COUNTERS"},
+        {GL_MAX_COMPUTE_SHARED_MEMORY_SIZE, 32768, "MAX_COMPUTE_SHARED_MEMORY_SIZE"},
+        {GL_MAX_COMPUTE_UNIFORM_COMPONENTS, 1024, "MAX_COMPUTE_UNIFORM_COMPONENTS"},
+        {GL_MAX_COMPUTE_IMAGE_UNIFORMS, 8, "MAX_COMPUTE_IMAGE_UNIFORMS"},
+        {GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS, 8, "MAX_COMPUTE_SHADER_STORAGE_BLOCKS"},
+        {GL_MAX_PROGRAM_TEXEL_OFFSET, 7, "MAX_PROGRAM_TEXEL_OFFSET"},
+        {GL_MAX_UNIFORM_BUFFER_BINDINGS, 84, "MAX_UNIFORM_BUFFER_BINDINGS"},
+        {GL_MAX_UNIFORM_BLOCK_SIZE, 16384, "MAX_UNIFORM_BLOCK_SIZE"},
+        {GL_MAX_COMBINED_UNIFORM_BLOCKS, 70, "MAX_COMBINED_UNIFORM_BLOCKS"},
+        {GL_MAX_VARYING_COMPONENTS, 60, "MAX_VARYING_COMPONENTS"},
+        {GL_MAX_VARYING_VECTORS, 15, "MAX_VARYING_VECTORS"},
+        {GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, 80, "MAX_COMBINED_TEXTURE_IMAGE_UNITS"},
+        {GL_MAX_UNIFORM_LOCATIONS, 1024, "MAX_UNIFORM_LOCATIONS"},
+        {GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS, 1, "MAX_ATOMIC_COUNTER_BUFFER_BINDINGS"},
+        {GL_MAX_ATOMIC_COUNTER_BUFFER_SIZE, 32, "MAX_ATOMIC_COUNTER_BUFFER_SIZE"},
+        {GL_MAX_COMBINED_ATOMIC_COUNTER_BUFFERS, 1, "MAX_COMBINED_ATOMIC_COUNTER_BUFFERS"},
+        {GL_MAX_COMBINED_ATOMIC_COUNTERS, 8, "MAX_COMBINED_ATOMIC_COUNTERS"},
+        {GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS, 8, "MAX_SHADER_STORAGE_BUFFER_BINDINGS"},
+        {GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS, 8, "MAX_COMBINED_SHADER_STORAGE_BLOCKS"},
+        {GL_MAX_IMAGE_UNITS, 8, "MAX_IMAGE_UNITS"},
+        {GL_MAX_COMBINED_SHADER_OUTPUT_RESOURCES, 8, "MAX_COMBINED_SHADER_OUTPUT_RESOURCES"},
+        {GL_MAX_FRAGMENT_IMAGE_UNIFORMS, 8, "MAX_FRAGMENT_IMAGE_UNIFORMS"},
+        {GL_MAX_COMBINED_IMAGE_UNIFORMS, 8, "MAX_COMBINED_IMAGE_UNIFORMS"},
+        {GL_MAX_DEBUG_MESSAGE_LENGTH, 1, "MAX_DEBUG_MESSAGE_LENGTH"},
+        {GL_MAX_DEBUG_LOGGED_MESSAGES, 1, "MAX_DEBUG_LOGGED_MESSAGES"},
+        {GL_MAX_DEBUG_GROUP_STACK_DEPTH, 64, "MAX_DEBUG_GROUP_STACK_DEPTH"},
+        {GL_MAX_LABEL_LENGTH, 256, "MAX_LABEL_LENGTH"},
+        {GL_MAX_FRAMEBUFFER_WIDTH, 16384, "MAX_FRAMEBUFFER_WIDTH"},
+        {GL_MAX_FRAMEBUFFER_HEIGHT, 16384, "MAX_FRAMEBUFFER_HEIGHT"},
+        {GL_MAX_FRAMEBUFFER_LAYERS, 2048, "MAX_FRAMEBUFFER_LAYERS"},
+        {GL_MAX_FRAMEBUFFER_SAMPLES, 4, "MAX_FRAMEBUFFER_SAMPLES"},
+        {GL_MAX_SAMPLE_MASK_WORDS, 1, "MAX_SAMPLE_MASK_WORDS"},
+        {GL_MAX_SAMPLES, 4, "MAX_SAMPLES"},
+        {GL_MAX_COLOR_TEXTURE_SAMPLES, 1, "MAX_COLOR_TEXTURE_SAMPLES"},
+        {GL_MAX_DEPTH_TEXTURE_SAMPLES, 1, "MAX_DEPTH_TEXTURE_SAMPLES"},
+        {GL_MAX_INTEGER_SAMPLES, 1, "MAX_INTEGER_SAMPLES"},
+        {GL_MAX_DRAW_BUFFERS, 8, "MAX_DRAW_BUFFERS"},
+        {GL_MAX_DUAL_SOURCE_DRAW_BUFFERS, 1, "MAX_DUAL_SOURCE_DRAW_BUFFERS"},
+        {GL_MAX_COLOR_ATTACHMENTS, 8, "MAX_COLOR_ATTACHMENTS"},
+        {GL_MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS, 64, "MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS"},
+        {GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS, 4, "MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS"},
+        {GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS, 4, "MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS"},
+        {GL_MAX_TRANSFORM_FEEDBACK_BUFFERS, 4, "MAX_TRANSFORM_FEEDBACK_BUFFERS"},
+    };
+    static const struct { GLenum pname; GLint max; const char *name; } kMaxAlign[] = {
+        {GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, 256, "UNIFORM_BUFFER_OFFSET_ALIGNMENT"},
+        {GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT, 256, "SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT"},
+        {GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT, 256, "TEXTURE_BUFFER_OFFSET_ALIGNMENT"},
+    };
+    static const struct { GLenum blocks, components, combined; const char *name; } kCombined[] = {
+        {GL_MAX_VERTEX_UNIFORM_BLOCKS, GL_MAX_VERTEX_UNIFORM_COMPONENTS,
+         GL_MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS, "VERTEX"},
+        {GL_MAX_TESS_CONTROL_UNIFORM_BLOCKS, GL_MAX_TESS_CONTROL_UNIFORM_COMPONENTS,
+         GL_MAX_COMBINED_TESS_CONTROL_UNIFORM_COMPONENTS, "TESS_CONTROL"},
+        {GL_MAX_TESS_EVALUATION_UNIFORM_BLOCKS, GL_MAX_TESS_EVALUATION_UNIFORM_COMPONENTS,
+         GL_MAX_COMBINED_TESS_EVALUATION_UNIFORM_COMPONENTS, "TESS_EVALUATION"},
+        {GL_MAX_GEOMETRY_UNIFORM_BLOCKS, GL_MAX_GEOMETRY_UNIFORM_COMPONENTS,
+         GL_MAX_COMBINED_GEOMETRY_UNIFORM_COMPONENTS, "GEOMETRY"},
+        {GL_MAX_FRAGMENT_UNIFORM_BLOCKS, GL_MAX_FRAGMENT_UNIFORM_COMPONENTS,
+         GL_MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS, "FRAGMENT"},
+        {GL_MAX_COMPUTE_UNIFORM_BLOCKS, GL_MAX_COMPUTE_UNIFORM_COMPONENTS,
+         GL_MAX_COMBINED_COMPUTE_UNIFORM_COMPONENTS, "COMPUTE"},
+    };
+    static const GLint kWorkGroupCount[3] = {65535, 65535, 65535};
+    static const GLint kWorkGroupSize[3] = {1024, 1024, 64};
+
+    int result = 0;
+    while (glGetError() != GL_NO_ERROR) {}
+    for (size_t i = 0; i < sizeof(kMin) / sizeof(kMin[0]); i++) {
+        GLint v = 0;
+        glGetIntegerv(kMin[i].pname, &v);
+        if (v < kMin[i].min) {
+            fprintf(stderr, "gl46_limit_minima: %s = %d < %d\n",
+                    kMin[i].name, v, kMin[i].min);
+            result = 1;
+        }
+    }
+    GLint v = 0;
+    glGetIntegerv(GL_MIN_PROGRAM_TEXEL_OFFSET, &v);
+    if (v > -8) {
+        fprintf(stderr, "gl46_limit_minima: MIN_PROGRAM_TEXEL_OFFSET = %d > -8\n", v);
+        result = 1;
+    }
+    glGetIntegerv(GL_MIN_PROGRAM_TEXTURE_GATHER_OFFSET, &v);
+    if (v > -8) {
+        fprintf(stderr, "gl46_limit_minima: MIN_PROGRAM_TEXTURE_GATHER_OFFSET = %d > -8\n", v);
+        result = 1;
+    }
+    for (size_t i = 0; i < sizeof(kMaxAlign) / sizeof(kMaxAlign[0]); i++) {
+        glGetIntegerv(kMaxAlign[i].pname, &v);
+        if (v < 1 || v > kMaxAlign[i].max) {
+            fprintf(stderr, "gl46_limit_minima: %s = %d not in [1, %d]\n",
+                    kMaxAlign[i].name, v, kMaxAlign[i].max);
+            result = 1;
+        }
+    }
+    GLint block_size = 0;
+    glGetIntegerv(GL_MAX_UNIFORM_BLOCK_SIZE, &block_size);
+    for (size_t i = 0; i < sizeof(kCombined) / sizeof(kCombined[0]); i++) {
+        GLint blocks = 0, components = 0, combined = 0;
+        glGetIntegerv(kCombined[i].blocks, &blocks);
+        glGetIntegerv(kCombined[i].components, &components);
+        glGetIntegerv(kCombined[i].combined, &combined);
+        long long need = (long long)blocks * block_size / 4 + components;
+        if ((long long)combined < need) {
+            fprintf(stderr, "gl46_limit_minima: MAX_COMBINED_%s_UNIFORM_COMPONENTS"
+                    " = %d < %lld\n", kCombined[i].name, combined, need);
+            result = 1;
+        }
+    }
+    for (GLuint i = 0; i < 3; i++) {
+        GLint count = 0, size = 0;
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, i, &count);
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, i, &size);
+        if (count < kWorkGroupCount[i] || size < kWorkGroupSize[i]) {
+            fprintf(stderr, "gl46_limit_minima: work group [%u] count=%d size=%d\n",
+                    i, count, size);
+            result = 1;
+        }
+    }
+    GLint64 v64 = 0;
+    glGetInteger64v(GL_MAX_ELEMENT_INDEX, &v64);
+    if (v64 < 0xFFFFFFFFll) {
+        fprintf(stderr, "gl46_limit_minima: MAX_ELEMENT_INDEX = %lld\n", (long long)v64);
+        result = 1;
+    }
+    glGetInteger64v(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &v64);
+    if (v64 < (1ll << 27)) {
+        fprintf(stderr, "gl46_limit_minima: MAX_SHADER_STORAGE_BLOCK_SIZE = %lld\n",
+                (long long)v64);
+        result = 1;
+    }
+    GLfloat f = 0.0f, range[2] = {0.0f, 0.0f};
+    glGetFloatv(GL_MAX_TEXTURE_LOD_BIAS, &f);
+    if (f < 2.0f) {
+        fprintf(stderr, "gl46_limit_minima: MAX_TEXTURE_LOD_BIAS = %f\n", f);
+        result = 1;
+    }
+    glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &f);
+    if (f < 16.0f) {
+        fprintf(stderr, "gl46_limit_minima: MAX_TEXTURE_MAX_ANISOTROPY = %f\n", f);
+        result = 1;
+    }
+    glGetFloatv(GL_MIN_FRAGMENT_INTERPOLATION_OFFSET, &f);
+    if (f > -0.5f) {
+        fprintf(stderr, "gl46_limit_minima: MIN_FRAGMENT_INTERPOLATION_OFFSET = %f\n", f);
+        result = 1;
+    }
+    glGetFloatv(GL_MAX_FRAGMENT_INTERPOLATION_OFFSET, &f);
+    if (f < 0.5f) {
+        fprintf(stderr, "gl46_limit_minima: MAX_FRAGMENT_INTERPOLATION_OFFSET = %f\n", f);
+        result = 1;
+    }
+    glGetFloatv(GL_VIEWPORT_BOUNDS_RANGE, range);
+    if (range[0] > -32768.0f || range[1] < 32767.0f) {
+        fprintf(stderr, "gl46_limit_minima: VIEWPORT_BOUNDS_RANGE = [%f, %f]\n",
+                range[0], range[1]);
+        result = 1;
+    }
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "gl46_limit_minima: GL error during queries\n");
+        result = 1;
+    }
+    return result;
+}
+
 static void pack_bits_le(unsigned char *dst, unsigned *bit, unsigned value,
                          unsigned count)
 {
@@ -17651,6 +17887,7 @@ static const TestCase TESTS[] = {
                     test_blit_integer_format_conversion),
     SELF_CHECK_TEST("discard_stub_integer_targets",
                     test_discard_stub_integer_targets),
+    SELF_CHECK_TEST("gl46_limit_minima", test_gl46_limit_minima),
     SELF_CHECK_TEST("glsl_version_strings", test_glsl_version_strings),
     SELF_CHECK_TEST("compressed_texture_sampling",
                     test_compressed_texture_sampling),

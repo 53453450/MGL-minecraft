@@ -429,7 +429,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
         glm_ctx->active_state->var.max_viewports = MGL_MAX_VIEWPORTS;
     }
     glGetIntegerv(GL_VIEWPORT_SUBPIXEL_BITS,&glm_ctx->active_state->var.viewport_subpixel_bits);
-    glGetIntegerv(GL_VIEWPORT_BOUNDS_RANGE,&glm_ctx->active_state->var.viewport_bounds_range);
+    glGetFloatv(GL_VIEWPORT_BOUNDS_RANGE,glm_ctx->active_state->var.viewport_bounds_range);
     /* GL 4.6 §11.3.4.6: the query must match the vertex convention used
      * for gl_Layer / gl_ViewportIndex.  MGL does not implement a defined
      * first/last convention, so report UNDEFINED_VERTEX. */
@@ -703,16 +703,6 @@ apply_gl46_defaults:
     glm_ctx->active_state->var.max_fragment_interpolation_offset = 0.5f;
     glm_ctx->active_state->var.fragment_interpolation_offset_bits = 4;
 
-    /* Compute combined uniform components: blocks * block_size / 4 + components */
-    {
-        const GLuint block_size = 16384;
-        const GLuint min_blocks = 14;
-        glm_ctx->active_state->var.max_combined_tess_control_uniform_components =
-            min_blocks * block_size / 4 + glm_ctx->active_state->var.max_tess_control_uniform_components;
-        glm_ctx->active_state->var.max_combined_tess_evaluation_uniform_components =
-            min_blocks * block_size / 4 + glm_ctx->active_state->var.max_tess_evaluation_uniform_components;
-    }
-
     /* Ensure max_element_index is at least UINT32_MAX */
     if (glm_ctx->active_state->var.max_element_index == 0 ||
         glm_ctx->active_state->var.max_element_index < 0xFFFFFFFFu) {
@@ -822,6 +812,10 @@ apply_gl46_defaults:
         glm_ctx->active_state->var.max_viewport_dims[1] = 16384u;
     if (glm_ctx->active_state->var.max_viewports < 16u)
         glm_ctx->active_state->var.max_viewports = 16u;
+    if (glm_ctx->active_state->var.viewport_bounds_range[0] > -32768.0f)
+        glm_ctx->active_state->var.viewport_bounds_range[0] = -32768.0f;
+    if (glm_ctx->active_state->var.viewport_bounds_range[1] < 32767.0f)
+        glm_ctx->active_state->var.viewport_bounds_range[1] = 32767.0f;
     if (glm_ctx->active_state->var.max_elements_vertices < 1048576u)
         glm_ctx->active_state->var.max_elements_vertices = 1048576u;
     if (glm_ctx->active_state->var.max_elements_indices < 1048576u)
@@ -873,10 +867,10 @@ apply_gl46_defaults:
         glm_ctx->active_state->var.max_fragment_uniform_blocks = 14u;
     if (glm_ctx->active_state->var.max_compute_uniform_blocks < 14u)
         glm_ctx->active_state->var.max_compute_uniform_blocks = 14u;
-    if (glm_ctx->active_state->var.max_combined_uniform_blocks < 36u)
-        glm_ctx->active_state->var.max_combined_uniform_blocks = 36u;
+    if (glm_ctx->active_state->var.max_combined_uniform_blocks < 70u)
+        glm_ctx->active_state->var.max_combined_uniform_blocks = 70u;
 
-    /* Combined uniform components (tess variants already computed above). */
+    /* Combined uniform components. */
     if (glm_ctx->active_state->var.max_combined_vertex_uniform_components < 1048576u)
         glm_ctx->active_state->var.max_combined_vertex_uniform_components = 1048576u;
     if (glm_ctx->active_state->var.max_combined_geometry_uniform_components < 1048576u)
@@ -951,6 +945,33 @@ apply_gl46_defaults:
 #ifdef MGL_GL_ES
     mglApplyES32Limits(glm_ctx);
 #endif
+
+    /* GL 4.6 Table 23.63 †: each MAX_COMBINED_stage_UNIFORM_COMPONENTS is at
+     * least MAX_stage_UNIFORM_BLOCKS * MAX_UNIFORM_BLOCK_SIZE / 4 +
+     * MAX_stage_UNIFORM_COMPONENTS, using the final values above. */
+    {
+        GLMParams *v = &glm_ctx->active_state->var;
+        const GLuint block_words = v->max_uniform_block_size / 4;
+        struct { GLuint blocks, components; GLuint *combined; } stages[] = {
+            {v->max_vertex_uniform_blocks, v->max_vertex_uniform_components,
+             &v->max_combined_vertex_uniform_components},
+            {v->max_tess_control_uniform_blocks, v->max_tess_control_uniform_components,
+             &v->max_combined_tess_control_uniform_components},
+            {v->max_tess_evaluation_uniform_blocks, v->max_tess_evaluation_uniform_components,
+             &v->max_combined_tess_evaluation_uniform_components},
+            {v->max_geometry_uniform_blocks, v->max_geometry_uniform_components,
+             &v->max_combined_geometry_uniform_components},
+            {v->max_fragment_uniform_blocks, v->max_fragment_uniform_components,
+             &v->max_combined_fragment_uniform_components},
+            {v->max_compute_uniform_blocks, v->max_compute_uniform_components,
+             &v->max_combined_compute_uniform_components},
+        };
+        for (size_t i = 0; i < sizeof(stages) / sizeof(stages[0]); i++) {
+            GLuint need = stages[i].blocks * block_words + stages[i].components;
+            if (*stages[i].combined < need)
+                *stages[i].combined = need;
+        }
+    }
 
     if (ctx) {
         CGLSetCurrentContext(NULL);

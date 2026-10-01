@@ -983,7 +983,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         }
         case 0x825B: RET_TYPE_VAR(type, max_viewports); break; // GL_MAX_VIEWPORTS
         case 0x825C: RET_TYPE_VAR(type, viewport_subpixel_bits); break; // GL_VIEWPORT_SUBPIXEL_BITS
-        case 0x825D: RET_TYPE_VAR(type, viewport_bounds_range); break; // GL_VIEWPORT_BOUNDS_RANGE
+        case 0x825D: RET_TYPE_VAR_COUNT(type, viewport_bounds_range, 2); break; // GL_VIEWPORT_BOUNDS_RANGE
         case 0x825E: RET_TYPE_VAR(type, layer_provoking_vertex); break; // GL_LAYER_PROVOKING_VERTEX
         case 0x825F: RET_TYPE_VAR(type, viewport_index_provoking_vertex); break; // GL_VIEWPORT_INDEX_PROVOKING_VERTEX
         case GL_CLIP_ORIGIN: RET_TYPE_VAR(type, clip_origin); break;
