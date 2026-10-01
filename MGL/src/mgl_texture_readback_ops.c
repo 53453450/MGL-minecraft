@@ -640,7 +640,7 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
                                   uint64_t outputComponentBytes,
                                   const int *componentMap, GLenum packedType,
                                   uint64_t mipmapLevel, uint64_t mtlSlice,
-                                  int isRenderTarget)
+                                  int flipRows)
 {
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
@@ -750,14 +750,10 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
         levelHeight = mglPdMaxU64(
             1u, mglPdTextureInfo(sourceTexture).height >> mipmapLevel);
     }
-    /* Render-target textures are stored top-to-bottom in Metal (Metal y=0 = GL
-     * y=levelHeight-1), so the blit source origin must be Y-flipped.
-     * Non-render-target textures (e.g. storage images written via imageStore)
-     * store data in GL order (Metal y=0 = GL y=0), so no source Y-flip is
-     * needed.  Using the flipped origin for storage images would read the wrong
-     * rows and corrupt the readback. */
+    /* Flipped storage keeps GL row y at Metal row levelHeight-1-y: remap the
+     * source window here and reverse the rows in the CPU convert. */
     const uint64_t blitSrcY =
-        isRenderTarget ? (levelHeight - (uint64_t)maxY) : (uint64_t)minY;
+        flipRows ? (levelHeight - (uint64_t)maxY) : (uint64_t)minY;
     mglPdTextureCopyTextureToBuffer(
         blit, sourceTexture, mtlSlice, mipmapLevel,
         mglTextureOrigin((uint64_t)minX, blitSrcY, 0u),
@@ -808,9 +804,7 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
         .packed_bit_widths = packedBitWidths,
         .packed_shifts = packedShifts,
         .packed_output_bytes = (uint32_t)packedOutputBytes,
-        /* Integer RTs retain GL row order after CPU upload + FragCoord remap;
-         * flipping here Y-mirrors glGetTexImage. */
-        .flip_y = 0,
+        .flip_y = flipRows,
     };
     if (mglRenderConvertIntegerReadback(&convert) != 0) {
         (void)mglRenderPassNewCommandBufferLocked(renderer);
@@ -981,7 +975,9 @@ void mglTextureReadIntegerPixels(void *renderer, GLMContext glm_ctx,
     (void)mglTextureReadIntegerAsRGBA32(
         renderer, texture, pixelBytes, bytesPerRow, bytesPerImage, region,
         outputComponents, outputComponentBytes, componentMap, type,
-        subresource.level, subresource.slice, 1);
+        subresource.level, subresource.slice,
+        mglReadbackNeedsYFlip(textureObj->is_render_target ? 1 : 0,
+                              textureObj->samples));
 }
 
 /* -mtlReadDrawable:pixelBytes:bytesPerRow:bytesPerImage:fromRegion: */
@@ -1248,12 +1244,8 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         }
         readSlice = 0u;
     }
-    /* Single-sample pass-rendered RTs are stored top-row-first in Metal (NDC
-     * y=-1 at high row addresses) and need a CPU Y-flip for GL's bottom-up
-     * readPixels.  Multisample RTs already land in GL row order after resolve -
-     * flipping them re-inverts DSA MSAA float/unorm getTexImage (3a8cb5c). */
     const int flipRenderTargetRows =
-        tex->is_render_target && tex->samples <= 1u;
+        mglReadbackNeedsYFlip(tex->is_render_target ? 1 : 0, tex->samples);
 
     /* Integer texture readback path: when the source texture is an integer
      * format and the output format is GL_*_INTEGER, use the dedicated integer
@@ -1271,7 +1263,7 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
             renderer, texture, pixelBytes, bytesPerRow, bytesPerImage,
             readRegion, (uint64_t)classify.output_components,
             (uint64_t)classify.output_component_bytes, classify.component_map,
-            type, level, readSlice, tex->is_render_target ? 1 : 0);
+            type, level, readSlice, flipRenderTargetRows);
         return;
     }
 

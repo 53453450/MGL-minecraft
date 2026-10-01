@@ -123,6 +123,11 @@ int mglRenderIntegerReadbackSourceClassify(
 
 /* --- C1 / O4.1 residual: Y-flip / depth pack / GetTexImagePlan / MSAA stride --- */
 
+/* Single-sample render targets are stored top-row-first in Metal and need a
+ * Y-flip to GL bottom-up order; resolved multisample data and upload-only
+ * textures are already in GL row order. */
+int mglReadbackNeedsYFlip(int is_render_target, uint32_t samples);
+
 /* copy packed rows with optional Y-flip. Pure CPU memcpy of `row_bytes`
  * per row — mirrors mglMetalCopyRows (void). */
 void mglRenderCopyRows(

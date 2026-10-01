@@ -83,7 +83,7 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
                                   uint64_t outputComponentBytes,
                                   const int *componentMap, GLenum packedType,
                                   uint64_t mipmapLevel, uint64_t mtlSlice,
-                                  int isRenderTarget);
+                                  int flipRows);
 
 #ifdef __cplusplus
 }

@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 114
+#define MAX_TESTS 115
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14967,6 +14967,87 @@ static int test_compressed_texture_sampling(unsigned char *pixels,
     return result;
 }
 
+/* GL 4.6 §18.2 / §8.11.4: ReadPixels and GetTexImage return rows bottom-up
+ * (window y), for both the normalized and the integer readback paths,
+ * including sub-rectangles away from the origin. */
+static int test_readback_row_order(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    GLuint pu = link_program(vs,
+        "#version 330 core\n"
+        "out uvec4 c;\n"
+        "void main() { c = uvec4(uint(gl_FragCoord.y)); }\n");
+    GLuint pf = link_program(vs,
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(floor(gl_FragCoord.y) / 255.0); }\n");
+    if (!pu || !pf) return 2;
+    GLuint vao = 0, tex[2] = {0};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint fu = make_color_fbo(GL_RGBA32UI, GL_RGBA_INTEGER, GL_UNSIGNED_INT, &tex[0]);
+    GLuint ff = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &tex[1]);
+    if (!fu || !ff) return 2;
+    glViewport(0, 0, REG_W, REG_H);
+
+    int result = 0;
+    glBindFramebuffer(GL_FRAMEBUFFER, fu);
+    glUseProgram(pu);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindFramebuffer(GL_FRAMEBUFFER, ff);
+    glUseProgram(pf);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    GLuint u[4][4];
+    unsigned char b[4][4];
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fu);
+    glReadPixels(2, 5, 1, 4, GL_RGBA_INTEGER, GL_UNSIGNED_INT, u);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, ff);
+    glReadPixels(2, 5, 1, 4, GL_RGBA, GL_UNSIGNED_BYTE, b);
+    for (int i = 0; i < 4; i++) {
+        if (u[i][0] != 5u + (GLuint)i || b[i][0] != 5 + i) {
+            fprintf(stderr, "readback_row_order: ReadPixels row %d uint=%u unorm=%u\n",
+                    i, u[i][0], b[i][0]);
+            result = 1;
+        }
+    }
+
+    static GLuint ufull[REG_W * REG_H * 4];
+    static unsigned char bfull[REG_W * REG_H * 4];
+    glBindTexture(GL_TEXTURE_2D, tex[0]);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA_INTEGER, GL_UNSIGNED_INT, ufull);
+    glBindTexture(GL_TEXTURE_2D, tex[1]);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, bfull);
+    for (int y = 0; y < REG_H; y += 37) {
+        if (ufull[(y * REG_W + 3) * 4] != (GLuint)y ||
+            bfull[(y * REG_W + 3) * 4] != y) {
+            fprintf(stderr, "readback_row_order: GetTexImage row %d uint=%u unorm=%u\n",
+                    y, ufull[(y * REG_W + 3) * 4], bfull[(y * REG_W + 3) * 4]);
+            result = 1;
+        }
+    }
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "readback_row_order: unexpected GL error\n");
+        result = 1;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fu);
+    glDeleteFramebuffers(1, &ff);
+    glDeleteTextures(2, tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(pu);
+    glDeleteProgram(pf);
+    return result;
+}
+
 /* GL 4.6 §7.4 / §7.6.1: ActiveShaderProgram selects the Uniform* target when
  * no program is bound with UseProgram. */
 static int test_active_shader_program(unsigned char *pixels, const char *out_path)
@@ -18424,6 +18505,7 @@ static const TestCase TESTS[] = {
                     test_current_vertex_attrib_forms),
     SELF_CHECK_TEST("debug_group_stack", test_debug_group_stack),
     SELF_CHECK_TEST("active_shader_program", test_active_shader_program),
+    SELF_CHECK_TEST("readback_row_order", test_readback_row_order),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
     SELF_CHECK_TEST("link_interface_check_no_reparse",

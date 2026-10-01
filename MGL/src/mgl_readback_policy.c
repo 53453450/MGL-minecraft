@@ -559,6 +559,10 @@ void *mglRenderTextureRepackDepthPlanes(const void *bytes,
     return packed;
 }
 
+int mglReadbackNeedsYFlip(int is_render_target, uint32_t samples) {
+    return is_render_target && samples <= 1u;
+}
+
 uint32_t mglRenderMSAAArrayLayerStride(int layered, uint32_t textarget) {
     return layered && textarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ? 8u : 1u;
 }
