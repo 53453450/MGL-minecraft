@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 127
+#define MAX_TESTS 128
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -5807,6 +5807,17 @@ static int test_legacy_glsl_frontend(unsigned char *pixels, const char *out_path
             return 18;
         }
         GLint texLocF = glGetUniformLocation(progF, "u_tex");
+        GLfloat mvpF[16] = { 0 };
+        glGetUniformfv(progF,
+                       glGetUniformLocation(progF, "gl_ModelViewProjectionMatrix"),
+                       mvpF);
+        for (int k = 0; k < 16; k++) {
+            if (mvpF[k] != ((k % 5) == 0 ? 1.0f : 0.0f)) {
+                fprintf(stderr, "legacy_glsl_frontend: seg F MVP not identity "
+                        "after link [%d]=%f\n", k, mvpF[k]);
+                return 19;
+            }
+        }
         /* Bind the red 1x1 texture; texcoords come from the legacy
          * fixed-function slot 8 (gl_MultiTexCoord0) — a tiny UV stream. */
         static const float uvsF[6] = {
@@ -17182,6 +17193,52 @@ static int test_uniform_array_partial_upload(unsigned char *pixels,
     return fail;
 }
 
+/* GL 4.6 §7.6: uniforms are program object state initialised to 0 at link;
+ * values written through another program at the same location must not
+ * leak in. */
+static int test_uniform_unset_reads_zero(unsigned char *pixels,
+                                         const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_PointSize = 1.0;\n"
+        "  gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "uniform vec4 c;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(c.rgb, 1.0); }\n";
+    GLuint a = link_program(vs, fs);
+    GLuint b = link_program(vs, fs);
+    if (!a || !b) return 3;
+    GLint la = glGetUniformLocation(a, "c");
+    GLint lb = glGetUniformLocation(b, "c");
+    int fail = 0;
+    glUseProgram(a);
+    glUniform4f(la, 1.0f, 0.5f, 0.25f, 1.0f);
+    unsigned char pa[4] = { 0 }, pb[4] = { 0 };
+    iface_point_color(a, pa);
+    iface_point_color(b, pb);
+    GLfloat got[4] = { -1, -1, -1, -1 };
+    glGetUniformfv(b, lb, got);
+    if (la != lb || pa[0] < 250 || pb[0] != 0 || pb[1] != 0 || pb[2] != 0 ||
+        got[0] != 0.0f || got[1] != 0.0f || got[2] != 0.0f || got[3] != 0.0f) {
+        fprintf(stderr, "uniform_unset_reads_zero: loc %d/%d a=(%u,%u,%u) "
+                "b=(%u,%u,%u) get=(%.2f,%.2f,%.2f,%.2f)\n", la, lb, pa[0],
+                pa[1], pa[2], pb[0], pb[1], pb[2], got[0], got[1], got[2],
+                got[3]);
+        fail = 1;
+    }
+    glUseProgram(0);
+    glDeleteProgram(a);
+    glDeleteProgram(b);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
 extern uint32_t mglFrontendParseCount(void);
 
 /* Linking compiled VS/FS must reuse each shader's translation unit for the
@@ -19942,6 +19999,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("glsl_array_of_arrays", test_glsl_array_of_arrays),
     SELF_CHECK_TEST("uniform_array_partial_upload",
                     test_uniform_array_partial_upload),
+    SELF_CHECK_TEST("uniform_unset_reads_zero", test_uniform_unset_reads_zero),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),
     SELF_CHECK_TEST("no_attachment_layered_fbo",

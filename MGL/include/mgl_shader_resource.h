@@ -70,13 +70,6 @@ GLuint mglMetalCombinedSamplerSlot(const MGLShaderResource *res);
 GLuint mglMetalCombinedSamplerSlotForElement(const MGLShaderResource *res,
                                              GLuint element);
 
-/* Returns true if a plain uniform resource may fall back to the global
- * (Minecraft legacy) binding table.  Mojang/Iris u_* uniforms are
- * excluded because their numeric locations collide with legacy slots
- * but mean different things — falling back corrupts first-person items
- * and inventory icons. */
-bool mglPlainUniformAllowsGlobalFallback(const MGLShaderResource *res);
-
 /* Human-readable name for a MGL resource type constant, or "resource"
  * for unknown types.  Used by diagnostic/logging paths. */
 const char *mglMGLShaderResourceTypeName(int type);

@@ -215,11 +215,6 @@ uint64_t mglRenderBufferSizeOrZero(int64_t size);
 
 int mglRenderBufferPlanIsStructPacked(uint32_t flags);
 
-int mglRenderBufferPlanAllowFallback(int has_fallback, uint32_t flags);
-
-int mglRenderAllowGlobalBufferFallback(int has_fallback, int spvc_type,
-                                       uint32_t flags);
-
 int mglRenderIsUniformBufferResource(int spvc_type);
 
 int mglRenderGetQueryVisibilityBuffer(MGLQueryStateOwner *owner, void **visibility_buffer_out);

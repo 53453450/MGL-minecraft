@@ -156,29 +156,6 @@ uint32_t mglRenderClientBufferBindingForResource(uint32_t resource_type,
     return gl_binding;
 }
 
-int mglRenderPlainUniformAllowsGlobalFallback(const char *name) {
-    if (!name) {
-        return 1;
-    }
-    /*
-     * Mojang/Iris' newer item/entity programs use u_* plain uniforms with the
-     * same numeric locations as the old ShaderInstance uniforms, but the slots
-     * do not mean the same thing. Falling back from u_RegionOffset or
-     * u_TexCoordShrink to TextureMat/ColorModulator corrupts first-person items
-     * and can make inventory icons disappear.
-     */
-    if (strcmp(name, "u_ProjectionMatrix") == 0 ||
-        strcmp(name, "u_ModelViewMatrix") == 0 ||
-        strcmp(name, "u_RegionOffset") == 0 ||
-        strcmp(name, "u_TexCoordShrink") == 0 ||
-        strcmp(name, "u_FogColor") == 0 ||
-        strcmp(name, "u_EnvironmentFog") == 0 ||
-        strcmp(name, "u_RenderFog") == 0) {
-        return 0;
-    }
-    return 1;
-}
-
 uint32_t mglRenderStageBufferResourceElementCount(uint32_t resource_type,
                                                   int has_res,
                                                   uint32_t ubo_array_size,

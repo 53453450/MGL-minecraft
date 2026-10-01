@@ -3146,35 +3146,6 @@ static void mglUniformStore(GLMContext ctx, Program *program, GLint location,
     uniformSlot->offset = 0;
     uniformSlot->size = size;
 
-    /*
-     * Minecraft's shader layer can reuse the same logical plain uniform values
-     * across generated program variants. Keep the legacy global slot as a
-     * fallback for programs that have not received an explicit upload yet, while
-     * still preferring the per-program storage above when it exists.
-     */
-    BufferBaseTarget *globalSlot = &STATE(buffer_base)[_UNIFORM_CONSTANT].buffers[location];
-    Buffer *prevGlobalBuf = globalSlot->buf;
-    GLsizeiptr prevGlobalSize = globalSlot->size;
-    if (!globalSlot->buf) {
-        GLuint globalName = MGL_INTERNAL_UNIFORM_BUFFER_NAME_BASE |
-                            0x00fff000u |
-                            (GLuint)location;
-        globalSlot->buf = newBuffer(ctx, GL_UNIFORM_BUFFER, globalName);
-        if (globalSlot->buf) {
-            globalSlot->buf->plain_uniform_slot = GL_TRUE;
-            insertHashElement(&STATE(buffer_table), globalName, globalSlot->buf);
-        }
-    }
-    if (globalSlot->buf) {
-        initBufferData(ctx, globalSlot->buf, size, ptr, true);
-        globalSlot->buffer = globalSlot->buf->name;
-        globalSlot->offset = 0;
-        globalSlot->size = size;
-        /* This is the only write point for _UNIFORM_CONSTANT slots; keep the
-         * active_mask in sync like the glBindBufferBase/Range paths do. */
-        mglBufferBaseSetActive(&STATE(buffer_base)[_UNIFORM_CONSTANT], (GLuint)location);
-    }
-
     /* The binding hashes only see slot identity ({buf, name, offset, size};
      * offset is always 0 here), not buffer contents.  A repeat upload to the
      * same location with the same size leaves that identity untouched, so
@@ -3183,8 +3154,7 @@ static void mglUniformStore(GLMContext ctx, Program *program, GLint location,
      * handled by initBufferData's own memcmp+flush above; the renderer bit
      * still triggers the buffer remap. */
     if (!mglUniformIdentityGateEnabled() ||
-        uniformSlot->buf != prevUniformBuf || uniformSlot->size != prevUniformSize ||
-        globalSlot->buf != prevGlobalBuf || globalSlot->size != prevGlobalSize) {
+        uniformSlot->buf != prevUniformBuf || uniformSlot->size != prevUniformSize) {
         mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE);
     } else {
         mglMarkRendererDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE);

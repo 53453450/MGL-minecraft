@@ -109,12 +109,6 @@ static void mglBuildPlanEntry(MGLBufferPlanEntry *entry,
         flags |= MGL_BP_FLAG_STRUCT_PACKED;
     }
 
-    if (spvc_type == _UNIFORM_CONSTANT_RES) {
-        if (mglPlainUniformAllowsGlobalFallback(resource)) {
-            flags |= MGL_BP_FLAG_ALLOW_FALLBACK;
-        }
-    }
-
     /* UBO/SSBO arrays may have a per-element bindings table
      * (ubo_array_bindings).  When present, the draw path reads it live so
      * that glUniformBlockBinding / glShaderStorageBlockBinding mutations

@@ -343,10 +343,8 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
         }
 
         BufferBaseTarget *buffers;
-        BufferBaseTarget *fallbackBuffers = NULL;
         if (mglRenderUsePlainUniformBuffers(spvc_type)) {
             buffers = program->plain_uniform_buffers;
-            fallbackBuffers = state->buffer_base[gl_buffer_type].buffers;
         } else {
             buffers = state->buffer_base[gl_buffer_type].buffers;
         }
@@ -372,8 +370,6 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
             GLint base_loc = entry->base_loc;
             GLuint struct_size = entry->struct_size;
             GLuint array_size = entry->element_count;
-            bool allowFallback = mglRenderBufferPlanAllowFallback(
-                fallbackBuffers ? 1 : 0, entry->flags) != 0;
 
             for (GLuint element = 0; element < array_size; element++) {
                 GLuint metal_binding = mglBufferPlanMetalBindingForElement(entry, element);
@@ -425,13 +421,6 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                                 ctx, mb->buf,
                                 "mapShaderBufferResourcesViaPlan(struct,array)",
                                 (unsigned long)elem_loc);
-                            if (!mbuf && allowFallback) {
-                                BufferBaseTarget *fb = &fallbackBuffers[elem_loc];
-                                mbuf = mglRendererGetValidatedBuffer(
-                                    ctx, fb->buf,
-                                    "mapShaderBufferResourcesViaPlan(struct,array,fb)",
-                                    (unsigned long)elem_loc);
-                            }
                             if (!mglRenderCPUShadowReadable(
                                     mbuf ? mbuf->data.buffer_data : NULL,
                                     mbuf ? mbuf->size : 0)) {
@@ -492,13 +481,6 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                             ctx, mb->buf,
                             "mapShaderBufferResourcesViaPlan(struct,scalar)",
                             (unsigned long)member_loc);
-                        if (!mbuf && allowFallback) {
-                            BufferBaseTarget *fb = &fallbackBuffers[member_loc];
-                            mbuf = mglRendererGetValidatedBuffer(
-                                ctx, fb->buf,
-                                "mapShaderBufferResourcesViaPlan(struct,scalar,fb)",
-                                (unsigned long)member_loc);
-                        }
                         if (!mglRenderCPUShadowReadable(
                                 mbuf ? mbuf->data.buffer_data : NULL,
                                 mbuf ? mbuf->size : 0)) {
@@ -581,18 +563,6 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
             }
 
             BufferBaseTarget *baseBinding = &buffers[client_binding];
-            bool usedFallbackBinding = false;
-            bool allowGlobalFallback = mglRenderAllowGlobalBufferFallback(
-                fallbackBuffers ? 1 : 0, spvc_type, entry->flags) != 0;
-            if (allowGlobalFallback &&
-                mglRenderBufferBindingEmpty(baseBinding->buf ? 1 : 0,
-                                            baseBinding->buffer)) {
-                BufferBaseTarget *fallbackBinding = &fallbackBuffers[client_binding];
-                if (fallbackBinding->buf || fallbackBinding->buffer != 0) {
-                    baseBinding = fallbackBinding;
-                    usedFallbackBinding = true;
-                }
-            }
             Buffer *buf = mglRendererGetValidatedBuffer(ctx, baseBinding->buf,
                                                         "mapShaderBufferResourcesViaPlan(base)",
                                                         (unsigned long)client_binding);
@@ -666,7 +636,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                 static uint64_t s_traceFileUBOMapLogs = 0;
                 if (mglProgramNeedsTraceLog(program) &&
                     mglShouldLogTraceFileBindingForProgram(program, &s_traceFileUBOMapLogs)) {
-                    mglTraceLog("BINDMAP program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u buffer=%u offset=%lld range=%lld reflected=%lu fallback=%d (plan)",
+                    mglTraceLog("BINDMAP program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u buffer=%u offset=%lld range=%lld reflected=%lu (plan)",
                                 (unsigned)program->name,
                                 mglShaderStageName(stage),
                                 mglMGLShaderResourceTypeName(spvc_type),
@@ -677,8 +647,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                                 (unsigned)buf->name,
                                 (long long)baseBinding->offset,
                                 (long long)baseBinding->size,
-                                (unsigned long)reflectedRequiredSize,
-                                usedFallbackBinding ? 1 : 0);
+                                (unsigned long)reflectedRequiredSize);
                 }
 
                 if (mglRenderBaseBindingTooSmall(baseBinding->size,
@@ -707,7 +676,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                     static uint64_t s_focusedUBOMissLogs = 0;
                     if (mglShouldLogFocusedBinding(&s_focusedUBOMissLogs)) {
                         fprintf(stderr,
-                                "MGL BINDMISS focused program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u baseBuffer=%u basePtr=%p offset=%lld range=%lld reflected=%lu usedFallback=%d (plan)\n",
+                                "MGL BINDMISS focused program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u baseBuffer=%u basePtr=%p offset=%lld range=%lld reflected=%lu (plan)\n",
                                 (unsigned)program->name,
                                 mglShaderStageName(stage),
                                 mglMGLShaderResourceTypeName(spvc_type),
@@ -719,14 +688,13 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                                 baseBinding->buf,
                                 (long long)baseBinding->offset,
                                 (long long)baseBinding->size,
-                                (unsigned long)reflectedRequiredSize,
-                                usedFallbackBinding ? 1 : 0);
+                                (unsigned long)reflectedRequiredSize);
                     }
                 }
                 static uint64_t s_traceFileUBOMissLogs = 0;
                 if (mglProgramNeedsTraceLog(program) &&
                     mglShouldLogTraceFileBindingForProgram(program, &s_traceFileUBOMissLogs)) {
-                    mglTraceLog("BINDMISS program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u baseBuffer=%u basePtr=%p offset=%lld range=%lld reflected=%lu fallback=%d (plan)",
+                    mglTraceLog("BINDMISS program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u baseBuffer=%u basePtr=%p offset=%lld range=%lld reflected=%lu (plan)",
                                 (unsigned)program->name,
                                 mglShaderStageName(stage),
                                 mglMGLShaderResourceTypeName(spvc_type),
@@ -738,8 +706,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                                 baseBinding->buf,
                                 (long long)baseBinding->offset,
                                 (long long)baseBinding->size,
-                                (unsigned long)reflectedRequiredSize,
-                                usedFallbackBinding ? 1 : 0);
+                                (unsigned long)reflectedRequiredSize);
                 }
                 if (baseBinding->buf || baseBinding->buffer != 0 || baseBinding->offset != 0 || baseBinding->size != 0) {
                     static uint64_t s_dropInvalidHits = 0;

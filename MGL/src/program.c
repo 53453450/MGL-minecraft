@@ -539,6 +539,51 @@ static void mglSeedUniformInitializers(GLMContext ctx, Program *pptr)
     STATE(program_name) = prev_name;
 }
 
+/* gl_-prefixed uniforms can only come from the legacy matrix injection.
+ * Compatibility profile §12.1.1: every fixed-function matrix starts as
+ * identity, as do its inverse/transpose forms. */
+static void mglSeedLegacyMatrixIdentity(GLMContext ctx, Program *pptr)
+{
+    enum { kMaxElems = 8 }; /* gl_TextureMatrix[gl_MaxTextureCoords] */
+    GLfloat ident[kMaxElems * 16];
+    Program *prev_prog = STATE(program);
+    GLuint prev_name = STATE(program_name);
+    STATE(program) = pptr;
+    STATE(program_name) = pptr->name;
+
+    GLint count = mglProgramActiveUniformCount(pptr);
+    for (GLint i = 0; i < count; i++) {
+        GLchar name[64];
+        GLint size = 0;
+        GLenum type = 0;
+        mglGetActiveUniform(ctx, pptr->name, (GLuint)i, (GLsizei)sizeof name,
+                            NULL, &size, &type, name);
+        if (strncmp(name, "gl_", 3) != 0 ||
+            (type != GL_FLOAT_MAT4 && type != GL_FLOAT_MAT3)) {
+            continue;
+        }
+        GLint loc = mglGetUniformLocation(ctx, pptr->name, name);
+        if (loc < 0 || size < 1 || size > kMaxElems) {
+            continue;
+        }
+        GLuint n = (type == GL_FLOAT_MAT4) ? 4u : 3u;
+        memset(ident, 0, sizeof ident);
+        for (GLint e = 0; e < size; e++) {
+            for (GLuint d = 0; d < n; d++) {
+                ident[(GLuint)e * n * n + d * n + d] = 1.0f;
+            }
+        }
+        if (type == GL_FLOAT_MAT4) {
+            mglUniformMatrix4fv(ctx, loc, size, GL_FALSE, ident);
+        } else {
+            mglUniformMatrix3fv(ctx, loc, size, GL_FALSE, ident);
+        }
+    }
+
+    STATE(program) = prev_prog;
+    STATE(program_name) = prev_name;
+}
+
 static GLboolean mglPointerLooksMallocOwned(const void *ptr)
 {
     uintptr_t value = (uintptr_t)ptr;
@@ -2980,6 +3025,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
      * the first draw matches the language defaults without baking them into
      * shader SSA (which would ignore later glUniform* updates). */
     mglSeedUniformInitializers(ctx, pptr);
+    mglSeedLegacyMatrixIdentity(ctx, pptr);
 
     mglRendererBindProgram(ctx, pptr);
 

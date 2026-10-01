@@ -557,21 +557,6 @@ int mglRenderBufferPlanIsStructPacked(uint32_t flags) {
     return (flags & MGL_BP_FLAG_STRUCT_PACKED) != 0u ? 1 : 0;
 }
 
-int mglRenderBufferPlanAllowFallback(int has_fallback, uint32_t flags) {
-    return has_fallback && (flags & MGL_BP_FLAG_ALLOW_FALLBACK) != 0u ? 1 : 0;
-}
-
-int mglRenderAllowGlobalBufferFallback(int has_fallback, int spvc_type,
-                                       uint32_t flags) {
-    if (!has_fallback) {
-        return 0;
-    }
-    if (spvc_type != _UNIFORM_CONSTANT_RES) {
-        return 1;
-    }
-    return (flags & MGL_BP_FLAG_ALLOW_FALLBACK) != 0u ? 1 : 0;
-}
-
 int mglRenderIsUniformBufferResource(int spvc_type) {
     return spvc_type == _UNIFORM_BUFFER_RES ? 1 : 0;
 }

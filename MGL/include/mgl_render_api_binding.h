@@ -82,8 +82,6 @@ int mglRenderBufferMapIsBaseBinding(uint32_t attribute_mask);
 
 int mglRenderClientBindingInRange(uint32_t binding, uint32_t max);
 
-int mglRenderBufferBindingEmpty(int has_buf, uint32_t name);
-
 int mglRenderBaseBindingTooSmall(int64_t range, uint64_t reflected);
 
 int mglRenderAttribOffsetsValid(int64_t binding_offset,

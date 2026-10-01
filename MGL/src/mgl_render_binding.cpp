@@ -277,10 +277,6 @@ int mglRenderClientBindingInRange(uint32_t binding, uint32_t max) {
     return binding < max ? 1 : 0;
 }
 
-int mglRenderBufferBindingEmpty(int has_buf, uint32_t name) {
-    return !has_buf && name == 0u ? 1 : 0;
-}
-
 int mglRenderBaseBindingTooSmall(int64_t range, uint64_t reflected) {
     return reflected > 0u && range > 0 && (uint64_t)range < reflected ? 1 : 0;
 }

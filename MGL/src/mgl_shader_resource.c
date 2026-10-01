@@ -76,14 +76,6 @@ GLuint mglMetalCombinedSamplerSlotForElement(const MGLShaderResource *res,
         res ? res->combined_sampler_binding : 0u, element);
 }
 
-bool mglPlainUniformAllowsGlobalFallback(const MGLShaderResource *res)
-{
-    if (!res) {
-        return true;
-    }
-    return mglRenderPlainUniformAllowsGlobalFallback(res->name) != 0;
-}
-
 const char *mglMGLShaderResourceTypeName(int type)
 {
     return mglRenderShaderResourceTypeName((uint32_t)type);
