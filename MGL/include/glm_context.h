@@ -249,6 +249,7 @@ Framebuffer *findFrameBuffer(GLMContext ctx, GLuint framebuffer);
 GLboolean mglFramebufferPrimaryColorSize(GLMContext ctx, Framebuffer *fbo, GLuint *outWidth, GLuint *outHeight);
 void mglSetViewportToFramebufferSize(GLMContext ctx, Framebuffer *fbo);
 void mglAssignDrawFramebuffer(GLMContext ctx, Framebuffer *fbo);
+Texture *mglAttachmentBackingTexture(const FBOAttachment *a);
 
 
 #ifdef __cplusplus

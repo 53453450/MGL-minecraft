@@ -313,18 +313,6 @@ static GLuint mglCurrentVertexArrayBinding(GLMContext ctx)
     return 0u;
 }
 
-/* Resolve the Texture backing an FBO attachment.  Returns NULL if the
- * attachment is empty.  Handles both texture-backed and renderbuffer-backed
- * attachments — the latter stores the backing Texture via buf.rbo->tex. */
-static Texture *mglAttachmentBackingTexture(const FBOAttachment *a)
-{
-    if (!a || a->texture == 0u)
-        return NULL;
-    if (a->textarget == GL_RENDERBUFFER)
-        return a->buf.rbo ? a->buf.rbo->tex : NULL;
-    return a->buf.tex;
-}
-
 /* Compute the actual sample count of the currently bound draw framebuffer by
  * inspecting its attachments.  Returns 0 for single-sample, or the number of
  * samples (1, 2, 4, ...) for multisample.  For framebuffers with no

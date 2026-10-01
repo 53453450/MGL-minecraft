@@ -3279,7 +3279,7 @@ void mglFramebufferParameteri(GLMContext ctx, GLenum target, GLenum pname, GLint
 /* Resolve the Texture backing an FBO attachment.  Returns NULL if the
  * attachment is empty.  Handles both texture-backed and renderbuffer-backed
  * attachments — the latter stores the backing Texture via buf.rbo->tex. */
-static Texture *mglAttachmentBackingTexture(const FBOAttachment *a)
+Texture *mglAttachmentBackingTexture(const FBOAttachment *a)
 {
     if (!a || a->texture == 0u)
         return NULL;
