@@ -1861,6 +1861,42 @@ static int verifyPipelineCacheOwner(id<MTLDevice> device) {
         return 1;
     }
 
+    /* Miss on a different key; at capacity (256) the least recently used
+     * quarter is evicted and a just-touched key survives. */
+    uint64_t missKey[MGL_RENDER_PIPELINE_CACHE_KEY_WORDS] =
+        {77, 1, 2, 3, 4, 5, 7};
+    if (mglRenderLookupPipeline(owner, missKey, &cached) != 0) {
+        fprintf(stderr, "FAIL: pipeline cache miss\n");
+        mglRenderDestroyPipelineCacheOwner(&owner);
+        return 1;
+    }
+    for (uint64_t i = 1; i < 256; i++) {
+        uint64_t fill[MGL_RENDER_PIPELINE_CACHE_KEY_WORDS] =
+            {1000 + i, 0, 0, 0, 0, 0, 0};
+        if (mglRenderStorePipeline(owner, fill, &active, &evicted) != 0 ||
+            evicted != 0) {
+            fprintf(stderr, "FAIL: pipeline cache fill %llu evicted=%u\n",
+                    (unsigned long long)i, evicted);
+            mglRenderDestroyPipelineCacheOwner(&owner);
+            return 1;
+        }
+    }
+    uint64_t oldestKey[MGL_RENDER_PIPELINE_CACHE_KEY_WORDS] =
+        {1001, 0, 0, 0, 0, 0, 0};
+    uint64_t overflowKey[MGL_RENDER_PIPELINE_CACHE_KEY_WORDS] =
+        {2000, 0, 0, 0, 0, 0, 0};
+    if (mglRenderLookupPipeline(owner, key, &cached) != 1 ||
+        mglRenderStorePipeline(owner, overflowKey, &active, &evicted) != 0 ||
+        evicted != 64 ||
+        mglRenderLookupPipeline(owner, key, &cached) != 1 ||
+        mglRenderLookupPipeline(owner, oldestKey, &cached) != 0 ||
+        mglRenderLookupPipeline(owner, overflowKey, &cached) != 1) {
+        fprintf(stderr, "FAIL: pipeline cache LRU eviction evicted=%u\n",
+                evicted);
+        mglRenderDestroyPipelineCacheOwner(&owner);
+        return 1;
+    }
+
     MGLRenderDepthStencilDescriptorState depth = {
         .depth_compare_function = (uint32_t)MTLCompareFunctionLessEqual,
         .depth_write_enabled = 1,
