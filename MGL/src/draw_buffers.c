@@ -42,6 +42,7 @@
 #include "mgl.h"
 #include "mgl_safety.h"
 #include "mgl_program_reflection.h"
+#include "vertex_arrays.h"
 
 extern void mglInvalidateColorShadowsForDraw(GLMContext ctx);
 #include "mgl_trace_log.h"
@@ -168,58 +169,6 @@ static bool should_log_throttled(uint64_t *counter, uint64_t burst_limit, uint64
 {
     (*counter)++;
     return (*counter <= burst_limit) || ((*counter % every_n) == 0);
-}
-
-static void mglDropCurrentVAO(GLMContext ctx)
-{
-    if (!ctx)
-        return;
-
-    STATE(vao) = NULL;
-    STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = STATE(default_vao_element_array_buffer);
-    STATE_VAR(element_array_buffer_binding) =
-        STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
-    mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
-}
-
-static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *caller)
-{
-    VertexArray *vao;
-
-    if (!ctx)
-        return NULL;
-
-    vao = STATE(vao);
-    if (!vao)
-        return NULL;
-
-    /* Table membership implies live memory (VAOs leave the table before
-     * free), so no readability probe is needed on the hit path. */
-    if (!mglObjectPointerLooksPlausible(vao) ||
-        !mglHashTableContainsData(&STATE(vao_table), vao))
-    {
-        static uint64_t invalid_vao_count = 0;
-        if (should_log_throttled(&invalid_vao_count, 8, 1000)) {
-            fprintf(stderr,
-                    "MGL WARNING: %s: dropping invalid current VAO pointer %p\n",
-                    caller ? caller : "draw",
-                    (void *)vao);
-        }
-        mglDropCurrentVAO(ctx);
-        return NULL;
-    }
-
-    if (vao->magic != MGL_VAO_MAGIC)
-    {
-        fprintf(stderr, "MGL WARNING: %s: current VAO magic invalid vao=%p magic=0x%x\n",
-                caller ? caller : "draw",
-                (void *)vao,
-                vao->magic);
-        mglDropCurrentVAO(ctx);
-        return NULL;
-    }
-
-    return vao;
 }
 
 static bool should_skip_indexed_draw_no_element_buffer(GLMContext ctx, const char *caller)

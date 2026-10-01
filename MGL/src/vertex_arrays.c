@@ -34,6 +34,7 @@
 #include <string.h>
 
 #include "glm_context.h"
+#include "vertex_arrays.h"
 #include "mgl_safety.h"
 
 Buffer *findBuffer(GLMContext ctx, GLuint buffer);
@@ -66,7 +67,23 @@ static void mglInitVertexArrayDefaults(VertexArray *vao)
     }
 }
 
-static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *func_name)
+static void mglDropCurrentVAO(GLMContext ctx)
+{
+    STATE(vao) = NULL;
+    STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = STATE(default_vao_element_array_buffer);
+    STATE_VAR(element_array_buffer_binding) =
+        STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
+}
+
+static bool mglInvalidVAOLogDue(void)
+{
+    static uint64_t count = 0;
+    count++;
+    return count <= 8u || (count % 1000u) == 0u;
+}
+
+VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *caller)
 {
     VertexArray *vao;
 
@@ -82,25 +99,23 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *func_name)
     if (!mglObjectPointerLooksPlausible(vao) ||
         !mglHashTableContainsData(&STATE(vao_table), vao))
     {
-        fprintf(stderr, "MGL VAO INVALID in %s vao=%p (not found in sane vao_table)\n",
-                func_name, (void *)vao);
-        STATE(vao) = NULL;
-        STATE(buffers)[_ELEMENT_ARRAY_BUFFER] = STATE(default_vao_element_array_buffer);
-        STATE(var).element_array_buffer_binding =
-            STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
-        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
+        if (mglInvalidVAOLogDue()) {
+            fprintf(stderr,
+                    "MGL WARNING: %s: current VAO %p is not in the VAO table; resetting to VAO 0\n",
+                    caller ? caller : "?", (void *)vao);
+        }
+        mglDropCurrentVAO(ctx);
         return NULL;
     }
 
     if (vao->magic != MGL_VAO_MAGIC)
     {
-        fprintf(stderr, "MGL VAO INVALID in %s vao=%p magic=0x%x\n",
-                func_name, (void *)vao, vao->magic);
-        STATE(vao) = NULL;
-        STATE(buffers)[_ELEMENT_ARRAY_BUFFER] = STATE(default_vao_element_array_buffer);
-        STATE(var).element_array_buffer_binding =
-            STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
-        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
+        if (mglInvalidVAOLogDue()) {
+            fprintf(stderr,
+                    "MGL WARNING: %s: current VAO %p has invalid magic 0x%x; resetting to VAO 0\n",
+                    caller ? caller : "?", (void *)vao, vao->magic);
+        }
+        mglDropCurrentVAO(ctx);
         return NULL;
     }
 

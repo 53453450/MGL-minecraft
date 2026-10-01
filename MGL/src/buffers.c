@@ -40,6 +40,7 @@
 #include "glm_context.h"
 #include "mgl_metal_ref.h"
 #include "buffers.h"
+#include "vertex_arrays.h"
 #include "mgl_byte_hash.h"
 #include "pixel_utils.h"
 #include "mgl_safety.h"
@@ -752,47 +753,6 @@ static inline void mglClearVAOBufferReferences(GLMContext ctx, Buffer *ptr, GLui
     }
 }
 
-static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx)
-{
-    VertexArray *vao;
-
-    if (!ctx)
-        return NULL;
-
-    vao = STATE(vao);
-    if (!vao)
-        return NULL;
-
-    /* Table membership implies live memory (VAOs leave the table before
-     * free), so no readability probe is needed on the hit path. */
-    if (!mglObjectPointerLooksPlausible(vao) ||
-        !mglHashTableContainsData(&STATE(vao_table), vao))
-    {
-        fprintf(stderr, "MGL WARNING: current VAO pointer %p is not in a sane VAO table; resetting to VAO 0\n", (void *)vao);
-        STATE(vao) = NULL;
-        STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = STATE(default_vao_element_array_buffer);
-        STATE_VAR(element_array_buffer_binding) =
-            STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
-        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
-        return NULL;
-    }
-
-    if (vao->magic != MGL_VAO_MAGIC)
-    {
-        fprintf(stderr, "MGL WARNING: current VAO pointer %p has invalid magic 0x%x; resetting to VAO 0\n",
-                (void *)vao,
-                vao->magic);
-        STATE(vao) = NULL;
-        STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = STATE(default_vao_element_array_buffer);
-        STATE_VAR(element_array_buffer_binding) =
-            STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
-        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
-        return NULL;
-    }
-
-    return vao;
-}
-
 static Buffer *mglGetBoundBufferForTarget(GLMContext ctx, GLenum target)
 {
     GLuint index;
@@ -804,7 +764,7 @@ static Buffer *mglGetBoundBufferForTarget(GLMContext ctx, GLenum target)
 
     if (target == GL_ELEMENT_ARRAY_BUFFER)
     {
-        VertexArray *vao = mglGetSafeCurrentVAO(ctx);
+        VertexArray *vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
         if (vao)
             return vao->element_array.buffer;
         return STATE(default_vao_element_array_buffer);
@@ -1393,7 +1353,7 @@ void mglBindBuffer(GLMContext ctx, GLenum target, GLuint buffer)
     // Keep VAO + compatibility state in sync so indexed draws can find EBO reliably.
     if (target == GL_ELEMENT_ARRAY_BUFFER)
     {
-        VertexArray *vao = mglGetSafeCurrentVAO(ctx);
+        VertexArray *vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
         if (vao)
         {
             if (vao->element_array.buffer != ptr)

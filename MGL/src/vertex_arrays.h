@@ -12,4 +12,8 @@
 
 VertexArray *newVAO(GLMContext ctx, GLuint vao);
 
+/* Current VAO, or NULL for VAO 0.  An invalid current pointer is reset to
+ * VAO 0 (throttled warning naming caller) and NULL is returned. */
+VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *caller);
+
 #endif /* vertex_arrays_h */
