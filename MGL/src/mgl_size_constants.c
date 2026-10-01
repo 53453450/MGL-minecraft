@@ -14,7 +14,7 @@
  * Translation notes: `ctx` -> areas.ctx, MGL_STATE(ctx) -> the dual-proxy twin
  * below, `_backend` -> areas.backend, `_device` -> the device of that backend,
  * `_renderPassManager.state->currentRenderEncoderOwner` -> areas.command,
- * `[self …]` -> the C entries of mgl_binding_state_ops.h, and the file-local
+ * `[self …]` -> the C entries of mgl_renderer_binding_ops.h, and the file-local
  * mglRenderPassCreateBufferWithBytes of +RenderPass.m (which ignored its device
  * argument) -> a direct mglRenderCreateBufferWithBytes call.
  */
@@ -29,7 +29,7 @@
 #include "mgl_renderer_backend.h"      /* size-constant cache + device */
 #include "mgl_render.h"                /* the mglRender* facade */
 #include "mgl_buffer_slots.h"          /* MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX */
-#include "mgl_binding_state_ops.h"     /* record last bound buffer */
+#include "mgl_renderer_binding_ops.h"     /* record last bound buffer */
 #include "mgl_frame_activity.h"        /* MGL_PERF_INC */
 #include "mgl_types_buffer.h"          /* mglBufferMapVisibleSize */
 
@@ -134,8 +134,8 @@ bool mglRendererBindBufferSizeConstantsForRenderEncoder(void *renderer)
                 renderEncoderOwner, vertexSizeBuffer, 0,
                 MGL_RENDER_BINDING_STAGE_VERTEX,
                 MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
-            mglBindingRecordLastBoundVertexBuffer(renderer, vertexSizeBuffer, 0,
-                                                  MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
+            mglRendererBindingRecordLastBoundVertexBuffer(renderer, vertexSizeBuffer, 0,
+                                                          MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
             MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
         }
     }
@@ -154,8 +154,8 @@ bool mglRendererBindBufferSizeConstantsForRenderEncoder(void *renderer)
                 renderEncoderOwner, fragmentSizeBuffer, 0,
                 MGL_RENDER_BINDING_STAGE_FRAGMENT,
                 MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
-            mglBindingRecordLastBoundFragmentBuffer(renderer, fragmentSizeBuffer, 0,
-                                                    MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
+            mglRendererBindingRecordLastBoundFragmentBuffer(renderer, fragmentSizeBuffer, 0,
+                                                            MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
             MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
         }
     }

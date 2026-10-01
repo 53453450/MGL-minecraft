@@ -206,7 +206,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 // === Resource binding sync ===
 /* MGLResourceSyncWork and the sync entry are C now:
- * mglRendererSyncResourceBindingsForContext (mgl_binding_state_ops.h). */
+ * mglRendererSyncResourceBindingsForContext (mgl_renderer_binding_ops.h). */
 - (bool)bindVertexBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
 - (bool)bindFragmentBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
 - (bool)bindStorageImagesForStage:(int)shaderStage
@@ -220,14 +220,14 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
  * (mgl_batch_issue.h). */
 
 // === Dedup state management ===
-/* now the C entry points in mgl_binding_state_ops.h */
-/* now the C entry points in mgl_binding_state_ops.h */
-/* now the C entry points in mgl_binding_state_ops.h */
-/* now the C entry points in mgl_binding_state_ops.h */
-/* now the C entry points in mgl_binding_state_ops.h */
-/* now the C entry points in mgl_binding_state_ops.h */
-/* now the C entry points in mgl_binding_state_ops.h */
-/* now the C entry points in mgl_binding_state_ops.h */
+/* now the C entry points in mgl_renderer_binding_ops.h */
+/* now the C entry points in mgl_renderer_binding_ops.h */
+/* now the C entry points in mgl_renderer_binding_ops.h */
+/* now the C entry points in mgl_renderer_binding_ops.h */
+/* now the C entry points in mgl_renderer_binding_ops.h */
+/* now the C entry points in mgl_renderer_binding_ops.h */
+/* now the C entry points in mgl_renderer_binding_ops.h */
+/* now the C entry points in mgl_renderer_binding_ops.h */
 
 // === Locked draw variants ===
 

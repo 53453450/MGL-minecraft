@@ -931,7 +931,9 @@ void mglRenderPassUpdateCurrentRenderEncoder(void *renderer)
         state->var.polygon_mode = (GLenum)repaired;
         mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
     }
-    mglBindingSetTriangleFillModeIfNeeded(renderer, triangleFillMode);
+    mglRenderBindingSetTriangleFillForOwner(
+        bindingOwner, commandState->currentRenderEncoderOwner,
+        triangleFillMode);
 }
 
 /* -updateViewportAndScissorLocked */
@@ -1073,7 +1075,9 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
             rect.y = (uint64_t)metalSy;
             rect.width = (uint64_t)sw;
             rect.height = (uint64_t)sh;
-            mglBindingSetScissorRectIfNeeded(renderer, rect.x, rect.y, rect.width, rect.height);
+            mglRenderBindingSetScissorForOwner(
+                bindingOwner, commandState->currentRenderEncoderOwner,
+                rect.x, rect.y, rect.width, rect.height);
 
             GLdouble rawVx = (GLdouble)state->viewport[0];
             GLdouble rawVy = (GLdouble)state->viewport[1];
@@ -1291,7 +1295,11 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
             if (traceEncoderState) {
                 fprintf(stderr, "MGL WARNING: updateCurrentRenderEncoder could not resolve pass size; using raw GL viewport\n");
             }
-            mglBindingSetViewportIfNeeded(renderer, state->viewport[0], state->viewport[1], state->viewport[2], state->viewport[3], state->var.depth_range[0], state->var.depth_range[1]);
+            mglRenderBindingSetViewportForOwner(
+                bindingOwner, commandState->currentRenderEncoderOwner,
+                state->viewport[0], state->viewport[1], state->viewport[2],
+                state->viewport[3], state->var.depth_range[0],
+                state->var.depth_range[1]);
         }
     }
 }

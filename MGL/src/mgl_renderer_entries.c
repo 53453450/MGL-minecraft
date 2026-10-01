@@ -2479,7 +2479,7 @@ void logDirtyBits(GLMContext ctx)
  * original inline return false).
  */
 /* syncResourceBindingsForContext:(GLMContext)glm_ctx is the C entry
- * mglRendererSyncResourceBindingsForContext (mgl_binding_state_ops.h). */
+ * mglRendererSyncResourceBindingsForContext (mgl_renderer_binding_ops.h). */
 
 /* syncPipelineStateWithDeferredBufferMap: moved to MGLRenderer+RenderPass.m */
 

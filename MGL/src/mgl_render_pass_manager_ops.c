@@ -37,7 +37,7 @@
 #include "mgl_draw_gs.h"           /* mglDrawGsPassthroughDeclType */
 #include "mgl_render_pass_plan.h"    /* mglRenderProcessGLState*, plans */
 #include "mgl_buffer_slots.h"        /* kMGL*BufferIndex */
-#include "mgl_binding_state_ops.h"  /* mglRendererSyncResourceBindingsForContext */
+#include "mgl_renderer_binding_ops.h"  /* mglRendererSyncResourceBindingsForContext */
 #include "mgl_swap_diagnostics.h"     /* swap colour copy + diagnostics */
 #include <dispatch/dispatch.h>       /* dispatch_async_f */
 #include "mgl_trace_log.h"         /* mglTraceLog, kMGLDiagnosticStateLogs */
@@ -48,7 +48,7 @@
 
 #include "mgl_pso_build_ops.h"    /* mglRenderPassSyncPipelineState */
 #include "mgl_renderer_ports.h"
-#include "mgl_binding_state_ops.h"      /* mglBindingInvalidateLastBoundState */
+#include "mgl_renderer_binding_ops.h"      /* mglRendererBindingInvalidateLastBoundState */
 #include "mgl_trace_strategy.h"         /* mglClearFragmentTraceBindingsForRenderer */
 #include "mgl_blit_sampled_copy.h"      /* GLSampled copies refresh */
 
@@ -219,7 +219,7 @@ static int mglRendererEndRenderEncodingGuardedBody(void *renderer)
  * shell guard; when it fails the same three cleanups run as the old @catch. */
 void mglRendererEndRenderEncodingLocked(void *renderer)
 {
-    mglBindingInvalidateLastBoundState(renderer);
+    mglRendererBindingInvalidateLastBoundState(renderer);
 
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
@@ -4464,7 +4464,7 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
             commandState->currentRenderEncoderOwner, fragCoordParams,
             sizeof(fragCoordParams), MGL_RENDER_BINDING_STAGE_FRAGMENT,
             kMGLFragCoordParamsBufferIndex);
-        mglBindingInvalidateLastBoundFragmentBufferAtIndex(
+        mglRendererBindingInvalidateLastBoundFragmentBufferAtIndex(
             renderer, kMGLFragCoordParamsBufferIndex);
     }
 
@@ -4483,13 +4483,13 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
             commandState->currentRenderEncoderOwner, lodBiasArr,
             sizeof(lodBiasArr), MGL_RENDER_BINDING_STAGE_FRAGMENT,
             kMGLLodBiasBufferIndex);
-        mglBindingInvalidateLastBoundFragmentBufferAtIndex(
+        mglRendererBindingInvalidateLastBoundFragmentBufferAtIndex(
             renderer, kMGLLodBiasBufferIndex);
 
         mglRenderSetRenderBytesForOwner(
             commandState->currentRenderEncoderOwner, &biasmax, sizeof(biasmax),
             MGL_RENDER_BINDING_STAGE_FRAGMENT, kMGLLodBiasMaxBufferIndex);
-        mglBindingInvalidateLastBoundFragmentBufferAtIndex(
+        mglRendererBindingInvalidateLastBoundFragmentBufferAtIndex(
             renderer, kMGLLodBiasMaxBufferIndex);
     }
 

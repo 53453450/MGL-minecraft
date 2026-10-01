@@ -37,7 +37,7 @@
 
 #include "draw_command.h"             /* mglInitBatchArena / mglDestroyBatchArena */
 #include "glm_limits.h"               /* MAX_COLOR_ATTACHMENTS */
-#include "mgl_binding_state_ops.h"    /* mglBindingInvalidateLastBoundState */
+#include "mgl_renderer_binding_ops.h"    /* mglRendererBindingInvalidateLastBoundState */
 #include "mgl.h"                      /* mglDrawBuffer */
 #include "mgl_capability.h"           /* MGLCapabilityInit */
 #include "mgl_render_pass_manager_ops.h" /* mglRendererEndRenderEncodingLocked */
@@ -1899,7 +1899,7 @@ static void mglShellCreateAndBind(MGLObjectId self, SEL cmd, GLMContext glm_ctx,
     /* Initialize last-bound render encoder dedup state to a clean slate.
      * The C++ binding state's valid bit starts false so the first bind on the first encoder is
      * never incorrectly skipped. */
-    mglBindingInvalidateLastBoundState((void *)self);
+    mglRendererBindingInvalidateLastBoundState((void *)self);
     fprintf(stderr, "MGL INFO: AGX GPU error tracking initialized\n");
     {
         const MGLPipelineCacheState *cacheState = mglRendererCacheState(ivars);
@@ -2439,7 +2439,7 @@ static void mglShellDealloc(MGLObjectId self, SEL cmd)
 
         /* Drop strong references held by the last-bound dedup cache before
          * releasing the underlying Metal resources below. */
-        mglBindingInvalidateLastBoundState((void *)self);
+        mglRendererBindingInvalidateLastBoundState((void *)self);
         /* Cleanup command buffer and encoder */
         if (ivars && ivars->_renderPassManager) {
             MGLRenderPassManager *passManager =

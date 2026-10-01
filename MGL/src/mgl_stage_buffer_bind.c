@@ -40,7 +40,7 @@
 #include "mgl_renderer_backend.h"   /* program binding sizes/counts, fallback buffer */
 #include "mgl_render.h"             /* snapshot encode, slot + map predicates */
 #include "mgl_binding_stage.h"      /* the stage-bind plan API */
-#include "mgl_binding_state_ops.h"  /* invalidate-last-bound helpers */
+#include "mgl_renderer_binding_ops.h"  /* invalidate-last-bound helpers */
 #include "mgl_shader_resource.h"    /* client binding / metal slot per element */
 #include "mgl_buffer_slots.h"       /* kMGLMaxMetalVertexBufferCount, … */
 #include "mgl_buffer_map.h"         /* mglNoteBufferEncoded */
@@ -354,10 +354,10 @@ bool mglBindingStateBindStageBufferMapEntries(
             }
             if (plan.invalidate_last_bound) {
                 if (is_fragment) {
-                    mglBindingInvalidateLastBoundFragmentBufferAtIndex(
+                    mglRendererBindingInvalidateLastBoundFragmentBufferAtIndex(
                         renderer, binding_index);
                 } else {
-                    mglBindingInvalidateLastBoundVertexBufferAtIndex(
+                    mglRendererBindingInvalidateLastBoundVertexBufferAtIndex(
                         renderer, binding_index);
                 }
             }

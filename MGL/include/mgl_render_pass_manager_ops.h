@@ -14,7 +14,7 @@
 #define MGL_RENDER_PASS_MANAGER_OPS_H
 
 #include "glm_context.h"
-#include "mgl_binding_state_ops.h" /* MGLResourceSyncWork (log 167) */
+#include "mgl_renderer_binding_ops.h" /* MGLResourceSyncWork (log 167) */
 #include "mgl_render.h"
 
 #ifdef __cplusplus

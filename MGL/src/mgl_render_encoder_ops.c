@@ -16,7 +16,7 @@
 #include "mgl_render_pass_sync_ops.h"
 #include "mgl_render_encoder_ops.h"
 
-#include "mgl_binding_state_ops.h"   /* mglBindingInvalidateLastBoundState */
+#include "mgl_renderer_binding_ops.h"   /* mglRendererBindingInvalidateLastBoundState */
 #include "mgl_buffer_slots.h"
 #include "mgl_draw_buffer.h"         /* mglMetal* draw-buffer mapping */
 #include "mgl_frame_activity.h"      /* MGL_PERF_INC / MGL_ENC_REASON_* */
@@ -1072,7 +1072,7 @@ static int mglPdNewRenderEncoderBody(void *renderer)
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
 
-    mglBindingInvalidateLastBoundState(renderer);
+    mglRendererBindingInvalidateLastBoundState(renderer);
 
     static uint64_t s_newRenderEncoderCallCount = 0;
     const uint64_t renderEncoderCall = ++s_newRenderEncoderCallCount;

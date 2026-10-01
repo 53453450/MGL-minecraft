@@ -55,7 +55,7 @@
 #include "mgl_trace_log.h"           /* mglTraceLog, mglTraceClockNS, kMGLDiagnosticStateLogs */
 #include "mgl_texture_bind.h"        /* mglRendererBindMTLBuffer */
 #include "mgl_env_flag.h"            /* mgl_env_flag_enabled */
-#include "mgl_binding_state_ops.h"   /* invalidate-last-bound helpers */
+#include "mgl_renderer_binding_ops.h"   /* invalidate-last-bound helpers */
 #include "mgl_frame_activity.h"      /* MGL_PERF_INC + the bind counters */
 #include "glm_limits.h"              /* MAX_ATTRIBS, MAX_MAPPED_BUFFERS */
 #include "mgl_size_constants.h"      /* kMGLMaxBufferSlots */
@@ -381,7 +381,7 @@ static void mglSeBindPointSizeParams(void *renderer, bool *any_binding_present,
                              byte_scratch_capacity,
                              kMGLPointSizeBufferIndex, point_size_params,
                              sizeof(point_size_params));
-        mglBindingInvalidateLastBoundVertexBufferAtIndex(
+        mglRendererBindingInvalidateLastBoundVertexBufferAtIndex(
             renderer, kMGLPointSizeBufferIndex);
         any_binding_present[kMGLPointSizeBufferIndex] = true;
     }

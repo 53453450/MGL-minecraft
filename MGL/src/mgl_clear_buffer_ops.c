@@ -17,7 +17,7 @@
 #include "mgl_clear_buffer_ops.h"
 
 #include "mgl_attachment_binding.h" /* mglRendererBindFramebufferAttachmentTextures */
-#include "mgl_binding_state_ops.h"  /* binding set / invalidate entries */
+#include "mgl_renderer_binding_ops.h"  /* binding set / invalidate entries */
 #include "mgl_blit_pipelines.h"     /* mglBlitClearRectPipeline / DepthState */
 #include "mgl_draw_buffer.h"        /* mglMetal* draw-buffer mapping */
 #include "mgl_renderer_backend.h"

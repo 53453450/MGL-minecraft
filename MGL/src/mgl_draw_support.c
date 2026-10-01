@@ -24,7 +24,7 @@
 #include "mgl_renderer_backend.h"
 #include "mgl_vertex_attrib_binding.h"
 #include "mgl_encode_context.h"
-#include "mgl_binding_state_ops.h"
+#include "mgl_renderer_binding_ops.h"
 #include "mgl_draw_issue.h"
 #include "mgl_draw_tess.h"    /* mglDrawHostRunVertexCaptureIndexed */
 #include "mgl_draw_mode.h"    /* mglRenderDrawModeProducesPolygons */
@@ -301,11 +301,11 @@ void mglDrawBindCullDistanceEmulationBuffers(void *renderer, uint32_t mode,
         mglRenderBindCullDistanceEmuSlots(encCtx->render_encoder_owner,
                                           captureBuffer,
                                           &params);
-        mglBindingRecordLastBoundVertexBuffer(
+        mglRendererBindingRecordLastBoundVertexBuffer(
             renderer, captureBuffer, 0,
             kMGLCullDistanceVertexBufferIndex);
         MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
-        mglBindingInvalidateLastBoundVertexBufferAtIndex(renderer, 
+        mglRendererBindingInvalidateLastBoundVertexBufferAtIndex(renderer, 
                   kMGLCullDistanceParamsBufferIndex);
         return;
     }
@@ -349,8 +349,8 @@ void mglDrawBindCullDistanceEmulationBuffers(void *renderer, uint32_t mode,
         0u, 0u, &params);
     mglRenderBindCullDistanceEmuSlots(encCtx->render_encoder_owner,
                                       cullMtlBuffer, &params);
-    mglBindingRecordLastBoundVertexBuffer(renderer, cullMtlBuffer,
-                                          0, kMGLCullDistanceVertexBufferIndex);
+    mglRendererBindingRecordLastBoundVertexBuffer(renderer, cullMtlBuffer,
+                                                  0, kMGLCullDistanceVertexBufferIndex);
     MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
-    mglBindingInvalidateLastBoundVertexBufferAtIndex(renderer, kMGLCullDistanceParamsBufferIndex);
+    mglRendererBindingInvalidateLastBoundVertexBufferAtIndex(renderer, kMGLCullDistanceParamsBufferIndex);
 }
