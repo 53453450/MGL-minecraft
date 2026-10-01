@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 133
+#define MAX_TESTS 134
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -17756,6 +17756,109 @@ static int test_get_tex_image_after_draw(unsigned char *pixels,
     return fail ? 1 : 0;
 }
 
+/* §8.11.4 GetTextureImage / GetnTexImage: every target including whole cube
+ * maps, PBO destinations, bufSize limits, and GPU-written contents. */
+static int test_get_texture_image_forms(unsigned char *pixels,
+                                        const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+    while (glGetError() != GL_NO_ERROR) { }
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    unsigned char buf[2 * 2 * 6 * 4], face[2 * 2 * 4];
+    GLuint unused = 0;
+    glGenTextures(1, &unused);
+    glGetTextureImage(unused + 100, 0, GL_RGBA, GL_UNSIGNED_BYTE, sizeof buf, buf);
+    if (glGetError() != GL_INVALID_OPERATION) fail |= 1;
+
+    GLuint cube = 0, arr = 0, t2d = 0, pbo = 0, fbo = 0, vao = 0;
+    glCreateTextures(GL_TEXTURE_CUBE_MAP, 1, &cube);
+    glTextureStorage2D(cube, 1, GL_RGBA8, 2, 2);
+    for (int f = 0; f < 6; f++) {
+        memset(face, 10 + f, sizeof face);
+        glTextureSubImage3D(cube, 0, 0, 0, f, 2, 2, 1, GL_RGBA,
+                            GL_UNSIGNED_BYTE, face);
+    }
+    if (glGetError() != GL_NO_ERROR) fail |= 256;
+    glGetTextureImage(cube, 0, GL_RGBA, GL_UNSIGNED_BYTE, -1, buf);
+    if (glGetError() != GL_INVALID_VALUE) fail |= 1;
+    glGetTextureImage(cube, 0, GL_RGBA, GL_UNSIGNED_BYTE, sizeof buf - 1, buf);
+    if (glGetError() != GL_INVALID_OPERATION) fail |= 2;
+    memset(buf, 0, sizeof buf);
+    glGetTextureImage(cube, 0, GL_RGBA, GL_UNSIGNED_BYTE, -1, buf);
+    glGetTextureImage(cube, 0, GL_RGBA, GL_UNSIGNED_BYTE, sizeof buf, buf);
+    if (glGetError() != GL_INVALID_VALUE) fail |= 4;
+    for (int f = 0; f < 6; f++) {
+        if (buf[f * 16] != 10 + f || buf[f * 16 + 15] != 10 + f) {
+            fprintf(stderr, "get_texture_image_forms: cube face %d got %u\n",
+                    f, buf[f * 16]);
+            fail |= 4;
+        }
+    }
+
+    glCreateTextures(GL_TEXTURE_2D_ARRAY, 1, &arr);
+    glTextureStorage3D(arr, 1, GL_RGBA8, 2, 2, 3);
+    for (int z = 0; z < 3; z++) {
+        memset(face, 50 + z, sizeof face);
+        glTextureSubImage3D(arr, 0, 0, 0, z, 2, 2, 1, GL_RGBA,
+                            GL_UNSIGNED_BYTE, face);
+    }
+    memset(buf, 0, sizeof buf);
+    glGetTextureImage(arr, 0, GL_RGBA, GL_UNSIGNED_BYTE, 2 * 2 * 3 * 4, buf);
+    if (buf[0] != 50 || buf[16] != 51 || buf[47] != 52) fail |= 8;
+
+    glBindTexture(GL_TEXTURE_2D_ARRAY, arr);
+    glGetnTexImage(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                   2 * 2 * 3 * 4 - 1, buf);
+    if (glGetError() != GL_INVALID_OPERATION) fail |= 16;
+
+    glCreateBuffers(1, &pbo);
+    glNamedBufferData(pbo, sizeof buf, NULL, GL_STREAM_READ);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+    glGetTextureImage(cube, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0, (void *)0);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    memset(buf, 0, sizeof buf);
+    glGetNamedBufferSubData(pbo, 0, sizeof buf, buf);
+    if (buf[0] != 10 || buf[5 * 16] != 15) fail |= 32;
+
+    /* A draw into the texture must be visible, not the earlier upload. */
+    unsigned char up[4 * 4 * 4];
+    memset(up, 200, sizeof up);
+    glCreateTextures(GL_TEXTURE_2D, 1, &t2d);
+    glTextureStorage2D(t2d, 1, GL_RGBA8, 4, 4);
+    glTextureSubImage2D(t2d, 0, 0, 0, 4, 4, GL_RGBA, GL_UNSIGNED_BYTE, up);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           t2d, 0);
+    glClearColor(30.0f / 255.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glGetTextureImage(t2d, 0, GL_RGBA, GL_UNSIGNED_BYTE, sizeof up, up);
+    if (up[0] != 30 || up[63 - 3] != 30) {
+        fprintf(stderr, "get_texture_image_forms: after clear got %u\n", up[0]);
+        fail |= 64;
+    }
+
+    if (glGetError() != GL_NO_ERROR) fail |= 128;
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteBuffers(1, &pbo);
+    glDeleteTextures(1, &cube);
+    glDeleteTextures(1, &arr);
+    glDeleteTextures(1, &t2d);
+    glDeleteTextures(1, &unused);
+    glDeleteVertexArrays(1, &vao);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "get_texture_image_forms: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* Uploaded rows must keep GL order after part of the texture is rendered. */
 static int test_rt_partial_render_orientation(unsigned char *pixels,
                                               const char *out_path)
@@ -20646,6 +20749,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("rt_layer_orientation", test_rt_layer_orientation),
     SELF_CHECK_TEST("get_tex_image_after_draw", test_get_tex_image_after_draw),
     SELF_CHECK_TEST("rt_partial_render_orientation", test_rt_partial_render_orientation),
+    SELF_CHECK_TEST("get_texture_image_forms", test_get_texture_image_forms),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),
     SELF_CHECK_TEST("no_attachment_layered_fbo",

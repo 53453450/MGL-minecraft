@@ -5925,15 +5925,6 @@ void mglGetnPixelMapusv(GLMContext ctx, GLenum map, GLsizei bufSize, GLushort *v
 	(void)ctx;
 }
 
-void mglGetnTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, GLenum type, GLsizei bufSize, void *pixels)
-{
-	if (bufSize < 0) {
-		ERROR_RETURN(GL_INVALID_VALUE);
-		return;
-	}
-	mglGetTexImage(ctx, target, level, format, type, pixels);
-}
-
 /* A full queue drops new errors, so a raise cannot be told apart from none;
  * treat it as raised so params stay untouched. */
 static bool mglQueryRaisedError(GLMContext ctx, GLuint queued_before)

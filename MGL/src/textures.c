@@ -4657,6 +4657,25 @@ void mglTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint xof
 
     ERROR_CHECK_RETURN(tex != NULL, GL_INVALID_OPERATION);
 
+    /* GL 4.6 §8.6: a cube map is addressed as six z-slices, one per face. */
+    if (tex->target == GL_TEXTURE_CUBE_MAP) {
+        MGLTextureUnpackLayout layout;
+        size_t pixel_size = sizeForFormatType(format, type);
+
+        ERROR_CHECK_RETURN(zoffset >= 0 && depth >= 0 && zoffset + depth <= _CUBE_MAP_MAX_FACE, GL_INVALID_VALUE);
+        ERROR_CHECK_RETURN(pixel_size > 0u, GL_INVALID_ENUM);
+        if (!mglComputeTextureUnpackLayout(ctx, width, height, 1, pixel_size, "TextureSubImage3D", &layout)) {
+            return;
+        }
+        for (GLsizei i = 0; i < depth; i++) {
+            if (!texSubImage2D(ctx, tex, (GLuint)(zoffset + i), level, xoffset, yoffset, width, height,
+                               format, type, (const uint8_t *)pixels + (size_t)i * layout.src_image_size)) {
+                return;
+            }
+        }
+        return;
+    }
+
     if (!texSubImage3D(ctx, tex, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels)) {
         return;
     }
@@ -5738,7 +5757,11 @@ void mglCopyTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint
 
 #pragma mark get tex image
 
-void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, GLenum type, void *pixels)
+/* §8.11.4.  `tex` NULL means the texture bound to `target`; a negative
+ * bufSize means no bufSize limit (GetTexImage). */
+static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
+                               GLint level, GLenum format, GLenum type,
+                               GLsizei bufSize, void *pixels)
 {
     GLuint slice = 0;
 
@@ -5812,7 +5835,9 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
         pixels = (void *)(base + offset);
     }
 
-    Texture *tex = getTex(ctx, 0, target);
+    if (!tex) {
+        tex = getTex(ctx, 0, target);
+    }
     if (!tex) {
         fprintf(stderr, "MGL ERROR: glGetTexImage - no texture bound\n");
         ERROR_RETURN(GL_INVALID_OPERATION);
@@ -5883,6 +5908,9 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
         ERROR_RETURN(GL_OUT_OF_MEMORY);
         return;
     }
+    ERROR_CHECK_RETURN(bufSize < 0 || pack_buffer ||
+                       pack_layout.required_bytes <= (size_t)bufSize,
+                       GL_INVALID_OPERATION);
 
     /* Deferred draws mark their render-target writes when flushed. */
     mglFlushPendingDraws(ctx);
@@ -6019,103 +6047,71 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
                                   slice);
 }
 
+void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, GLenum type, void *pixels)
+{
+    mglGetTexImageImpl(ctx, NULL, target, level, format, type, -1, pixels);
+}
+
+void mglGetnTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, GLenum type, GLsizei bufSize, void *pixels)
+{
+    ERROR_CHECK_RETURN(bufSize >= 0, GL_INVALID_VALUE);
+    mglGetTexImageImpl(ctx, NULL, target, level, format, type, bufSize, pixels);
+}
+
 void mglGetTextureImage(GLMContext ctx, GLuint texture, GLint level, GLenum format, GLenum type, GLsizei bufSize, void *pixels)
 {
-    if (bufSize < 0) {
-        ERROR_RETURN(GL_INVALID_VALUE);
-        return;
+    ERROR_CHECK_RETURN(bufSize >= 0, GL_INVALID_VALUE);
+    Texture *tex = findTexture(ctx, texture);
+    ERROR_CHECK_RETURN(tex != NULL, GL_INVALID_OPERATION);
+    switch (tex->target) {
+        case GL_TEXTURE_1D:
+        case GL_TEXTURE_2D:
+        case GL_TEXTURE_3D:
+        case GL_TEXTURE_1D_ARRAY:
+        case GL_TEXTURE_2D_ARRAY:
+        case GL_TEXTURE_CUBE_MAP_ARRAY:
+        case GL_TEXTURE_RECTANGLE:
+            mglGetTexImageImpl(ctx, tex, tex->target, level, format, type,
+                               bufSize, pixels);
+            return;
+        case GL_TEXTURE_CUBE_MAP:
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
     }
-    if (STATE(buffers[_PIXEL_PACK_BUFFER])) {
-        fprintf(stderr, "MGL WARNING: glGetTextureImage with GL_PIXEL_PACK_BUFFER is unsupported\n");
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
+
+    /* A cube map reads as a depth-6 image, faces in table 9.3 order. */
+    ERROR_CHECK_RETURN(level >= 0 && level < (GLint)tex->num_levels,
+                       GL_INVALID_VALUE);
+    const TextureLevel *face0 = &tex->faces[0].levels[level];
+    for (GLuint face = 0; face < 6u; face++) {
+        const TextureLevel *lvl = &tex->faces[face].levels[level];
+        ERROR_CHECK_RETURN(lvl->complete && lvl->width == face0->width &&
+                           lvl->height == face0->height,
+                           GL_INVALID_OPERATION);
     }
-    if (!pixels && bufSize > 0) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-    
-    Texture *tex = getTex(ctx, texture, 0);
-    if (!tex) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-    
-    if (tex->target == GL_TEXTURE_3D ||
-        tex->target == GL_TEXTURE_1D_ARRAY ||
-        tex->target == GL_TEXTURE_2D_ARRAY ||
-        tex->target == GL_TEXTURE_CUBE_MAP ||
-        tex->target == GL_TEXTURE_CUBE_MAP_ARRAY) {
-        fprintf(stderr, "MGL WARNING: glGetTextureImage layered/3D readback texture=%u target=0x%x is unsupported\n",
-                texture,
-                tex->target);
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-    if (level < 0 || level >= (GLint)tex->num_levels) {
-        ERROR_RETURN(GL_INVALID_VALUE);
-        return;
-    }
-    
-    GLsizei width = tex->width >> level;
-    GLsizei height = tex->height >> level;
-    if (width < 1) width = 1;
-    if (height < 1) height = 1;
-    
     size_t pixel_size = sizeForFormatType(format, type);
-    if (pixel_size == 0u) {
-        ERROR_RETURN(GL_INVALID_ENUM);
+    ERROR_CHECK_RETURN(pixel_size != 0u, GL_INVALID_ENUM);
+    MGLTexturePackLayout layout;
+    if (!mglComputeTexturePackLayout(ctx, (GLsizei)face0->width,
+                                     (GLsizei)face0->height, 6, pixel_size,
+                                     "glGetTextureImage", &layout)) {
         return;
     }
-
-    MGLTexturePackLayout pack_layout;
-    if (!mglComputeTexturePackLayout(ctx,
-                                     width,
-                                     height,
-                                     1,
-                                     pixel_size,
-                                     "glGetTextureImage",
-                                     &pack_layout)) {
-        return;
+    ERROR_CHECK_RETURN(STATE(buffers[_PIXEL_PACK_BUFFER]) ||
+                       layout.required_bytes <= (size_t)bufSize,
+                       GL_INVALID_OPERATION);
+    GLuint queued_before = LIVE_STATE(error_count);
+    for (GLuint face = 0; face < 6u; face++) {
+        mglGetTexImageImpl(ctx, tex, GL_TEXTURE_CUBE_MAP_POSITIVE_X + face,
+                           level, format, type, -1,
+                           (uint8_t *)pixels + face * layout.dst_image_size);
+        if (LIVE_STATE(error_count) != queued_before ||
+            queued_before >= MGL_ERROR_QUEUE_SIZE) {
+            return;
+        }
     }
-
-    if (pack_layout.required_bytes > (size_t)bufSize ||
-        pack_layout.dst_pitch > UINT_MAX ||
-        pack_layout.dst_image_size > UINT_MAX) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
-    TextureLevel *lvl = &tex->faces[0].levels[level];
-    if (!lvl || !lvl->complete) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
-
-    if (mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, 1, format, type, &pack_layout, pixels, STATE(pack).swap_bytes == GL_TRUE)) {
-        return;
-    }
-
-    if (!tex->mtl_data) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-    
-    mglFlushCommandBuffer(ctx);
-    mglRendererGetTexImage(ctx,
-                                  tex,
-                                  (uint8_t *)pixels + pack_layout.skip_offset_bytes,
-                                  (GLuint)pack_layout.dst_pitch,
-                                  (GLuint)pack_layout.dst_image_size,
-                                  0,
-                                  0,
-                                  width,
-                                  height,
-                                  format,
-                                  type,
-                                  level,
-                                  0);
 }
 
 void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, GLsizei bufSize, void *pixels)
