@@ -40,6 +40,7 @@
 #include "glm_context.h"
 #include "mgl_metal_ref.h"
 #include "buffers.h"
+#include "mgl_byte_hash.h"
 #include "pixel_utils.h"
 #include "mgl_safety.h"
 #include "mgl_frame_activity.h"
@@ -81,66 +82,6 @@ static inline bool mglShouldTraceBufferMutation(uint64_t call, GLenum target, GL
     }
 
     return ((call % 128ull) == 0ull);
-}
-
-static uint64_t mglTraceHashBytes(const void *data, size_t len)
-{
-    if (!data || len == 0) {
-        return 0ull;
-    }
-
-    const uint8_t *bytes = (const uint8_t *)data;
-    size_t head = len < 1024 ? len : 1024;
-    uint64_t hash = 1469598103934665603ull;
-
-    for (size_t i = 0; i < head; i++) {
-        hash ^= (uint64_t)bytes[i];
-        hash *= 1099511628211ull;
-    }
-
-    if (len > head) {
-        const uint8_t *tail = bytes + (len - head);
-        for (size_t i = 0; i < head; i++) {
-            hash ^= (uint64_t)tail[i];
-            hash *= 1099511628211ull;
-        }
-    }
-
-    hash ^= (uint64_t)len;
-    hash *= 1099511628211ull;
-    return hash;
-}
-
-static void mglTraceFormatBytes(const void *data, size_t len, char *out, size_t out_size)
-{
-    if (!out || out_size == 0) {
-        return;
-    }
-
-    if (!data || len == 0) {
-        snprintf(out, out_size, "-");
-        return;
-    }
-
-    const uint8_t *bytes = (const uint8_t *)data;
-    size_t sample = len < 8 ? len : 8;
-    size_t used = 0;
-
-    for (size_t i = 0; i < sample && used + 3 < out_size; i++) {
-        int wrote = snprintf(out + used, out_size - used, "%02x", bytes[i]);
-        if (wrote <= 0) {
-            break;
-        }
-        used += (size_t)wrote;
-        if (i + 1 < sample && used + 2 < out_size) {
-            out[used++] = ':';
-            out[used] = '\0';
-        }
-    }
-
-    if (len > sample && used + 4 < out_size) {
-        snprintf(out + used, out_size - used, "...");
-    }
 }
 
 static bool mglTraceSampleAllZero(const void *data, size_t len)
