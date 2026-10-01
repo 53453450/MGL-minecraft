@@ -2663,14 +2663,14 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
 
 
 void mglRendererClearBuffer(GLMContext glm_ctx,
-                                  unsigned int type,
+                                  unsigned int flags,
                                   unsigned int mask)
 {
     MGLRendererBackendLease backend_lease = {};
     if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
     void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
     if (renderer && glm_ctx) {
-        mglRendererMTLClearBuffer((void *)renderer, glm_ctx, type, mask);
+        mglRendererMTLClearBuffer((void *)renderer, glm_ctx, flags, mask);
     }
     mglRendererBackendEnd(&backend_lease);
 }

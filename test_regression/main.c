@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 145
+#define MAX_TESTS 146
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18937,6 +18937,155 @@ static int test_color_write_mask(unsigned char *pixels, const char *out_path)
     return fail ? 1 : 0;
 }
 
+/* GL 4.6 §17.4.3: Clear honors ColorMask and the front StencilMask, with and
+ * without the scissor test. */
+static int test_clear_write_mask(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint prog = link_program(
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n",
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(1.0); }\n");
+    if (!prog) return 2;
+    GLuint vao = 0, color = 0, ds = 0, fbo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenTextures(1, &color);
+    glBindTexture(GL_TEXTURE_2D, color);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 16, 16);
+    glGenTextures(1, &ds);
+    glBindTexture(GL_TEXTURE_2D, ds);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_DEPTH24_STENCIL8, 16, 16);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           color, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                           GL_TEXTURE_2D, ds, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        return 2;
+    glViewport(0, 0, 16, 16);
+    int fail = 0;
+    unsigned char px[4] = {0}, st = 0;
+
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glColorMask(GL_TRUE, GL_FALSE, GL_FALSE, GL_FALSE);
+    glClearColor(1, 1, 1, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glColorMask(GL_FALSE, GL_TRUE, GL_FALSE, GL_TRUE);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, 16, 8);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    if (px[0] != 255 || px[1] != 255 || px[2] != 0 || px[3] != 255) {
+        fprintf(stderr, "clear_write_mask: scissored color %u,%u,%u,%u\n",
+                px[0], px[1], px[2], px[3]);
+        fail |= 1;
+    }
+    glReadPixels(2, 13, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    if (px[0] != 255 || px[1] != 0 || px[2] != 0 || px[3] != 0) {
+        fprintf(stderr, "clear_write_mask: color %u,%u,%u,%u\n",
+                px[0], px[1], px[2], px[3]);
+        fail |= 2;
+    }
+
+    glClearStencil(2);
+    glClear(GL_STENCIL_BUFFER_BIT);
+    glStencilMask(0x05);
+    glClearStencil(15);
+    glClear(GL_STENCIL_BUFFER_BIT);
+    glStencilMask(0xff);
+    glReadPixels(2, 2, 1, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, &st);
+    if (st != 7) {
+        fprintf(stderr, "clear_write_mask: stencil %u\n", st);
+        fail |= 4;
+    }
+
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_STENCIL_TEST);
+    glStencilFunc(GL_EQUAL, 7, 0xff);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+    glUseProgram(prog);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glDisable(GL_STENCIL_TEST);
+    glStencilFunc(GL_ALWAYS, 0, 0xff);
+    glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    if (px[0] != 255) {
+        fprintf(stderr, "clear_write_mask: stencil-tested draw %u\n", px[0]);
+        fail |= 8;
+    }
+
+    glStencilMaskSeparate(GL_FRONT, 0x00);
+    glStencilMaskSeparate(GL_BACK, 0xff);
+    glClearStencil(9);
+    glClear(GL_STENCIL_BUFFER_BIT);
+    glStencilMask(0xff);
+    glReadPixels(2, 2, 1, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, &st);
+    if (st != 7) {
+        fprintf(stderr, "clear_write_mask: front mask 0 cleared to %u\n", st);
+        fail |= 16;
+    }
+
+    GLuint s8 = 0;
+    glGenRenderbuffers(1, &s8);
+    glBindRenderbuffer(GL_RENDERBUFFER, s8);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_STENCIL_INDEX8, 16, 16);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                              GL_RENDERBUFFER, 0);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT,
+                              GL_RENDERBUFFER, s8);
+    glClearStencil(2);
+    glClear(GL_STENCIL_BUFFER_BIT);
+    glStencilMask(0x05);
+    glClearStencil(15);
+    glClear(GL_STENCIL_BUFFER_BIT);
+    glStencilMask(0xff);
+    st = 0;
+    glReadPixels(2, 2, 1, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, &st);
+    if (st != 7) {
+        fprintf(stderr, "clear_write_mask: stencil8 %u\n", st);
+        fail |= 128;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
+    glClearColor(1, 1, 1, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glReadPixels(4, 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    if (px[0] != 255 || px[1] != 255 || px[2] != 255 || px[3] != 0) {
+        fprintf(stderr, "clear_write_mask: default fb %u,%u,%u,%u\n",
+                px[0], px[1], px[2], px[3]);
+        fail |= 32;
+    }
+
+    glClearColor(0, 0, 0, 0);
+    glClearStencil(0);
+    if (glGetError() != GL_NO_ERROR) fail |= 64;
+    glUseProgram(0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &s8);
+    glDeleteTextures(1, &color);
+    glDeleteTextures(1, &ds);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "clear_write_mask: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* Rendering into a rectangle texture or one slice of a 3D texture and then
  * sampling it returns the rendered rows in GL order. */
 static int test_rt_rect_3d_orientation(unsigned char *pixels, const char *out_path)
@@ -22315,6 +22464,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("rt_rect_3d_orientation", test_rt_rect_3d_orientation),
     SELF_CHECK_TEST("depth_stencil_rt_orientation", test_depth_stencil_rt_orientation),
     SELF_CHECK_TEST("color_write_mask", test_color_write_mask),
+    SELF_CHECK_TEST("clear_write_mask", test_clear_write_mask),
     SELF_CHECK_TEST("get_texture_image_forms", test_get_texture_image_forms),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),

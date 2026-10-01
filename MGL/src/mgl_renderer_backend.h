@@ -292,7 +292,9 @@ void mglRendererFlush(GLMContext context, bool finish);
 void mglRendererSwapBuffers(GLMContext context);
 void mglRendererFlushDrawBuffer(GLMContext context);
 void mglRendererInvalidateRenderPass(GLMContext context);
-void mglRendererClearBuffer(GLMContext context, uint32_t type, uint32_t mask);
+/* Clear through a draw so the write masks apply; scissored clears always do. */
+#define MGL_RENDERER_CLEAR_MASKED 1u
+void mglRendererClearBuffer(GLMContext context, uint32_t flags, uint32_t mask);
 void mglRendererBlitFramebuffer(GLMContext context,
                                 int32_t src_x0, int32_t src_y0,
                                 int32_t src_x1, int32_t src_y1,

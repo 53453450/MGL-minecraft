@@ -33,9 +33,9 @@ void *mglRendererNewDrawBufferWithCustomSize(uint32_t pixelFormat,
                                              int depthStencil, uint64_t width,
                                              uint64_t height);
 
-/* -mtlClearBuffer:type:mask:. */
+/* -mtlClearBuffer:type:mask:.  flags takes MGL_RENDERER_CLEAR_MASKED. */
 void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
-                               unsigned int type, unsigned int mask);
+                               unsigned int flags, unsigned int mask);
 
 #ifdef __cplusplus
 }

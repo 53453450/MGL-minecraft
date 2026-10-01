@@ -328,9 +328,10 @@ void *mglBlitMsaaIntegerResolvePipeline(void *renderer, int signedInteger)
 
 void *mglBlitClearRectPipeline(void *renderer, uint32_t colorFormat,
                               uint32_t depthFormat, uint32_t stencilFormat,
-                              int writesColor, int writesDepth)
+                              uint32_t colorWriteMask, int writesDepth)
 {
     MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    const int writesColor = colorWriteMask != MGLColorWriteMaskNone;
     if (mglRenderPixelFormatIsInvalid(stencilFormat) &&
         !mglRenderClearRectPipelineReady(writesColor ? 1 : 0, colorFormat,
                                          writesDepth ? 1 : 0, depthFormat)) {
@@ -341,11 +342,11 @@ void *mglBlitClearRectPipeline(void *renderer, uint32_t colorFormat,
                        ((uint64_t)(uint32_t)depthFormat << 16) |
                        ((uint64_t)(writesColor ? 1u : 0u) << 32) |
                        ((uint64_t)(writesDepth ? 1u : 0u) << 33) |
-                       ((uint64_t)(stencilFormat & 0x3fffu) << 34);
+                       ((uint64_t)(stencilFormat & 0x3fffu) << 34) |
+                       ((uint64_t)(colorWriteMask & 0xfu) << 48);
     void *cached = mglBlitLookupAuxRenderPipeline(
         MGL_RENDER_AUX_RENDER_CLEAR_RECT, variant,
-        colorFormat, depthFormat, stencilFormat,
-        writesColor ? MGLColorWriteMaskAll : MGLColorWriteMaskNone, 1u);
+        colorFormat, depthFormat, stencilFormat, colorWriteMask, 1u);
     if (cached) return cached;
 
     char error[512] = {0};
@@ -353,8 +354,7 @@ void *mglBlitClearRectPipeline(void *renderer, uint32_t colorFormat,
         "clear_rect", "mgl_clear_rect_vs",
         writesColor ? "mgl_clear_rect_fs" : NULL,
         MGL_RENDER_AUX_RENDER_CLEAR_RECT, variant,
-        colorFormat, depthFormat, stencilFormat,
-        writesColor ? MGLColorWriteMaskAll : MGLColorWriteMaskNone,
+        colorFormat, depthFormat, stencilFormat, colorWriteMask,
         1u, error, sizeof(error));
     if (!pipeline) {
         fprintf(stderr,

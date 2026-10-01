@@ -195,10 +195,12 @@ static void mglUpdateStencilShadowForClear(GLMContext ctx)
             y1 = STATE(var).scissor_box[1] + STATE(var).scissor_box[3];
     }
     GLubyte value = (GLubyte)STATE(var).stencil_clear_value;
+    GLubyte writeMask = (GLubyte)STATE(var).stencil_writemask;
     for (GLint row = y0; row < y1; row++) {
-        memset(texture->stencil_shadow + (size_t)row * texture->width + x0,
-               value,
-               (size_t)(x1 - x0));
+        GLubyte *dst = texture->stencil_shadow + (size_t)row * texture->width;
+        for (GLint x = x0; x < x1; x++) {
+            dst[x] = (GLubyte)((dst[x] & ~writeMask) | (value & writeMask));
+        }
     }
 }
 
@@ -479,6 +481,28 @@ static GLboolean mglColorMaskAllowsAnyWrite(GLMContext ctx, GLuint drawBufferInd
            STATE(var).color_writemask[drawBufferIndex][3];
 }
 
+/* Load-action clears write every bit of a single draw buffer; partial write
+ * masks need the draw-based clear, which handles one color buffer. */
+static GLboolean mglClearNeedsMaskedDraw(GLMContext ctx, GLbitfield mask)
+{
+    if ((mask & GL_COLOR_BUFFER_BIT) && mglDrawBufferCount(ctx) > 1)
+        return GL_FALSE;
+
+    if (mask & GL_STENCIL_BUFFER_BIT) {
+        GLuint stencilMask = STATE(var).stencil_writemask & 0xffu;
+        if (stencilMask != 0u && stencilMask != 0xffu)
+            return GL_TRUE;
+    }
+    if ((mask & GL_COLOR_BUFFER_BIT) && STATE(caps).use_color_mask[0]) {
+        int channels = 0;
+        for (int i = 0; i < 4; i++)
+            channels += STATE(var).color_writemask[0][i] ? 1 : 0;
+        if (channels != 0 && channels != 4)
+            return GL_TRUE;
+    }
+    return GL_FALSE;
+}
+
 static GLubyte mglClearComponentToByte(GLfloat value)
 {
     if (!(value > 0.0f)) return 0u;
@@ -606,9 +630,9 @@ void mglClear(GLMContext ctx, GLbitfield mask)
     // glClear mutates framebuffer contents, so deferred draws must land first.
     mglFlushCommandBuffer(ctx);
 
+    /* Clears use the front stencil write mask (§17.4.2). */
     if ((mask & GL_STENCIL_BUFFER_BIT) &&
-        (STATE(var).stencil_writemask != 0u ||
-         STATE(var).stencil_back_writemask != 0u)) {
+        (STATE(var).stencil_writemask & 0xffu) != 0u) {
         mglUpdateStencilShadowForClear(ctx);
     }
     if ((mask & GL_DEPTH_BUFFER_BIT) && STATE(var).depth_writemask) {
@@ -620,7 +644,8 @@ void mglClear(GLMContext ctx, GLbitfield mask)
         mglUpdateRGB10A2ShadowForClear(ctx);
     }
 
-    if (STATE(caps).scissor_test) {
+    const GLboolean maskedDraw = mglClearNeedsMaskedDraw(ctx, mask);
+    if (STATE(caps).scissor_test || maskedDraw) {
         uint64_t hit = ++s_scissoredClearCount;
         if (hit <= 32ull || (hit % 512ull) == 0ull) {
             mglTraceLogExternal("CLEAR_SCISSORED_GL call=%llu hit=%llu mask=0x%x fbo=%u drawBuf=0x%x readBuf=0x%x box=%d,%d,%d,%d colorMask=%d%d%d%d depth(write=%d clear=%.6f) stencilWrite(front=0x%x back=0x%x)",
@@ -643,11 +668,11 @@ void mglClear(GLMContext ctx, GLbitfield mask)
                                 (unsigned)STATE(var).stencil_writemask,
                                 (unsigned)STATE(var).stencil_back_writemask);
         }
-        mglRendererClearBuffer(ctx, 0, mask);
+        mglRendererClearBuffer(ctx, maskedDraw ? MGL_RENDERER_CLEAR_MASKED : 0u,
+                               mask);
         if ((mask & GL_STENCIL_BUFFER_BIT) &&
             STATE(framebuffer) &&
-            (STATE(var).stencil_writemask != 0u ||
-             STATE(var).stencil_back_writemask != 0u)) {
+            (STATE(var).stencil_writemask & 0xffu) != 0u) {
             STATE(framebuffer)->stencil.clear_color[0] =
                 (GLfloat)STATE(var).stencil_clear_value;
         }
@@ -744,8 +769,7 @@ void mglClear(GLMContext ctx, GLbitfield mask)
 clear_stencil:
     if (mask & GL_STENCIL_BUFFER_BIT)
     {
-        if (STATE(var).stencil_writemask == 0u &&
-            STATE(var).stencil_back_writemask == 0u)
+        if ((STATE(var).stencil_writemask & 0xffu) == 0u)
             goto clear_done;
 
         if (fbo)

@@ -34,6 +34,7 @@
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_render_encoder_ops.h" /* mglRenderPassNewCommandBufferLocked */
 
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -232,9 +233,8 @@ static int mglPdPassAttachmentIs(void *renderPassStateOwner, uint32_t kind,
 }
 
 void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
-                               unsigned int type, unsigned int mask)
+                               unsigned int flags, unsigned int mask)
 {
-    (void)type;
     if (!glm_ctx || !mglRenderClearMaskHasAny((uint32_t)mask)) {
         return;
     }
@@ -245,7 +245,8 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
     MGLCommandState *commandState = areas.command;
     mglPlatformShellSetContext(renderer, glm_ctx);
 
-    if (!glState->caps.scissor_test) {
+    const int scissored = glState->caps.scissor_test != 0;
+    if (!scissored && !(flags & MGL_RENDERER_CLEAR_MASKED)) {
         mglRendererEndRenderEncodingLocked(renderer);
 
         MGLRenderCommandBufferState clearCommandState = {0};
@@ -278,10 +279,10 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
         return;
     }
 
-    const GLint rawX = glState->var.scissor_box[0];
-    const GLint rawY = glState->var.scissor_box[1];
-    const GLint rawW = glState->var.scissor_box[2];
-    const GLint rawH = glState->var.scissor_box[3];
+    const GLint rawX = scissored ? glState->var.scissor_box[0] : 0;
+    const GLint rawY = scissored ? glState->var.scissor_box[1] : 0;
+    const GLint rawW = scissored ? glState->var.scissor_box[2] : INT_MAX / 2;
+    const GLint rawH = scissored ? glState->var.scissor_box[3] : INT_MAX / 2;
     if (rawW <= 0 || rawH <= 0) {
         return;
     }
@@ -308,16 +309,14 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
     int wantsStencil = mglRenderClearMaskHasStencil((uint32_t)mask) != 0 &&
                        stencilWriteMask != 0u;
 
-    if (wantsColor) {
-        const int colorMaskAllowsWrite =
-            !glState->caps.use_color_mask[0] ||
-            glState->var.color_writemask[0][0] ||
-            glState->var.color_writemask[0][1] ||
-            glState->var.color_writemask[0][2] ||
-            glState->var.color_writemask[0][3];
-        if (!colorMaskAllowsWrite) {
-            wantsColor = 0;
-        }
+    const uint32_t colorWriteMask = mglRenderColorWriteMaskFromChannels(
+        glState->caps.use_color_mask[0] ? 1 : 0,
+        glState->var.color_writemask[0][0] ? 1 : 0,
+        glState->var.color_writemask[0][1] ? 1 : 0,
+        glState->var.color_writemask[0][2] ? 1 : 0,
+        glState->var.color_writemask[0][3] ? 1 : 0);
+    if (colorWriteMask == MGLColorWriteMaskNone) {
+        wantsColor = 0;
     }
 
     if (fbo) {
@@ -457,6 +456,29 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
                 wantsDepth = 0;
             }
         }
+
+        if (wantsStencil && drawBufferIndex < _MAX_DRAW_BUFFERS) {
+            stencilTexture = mglRendererBackendGetDefaultDrawBufferAttachment(
+                areas.backend, drawBufferIndex,
+                MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL);
+            if (!stencilTexture && glm_ctx->stencil_format.format) {
+                const uint32_t stencilFormat =
+                    mglRenderRepairedDefaultStencilFormat(
+                        glm_ctx->stencil_format.mtl_pixel_format);
+                const uint64_t stencilWidth =
+                    colorTexture ? mglPdTextureInfo(colorTexture).width
+                                 : mglPdMaxU64(glState->viewport[2], 1);
+                const uint64_t stencilHeight =
+                    colorTexture ? mglPdTextureInfo(colorTexture).height
+                                 : mglPdMaxU64(glState->viewport[3], 1);
+                stencilTexture = mglRendererNewDrawBufferWithCustomSize(
+                    stencilFormat, 1, stencilWidth, stencilHeight);
+                (void)mglRendererBackendSetDefaultDrawBufferAttachment(
+                    areas.backend, drawBufferIndex,
+                    MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL,
+                    stencilTexture);
+            }
+        }
     }
 
     if (!stencilTexture) {
@@ -510,9 +532,9 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
     const uint32_t stencilFormat =
         wantsStencil ? mglPdTextureInfo(stencilTexture).pixel_format
                      : MGL_PD_PIXEL_FORMAT_INVALID;
-    void *pipeline = mglBlitClearRectPipeline(renderer, colorFormat, depthFormat,
-                                              stencilFormat, wantsColor,
-                                              wantsDepth);
+    void *pipeline = mglBlitClearRectPipeline(
+        renderer, colorFormat, depthFormat, stencilFormat,
+        wantsColor ? colorWriteMask : MGLColorWriteMaskNone, wantsDepth);
     if (!pipeline) {
         fprintf(stderr,
                 "MGL ERROR: scissored clear missing pipeline color=%lu depth=%lu stencil=%lu wantsColor=%d wantsDepth=%d\n",

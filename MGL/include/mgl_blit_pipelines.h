@@ -66,11 +66,12 @@ void *mglBlitScaledComputePipelineForPixelFormat(void *renderer, uint32_t pixel_
 /* MSAA integer resolve compute pipeline. */
 void *mglBlitMsaaIntegerResolvePipeline(void *renderer, int signed_integer);
 
-/* Scissored clear pipeline for the given colour/depth/stencil formats and
- * write masks; a valid stencil format means the clear writes stencil. */
+/* Clear-rect pipeline for the given colour/depth/stencil formats and write
+ * masks (color_write_mask in MGLColorWriteMask bits, None = no colour); a
+ * valid stencil format means the clear writes stencil. */
 void *mglBlitClearRectPipeline(void *renderer, uint32_t color_format,
                                uint32_t depth_format, uint32_t stencil_format,
-                               int writes_color, int writes_depth);
+                               uint32_t color_write_mask, int writes_depth);
 
 /* Nearest/linear scaled-blit sampler (cached in the backend blit cache). */
 void *mglBlitScaledSamplerForFilter(void *renderer, uint32_t filter);
