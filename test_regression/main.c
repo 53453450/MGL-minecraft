@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 153
+#define MAX_TESTS 154
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18807,6 +18807,95 @@ static int test_get_tex_image_swap_bytes(unsigned char *pixels, const char *out_
     return fail ? 1 : 0;
 }
 
+/* GetTexImage / GetTextureSubImage into a PIXEL_PACK_BUFFER must be visible
+ * to later GPU reads of that buffer, and packing past its end is
+ * INVALID_OPERATION (GL 4.6 §8.11.4, §18.2). */
+static int test_get_tex_image_pack_buffer(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint prog = link_program(
+        "#version 330 core\n"
+        "layout(location = 0) in vec4 p;\n"
+        "void main() { gl_Position = p; }\n",
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(1.0); }\n");
+    if (!prog) return 2;
+    static const GLfloat tri[12] = {-1, -1, 0, 1, 3, -1, 0, 1, -1, 3, 0, 1};
+    static const GLfloat zero[12] = {0};
+
+    GLuint tex = 0, rt = 0, fbo = 0, vao = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 3, 1, 0, GL_RGBA, GL_FLOAT, tri);
+    glGenTextures(1, &rt);
+    glBindTexture(GL_TEXTURE_2D, rt);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rt, 0);
+    glViewport(0, 0, 4, 4);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glUseProgram(prog);
+
+    int fail = 0;
+    for (int c = 0; c < 2; c++) {
+        GLuint pbo = 0;
+        glGenBuffers(1, &pbo);
+        glBindBuffer(GL_ARRAY_BUFFER, pbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(zero), zero, GL_STREAM_COPY);
+        glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, NULL);
+        glEnableVertexAttribArray(0);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+        if (c == 0)
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, NULL);
+        else
+            glGetTextureSubImage(tex, 0, 0, 0, 0, 3, 1, 1, GL_RGBA, GL_FLOAT,
+                                 sizeof(tri), NULL);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        if (glGetError() != GL_NO_ERROR) fail |= 0x10 << c;
+
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        GLubyte px[4] = {0, 0, 0, 0};
+        glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        if (px[0] != 255) {
+            fprintf(stderr, "get_tex_image_pack_buffer: case %d got %u\n", c, px[0]);
+            fail |= 1 << c;
+        }
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+        while (glGetError() != GL_NO_ERROR) { }
+        if (c == 0)
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, (void *)(uintptr_t)16);
+        else
+            glGetTextureSubImage(tex, 0, 0, 0, 0, 3, 1, 1, GL_RGBA, GL_FLOAT,
+                                 sizeof(tri), (void *)(uintptr_t)16);
+        if (glGetError() != GL_INVALID_OPERATION) fail |= 0x100 << c;
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        glDisableVertexAttribArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glDeleteBuffers(1, &pbo);
+    }
+
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &rt);
+    glDeleteTextures(1, &tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "get_tex_image_pack_buffer: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* Stencil texturing: usampler2D reads (s, 0, 0, 1) from STENCIL_INDEX8 and
  * from depth-stencil textures in STENCIL_INDEX mode (GL 4.6 §8.23.1). */
 static int test_stencil_texturing(unsigned char *pixels, const char *out_path)
@@ -23320,6 +23409,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("get_tex_image_depth_types", test_get_tex_image_depth_types),
     SELF_CHECK_TEST("stencil_texturing", test_stencil_texturing),
     SELF_CHECK_TEST("get_tex_image_swap_bytes", test_get_tex_image_swap_bytes),
+    SELF_CHECK_TEST("get_tex_image_pack_buffer", test_get_tex_image_pack_buffer),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
     SELF_CHECK_TEST("depth_blit_orientation", test_depth_blit_orientation),

@@ -5620,6 +5620,62 @@ void mglCopyTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint
 
 #pragma mark get tex image
 
+/* With a PIXEL_PACK_BUFFER bound, `*pixels` is a byte offset into it;
+ * redirect it to the buffer's CPU storage. */
+static bool mglResolvePackBufferDst(GLMContext ctx, const char *api,
+                                    void **pixels, Buffer **pack_buffer_out)
+{
+    Buffer *ptr = STATE(buffers[_PIXEL_PACK_BUFFER]);
+    *pack_buffer_out = NULL;
+    if (!ptr) {
+        if (!*pixels) {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
+        return true;
+    }
+
+    if (ptr->mapped) {
+        GLboolean persistent_map =
+            ((ptr->storage_flags & GL_MAP_PERSISTENT_BIT) != 0u) &&
+            ((ptr->access_flags & GL_MAP_PERSISTENT_BIT) != 0u);
+        if (!persistent_map) {
+            fprintf(stderr, "MGL Error: %s: pixel pack buffer is mapped non-persistently\n", api);
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
+    }
+
+    if (ptr->size < 0) {
+        fprintf(stderr, "MGL Error: %s: pixel pack buffer has negative size\n", api);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+
+    if (!ptr->data.buffer_data) {
+        fprintf(stderr, "MGL Error: %s: pixel pack buffer has no CPU storage\n", api);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+
+    uintptr_t offset = (uintptr_t)*pixels;
+    if (offset > (uintptr_t)ptr->size) {
+        fprintf(stderr, "MGL Error: %s: pixel pack offset overflow off=%" PRIuPTR " size=%lld\n",
+                api, offset, (long long)ptr->size);
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+    *pixels = (void *)((uint8_t *)(uintptr_t)ptr->data.buffer_data + offset);
+    *pack_buffer_out = ptr;
+    return true;
+}
+
+/* Packing past the end of the bound pack buffer is INVALID_OPERATION
+ * (§8.11.4). */
+static bool mglCheckPackBufferRange(GLMContext ctx, const Buffer *pack_buffer,
+                                    uintptr_t offset, size_t bytes)
+{
+    if (pack_buffer && bytes > (size_t)pack_buffer->size - offset) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+    return true;
+}
+
 static void mglApplyPackSwapBytes(GLMContext ctx, uint8_t *dst, size_t pitch,
                                   size_t row_bytes, size_t rows, GLenum type)
 {
@@ -5663,51 +5719,9 @@ static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
             return;
     }
     Buffer *pack_buffer = NULL;
-    if (STATE(buffers[_PIXEL_PACK_BUFFER])) {
-        Buffer *ptr = STATE(buffers[_PIXEL_PACK_BUFFER]);
-
-        if (ptr->mapped) {
-            GLboolean persistent_map =
-                ((ptr->storage_flags & GL_MAP_PERSISTENT_BIT) != 0u) &&
-                ((ptr->access_flags & GL_MAP_PERSISTENT_BIT) != 0u);
-            if (!persistent_map) {
-                fprintf(stderr, "MGL Error: glGetTexImage: pixel pack buffer is mapped non-persistently\n");
-                ERROR_RETURN(GL_INVALID_OPERATION);
-                return;
-            }
-        }
-
-        if (ptr->size < 0) {
-            fprintf(stderr, "MGL Error: glGetTexImage: pixel pack buffer has negative size\n");
-            ERROR_RETURN(GL_INVALID_OPERATION);
-            return;
-        }
-
-        if (!ptr->data.buffer_data) {
-            fprintf(stderr, "MGL Error: glGetTexImage: pixel pack buffer has no CPU storage\n");
-            ERROR_RETURN(GL_INVALID_OPERATION);
-            return;
-        }
-        pack_buffer = ptr;
-    }
-    if (!STATE(buffers[_PIXEL_PACK_BUFFER]) && !pixels) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
+    uintptr_t pack_offset = (uintptr_t)pixels;
+    if (!mglResolvePackBufferDst(ctx, "glGetTexImage", &pixels, &pack_buffer)) {
         return;
-    }
-
-    /* If a PIXEL_PACK_BUFFER is bound, the `pixels` argument is actually a
-     * byte offset into that buffer. Redirect it to the real CPU backing
-     * storage, mirroring the mglReadPixels PBO path. */
-    if (pack_buffer) {
-        uintptr_t offset = (uintptr_t)pixels;
-        uint8_t *base = (uint8_t *)(uintptr_t)pack_buffer->data.buffer_data;
-        if (offset > (uintptr_t)pack_buffer->size) {
-            fprintf(stderr, "MGL Error: glGetTexImage: pixel pack offset overflow off=%" PRIuPTR " size=%lld\n",
-                    offset, (long long)pack_buffer->size);
-            ERROR_RETURN(GL_INVALID_VALUE);
-            return;
-        }
-        pixels = (void *)(base + offset);
     }
 
     if (!tex) {
@@ -5793,6 +5807,10 @@ static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
     ERROR_CHECK_RETURN(bufSize < 0 || pack_buffer ||
                        pack_layout.required_bytes <= (size_t)bufSize,
                        GL_INVALID_OPERATION);
+    if (!mglCheckPackBufferRange(ctx, pack_buffer, pack_offset,
+                                 pack_layout.required_bytes)) {
+        return;
+    }
 
     /* Deferred draws mark their render-target writes when flushed. */
     mglFlushPendingDraws(ctx);
@@ -6013,13 +6031,9 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
     if (width == 0 || height == 0 || depth == 0) {
         return;
     }
-    if (STATE(buffers[_PIXEL_PACK_BUFFER])) {
-        fprintf(stderr, "MGL WARNING: glGetTextureSubImage with GL_PIXEL_PACK_BUFFER is unsupported\n");
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-    if (!pixels) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
+    Buffer *pack_buffer = NULL;
+    uintptr_t pack_offset = (uintptr_t)pixels;
+    if (!mglResolvePackBufferDst(ctx, "glGetTextureSubImage", &pixels, &pack_buffer)) {
         return;
     }
     
@@ -6073,10 +6087,14 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
                                      &pack_layout)) {
         return;
     }
-    if (pack_layout.required_bytes > (size_t)bufSize ||
+    if ((!pack_buffer && pack_layout.required_bytes > (size_t)bufSize) ||
         pack_layout.dst_pitch > UINT_MAX ||
         pack_layout.dst_image_size > UINT_MAX) {
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (!mglCheckPackBufferRange(ctx, pack_buffer, pack_offset,
+                                 pack_layout.required_bytes)) {
         return;
     }
 
