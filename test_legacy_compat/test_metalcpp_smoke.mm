@@ -4472,7 +4472,7 @@ static int verifyTextureDataKinds(void) {
          MGL_RENDER_TEXTURE_DATA_KIND_DEPTH},
         {"Depth32Stencil8", MTLPixelFormatDepth32Float_Stencil8,
          MGL_RENDER_TEXTURE_DATA_KIND_DEPTH},
-        {"Stencil8", MTLPixelFormatStencil8, MGL_RENDER_TEXTURE_DATA_KIND_FLOAT},
+        {"Stencil8", MTLPixelFormatStencil8, MGL_RENDER_TEXTURE_DATA_KIND_UINT},
         {"RGBA8Unorm", MTLPixelFormatRGBA8Unorm,
          MGL_RENDER_TEXTURE_DATA_KIND_FLOAT},
         {"RGBA16Float", MTLPixelFormatRGBA16Float,
