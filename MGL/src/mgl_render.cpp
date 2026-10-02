@@ -3580,6 +3580,68 @@ int mglRenderBlitCopyDepthStencilAspectToBuffer(
     return 0;
 }
 
+int mglRenderBlitCopyStencilToBuffer(
+    void* blit_encoder,
+    void* source_texture,
+    uint64_t source_x,
+    uint64_t source_y,
+    uint64_t width,
+    uint64_t height,
+    void* destination_buffer,
+    uint64_t destination_offset,
+    uint64_t destination_bytes_per_row,
+    int packed_depth_stencil) {
+    MTL::BlitCommandEncoder* encoder =
+        static_cast<MTL::BlitCommandEncoder*>(blit_encoder);
+    MTL::Texture* source = static_cast<MTL::Texture*>(source_texture);
+    MTL::Buffer* destination =
+        static_cast<MTL::Buffer*>(destination_buffer);
+    if (!encoder || !source || !destination || width == 0 || height == 0 ||
+        destination_bytes_per_row == 0) {
+        return -1;
+    }
+    encoder->copyFromTexture(
+        source, 0, 0, MTL::Origin(source_x, source_y, 0),
+        MTL::Size(width, height, 1), destination,
+        static_cast<NS::UInteger>(destination_offset),
+        static_cast<NS::UInteger>(destination_bytes_per_row),
+        static_cast<NS::UInteger>(destination_bytes_per_row * height),
+        packed_depth_stencil ? MTL::BlitOptionStencilFromDepthStencil
+                             : MTL::BlitOptionNone);
+    return 0;
+}
+
+int mglRenderBlitCopyBufferToStencil(
+    void* blit_encoder,
+    void* source_buffer,
+    uint64_t source_offset,
+    uint64_t source_bytes_per_row,
+    uint64_t width,
+    uint64_t height,
+    void* destination_texture,
+    uint64_t destination_x,
+    uint64_t destination_y,
+    int packed_depth_stencil) {
+    MTL::BlitCommandEncoder* encoder =
+        static_cast<MTL::BlitCommandEncoder*>(blit_encoder);
+    MTL::Buffer* source = static_cast<MTL::Buffer*>(source_buffer);
+    MTL::Texture* destination =
+        static_cast<MTL::Texture*>(destination_texture);
+    if (!encoder || !source || !destination || width == 0 || height == 0 ||
+        source_bytes_per_row == 0) {
+        return -1;
+    }
+    encoder->copyFromBuffer(
+        source, static_cast<NS::UInteger>(source_offset),
+        static_cast<NS::UInteger>(source_bytes_per_row),
+        static_cast<NS::UInteger>(source_bytes_per_row * height),
+        MTL::Size(width, height, 1), destination, 0, 0,
+        MTL::Origin(destination_x, destination_y, 0),
+        packed_depth_stencil ? MTL::BlitOptionStencilFromDepthStencil
+                             : MTL::BlitOptionNone);
+    return 0;
+}
+
 
 
 

@@ -1597,6 +1597,30 @@ int mglRenderBlitCopyDepthStencilAspectToBuffer(
     uint64_t destination_offset,
     uint64_t destination_bytes_per_row,
     int stencil_aspect);
+/* Stencil (1 byte per texel) between level 0 / slice 0 of a Stencil8 or
+ * packed depth-stencil texture and a buffer. */
+int mglRenderBlitCopyStencilToBuffer(
+    void *blit_encoder,
+    void *source_texture,
+    uint64_t source_x,
+    uint64_t source_y,
+    uint64_t width,
+    uint64_t height,
+    void *destination_buffer,
+    uint64_t destination_offset,
+    uint64_t destination_bytes_per_row,
+    int packed_depth_stencil);
+int mglRenderBlitCopyBufferToStencil(
+    void *blit_encoder,
+    void *source_buffer,
+    uint64_t source_offset,
+    uint64_t source_bytes_per_row,
+    uint64_t width,
+    uint64_t height,
+    void *destination_texture,
+    uint64_t destination_x,
+    uint64_t destination_y,
+    int packed_depth_stencil);
 
 
 /* Unified value-state draw plan. Resources are borrowed and final draw

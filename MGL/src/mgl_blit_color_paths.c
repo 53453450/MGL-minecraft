@@ -589,6 +589,112 @@ bool mglBlitIntegerColorWithState(void *renderer, const MGLBlitColorState *st)
 
 /* --- -blitFramebufferDepthStencil:… -------------------------------------- */
 
+/* Source texel of destination texel d for a NEAREST blit (GL 4.6 §18.3.1). */
+static GLint mglBlitNearestSource(GLint d, GLint s0, GLint s1, GLint d0, GLint d1)
+{
+    return (GLint)floor((double)s0 + ((double)d + 0.5 - (double)d0) *
+                                         (double)(s1 - s0) / (double)(d1 - d0));
+}
+
+/* Valid destination range [*lo, *hi) along one axis: inside the destination
+ * rectangle, the clip range and the texture, and mapping to source texels
+ * inside the source texture.  The NEAREST mapping is monotonic, so the valid
+ * texels are contiguous. */
+static int mglBlitNearestRange(GLint s0, GLint s1, GLint d0, GLint d1,
+                               GLint clip_lo, GLint clip_hi, GLint src_size,
+                               GLint dst_size, GLint *lo, GLint *hi)
+{
+    GLint a = MAX(MAX(MIN(d0, d1), clip_lo), 0);
+    GLint b = MIN(MIN(MAX(d0, d1), clip_hi), dst_size);
+    while (a < b) {
+        GLint s = mglBlitNearestSource(a, s0, s1, d0, d1);
+        if (s >= 0 && s < src_size) break;
+        a++;
+    }
+    while (b > a) {
+        GLint s = mglBlitNearestSource(b - 1, s0, s1, d0, d1);
+        if (s >= 0 && s < src_size) break;
+        b--;
+    }
+    *lo = a;
+    *hi = b;
+    return a < b;
+}
+
+/* NEAREST-scaled stencil blit between single-sampled level-0 2D textures in
+ * render-target (Y-flipped) storage.  The render-pass path writes depth only;
+ * stencil goes through a staging buffer of (destination columns x source
+ * rows): one copy per destination column gathers its source column, then one
+ * copy per destination row writes its source row back. */
+static void mglBlitScaledStencil(void *renderer, MGLRendererStateAreas *areas,
+                                 void *src, void *dst,
+                                 const MGLRenderTextureInfo *src_info,
+                                 const MGLRenderTextureInfo *dst_info,
+                                 GLint src_x0, GLint src_y0, GLint src_x1,
+                                 GLint src_y1, GLint dst_x0, GLint dst_y0,
+                                 GLint dst_x1, GLint dst_y1, int scissor,
+                                 const GLint *scissor_box)
+{
+    const GLint src_w = (GLint)src_info->width, src_h = (GLint)src_info->height;
+    const GLint dst_w = (GLint)dst_info->width, dst_h = (GLint)dst_info->height;
+    const GLint clip_x0 = scissor ? scissor_box[0] : 0;
+    const GLint clip_y0 = scissor ? scissor_box[1] : 0;
+    const GLint clip_x1 = scissor ? scissor_box[0] + scissor_box[2] : dst_w;
+    const GLint clip_y1 = scissor ? scissor_box[1] + scissor_box[3] : dst_h;
+    GLint x_lo, x_hi, y_lo, y_hi;
+    if (!mglBlitNearestRange(src_x0, src_x1, dst_x0, dst_x1, clip_x0, clip_x1,
+                             src_w, dst_w, &x_lo, &x_hi) ||
+        !mglBlitNearestRange(src_y0, src_y1, dst_y0, dst_y1, clip_y0, clip_y1,
+                             src_h, dst_h, &y_lo, &y_hi)) {
+        return;
+    }
+    GLint sy_a = mglBlitNearestSource(y_lo, src_y0, src_y1, dst_y0, dst_y1);
+    GLint sy_b = mglBlitNearestSource(y_hi - 1, src_y0, src_y1, dst_y0, dst_y1);
+    const GLint sy_lo = MIN(sy_a, sy_b), sy_hi = MAX(sy_a, sy_b) + 1;
+    const uint64_t cols = (uint64_t)(x_hi - x_lo);
+    const uint64_t rows = (uint64_t)(sy_hi - sy_lo);
+    const int src_packed =
+        mglRenderPixelFormatIsPackedDepthStencil((uint32_t)src_info->pixel_format);
+    const int dst_packed =
+        mglRenderPixelFormatIsPackedDepthStencil((uint32_t)dst_info->pixel_format);
+
+    void *staging = NULL;
+    if (mglRenderCreateBuffer(cols * rows, 0u, "mglBlitScaledStencil",
+                              &staging) != 0 || !staging) {
+        return;
+    }
+    mglBcEndRenderEncodingPort(renderer);
+    if (mglRenderPassEnsureWritableCommandBufferLocked(
+            renderer, "mtlBlitFramebuffer.stencilScaled")) {
+        /* Buffer row r holds GL source row sy_hi - 1 - r. */
+        void *gather = mglRenderCreateBlitEncoderBorrowed(
+            mglBcCommandBufferOwner(areas));
+        if (gather) {
+            for (GLint x = x_lo; x < x_hi; x++) {
+                GLint sx = mglBlitNearestSource(x, src_x0, src_x1, dst_x0, dst_x1);
+                (void)mglRenderBlitCopyStencilToBuffer(
+                    gather, src, (uint64_t)sx, (uint64_t)(src_h - sy_hi), 1u,
+                    rows, staging, (uint64_t)(x - x_lo), cols, src_packed);
+            }
+            mglBcEndBlitEncoder(gather);
+        }
+        void *scatter = gather ? mglRenderCreateBlitEncoderBorrowed(
+                                     mglBcCommandBufferOwner(areas))
+                               : NULL;
+        if (scatter) {
+            for (GLint y = y_lo; y < y_hi; y++) {
+                GLint sy = mglBlitNearestSource(y, src_y0, src_y1, dst_y0, dst_y1);
+                (void)mglRenderBlitCopyBufferToStencil(
+                    scatter, staging, (uint64_t)(sy_hi - 1 - sy) * cols, cols,
+                    cols, 1u, dst, (uint64_t)x_lo, (uint64_t)(dst_h - 1 - y),
+                    dst_packed);
+            }
+            mglBcEndBlitEncoder(scatter);
+        }
+    }
+    mglReleaseMetalObjNoNull(staging);
+}
+
 GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                                GLint src_y0, GLint src_x1, GLint src_y1,
                                GLint dst_x0, GLint dst_y0, GLint dst_x1,
@@ -828,9 +934,12 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                         }
 
                         void *depth_pipeline =
-                            mglBlitScaledDepthPipelineForPixelFormat(
-                                renderer, mglBcTextureInfo(depth_draw_texture)
-                                              .pixel_format);
+                            ds_in.has_depth
+                                ? mglBlitScaledDepthPipelineForPixelFormat(
+                                      renderer,
+                                      mglBcTextureInfo(depth_draw_texture)
+                                          .pixel_format)
+                                : NULL;
                         void *sampler = mglBlitScaledSamplerForFilter(
                             renderer, (GLuint)mglRenderNearestFilter());
                         if (depth_pipeline && sampler) {
@@ -980,7 +1089,7 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                                         "mgl_blit_color_paths.c", __LINE__);
                                 }
                             }
-                        } else {
+                        } else if (ds_in.has_depth) {
                             static uint64_t s_scaled_depth_blit_skip_count = 0;
                             uint64_t hit = ++s_scaled_depth_blit_skip_count;
                             if (hit <= 32ull || (hit % 512ull) == 0ull) {
@@ -991,6 +1100,29 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                                         depth_pipeline, sampler,
                                         (unsigned long long)hit);
                             }
+                        }
+
+                        /* With depth in the mask the plan was built on the
+                         * depth attachments; reuse it for stencil only when
+                         * they are the same packed textures. */
+                        if (ds_in.has_stencil &&
+                            (!ds_in.has_depth ||
+                             (mglRendererAttachmentTextureFor(
+                                  glm_ctx, &depth_read_fbo->stencil) ==
+                                  depth_read_object &&
+                              mglRendererAttachmentTextureFor(
+                                  glm_ctx, &depth_draw_fbo->stencil) ==
+                                  depth_draw_object))) {
+                            mglBlitScaledStencil(
+                                renderer, &areas, depth_read_texture,
+                                depth_draw_texture, &ds_read_info,
+                                &ds_draw_info, src_x0, src_y0, src_x1, src_y1,
+                                dst_x0, dst_y0, dst_x1, dst_y1,
+                                glm_ctx->active_state->caps.scissor_test ? 1 : 0,
+                                glm_ctx->active_state->var.scissor_box);
+                            mglMarkTextureLevelRenderTargetWrittenImpl(
+                                depth_draw_object, depth_draw_attachment->level,
+                                "mgl_blit_color_paths.c", __LINE__);
                         }
                     }
                 }

@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 157
+#define MAX_TESTS 158
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19068,6 +19068,138 @@ static int test_copy_tex_errors(unsigned char *pixels, const char *out_path)
     return fail ? 1 : 0;
 }
 
+/* Scaled NEAREST BlitFramebuffer of draw-written stencil (GL 4.6 §18.3.1),
+ * checked by ReadPixels and by a stencil-tested draw; a stencil-only blit
+ * leaves the destination depth alone. */
+static int test_blit_scaled_stencil(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint prog = link_program(
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n",
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(1.0, 0.0, 0.0, 1.0); }\n");
+    if (!prog) return 2;
+    GLuint vao = 0, rb[4] = {0, 0, 0, 0}, fbo[2] = {0, 0};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glUseProgram(prog);
+    glGenRenderbuffers(4, rb);
+    glGenFramebuffers(2, fbo);
+    for (int i = 0; i < 2; i++) {
+        const int size = i ? 8 : 4;
+        glBindRenderbuffer(GL_RENDERBUFFER, rb[i * 2]);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, size, size);
+        glBindRenderbuffer(GL_RENDERBUFFER, rb[i * 2 + 1]);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, size, size);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo[i]);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                  GL_RENDERBUFFER, rb[i * 2]);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                                  GL_RENDERBUFFER, rb[i * 2 + 1]);
+    }
+
+    /* Source stencil: 5 in columns 0..1 and 7 in column 3 (rows 2..3 only),
+     * written by draws. */
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo[0]);
+    glViewport(0, 0, 4, 4);
+    glClearDepth(0.25);
+    glClearStencil(0);
+    glClear(GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    glEnable(GL_STENCIL_TEST);
+    glEnable(GL_SCISSOR_TEST);
+    glStencilFunc(GL_ALWAYS, 5, 0xff);
+    glStencilOp(GL_REPLACE, GL_REPLACE, GL_REPLACE);
+    glScissor(0, 0, 2, 4);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glStencilFunc(GL_ALWAYS, 7, 0xff);
+    glScissor(3, 2, 1, 2);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
+
+    int fail = 0;
+    static GLubyte st[8 * 8];
+    static GLfloat dz[8 * 8];
+    static GLubyte rgba[8 * 8 * 4];
+    for (int c = 0; c < 3; c++) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo[1]);
+        glViewport(0, 0, 8, 8);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClearDepth(0.75);
+        glClearStencil(1);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[0]);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[1]);
+        /* 0: 2x stencil only; 1: 2x mirrored in x, depth + stencil;
+         * 2: minify the top half 4x2 -> 2x1 at (5, 6). */
+        if (c == 0)
+            glBlitFramebuffer(0, 0, 4, 4, 0, 0, 8, 8, GL_STENCIL_BUFFER_BIT, GL_NEAREST);
+        else if (c == 1)
+            glBlitFramebuffer(0, 0, 4, 4, 8, 0, 0, 8,
+                              GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT, GL_NEAREST);
+        else
+            glBlitFramebuffer(0, 2, 4, 4, 5, 6, 7, 7, GL_STENCIL_BUFFER_BIT, GL_NEAREST);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo[1]);
+        glReadPixels(0, 0, 8, 8, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, st);
+        glReadPixels(0, 0, 8, 8, GL_DEPTH_COMPONENT, GL_FLOAT, dz);
+        glEnable(GL_STENCIL_TEST);
+        glStencilFunc(GL_EQUAL, 5, 0xff);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDisable(GL_STENCIL_TEST);
+        glReadPixels(0, 0, 8, 8, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+
+        int bad_s = 0, bad_d = 0, bad_c = 0;
+        for (int y = 0; y < 8; y++) {
+            for (int x = 0; x < 8; x++) {
+                int sx = c == 1 ? (7 - x) / 2 : x / 2;
+                int sy = y / 2;
+                GLubyte want = (sx < 2) ? 5 : (sx == 3 && sy >= 2) ? 7 : 0;
+                if (c == 2) {
+                    want = 1;
+                    if (y == 6 && x == 5) want = 5;
+                    if (y == 6 && x == 6) want = 7;
+                }
+                const float want_d = c == 1 ? 0.25f : 0.75f;
+                if (st[y * 8 + x] != want) bad_s++;
+                const float dd = dz[y * 8 + x] - want_d;
+                if (dd > 0.01f || dd < -0.01f) bad_d++;
+                if ((rgba[(y * 8 + x) * 4] > 127) != (want == 5)) bad_c++;
+            }
+        }
+        if (bad_s || bad_d || bad_c)
+            fprintf(stderr, "blit_scaled_stencil: case %d bad stencil=%d depth=%d draw=%d "
+                    "row0=%u,%u,%u,%u,%u,%u,%u,%u\n", c, bad_s, bad_d, bad_c,
+                    st[0], st[1], st[2], st[3], st[4], st[5], st[6], st[7]);
+        if (bad_s) fail |= 1 << (c * 3);
+        if (bad_d) fail |= 2 << (c * 3);
+        if (bad_c) fail |= 4 << (c * 3);
+    }
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) {
+        fprintf(stderr, "blit_scaled_stencil: GL error 0x%x\n", err);
+        fail |= 0x1000;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(2, fbo);
+    glDeleteRenderbuffers(4, rb);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    glClearDepth(1.0);
+    glClearStencil(0);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "blit_scaled_stencil: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* Stencil texturing: usampler2D reads (s, 0, 0, 1) from STENCIL_INDEX8 and
  * from depth-stencil textures in STENCIL_INDEX mode (GL 4.6 §8.23.1). */
 static int test_stencil_texturing(unsigned char *pixels, const char *out_path)
@@ -23613,6 +23745,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("read_pixels_framebuffer_errors", test_read_pixels_framebuffer_errors),
     SELF_CHECK_TEST("error_flag_dedup", test_error_flag_dedup),
     SELF_CHECK_TEST("copy_tex_errors", test_copy_tex_errors),
+    SELF_CHECK_TEST("blit_scaled_stencil", test_blit_scaled_stencil),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
     SELF_CHECK_TEST("depth_blit_orientation", test_depth_blit_orientation),
