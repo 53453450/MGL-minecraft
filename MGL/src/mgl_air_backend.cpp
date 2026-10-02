@@ -13578,7 +13578,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     uint32_t mArgSlot =
         (isCapture ? 1 : 0) +
         ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) + ssboCount +
-        uboCount + (needsBufferSizeBuffer ? 1 : 0) + 2 * texCount + imageCount;
+        uboCount + acCount + (needsBufferSizeBuffer ? 1 : 0) + 2 * texCount +
+        imageCount;
     if (isTCS) mArgSlot += 5;
     else if (isGS) mArgSlot += 8;  /* input/output/counts/gather/params/xfb/xfb-meta/xfb-vis */
     else if (isTESCompute) mArgSlot += 8; /* stage_in/factors/patches/out/indirect/gather/params/xfb */

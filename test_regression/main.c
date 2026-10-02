@@ -19565,9 +19565,29 @@ static int test_xfb_atomic_counters(unsigned char *pixels, const char *out_path)
         "  o_inc = i_zero + atomicCounterIncrement(ac_inc);\n"
         "  o_dec = i_zero + atomicCounterDecrement(ac_dec);\n"
         "}\n";
+    static const char *vs_pass =
+        "#version 420 core\n"
+        "layout(location = 0) in uint i_zero;\n"
+        "out uint vs_zero;\n"
+        "void main() { vs_zero = i_zero; }\n";
+    static const char *gs_one =
+        "#version 420 core\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices = 1) out;\n"
+        "in uint vs_zero[];\n"
+        "out uint o_inc;\n"
+        "out uint o_dec;\n"
+        "layout(binding = 0, offset = 8) uniform atomic_uint ac_inc;\n"
+        "layout(binding = 0, offset = 16) uniform atomic_uint ac_dec;\n"
+        "void main() {\n"
+        "  o_inc = vs_zero[0] + atomicCounterIncrement(ac_inc);\n"
+        "  o_dec = vs_zero[0] + atomicCounterDecrement(ac_dec);\n"
+        "  EmitVertex();\n"
+        "}\n";
     int fail = 0;
     fail |= xfb_atomic_counter_case("VS two buffers", vs_two, NULL, 0);
     fail |= xfb_atomic_counter_case("VS one buffer", vs_one, NULL, 1);
+    fail |= xfb_atomic_counter_case("GS one buffer", vs_pass, gs_one, 1);
     return fail;
 }
 
