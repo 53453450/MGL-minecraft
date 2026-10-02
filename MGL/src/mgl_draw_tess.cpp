@@ -2761,6 +2761,9 @@ extern "C" void *mglTessRunVertexCaptureIndexed(
         ops->encoder_owner(ops->renderer), drawIndexBuffer, (uint32_t)mtlIndexType,
         drawIndexOffset, (uint32_t)count, (int32_t)baseVertex,
         (uint32_t)instanceCount, baseInstance);
+    if (sanitizedIndexBuffer != index_mtl) {
+        CFRelease(sanitizedIndexBuffer);
+    }
     ops->mark_cb_has_work(ops->renderer);
     ops->end_render_encoding(ops->renderer);
     ops->set_capture_active(ops->renderer, 0);
@@ -3206,6 +3209,7 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
                         indexOffsetBytes, count, baseVertex, instanceCount,
                         baseInstance, gatherMaxIndex, &captureOffset);
                     if (!capture) {
+                        CFRelease(gatherBuf);
                         nativeTES = 0;
                     } else {
                         ops->set_tess_vertex_capture(
