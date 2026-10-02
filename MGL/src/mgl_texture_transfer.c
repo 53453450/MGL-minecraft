@@ -62,6 +62,42 @@ extern void *getBufferData(GLMContext ctx, Buffer *ptr);
 extern GLsizei mglSafeMaxTextureSize(GLMContext ctx);
 extern size_t mglPixelTypeDatumBytes(GLenum type);
 
+/* Depth-only formats are stored as Depth16Unorm (2 bytes) or Depth32Float
+ * (4 bytes); see sizeForInternalFormat. */
+static bool mglIsStoredDepthOnly(GLenum internalformat, GLenum format,
+                                 size_t storage_pixel_size)
+{
+    return format == GL_DEPTH_COMPONENT &&
+           mglInternalFormatIsDepthStencil(internalformat) &&
+           !mglInternalFormatIsCombinedDepthStencil(internalformat) &&
+           (storage_pixel_size == 2u || storage_pixel_size == 4u);
+}
+
+static double mglLoadStoredDepth(const uint8_t *pixel, size_t storage_pixel_size)
+{
+    if (storage_pixel_size == 2u) {
+        uint16_t v;
+        memcpy(&v, pixel, sizeof(v));
+        return (double)v / 65535.0;
+    }
+    GLfloat v;
+    memcpy(&v, pixel, sizeof(v));
+    return (double)v;
+}
+
+/* Depth values are clamped to [0, 1] on specification (GL 4.6 §8.5). */
+static void mglStoreDepth(uint8_t *pixel, size_t storage_pixel_size, double d)
+{
+    d = d < 0.0 ? 0.0 : (d > 1.0 ? 1.0 : d);
+    if (storage_pixel_size == 2u) {
+        uint16_t v = (uint16_t)(d * 65535.0 + 0.5);
+        memcpy(pixel, &v, sizeof(v));
+    } else {
+        GLfloat v = (GLfloat)d;
+        memcpy(pixel, &v, sizeof(v));
+    }
+}
+
 bool mglComputeTexturePackLayout(GLMContext ctx,
                                         GLsizei width,
                                         GLsizei height,
@@ -232,13 +268,9 @@ bool mglConvertTextureRectToCPU(GLenum internalformat,
         return false;
     }
 
-    /* Depth-only formats are stored as Depth16Unorm (2 bytes) or Depth32Float
-     * (4 bytes).  Normalized integer types are converted to floating point
-     * and every depth value is clamped to [0, 1] (GL 4.6 §8.4.4.3, §8.5). */
-    if (format == GL_DEPTH_COMPONENT &&
-        mglInternalFormatIsDepthStencil(internalformat) &&
-        !mglInternalFormatIsCombinedDepthStencil(internalformat) &&
-        (storage_pixel_size == 2u || storage_pixel_size == 4u)) {
+    /* Normalized integer depth is converted to floating point and clamped
+     * (GL 4.6 §8.4.4.3, §8.5). */
+    if (mglIsStoredDepthOnly(internalformat, format, storage_pixel_size)) {
         size_t dst_img_size = 0u;
         if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &dst_img_size)) {
             return false;
@@ -266,16 +298,9 @@ bool mglConvertTextureRectToCPU(GLenum internalformat,
                         mglSwapPixelBytes(swapped, src_pixel_size, elem_size);
                         read_pixel = swapped;
                     }
-                    double d = mglReadExternalComponent(read_pixel, type, 0, false, 0u);
-                    d = d < 0.0 ? 0.0 : (d > 1.0 ? 1.0 : d);
-                    uint8_t *dst_pixel = dst_row + ((size_t)x * storage_pixel_size);
-                    if (storage_pixel_size == 2u) {
-                        uint16_t v = (uint16_t)(d * 65535.0 + 0.5);
-                        memcpy(dst_pixel, &v, sizeof(v));
-                    } else {
-                        GLfloat v = (GLfloat)d;
-                        memcpy(dst_pixel, &v, sizeof(v));
-                    }
+                    mglStoreDepth(dst_row + ((size_t)x * storage_pixel_size),
+                                  storage_pixel_size,
+                                  mglReadExternalComponent(read_pixel, type, 0, false, 0u));
                 }
             }
         }
@@ -640,6 +665,30 @@ bool mglFillTextureRectCPU(GLenum internalformat,
         return false;
     }
 
+    if (mglIsStoredDepthOnly(internalformat, format, storage_pixel_size)) {
+        uint8_t clear_pixel[4];
+        mglStoreDepth(clear_pixel, storage_pixel_size,
+                      data ? mglReadExternalComponent(data, type, 0, false, 0u) : 0.0);
+        size_t image_pitch = 0u;
+        if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &image_pitch)) {
+            return false;
+        }
+        uint8_t *base = (uint8_t *)lvl->data +
+                        ((size_t)zoffset * image_pitch) +
+                        ((size_t)yoffset * lvl->pitch) +
+                        ((size_t)xoffset * storage_pixel_size);
+        for (GLsizei z = 0; z < depth; z++) {
+            uint8_t *slice = base + ((size_t)z * image_pitch);
+            for (GLsizei y = 0; y < height; y++) {
+                uint8_t *row = slice + ((size_t)y * lvl->pitch);
+                for (GLsizei x = 0; x < width; x++) {
+                    memcpy(row + ((size_t)x * storage_pixel_size), clear_pixel, storage_pixel_size);
+                }
+            }
+        }
+        return true;
+    }
+
     /* Fast path for identity formats: the source pixel has the same byte
      * layout as the storage, so we can skip the per-component double
      * conversion and use the source data directly as the clear value. */
@@ -841,6 +890,40 @@ bool mglCopyTextureRectFromCPU(GLenum internalformat,
         (GLuint)height > lvl->height - (GLuint)yoffset ||
         (GLuint)depth > lvl->depth - (GLuint)zoffset) {
         return false;
+    }
+
+    if (mglIsStoredDepthOnly(internalformat, format, storage_pixel_size)) {
+        size_t src_img_size = 0u;
+        size_t src_base_off = 0u;
+        size_t byte_span_tmp = 0u;
+        if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &src_img_size) ||
+            !mglTextureRectByteRange(lvl, storage_pixel_size,
+                                     (size_t)xoffset, (size_t)yoffset, (size_t)zoffset,
+                                     (size_t)width, (size_t)height, (size_t)depth,
+                                     &src_base_off, &byte_span_tmp)) {
+            return false;
+        }
+        const uint8_t *src_base = (const uint8_t *)lvl->data + src_base_off;
+        uint8_t *dst_base = (uint8_t *)pixels + pack_layout->skip_offset_bytes;
+        size_t elem_size = mglPixelTypeDatumBytes(type);
+        for (GLsizei z = 0; z < depth; z++) {
+            const uint8_t *src_slice = src_base + ((size_t)z * src_img_size);
+            uint8_t *dst_slice = dst_base + ((size_t)z * pack_layout->dst_image_size);
+            for (GLsizei y = 0; y < height; y++) {
+                const uint8_t *src_row = src_slice + ((size_t)y * lvl->pitch);
+                uint8_t *dst_row = dst_slice + ((size_t)y * pack_layout->dst_pitch);
+                for (GLsizei x = 0; x < width; x++) {
+                    uint8_t *dst_pixel = dst_row + ((size_t)x * pack_layout->pixel_size);
+                    mglWriteExternalComponent(dst_pixel, type, 0, false,
+                                              mglLoadStoredDepth(src_row + ((size_t)x * storage_pixel_size),
+                                                                 storage_pixel_size));
+                    if (swap_bytes && elem_size > 1u) {
+                        mglSwapPixelBytes(dst_pixel, pack_layout->pixel_size, elem_size);
+                    }
+                }
+            }
+        }
+        return true;
     }
 
     /* Fast path: when the external format/type produces the exact same bit
