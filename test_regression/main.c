@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 171
+#define MAX_TESTS 172
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19073,6 +19073,91 @@ static int test_read_pixels_framebuffer_errors(unsigned char *pixels, const char
     return fail ? 1 : 0;
 }
 
+/* Draw* / Clear* on an incomplete draw framebuffer are
+ * INVALID_FRAMEBUFFER_OPERATION (GL 4.6 §9.4.4 / §10.4 / §17.4.3). */
+static int test_draw_clear_incomplete_fbo(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint fbo = 0, vao = 0, cmd_buf = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+    if (glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "draw_clear_incomplete_fbo: empty FBO unexpectedly complete\n");
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fbo);
+        return 1;
+    }
+    while (glGetError() != GL_NO_ERROR) { }
+
+    int fail = 0;
+    glClear(GL_COLOR_BUFFER_BIT);
+    if (glGetError() != GL_INVALID_FRAMEBUFFER_OPERATION) {
+        fprintf(stderr, "draw_clear_incomplete_fbo: Clear expected IFO\n");
+        fail |= 0x1;
+    }
+    while (glGetError() != GL_NO_ERROR) { }
+
+    const GLfloat clear_color[4] = {0.f, 0.f, 0.f, 1.f};
+    glClearBufferfv(GL_COLOR, 0, clear_color);
+    if (glGetError() != GL_INVALID_FRAMEBUFFER_OPERATION) {
+        fprintf(stderr, "draw_clear_incomplete_fbo: ClearBufferfv expected IFO\n");
+        fail |= 0x2;
+    }
+    while (glGetError() != GL_NO_ERROR) { }
+
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    if (glGetError() != GL_INVALID_FRAMEBUFFER_OPERATION) {
+        fprintf(stderr, "draw_clear_incomplete_fbo: DrawArrays expected IFO\n");
+        fail |= 0x4;
+    }
+    while (glGetError() != GL_NO_ERROR) { }
+
+    {
+        const GLint first = 0;
+        const GLsizei count = 3;
+        glMultiDrawArrays(GL_TRIANGLES, &first, &count, 1);
+        if (glGetError() != GL_INVALID_FRAMEBUFFER_OPERATION) {
+            fprintf(stderr, "draw_clear_incomplete_fbo: MultiDrawArrays expected IFO\n");
+            fail |= 0x8;
+        }
+        while (glGetError() != GL_NO_ERROR) { }
+    }
+
+    {
+        /* DrawArraysIndirectCommand: count, instanceCount, first, baseInstance */
+        const GLuint cmd[4] = {3u, 1u, 0u, 0u};
+        glGenBuffers(1, &cmd_buf);
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmd_buf);
+        glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(cmd), cmd, GL_STATIC_DRAW);
+        glDrawArraysIndirect(GL_TRIANGLES, (const void *)0);
+        if (glGetError() != GL_INVALID_FRAMEBUFFER_OPERATION) {
+            fprintf(stderr, "draw_clear_incomplete_fbo: DrawArraysIndirect expected IFO\n");
+            fail |= 0x10;
+        }
+        while (glGetError() != GL_NO_ERROR) { }
+        glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+    }
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "draw_clear_incomplete_fbo: default FBO Clear unexpected error\n");
+        fail |= 0x20;
+    }
+    while (glGetError() != GL_NO_ERROR) { }
+
+    glBindVertexArray(0);
+    if (cmd_buf) glDeleteBuffers(1, &cmd_buf);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    glDeleteFramebuffers(1, &fbo);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "draw_clear_incomplete_fbo: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* CopyTex* read-framebuffer, level and target errors (GL 4.6 §8.6) and the
  * GetCompressedTextureImage level error (§8.11.4). */
 static int test_copy_tex_errors(unsigned char *pixels, const char *out_path)
@@ -24931,6 +25016,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("get_tex_image_swap_bytes", test_get_tex_image_swap_bytes),
     SELF_CHECK_TEST("get_tex_image_pack_buffer", test_get_tex_image_pack_buffer),
     SELF_CHECK_TEST("read_pixels_framebuffer_errors", test_read_pixels_framebuffer_errors),
+    SELF_CHECK_TEST("draw_clear_incomplete_fbo", test_draw_clear_incomplete_fbo),
     SELF_CHECK_TEST("error_flag_dedup", test_error_flag_dedup),
     SELF_CHECK_TEST("copy_tex_errors", test_copy_tex_errors),
     SELF_CHECK_TEST("copy_texture_sub_image3d_cube", test_copy_texture_sub_image3d_cube),

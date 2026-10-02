@@ -638,6 +638,8 @@ void mglClear(GLMContext ctx, GLbitfield mask)
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
+    if (!mglValidateDrawFramebuffer(ctx))
+        return;
 
     // glClear mutates framebuffer contents, so deferred draws must land first.
     mglFlushCommandBuffer(ctx);
@@ -868,6 +870,8 @@ void mglClearDepth(GLMContext ctx, GLdouble depth)
  * inside the scissor box and through that buffer's write mask (§17.4.3.1). */
 void mglClearBufferColor(GLMContext ctx, const MGLRendererClearValues *values)
 {
+    if (!mglValidateDrawFramebuffer(ctx))
+        return;
     const GLint slot = values->draw_buffer;
     if (!mglColorMaskAllowsAnyWrite(ctx, (GLuint)slot))
         return;

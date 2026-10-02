@@ -285,6 +285,8 @@ void mglSetViewportToFramebufferSize(GLMContext ctx, Framebuffer *fbo);
 void mglAssignDrawFramebuffer(GLMContext ctx, Framebuffer *fbo);
 Texture *mglAttachmentBackingTexture(const FBOAttachment *a);
 bool mglValidateReadFramebuffer(GLMContext ctx);
+/* GL 4.6 §9.4.4 / §10.4 / §17.4.3: draw/clear on an incomplete draw FBO. */
+bool mglValidateDrawFramebuffer(GLMContext ctx);
 bool mglImplementationColorRead(GLMContext ctx, GLenum pname, GLint *value);
 GLboolean mglGetCapState(GLMContext ctx, GLenum cap, GLboolean *enabled);
 

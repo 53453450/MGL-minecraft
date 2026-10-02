@@ -3319,6 +3319,16 @@ bool mglValidateReadFramebuffer(GLMContext ctx)
     return true;
 }
 
+/* GL 4.6 §9.4.4 / §10.4 / §17.4.3: Draw* and Clear* on the draw framebuffer. */
+bool mglValidateDrawFramebuffer(GLMContext ctx)
+{
+    if (!STATE(framebuffer))
+        return true;
+    if (mglCheckFramebufferStatus(ctx, GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        ERROR_RETURN_VALUE(GL_INVALID_FRAMEBUFFER_OPERATION, false);
+    return true;
+}
+
 /* GL 4.6 §18.2.2: preferred ReadPixels format/type for the selected read
  * buffer of the read framebuffer. */
 bool mglImplementationColorRead(GLMContext ctx, GLenum pname, GLint *value)

@@ -1520,6 +1520,10 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
         if (cmd->instanceCount == 0) return;
     }
 
+    /* S2.5: draw framebuffer completeness (GL 4.6 §9.4.4 / §10.4). */
+    if (!mglValidateDrawFramebuffer(ctx))
+        return;
+
     /* S3+S4: element-specific validation (indexed only) */
     if (indexed) {
         if (!check_element_type(cmd->indexType)) {
@@ -1970,6 +1974,13 @@ void mglDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirect)
         return;
     }
 
+    /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
+    if (!mglValidateDrawFramebuffer(ctx)) {
+        mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=incomplete_fbo program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
+
     if(validate_vao(ctx, false) == false)
     {
         mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=validate_vao program=%u",
@@ -2029,6 +2040,13 @@ void mglDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, const voi
 
     if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
         mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=no_element_buffer program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
+
+    /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
+    if (!mglValidateDrawFramebuffer(ctx)) {
+        mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=incomplete_fbo program=%u",
                             (unsigned)mglTraceDrawProgram(ctx));
         return;
     }
@@ -2118,6 +2136,10 @@ void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const G
         ERROR_CHECK_RETURN(count[i] >= 0, GL_INVALID_VALUE);
     }
 
+    /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
+    if (!mglValidateDrawFramebuffer(ctx))
+        return;
+
     if(validate_vao(ctx, false) == false)
     {
         ERROR_RETURN(GL_INVALID_OPERATION);
@@ -2168,6 +2190,10 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
     }
 
     ERROR_CHECK_RETURN(check_element_type(type), GL_INVALID_ENUM);
+
+    /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
+    if (!mglValidateDrawFramebuffer(ctx))
+        return;
 
     if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
         return;
@@ -2227,6 +2253,10 @@ void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *
     }
 
     ERROR_CHECK_RETURN(check_element_type(type), GL_INVALID_ENUM);
+
+    /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
+    if (!mglValidateDrawFramebuffer(ctx))
+        return;
 
     if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
         return;
@@ -2307,6 +2337,13 @@ void mglMultiDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirec
         return;
     }
 
+    /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
+    if (!mglValidateDrawFramebuffer(ctx)) {
+        mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=incomplete_fbo program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
+
     if(validate_vao(ctx, false) == false)
     {
         mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=validate_vao program=%u",
@@ -2375,6 +2412,13 @@ void mglMultiDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, cons
         mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=bad_type type=0x%x program=%u",
                             (unsigned)type, (unsigned)mglTraceDrawProgram(ctx));
         ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
+    if (!mglValidateDrawFramebuffer(ctx)) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=incomplete_fbo program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
         return;
     }
 
