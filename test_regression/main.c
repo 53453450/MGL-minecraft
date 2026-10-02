@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 162
+#define MAX_TESTS 163
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19225,6 +19225,40 @@ static int test_depth_integer_upload(unsigned char *pixels, const char *out_path
 
 /* Depth-only GetTexImage of uploaded data and ClearTexImage convert between
  * the requested type and the stored depth (GL 4.6 §8.11.4, §8.21, §8.5). */
+static int test_generic_buffer_binding_queries(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const GLenum targets[][2] = {
+        { GL_COPY_READ_BUFFER, GL_COPY_READ_BUFFER_BINDING },
+        { GL_COPY_WRITE_BUFFER, GL_COPY_WRITE_BUFFER_BINDING },
+        { GL_ATOMIC_COUNTER_BUFFER, GL_ATOMIC_COUNTER_BUFFER_BINDING },
+        { GL_TEXTURE_BUFFER, GL_TEXTURE_BUFFER_BINDING },
+        { GL_QUERY_BUFFER, GL_QUERY_BUFFER_BINDING },
+        { GL_PARAMETER_BUFFER, GL_PARAMETER_BUFFER_BINDING },
+    };
+    enum { T = sizeof(targets) / sizeof(targets[0]) };
+    GLuint bufs[T];
+    glGenBuffers(T, bufs);
+    int fail = 0;
+    for (int i = 0; i < T; i++) {
+        glBindBuffer(targets[i][0], bufs[i]);
+        GLint bound = -1;
+        glGetIntegerv(targets[i][1], &bound);
+        glBindBuffer(targets[i][0], 0);
+        GLint unbound = -1;
+        glGetIntegerv(targets[i][1], &unbound);
+        if (bound != (GLint)bufs[i] || unbound != 0) {
+            fprintf(stderr, "generic_buffer_binding_queries: 0x%04x bound %d want %u, unbound %d\n",
+                    targets[i][1], bound, bufs[i], unbound);
+            fail = 1;
+        }
+    }
+    glDeleteBuffers(T, bufs);
+    if (glGetError() != GL_NO_ERROR) fail = 1;
+    return fail;
+}
+
 static int test_ms_integer_texel_fetch(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -24093,6 +24127,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("depth_integer_upload", test_depth_integer_upload),
     SELF_CHECK_TEST("depth_readback_clear_types", test_depth_readback_clear_types),
     SELF_CHECK_TEST("ms_integer_texel_fetch", test_ms_integer_texel_fetch),
+    SELF_CHECK_TEST("generic_buffer_binding_queries", test_generic_buffer_binding_queries),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
     SELF_CHECK_TEST("depth_blit_orientation", test_depth_blit_orientation),

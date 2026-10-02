@@ -505,6 +505,12 @@ static GLuint mglActiveUnitTextureBinding(GLMContext ctx, GLenum pname)
     return tex ? tex->name : 0;
 }
 
+static GLuint mglGetGenericBufferBinding(GLMContext ctx, int index)
+{
+    Buffer *buf = STATE(buffers[index]);
+    return buf ? buf->name : 0;
+}
+
 static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
 {
     if (pname >= GL_DRAW_BUFFER0 &&
@@ -1018,6 +1024,12 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x91BF: RET_TYPE_VAR(type, max_compute_work_group_size[0]); break; // GL_MAX_COMPUTE_WORK_GROUP_SIZE
         case 0x90EF: RET_TYPE_VAR(type, dispatch_indirect_buffer_binding); break; // GL_DISPATCH_INDIRECT_BUFFER_BINDING
         case 0x8F43: RET_TYPE_VAR(type, draw_indirect_buffer_binding); break; // GL_DRAW_INDIRECT_BUFFER_BINDING
+        case 0x8F36: RET_TYPE_VAR_DERIVED(mglGetGenericBufferBinding(ctx, _COPY_READ_BUFFER)); break; // GL_COPY_READ_BUFFER_BINDING
+        case 0x8F37: RET_TYPE_VAR_DERIVED(mglGetGenericBufferBinding(ctx, _COPY_WRITE_BUFFER)); break; // GL_COPY_WRITE_BUFFER_BINDING
+        case 0x92C1: RET_TYPE_VAR_DERIVED(mglGetGenericBufferBinding(ctx, _ATOMIC_COUNTER_BUFFER)); break; // GL_ATOMIC_COUNTER_BUFFER_BINDING
+        case 0x8C2A: RET_TYPE_VAR_DERIVED(mglGetGenericBufferBinding(ctx, _TEXTURE_BUFFER)); break; // GL_TEXTURE_BUFFER_BINDING
+        case 0x9193: RET_TYPE_VAR_DERIVED(mglGetGenericBufferBinding(ctx, _QUERY_BUFFER)); break; // GL_QUERY_BUFFER_BINDING
+        case 0x80EF: RET_TYPE_VAR_DERIVED(mglGetGenericBufferBinding(ctx, _PARAMETER_BUFFER)); break; // GL_PARAMETER_BUFFER_BINDING
         case 0x826C: RET_TYPE_VAR(type, max_debug_group_stack_depth); break; // GL_MAX_DEBUG_GROUP_STACK_DEPTH
         case 0x826D: RET_TYPE_VAR(type, debug_group_stack_depth); break; // GL_DEBUG_GROUP_STACK_DEPTH
         case 0x82E8: RET_TYPE_VAR(type, max_label_length); break; // GL_MAX_LABEL_LENGTH
