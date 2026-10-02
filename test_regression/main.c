@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 169
+#define MAX_TESTS 170
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19159,6 +19159,72 @@ static int test_copy_tex_errors(unsigned char *pixels, const char *out_path)
     return fail ? 1 : 0;
 }
 
+/* Table 8.15: CopyTextureSubImage3D accepts TEXTURE_CUBE_MAP; zoffset selects
+ * the face (GL 4.6 §8.6). */
+static int test_copy_texture_sub_image3d_cube(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint fbo = 0, color = 0, cube = 0;
+    fbo = make_fbo(4, 4, &color);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glClearColor(0.0f, 1.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glCreateTextures(GL_TEXTURE_CUBE_MAP, 1, &cube);
+    glTextureStorage2D(cube, 1, GL_RGBA8, 4, 4);
+    while (glGetError() != GL_NO_ERROR) { }
+
+    glCopyTextureSubImage3D(cube, 0, 0, 0, 2, 0, 0, 4, 4);
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) {
+        fprintf(stderr, "copy_texture_sub_image3d_cube: copy error 0x%x\n", err);
+        glDeleteTextures(1, &cube);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &color);
+        return 1;
+    }
+    glCopyTextureSubImage3D(cube, 0, 0, 0, 6, 0, 0, 4, 4);
+    if ((err = glGetError()) != GL_INVALID_VALUE) {
+        fprintf(stderr, "copy_texture_sub_image3d_cube: zoffset=6 got 0x%x\n", err);
+        glDeleteTextures(1, &cube);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &color);
+        return 1;
+    }
+
+    unsigned char face[4 * 4 * 4];
+    memset(face, 0, sizeof(face));
+    glGetTextureSubImage(cube, 0, 0, 0, 2, 4, 4, 1, GL_RGBA, GL_UNSIGNED_BYTE,
+                         (GLsizei)sizeof(face), face);
+    if ((err = glGetError()) != GL_NO_ERROR) {
+        fprintf(stderr, "copy_texture_sub_image3d_cube: get error 0x%x\n", err);
+        glDeleteTextures(1, &cube);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &color);
+        return 1;
+    }
+    int fail = 0;
+    if (face[0] > 20u || face[1] < 200u || face[2] > 20u) {
+        fprintf(stderr, "copy_texture_sub_image3d_cube: face2 pixel (%u,%u,%u)\n",
+                face[0], face[1], face[2]);
+        fail = 1;
+    }
+    /* Unwritten face stays cleared/zero, not the copied green. */
+    memset(face, 0xff, sizeof(face));
+    glGetTextureSubImage(cube, 0, 0, 0, 0, 4, 4, 1, GL_RGBA, GL_UNSIGNED_BYTE,
+                         (GLsizei)sizeof(face), face);
+    if (face[1] >= 200u && face[0] <= 20u && face[2] <= 20u) {
+        fprintf(stderr, "copy_texture_sub_image3d_cube: face0 unexpectedly green\n");
+        fail = 1;
+    }
+    (void)pixels;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteTextures(1, &cube);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &color);
+    return fail;
+}
+
 /* BlitFramebuffer completeness and multisample errors (GL 4.6 §18.3.1). */
 static int test_blit_framebuffer_errors(unsigned char *pixels, const char *out_path)
 {
@@ -24798,6 +24864,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("read_pixels_framebuffer_errors", test_read_pixels_framebuffer_errors),
     SELF_CHECK_TEST("error_flag_dedup", test_error_flag_dedup),
     SELF_CHECK_TEST("copy_tex_errors", test_copy_tex_errors),
+    SELF_CHECK_TEST("copy_texture_sub_image3d_cube", test_copy_texture_sub_image3d_cube),
     SELF_CHECK_TEST("blit_scaled_stencil", test_blit_scaled_stencil),
     SELF_CHECK_TEST("blit_framebuffer_errors", test_blit_framebuffer_errors),
     SELF_CHECK_TEST("depth_integer_upload", test_depth_integer_upload),

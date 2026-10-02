@@ -5604,16 +5604,39 @@ void mglCopyTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint
     if (!tex ||
         (tex->target != GL_TEXTURE_3D &&
          tex->target != GL_TEXTURE_2D_ARRAY &&
-         tex->target != GL_TEXTURE_CUBE_MAP_ARRAY)) {
+         tex->target != GL_TEXTURE_CUBE_MAP_ARRAY &&
+         tex->target != GL_TEXTURE_CUBE_MAP)) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
-    if (!mglCopyTextureSubImageValidate(ctx, tex, level, xoffset, yoffset, zoffset, width, height)) {
-        return;
-    }
-    if ((GLuint)zoffset >= tex->faces[0].levels[level].depth) {
-        ERROR_RETURN(GL_INVALID_VALUE);
-        return;
+    GLuint slice = 0u;
+    if (tex->target == GL_TEXTURE_CUBE_MAP) {
+        /* Table 8.15: DSA 3D copy accepts TEXTURE_CUBE_MAP; zoffset is the
+         * face index (GL 4.6 §8.6). */
+        if (zoffset < 0 || zoffset >= 6) {
+            ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        }
+        slice = (GLuint)zoffset;
+        if (!mglCopyTextureSubImageValidate(ctx, tex, level, xoffset, yoffset,
+                                            0, width, height)) {
+            return;
+        }
+        if (!tex->faces[slice].levels ||
+            !tex->faces[slice].levels[level].complete) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+    } else {
+        if (!mglCopyTextureSubImageValidate(ctx, tex, level, xoffset, yoffset,
+                                            zoffset, width, height)) {
+            return;
+        }
+        if ((GLuint)zoffset >= tex->faces[0].levels[level].depth) {
+            ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        }
+        slice = (GLuint)zoffset;
     }
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
@@ -5623,7 +5646,7 @@ void mglCopyTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint
         mglRendererFlush(ctx, true);
     }
 
-    mglRendererCopyTexSubImage(ctx, tex, (GLuint)zoffset, level, xoffset, yoffset, x, y, width, height);
+    mglRendererCopyTexSubImage(ctx, tex, slice, level, xoffset, yoffset, x, y, width, height);
 }
 
 #pragma mark get tex image
