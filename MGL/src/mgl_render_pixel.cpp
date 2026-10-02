@@ -105,23 +105,6 @@ uint32_t mglRenderDepth24Stencil8ToFloatBits(const uint8_t* src) {
     return bits;
 }
 
-uint32_t mglRenderDepthUint32ToFloatBits(uint32_t raw) {
-    const float depth = (float)((double)raw / 4294967295.0);
-    uint32_t bits = 0u;
-    memcpy(&bits, &depth, sizeof(bits));
-    return bits;
-}
-
-uint32_t mglRenderDepth24ToFloatBits(const uint8_t* src) {
-    const uint32_t v = (uint32_t)src[0] |
-                       ((uint32_t)src[1] << 8u) |
-                       ((uint32_t)src[2] << 16u);
-    const float depth = (float)((double)v / 16777215.0);
-    uint32_t bits = 0u;
-    memcpy(&bits, &depth, sizeof(bits));
-    return bits;
-}
-
 uint8_t mglRenderResolveR8SnormSwizzledComponent(uint32_t swizzle,
                                                         uint8_t red) {
     switch (swizzle) {

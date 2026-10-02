@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 159
+#define MAX_TESTS 160
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19127,6 +19127,102 @@ static int test_blit_framebuffer_errors(unsigned char *pixels, const char *out_p
     return fail ? 1 : 0;
 }
 
+/* DEPTH_COMPONENT TexImage / TexSubImage uploads: unsigned integer types are
+ * normalized and every depth value is clamped to [0, 1] (GL 4.6 §8.4.4.3,
+ * §8.5); checked by texelFetch and GetTexImage. */
+static int test_depth_integer_upload(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint prog = link_program(
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n",
+        "#version 330 core\n"
+        "uniform sampler2D s;\n"
+        "out vec4 c;\n"
+        "void main() { c = texelFetch(s, ivec2(gl_FragCoord.xy), 0); }\n");
+    if (!prog) return 1;
+    GLuint vao = 0, rt = 0, fbo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glUseProgram(prog);
+    glGenTextures(1, &rt);
+    glBindTexture(GL_TEXTURE_2D, rt);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, 4, 2);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rt, 0);
+    glViewport(0, 0, 4, 2);
+
+    static const GLenum ifs[5] = {GL_DEPTH_COMPONENT16, GL_DEPTH_COMPONENT24,
+                                  GL_DEPTH_COMPONENT32, GL_DEPTH_COMPONENT32F,
+                                  GL_DEPTH_COMPONENT};
+    static const GLuint ui[8] = {0xffffffffu, 0x80000000u, 0x40000000u, 0x00001234u,
+                                 0x00001234u, 0x40000000u, 0x80000000u, 0xffffffffu};
+    static const GLushort us[8] = {0xffff, 0x8000, 0x4000, 0x1234,
+                                   0x1234, 0x4000, 0x8000, 0xffff};
+    static const GLfloat fl[8] = {1.5f, 0.5f, 0.25f, -0.25f,
+                                  -0.25f, 0.25f, 0.5f, 1.5f};
+    const float want_ui[4] = {1.0f, 0.5f, 0.25f, 0.0f};
+    const float want_us[4] = {1.0f, 32768.0f / 65535.0f, 16384.0f / 65535.0f,
+                              4660.0f / 65535.0f};
+    const float want_fl[4] = {1.0f, 0.5f, 0.25f, 0.0f};
+    static const GLenum types[3] = {GL_UNSIGNED_INT, GL_UNSIGNED_SHORT, GL_FLOAT};
+    static const char *type_names[3] = {"UINT", "USHORT", "FLOAT"};
+    const void *data[3] = {ui, us, fl};
+    const float *wants[3] = {want_ui, want_us, want_fl};
+    int fail = 0;
+    for (int t = 0; t < 3; t++) {
+        for (int i = 0; i < 5; i++) {
+            GLuint tex = 0;
+            glGenTextures(1, &tex);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexImage2D(GL_TEXTURE_2D, 0, ifs[i], 4, 2, 0, GL_DEPTH_COMPONENT,
+                         types[t], data[t]);
+            /* Second row becomes w3 w0 w1 w0. */
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 1, 1, 2, 1, GL_DEPTH_COMPONENT,
+                            types[t], data[t]);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            GLfloat sampled[32] = {0}, got[8] = {0};
+            glReadPixels(0, 0, 4, 2, GL_RGBA, GL_FLOAT, sampled);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_FLOAT, got);
+            GLenum err = glGetError();
+            const float *want = wants[t];
+            static const int order[8] = {0, 1, 2, 3, 3, 0, 1, 0};
+            int bad = err != GL_NO_ERROR;
+            for (int k = 0; k < 8; k++) {
+                float w = want[order[k]];
+                float ds = sampled[k * 4] - w, dg = got[k] - w;
+                if (ds > 2e-5f || ds < -2e-5f || dg > 2e-5f || dg < -2e-5f) bad = 1;
+            }
+            if (bad) {
+                fprintf(stderr,
+                        "depth_integer_upload: %s if=0x%x err=0x%x sampled/get:",
+                        type_names[t], ifs[i], err);
+                for (int k = 0; k < 8; k++)
+                    fprintf(stderr, " %.6f/%.6f", sampled[k * 4], got[k]);
+                fprintf(stderr, "\n");
+                fail |= 1 << (t * 5 + i);
+            }
+            glDeleteTextures(1, &tex);
+        }
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &rt);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "depth_integer_upload: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* Scaled NEAREST BlitFramebuffer of draw-written stencil (GL 4.6 §18.3.1),
  * checked by ReadPixels and by a stencil-tested draw; a stencil-only blit
  * leaves the destination depth alone. */
@@ -23806,6 +23902,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("copy_tex_errors", test_copy_tex_errors),
     SELF_CHECK_TEST("blit_scaled_stencil", test_blit_scaled_stencil),
     SELF_CHECK_TEST("blit_framebuffer_errors", test_blit_framebuffer_errors),
+    SELF_CHECK_TEST("depth_integer_upload", test_depth_integer_upload),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
     SELF_CHECK_TEST("depth_blit_orientation", test_depth_blit_orientation),

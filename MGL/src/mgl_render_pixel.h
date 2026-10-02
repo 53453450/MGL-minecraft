@@ -8,8 +8,6 @@ float mglReadbackMissingChannelFloat(int src_channel_idx);
 float mglRead16or32SourceFloat(const uint8_t* s, int idx, int is16u, int is16s, int is16f);
 uint8_t mglExpandUNormBitsTo8(uint32_t value, uint32_t bits);
 uint32_t mglRenderDepth24Stencil8ToFloatBits(const uint8_t* src);
-uint32_t mglRenderDepthUint32ToFloatBits(uint32_t raw);
-uint32_t mglRenderDepth24ToFloatBits(const uint8_t* src);
 uint8_t mglRenderResolveR8SnormSwizzledComponent(uint32_t swizzle, uint8_t red);
 uint16_t mglRenderResolveR16UnormSwizzledComponent(uint32_t swizzle, uint16_t red);
 uint16_t mglRenderResolveR16SnormSwizzledComponent(uint32_t swizzle, int16_t red);

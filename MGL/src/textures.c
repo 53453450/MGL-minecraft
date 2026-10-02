@@ -3257,14 +3257,7 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
                                 case GL_DEPTH_COMPONENT16:
                                     d = (GLfloat)((uint16_t *)pixel)[0] / 65535.0f;
                                     break;
-                                case GL_DEPTH_COMPONENT24: {
-                                    /* 24-bit depth stored in 3 bytes (LE). */
-                                    uint32_t v = (uint32_t)pixel[0] |
-                                                 ((uint32_t)pixel[1] << 8) |
-                                                 ((uint32_t)pixel[2] << 16);
-                                    d = (GLfloat)v / 16777215.0f;
-                                    break;
-                                }
+                                case GL_DEPTH_COMPONENT24:
                                 case GL_DEPTH_COMPONENT32:
                                 case GL_DEPTH_COMPONENT32F:
                                     d = ((GLfloat *)pixel)[0];

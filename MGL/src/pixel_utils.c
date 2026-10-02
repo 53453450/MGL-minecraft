@@ -886,7 +886,7 @@ GLuint sizeForInternalFormat(GLenum internalformat, GLenum format, GLenum type)
             return bitsToBytes(16);
 
         case GL_DEPTH_COMPONENT24:
-            return bitsToBytes(24);
+            return bitsToBytes(32);  // Depth32Float
 
         case GL_DEPTH_COMPONENT32:
             return bitsToBytes(32);

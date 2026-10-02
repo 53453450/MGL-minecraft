@@ -232,6 +232,56 @@ bool mglConvertTextureRectToCPU(GLenum internalformat,
         return false;
     }
 
+    /* Depth-only formats are stored as Depth16Unorm (2 bytes) or Depth32Float
+     * (4 bytes).  Normalized integer types are converted to floating point
+     * and every depth value is clamped to [0, 1] (GL 4.6 §8.4.4.3, §8.5). */
+    if (format == GL_DEPTH_COMPONENT &&
+        mglInternalFormatIsDepthStencil(internalformat) &&
+        !mglInternalFormatIsCombinedDepthStencil(internalformat) &&
+        (storage_pixel_size == 2u || storage_pixel_size == 4u)) {
+        size_t dst_img_size = 0u;
+        if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &dst_img_size)) {
+            return false;
+        }
+        if (src_image_size == 0u &&
+            !mglMulSizeT(src_pitch, (size_t)height, &src_image_size)) {
+            return false;
+        }
+        uint8_t *dst_base = (uint8_t *)lvl->data +
+                            ((size_t)zoffset * dst_img_size) +
+                            ((size_t)yoffset * lvl->pitch) +
+                            ((size_t)xoffset * storage_pixel_size);
+        const size_t elem_size = mglPixelTypeDatumBytes(type);
+        for (GLsizei z = 0; z < depth; ++z) {
+            const uint8_t *src_slice = src_base + ((size_t)z * src_image_size);
+            uint8_t *dst_slice = dst_base + ((size_t)z * dst_img_size);
+            for (GLsizei y = 0; y < height; ++y) {
+                const uint8_t *src_row = src_slice + ((size_t)y * src_pitch);
+                uint8_t *dst_row = dst_slice + ((size_t)y * lvl->pitch);
+                for (GLsizei x = 0; x < width; ++x) {
+                    const uint8_t *read_pixel = src_row + ((size_t)x * src_pixel_size);
+                    uint8_t swapped[8];
+                    if (swap_bytes && elem_size > 1u && src_pixel_size <= sizeof(swapped)) {
+                        memcpy(swapped, read_pixel, src_pixel_size);
+                        mglSwapPixelBytes(swapped, src_pixel_size, elem_size);
+                        read_pixel = swapped;
+                    }
+                    double d = mglReadExternalComponent(read_pixel, type, 0, false, 0u);
+                    d = d < 0.0 ? 0.0 : (d > 1.0 ? 1.0 : d);
+                    uint8_t *dst_pixel = dst_row + ((size_t)x * storage_pixel_size);
+                    if (storage_pixel_size == 2u) {
+                        uint16_t v = (uint16_t)(d * 65535.0 + 0.5);
+                        memcpy(dst_pixel, &v, sizeof(v));
+                    } else {
+                        GLfloat v = (GLfloat)d;
+                        memcpy(dst_pixel, &v, sizeof(v));
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
     /* Fast path: when the external format/type produces the exact same bit
      * layout as the internal format's CPU storage, do a raw memcpy.  This
      * avoids precision loss from per-component unpack/repack through double
