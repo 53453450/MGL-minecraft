@@ -81,6 +81,7 @@ static const char *kMglExtensions[] = {
     "GL_EXT_texture_compression_s3tc",     /* MGL maps compressed S3TC internal formats in textures.c */
     "GL_KHR_texture_compression_astc_ldr", /* MGL maps compressed ASTC LDR internal formats in textures.c */
     "GL_EXT_texture_sRGB_decode",          /* GL_TEXTURE_SRGB_DECODE_EXT state in tex_param.c; mglEffectiveMGLPixelFormatForTexture downgrades sRGB→linear on SKIP_DECODE */
+    "GL_ARB_texture_stencil8",             /* core in 4.4: STENCIL_INDEX8 textures (Stencil8), sampled and read with STENCIL_INDEX */
 };
 static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
               "MGL_NUM_EXTENSIONS must match kMglExtensions");
