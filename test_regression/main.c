@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 158
+#define MAX_TESTS 159
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19068,6 +19068,65 @@ static int test_copy_tex_errors(unsigned char *pixels, const char *out_path)
     return fail ? 1 : 0;
 }
 
+/* BlitFramebuffer completeness and multisample errors (GL 4.6 §18.3.1). */
+static int test_blit_framebuffer_errors(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint rb[4] = {0, 0, 0, 0}, fbo[5] = {0, 0, 0, 0, 0};
+    glGenRenderbuffers(4, rb);
+    glBindRenderbuffer(GL_RENDERBUFFER, rb[0]);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 8, 8);
+    glBindRenderbuffer(GL_RENDERBUFFER, rb[1]);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 8, 8);
+    glBindRenderbuffer(GL_RENDERBUFFER, rb[2]);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_RGBA8, 8, 8);
+    glBindRenderbuffer(GL_RENDERBUFFER, rb[3]);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, 2, GL_RGBA8, 8, 8);
+    GLint samples4 = 0, samples2 = 0;
+    glBindRenderbuffer(GL_RENDERBUFFER, rb[2]);
+    glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_SAMPLES, &samples4);
+    glBindRenderbuffer(GL_RENDERBUFFER, rb[3]);
+    glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_SAMPLES, &samples2);
+    glGenFramebuffers(5, fbo);
+    for (int i = 0; i < 4; i++) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo[i]);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                  GL_RENDERBUFFER, rb[i]);
+    }
+    while (glGetError() != GL_NO_ERROR) { }
+
+    /* read, draw, src rect width, expected error */
+    static const struct { int r, d, w; GLenum want; } cases[] = {
+        {0, 1, 8, GL_NO_ERROR},
+        {4, 1, 8, GL_INVALID_FRAMEBUFFER_OPERATION},
+        {0, 4, 8, GL_INVALID_FRAMEBUFFER_OPERATION},
+        {2, 1, 8, GL_NO_ERROR},
+        {2, 1, 4, GL_INVALID_OPERATION},
+        {2, 3, 8, GL_INVALID_OPERATION},
+    };
+    int fail = 0;
+    for (int c = 0; c < (int)(sizeof(cases) / sizeof(cases[0])); c++) {
+        if (c == 5 && samples2 == samples4) continue;
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[cases[c].r]);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[cases[c].d]);
+        glBlitFramebuffer(0, 0, cases[c].w, 8, 0, 0, 8, 8, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        GLenum err = glGetError();
+        if (err != cases[c].want) {
+            fprintf(stderr, "blit_framebuffer_errors: case %d error 0x%x\n", c, err);
+            fail |= 1 << c;
+        }
+        while (glGetError() != GL_NO_ERROR) { }
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(5, fbo);
+    glDeleteRenderbuffers(4, rb);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "blit_framebuffer_errors: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* Scaled NEAREST BlitFramebuffer of draw-written stencil (GL 4.6 §18.3.1),
  * checked by ReadPixels and by a stencil-tested draw; a stencil-only blit
  * leaves the destination depth alone. */
@@ -23746,6 +23805,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("error_flag_dedup", test_error_flag_dedup),
     SELF_CHECK_TEST("copy_tex_errors", test_copy_tex_errors),
     SELF_CHECK_TEST("blit_scaled_stencil", test_blit_scaled_stencil),
+    SELF_CHECK_TEST("blit_framebuffer_errors", test_blit_framebuffer_errors),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
     SELF_CHECK_TEST("depth_blit_orientation", test_depth_blit_orientation),

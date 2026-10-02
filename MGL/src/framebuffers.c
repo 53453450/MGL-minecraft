@@ -3053,6 +3053,8 @@ void mglGetNamedFramebufferAttachmentParameteriv(GLMContext ctx, GLuint framebuf
 }
 
 
+static GLuint mglFramebufferSamples(Framebuffer *fbo);
+
 void mglBlitFramebuffer(GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter)
 {
     static uint64_t s_blitTraceCount = 0;
@@ -3092,6 +3094,25 @@ void mglBlitFramebuffer(GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, G
     if ((mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) != 0u && filter != GL_NEAREST) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
+    }
+    if (mglCheckFramebufferStatus(ctx, GL_READ_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
+        mglCheckFramebufferStatus(ctx, GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        ERROR_RETURN(GL_INVALID_FRAMEBUFFER_OPERATION);
+        return;
+    }
+    {
+        GLuint read_samples = mglFramebufferSamples(STATE(readbuffer));
+        GLuint draw_samples = mglFramebufferSamples(STATE(framebuffer));
+        if ((read_samples > 0u || draw_samples > 0u) &&
+            (abs(srcX1 - srcX0) != abs(dstX1 - dstX0) ||
+             abs(srcY1 - srcY0) != abs(dstY1 - dstY0))) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+        if (read_samples > 0u && draw_samples > 0u && read_samples != draw_samples) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
     }
 
     /* GL 4.6 §18.3.1: LINEAR is invalid for an integer read buffer, and the
