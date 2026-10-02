@@ -16842,6 +16842,100 @@ static int test_stage_interface_location_matching(unsigned char *pixels,
                 type_ok);
         fail = 1;
     }
+
+    /* Blocks match by block name; instance names may differ. */
+    static const char *vs_block = IFACE_VS_HEAD
+        "out Data { vec4 c; } vout;\n"
+        IFACE_VS_MAIN("vout.c = vec4(1, 0, 0, 1);");
+    static const char *fs_block = IFACE_FS_HEAD
+        "in Data { vec4 c; } fin;\n"
+        "void main() { frag = fin.c; }\n";
+    static const char *fs_block_missing = IFACE_FS_HEAD
+        "in Other { vec4 c; } fin;\n"
+        "void main() { frag = fin.c; }\n";
+    static const char *fs_block_members = IFACE_FS_HEAD
+        "in Data { vec4 d; } fin;\n"
+        "void main() { frag = fin.d; }\n";
+    GLuint block_prog = link_program(vs_block, fs_block);
+    unsigned char block_px[4] = { 0 };
+    if (block_prog) {
+        iface_point_color(block_prog, block_px);
+        glDeleteProgram(block_prog);
+    }
+    if (!block_prog || block_px[0] < 200 || block_px[1] > 50) {
+        fprintf(stderr, "stage_interface_location_matching: block link=%d "
+                "rgb=(%u,%u,%u), want red\n", block_prog != 0, block_px[0],
+                block_px[1], block_px[2]);
+        fail = 1;
+    }
+    GLint block_missing_ok = iface_link_status(vs_block, fs_block_missing);
+    GLint block_members_ok = iface_link_status(vs_block, fs_block_members);
+    if (block_missing_ok != GL_FALSE || block_members_ok != GL_FALSE) {
+        fprintf(stderr, "stage_interface_location_matching: block link "
+                "status unmatched=%d member-mismatch=%d, want 0 0\n",
+                block_missing_ok, block_members_ok);
+        fail = 1;
+    }
+
+    static const char *tcs_block =
+        "#version 450 core\n"
+        "layout(vertices = 3) out;\n"
+        "out TcData { vec4 c; } tco[];\n"
+        "void main() {\n"
+        "  gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;\n"
+        "  tco[gl_InvocationID].c = vec4(1, 0, 0, 1);\n"
+        "  gl_TessLevelOuter[0] = 1.0; gl_TessLevelOuter[1] = 1.0;\n"
+        "  gl_TessLevelOuter[2] = 1.0; gl_TessLevelInner[0] = 1.0;\n"
+        "}\n";
+    static const char *tes_block =
+        "#version 450 core\n"
+        "layout(triangles) in;\n"
+        "in TcData { vec4 c; } tei[];\n"
+        "out vec4 te_value;\n"
+        "void main() { te_value = tei[0].c; gl_Position = gl_in[0].gl_Position; }\n";
+    static const char *fs_tess = IFACE_FS_HEAD
+        "in vec4 te_value;\n"
+        "void main() { frag = te_value; }\n";
+    GLuint tess_prog = link_program_with_tessellation(vs_red, tcs_block,
+                                                      tes_block, fs_tess);
+    if (!tess_prog) {
+        fprintf(stderr, "stage_interface_location_matching: TCS/TES block "
+                "did not link\n");
+        fail = 1;
+    } else {
+        glDeleteProgram(tess_prog);
+    }
+
+    /* `out struct { ... } s[]` is a variable of struct type, not a block. */
+    static const char *tcs_struct =
+        "#version 450 core\n"
+        "layout(vertices = 3) out;\n"
+        "out struct { int test1; float test2; } tcs_s[];\n"
+        "void main() {\n"
+        "  gl_out[gl_InvocationID].gl_Position = vec4(0.0);\n"
+        "  gl_TessLevelOuter[0] = 1.0; gl_TessLevelOuter[1] = 1.0;\n"
+        "  gl_TessLevelOuter[2] = 1.0; gl_TessLevelInner[0] = 1.0;\n"
+        "  tcs_s[gl_InvocationID].test1 = 1; tcs_s[gl_InvocationID].test2 = 2.0;\n"
+        "}\n";
+    static const char *tes_struct =
+        "#version 450 core\n"
+        "layout(triangles) in;\n"
+        "in struct { int test1; float test2; } tcs_s[];\n"
+        "out vec4 te_value;\n"
+        "void main() {\n"
+        "  float b = tcs_s[0].test2;\n"
+        "  te_value = vec4(b);\n"
+        "  gl_Position = gl_in[0].gl_Position;\n"
+        "}\n";
+    tess_prog = link_program_with_tessellation(vs_red, tcs_struct,
+                                               tes_struct, fs_tess);
+    if (!tess_prog) {
+        fprintf(stderr, "stage_interface_location_matching: TCS/TES struct "
+                "variable did not link\n");
+        fail = 1;
+    } else {
+        glDeleteProgram(tess_prog);
+    }
 #undef IFACE_VS_HEAD
 #undef IFACE_VS_MAIN
 #undef IFACE_FS_HEAD

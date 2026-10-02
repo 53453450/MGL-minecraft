@@ -83,6 +83,8 @@ typedef struct MGLIRSymbol {
     MGLIRType *return_type;     /* function return type */
     uint32_t param_count;
     MGLIRType **param_types;    /* owned array of copies */
+    /* 1 = declared as `in|out Block { ... } [inst]`. */
+    int is_io_block;
 } MGLIRSymbol;
 
 /* Shader-level module produced by semantic analysis.  Layouts on

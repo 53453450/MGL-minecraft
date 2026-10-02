@@ -4552,6 +4552,9 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             if (d->struct_members && d->struct_member_count > 0 &&
                 (d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
                 isym->is_interface_block = 1;
+            } else if (d->is_block &&
+                       (d->qualifiers & (MGL_AST_Q_IN | MGL_AST_Q_OUT))) {
+                isym->is_io_block = 1;
             }
             /* layout block: compute offsets on the block type */
             if (d->struct_members && d->struct_member_count > 0) {
@@ -5011,8 +5014,20 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
 
 static int sym_is_interface_block(const MGLIRSymbol *is)
 {
-    return is->type && is->type->kind == MGLIR_TYPE_STRUCT &&
-           is->layout != MGL_AST_LAYOUT_DEFAULT;
+    return is->is_io_block ||
+           (is->type && is->type->kind == MGLIR_TYPE_STRUCT &&
+            is->layout != MGL_AST_LAYOUT_DEFAULT);
+}
+
+/* The block type of an in/out block instance.  Instance arrays, including
+ * the per-vertex arrays of tessellation stages, are not compared. */
+static const MGLIRType *sym_block_type(const MGLIRSymbol *is)
+{
+    const MGLIRType *t = is->type;
+    while (is->is_io_block && t && t->kind == MGLIR_TYPE_ARRAY) {
+        t = t->elem_type;
+    }
+    return t;
 }
 
 /* Effective interpolation state for a user-defined interface variable.
@@ -5154,16 +5169,23 @@ int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
                 }
                 /* Block: match by block type name; instance names may
                  * differ. */
-                if (!sa->type->name || !sb->type->name ||
-                    strcmp(sa->type->name, sb->type->name) != 0) {
+                const MGLIRType *ta = sym_block_type(sa);
+                const MGLIRType *tb = sym_block_type(sb);
+                if (!ta || !tb || !ta->name || !tb->name ||
+                    strcmp(ta->name, tb->name) != 0) {
+                    continue;
+                }
+                if ((sa->is_io_block || sb->is_io_block) &&
+                    (!(sa->qualifiers & MGL_AST_Q_OUT) ||
+                     !(sb->qualifiers & MGL_AST_Q_IN))) {
                     continue;
                 }
                 if (sa->layout != sb->layout ||
                     sa->matrix_major != sb->matrix_major ||
-                    !ir_type_interface_equal(sa->type, sb->type)) {
+                    !ir_type_interface_equal(ta, tb)) {
                     sema_error(&s, 0,
                                "interface block '%s' does not match across stages",
-                               sa->type->name);
+                               ta->name);
                 }
                 continue;
             }
@@ -5196,7 +5218,8 @@ int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
 
     for (uint32_t j = 0; j < b->symbol_count; j++) {
         const MGLIRSymbol *sb = b->symbols[j];
-        if (!interface_var_is_ordinary(sb) ||
+        if (!sb || sb->is_function || !sb->name || !sb->type ||
+            !(sb->is_io_block || interface_var_is_ordinary(sb)) ||
             !(sb->qualifiers & MGL_AST_Q_IN) || !sb->statically_used ||
             strncmp(sb->name, "gl_", 3) == 0) {
             continue;
@@ -5204,9 +5227,19 @@ int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
         int matched = 0;
         for (uint32_t i = 0; i < a->symbol_count && !matched; i++) {
             const MGLIRSymbol *sa = a->symbols[i];
-            matched = interface_var_is_ordinary(sa) &&
-                      (sa->qualifiers & MGL_AST_Q_OUT) &&
-                      interface_vars_paired(sa, sb);
+            if (!sa || sa->is_function || !sa->name || !sa->type ||
+                !(sa->qualifiers & MGL_AST_Q_OUT)) {
+                continue;
+            }
+            if (sb->is_io_block) {
+                const MGLIRType *ta = sym_block_type(sa);
+                const MGLIRType *tb = sym_block_type(sb);
+                matched = sa->is_io_block && ta && tb && ta->name &&
+                          tb->name && strcmp(ta->name, tb->name) == 0;
+            } else {
+                matched = interface_var_is_ordinary(sa) &&
+                          interface_vars_paired(sa, sb);
+            }
         }
         if (!matched) {
             sema_error(&s, 0,

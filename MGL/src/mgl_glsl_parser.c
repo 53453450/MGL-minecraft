@@ -2808,6 +2808,7 @@ more_qualifiers:
             expect_punct(p, "}");
             d->struct_members = members;
             d->struct_member_count = mcount;
+            d->is_block = 1;
             /* instance name */
             if (at_any_ident(p)) {
                 d->name = dup_current(p);

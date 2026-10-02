@@ -353,6 +353,7 @@ struct MGLDecl {
      * header; each node owns its name, array dims and initializer. */
     struct MGLDecl *next_declarator;
     int type_shared;       /* 1 = type owned by the first declarator */
+    int is_block;          /* 1 = `Name { ... } [inst]`, not `struct { ... }` */
 };
 
 /* Entire shader translation unit. */
