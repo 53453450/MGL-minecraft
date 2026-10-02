@@ -3257,7 +3257,7 @@ Texture *mglAttachmentBackingTexture(const FBOAttachment *a)
  * attachments.  Returns 0 for single-sample, or the number of samples
  * (1, 2, 4, ...) for multisample.  For framebuffers with no attachments,
  * falls back to default_samples. */
-static GLuint mglFramebufferSamples(Framebuffer *fbo)
+GLuint mglFramebufferSamples(Framebuffer *fbo)
 {
     if (!fbo)
         return 0u;

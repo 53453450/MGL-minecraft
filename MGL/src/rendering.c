@@ -2901,6 +2901,18 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         return;
     }
 
+    /* §18.2.1 */
+    if (STATE(readbuffer)) {
+        if (mglCheckFramebufferStatus(ctx, GL_READ_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            ERROR_RETURN(GL_INVALID_FRAMEBUFFER_OPERATION);
+            return;
+        }
+        if (mglFramebufferSamples(STATE(readbuffer)) > 0u) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+    }
+
     if (width == 0 || height == 0)
     {
         return;

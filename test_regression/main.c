@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 154
+#define MAX_TESTS 155
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18896,6 +18896,55 @@ static int test_get_tex_image_pack_buffer(unsigned char *pixels, const char *out
     return fail ? 1 : 0;
 }
 
+/* ReadPixels from an incomplete read framebuffer is INVALID_FRAMEBUFFER_OPERATION
+ * and from a multisample one INVALID_OPERATION (GL 4.6 §18.2.1). */
+static int test_read_pixels_framebuffer_errors(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint rb[2] = {0, 0}, fbo[3] = {0, 0, 0};
+    glGenRenderbuffers(2, rb);
+    glBindRenderbuffer(GL_RENDERBUFFER, rb[0]);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 4, 4);
+    glBindRenderbuffer(GL_RENDERBUFFER, rb[1]);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_RGBA8, 4, 4);
+    glGenFramebuffers(3, fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[0]);
+    glFramebufferRenderbuffer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              GL_RENDERBUFFER, rb[0]);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[1]);
+    glFramebufferRenderbuffer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              GL_RENDERBUFFER, rb[1]);
+    while (glGetError() != GL_NO_ERROR) { }
+
+    static const GLenum want[3] = {GL_NO_ERROR, GL_INVALID_OPERATION,
+                                   GL_INVALID_FRAMEBUFFER_OPERATION};
+    int fail = 0;
+    for (int c = 0; c < 3; c++) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[c]);
+        const GLenum status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
+        if ((status == GL_FRAMEBUFFER_COMPLETE) != (c < 2)) {
+            fprintf(stderr, "read_pixels_framebuffer_errors: case %d status 0x%x\n", c, status);
+            fail |= 0x10 << c;
+        }
+        GLubyte px[4];
+        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        const GLenum err = glGetError();
+        if (err != want[c]) {
+            fprintf(stderr, "read_pixels_framebuffer_errors: case %d error 0x%x\n", c, err);
+            fail |= 1 << c;
+        }
+        while (glGetError() != GL_NO_ERROR) { }
+    }
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(3, fbo);
+    glDeleteRenderbuffers(2, rb);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "read_pixels_framebuffer_errors: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* Stencil texturing: usampler2D reads (s, 0, 0, 1) from STENCIL_INDEX8 and
  * from depth-stencil textures in STENCIL_INDEX mode (GL 4.6 §8.23.1). */
 static int test_stencil_texturing(unsigned char *pixels, const char *out_path)
@@ -23438,6 +23487,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("stencil_texturing", test_stencil_texturing),
     SELF_CHECK_TEST("get_tex_image_swap_bytes", test_get_tex_image_swap_bytes),
     SELF_CHECK_TEST("get_tex_image_pack_buffer", test_get_tex_image_pack_buffer),
+    SELF_CHECK_TEST("read_pixels_framebuffer_errors", test_read_pixels_framebuffer_errors),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
     SELF_CHECK_TEST("depth_blit_orientation", test_depth_blit_orientation),
