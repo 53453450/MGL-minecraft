@@ -3319,6 +3319,36 @@ bool mglValidateReadFramebuffer(GLMContext ctx)
     return true;
 }
 
+/* GL 4.6 §18.2.2: preferred ReadPixels format/type for the selected read
+ * buffer of the read framebuffer. */
+bool mglImplementationColorRead(GLMContext ctx, GLenum pname, GLint *value)
+{
+    Framebuffer *fbo = STATE(readbuffer);
+    GLenum readBuffer = STATE(read_buffer);
+    if (mglCheckFramebufferStatus(ctx, GL_READ_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
+        readBuffer == GL_NONE)
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+
+    GLint internalformat = 0;
+    if (fbo) {
+        GLuint index = (GLuint)(readBuffer - GL_COLOR_ATTACHMENT0);
+        if (!mglFramebufferBufferIsColorAttachment(ctx, readBuffer) ||
+            ((fbo->color_attachment_bitfield >> index) & 1u) == 0u)
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        Texture *tex = mglAttachmentBackingTexture(&fbo->color_attachments[index]);
+        internalformat = tex ? (GLint)tex->internalformat : 0;
+    }
+
+    if (mglInternalFormatIsInteger(internalformat)) {
+        *value = pname == GL_IMPLEMENTATION_COLOR_READ_FORMAT
+            ? GL_RGBA_INTEGER
+            : (mglInternalFormatIsUnsignedInteger(internalformat) ? GL_UNSIGNED_INT : GL_INT);
+    } else {
+        *value = pname == GL_IMPLEMENTATION_COLOR_READ_FORMAT ? GL_BGRA : GL_UNSIGNED_BYTE;
+    }
+    return true;
+}
+
 void mglGetFramebufferParameteriv(GLMContext ctx, GLenum target, GLenum pname, GLint *params)
 {
     Framebuffer *fbo = NULL;

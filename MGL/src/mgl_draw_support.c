@@ -197,7 +197,7 @@ void mglDrawApplyPolygonOffset(void *renderer, uint32_t mode)
     if (enableDepthBias) {
         float bias = ctx->active_state->var.polygon_offset_units;
         float slope = ctx->active_state->var.polygon_offset_factor;
-        float clamp = 0.0f;
+        float clamp = ctx->active_state->var.polygon_offset_clamp;
         mglRenderBindingSetDepthBiasIfNeededForOwner(
             areas.binding_state_owner ? *areas.binding_state_owner : NULL,
             cs->currentRenderEncoderOwner, bias, clamp, slope);

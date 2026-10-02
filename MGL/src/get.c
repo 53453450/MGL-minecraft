@@ -37,6 +37,7 @@
 #include "mgl_pixel_format.h"
 #include "mgl_texture_compat.h"
 #include "pixel_utils.h"
+#include "mgl_renderer_backend.h"
 
 void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data);
 
@@ -511,7 +512,8 @@ static GLuint mglGetGenericBufferBinding(GLMContext ctx, int index)
     return buf ? buf->name : 0;
 }
 
-static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
+/* GL 4.6 §22.1: returns false without touching data after raising an error. */
+static bool mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
 {
     if (pname >= GL_DRAW_BUFFER0 &&
         pname < (GL_DRAW_BUFFER0 + MAX_COLOR_ATTACHMENTS))
@@ -523,7 +525,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         }
         if (index >= maxDrawBuffers) {
             ERROR_RETURN(GL_INVALID_ENUM);
-            return;
+            return false;
         }
 
         GLenum value = (index < (GLuint)STATE(draw_buffer_count))
@@ -535,6 +537,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
             case kFloat: RET_FLOAT(value);
             case kDouble: RET_DOUBLE(value);
         }
+        return true;
     }
 
     switch(pname)
@@ -907,7 +910,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
 #ifdef MGL_GL_ES
         case 0x9126: /* GL_CONTEXT_PROFILE_MASK is desktop-only. */
             ERROR_RETURN(GL_INVALID_ENUM);
-            return;
+            return false;
 #else
         case 0x9126: RET_TYPE_VAR(type, context_profile_mask); break; // GL_CONTEXT_PROFILE_MASK
 #endif
@@ -1139,7 +1142,55 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x8E5B: RET_TYPE_VAR(type, min_fragment_interpolation_offset); break; // GL_MIN_FRAGMENT_INTERPOLATION_OFFSET
         case 0x8E5C: RET_TYPE_VAR(type, max_fragment_interpolation_offset); break; // GL_MAX_FRAGMENT_INTERPOLATION_OFFSET
         case 0x8E5D: RET_TYPE_VAR(type, fragment_interpolation_offset_bits); break; // GL_FRAGMENT_INTERPOLATION_OFFSET_BITS
+        case GL_LINE_SMOOTH_HINT: RET_TYPE(type, hints.line_smooth_hint); break;
+        case GL_POLYGON_SMOOTH_HINT: RET_TYPE(type, hints.polygon_smooth_hint); break;
+        case GL_TEXTURE_COMPRESSION_HINT: RET_TYPE(type, hints.texture_compression_hint); break;
+        case GL_FRAGMENT_SHADER_DERIVATIVE_HINT: RET_TYPE(type, hints.fragment_shader_derivative_hint); break;
+        case GL_DOUBLEBUFFER: RET_TYPE_VAR_DERIVED(STATE(framebuffer) ? GL_FALSE : GL_TRUE); break;
+        case GL_STEREO: RET_TYPE_VAR_DERIVED(GL_FALSE); break;
+        case GL_POINT_FADE_THRESHOLD_SIZE: RET_TYPE_VAR(type, point_fade_threshold_size); break;
+        case GL_POLYGON_OFFSET_CLAMP: RET_TYPE_VAR(type, polygon_offset_clamp); break;
+        case GL_POINT_SPRITE_COORD_ORIGIN: RET_TYPE_VAR(type, point_sprite_coord_origin); break;
+        case GL_PRIMITIVE_RESTART_FOR_PATCHES_SUPPORTED: RET_TYPE_VAR_DERIVED(GL_FALSE); break;
+        case GL_RESET_NOTIFICATION_STRATEGY: RET_TYPE_VAR_DERIVED(GL_NO_RESET_NOTIFICATION); break;
+        case GL_TRANSFORM_FEEDBACK_PAUSED:
+            RET_TYPE_VAR_DERIVED(STATE(transform_feedback) && STATE(transform_feedback)->paused);
+            break;
+        case GL_TRANSFORM_FEEDBACK_ACTIVE:
+            RET_TYPE_VAR_DERIVED(STATE(transform_feedback) && STATE(transform_feedback)->active);
+            break;
+        case GL_IMPLEMENTATION_COLOR_READ_FORMAT:
+        case GL_IMPLEMENTATION_COLOR_READ_TYPE:
+        {
+            GLint value = 0;
+            if (!mglImplementationColorRead(ctx, pname, &value))
+                return false;
+            RET_TYPE_VAR_DERIVED((GLuint)value);
+            break;
+        }
+        case GL_TIMESTAMP:
+        {
+            uint64_t ns = mglRendererGetGPUTimestamp(ctx);
+            switch(type) {
+                case kBool: RET_BOOL(ns);
+                case kInt: RET_INT(ns > INT_MAX ? INT_MAX : (GLint)ns);
+                case kFloat: RET_FLOAT(ns);
+                case kDouble: RET_DOUBLE(ns);
+            }
+            break;
+        }
+        default:
+        {
+            GLboolean enabled = GL_FALSE;
+            if (!mglGetCapState(ctx, pname, &enabled)) {
+                ERROR_RETURN(GL_INVALID_ENUM);
+                return false;
+            }
+            RET_TYPE_VAR_DERIVED(enabled);
+            break;
+        }
     }
+    return true;
 }
 
 void mglGetBooleanv(GLMContext ctx, GLenum pname, GLboolean *data)
@@ -1254,6 +1305,10 @@ void mglGetInteger64v(GLMContext ctx, GLenum pname, GLint64 *data)
         *data = (GLint64)(GLuint64)STATE(var).max_element_index;
         return;
     }
+    if (pname == GL_TIMESTAMP) {
+        *data = (GLint64)mglRendererGetGPUTimestamp(ctx);
+        return;
+    }
 
     GLint tmp[16] = {0};
     GLsizei count = mglGetParameterCount(pname);
@@ -1261,7 +1316,8 @@ void mglGetInteger64v(GLMContext ctx, GLenum pname, GLint64 *data)
         count = (GLsizei)(sizeof(tmp) / sizeof(tmp[0]));
     }
 
-    mglGet(ctx, pname, kInt, tmp);
+    if (!mglGet(ctx, pname, kInt, tmp))
+        return;
     for (GLsizei i = 0; i < count; ++i) {
         data[i] = (GLint64)tmp[i];
     }

@@ -536,12 +536,15 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 
     STATE(var.line_width) = 1.0f;
     STATE(var.point_size) = 1.0f;
+    STATE(var.point_fade_threshold_size) = 1.0f;
+    STATE(var.point_sprite_coord_origin) = GL_UPPER_LEFT;
     STATE(var.polygon_mode) = GL_FILL;
     STATE(var.primitive_restart_index) = 0u;
     STATE(var.provoking_vertex) = GL_LAST_VERTEX_CONVENTION;
     STATE(var.clamp_read_color) = GL_FIXED_ONLY;
     STATE(var.polygon_offset_factor) = 0.0f;
     STATE(var.polygon_offset_units) = 0.0f;
+    STATE(var.polygon_offset_clamp) = 0.0f;
 
     /* Image units default to access=GL_READ_ONLY, format=GL_R8 (GL 4.6). */
     for (int i = 0; i < TEXTURE_UNITS; i++) {

@@ -907,7 +907,7 @@ void mglRenderPassUpdateCurrentRenderEncoder(void *renderer)
     {
         float _bias = state->var.polygon_offset_units;
         float _slope = state->var.polygon_offset_factor;
-        float _clamp = 0.0f;
+        float _clamp = state->var.polygon_offset_clamp;
         mglRenderBindingSetDepthBiasIfNeededForOwner(
             bindingOwner,
             commandState->currentRenderEncoderOwner,

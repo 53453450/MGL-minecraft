@@ -2550,6 +2550,7 @@ static uint64_t mglComputeRenderStateHash(GLMContext ctx)
     hash ^= mglHashBytes64(&var->polygon_offset_units, sizeof(var->polygon_offset_units), 0x20cu);
     hash ^= mglHashBytes64(&var->polygon_offset_factor, sizeof(var->polygon_offset_factor), 0x20du);
     hash ^= mglHashBytes64(&var->sample_coverage_value, sizeof(var->sample_coverage_value), 0x20eu);
+    hash ^= mglHashBytes64(&var->polygon_offset_clamp, sizeof(var->polygon_offset_clamp), 0x20fu);
     hash ^= mglRotateLeft64((uint64_t)var->sample_coverage_invert, 38);
     hash ^= mglRotateLeft64((uint64_t)var->primitive_restart_index, 39);
     hash ^= mglRotateLeft64((uint64_t)var->clip_origin, 40);

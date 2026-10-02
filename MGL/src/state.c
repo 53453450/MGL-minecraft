@@ -706,14 +706,15 @@ void mglViewport(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height
 }
 
 #define RET_VAR(_VAR_, _DEFAULT_)  return (STATE(var)._VAR_ == _DEFAULT_)
-#define RET_CAP(_CAP_)  return STATE(caps)._CAP_
+#define RET_CAP(_CAP_)  *enabled = STATE(caps)._CAP_; return GL_TRUE
 
-GLboolean mglIsEnabled(GLMContext ctx, GLenum cap)
+GLboolean mglGetCapState(GLMContext ctx, GLenum cap, GLboolean *enabled)
 {
     GLuint clipIndex = 0;
     if (mglClipDistanceIndex(ctx, cap, &clipIndex))
     {
-        return STATE(caps).clip_distances[clipIndex];
+        *enabled = STATE(caps).clip_distances[clipIndex];
+        return GL_TRUE;
     }
 
     switch(cap)
@@ -745,12 +746,17 @@ GLboolean mglIsEnabled(GLMContext ctx, GLenum cap)
         case GL_STENCIL_TEST: RET_CAP(stencil_test);
         case GL_TEXTURE_CUBE_MAP_SEAMLESS: RET_CAP(texture_cube_map_seamless);
         case GL_RASTERIZER_DISCARD: RET_CAP(rasterizer_discard);
-
-        default:
-            ERROR_RETURN_VALUE(GL_INVALID_ENUM, GL_FALSE);
     }
 
-    return false;
+    return GL_FALSE;
+}
+
+GLboolean mglIsEnabled(GLMContext ctx, GLenum cap)
+{
+    GLboolean enabled = GL_FALSE;
+    if (!mglGetCapState(ctx, cap, &enabled))
+        ERROR_RETURN_VALUE(GL_INVALID_ENUM, GL_FALSE);
+    return enabled;
 }
 
 void mglEnablei(GLMContext ctx, GLenum target, GLuint index)
@@ -1293,6 +1299,7 @@ void mglPolygonOffset(GLMContext ctx, GLfloat factor, GLfloat units)
 
     STATE(var).polygon_offset_factor = factor;
     STATE(var).polygon_offset_units = units;
+    STATE(var).polygon_offset_clamp = 0.0f;
     mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
 }
 
@@ -1428,10 +1435,18 @@ void mglPointParameterf(GLMContext ctx, GLenum pname, GLfloat param)
     switch (pname)
     {
         case GL_POINT_FADE_THRESHOLD_SIZE:
+            if (param < 0.0f)
+                ERROR_RETURN(GL_INVALID_VALUE);
+            else
+                STATE(var).point_fade_threshold_size = param;
+            return;
         case 0x8126: // GL_POINT_SIZE_MIN
         case 0x8127: // GL_POINT_SIZE_MAX
             if (param < 0.0f)
                 ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        case GL_POINT_SPRITE_COORD_ORIGIN:
+            mglPointParameteri(ctx, pname, (GLint)param);
             return;
         default:
             ERROR_RETURN(GL_INVALID_ENUM);
@@ -1462,6 +1477,8 @@ void mglPointParameteri(GLMContext ctx, GLenum pname, GLint param)
     switch (pname)
     {
         case GL_POINT_FADE_THRESHOLD_SIZE:
+            mglPointParameterf(ctx, pname, (GLfloat)param);
+            return;
         case 0x8126: // GL_POINT_SIZE_MIN
         case 0x8127: // GL_POINT_SIZE_MAX
             if (param < 0)
@@ -1470,6 +1487,8 @@ void mglPointParameteri(GLMContext ctx, GLenum pname, GLint param)
         case GL_POINT_SPRITE_COORD_ORIGIN:
             if (param != GL_LOWER_LEFT && param != GL_UPPER_LEFT)
                 ERROR_RETURN(GL_INVALID_ENUM);
+            else
+                STATE(var).point_sprite_coord_origin = (GLenum)param;
             return;
         default:
             ERROR_RETURN(GL_INVALID_ENUM);

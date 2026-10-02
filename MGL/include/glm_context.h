@@ -285,6 +285,8 @@ void mglSetViewportToFramebufferSize(GLMContext ctx, Framebuffer *fbo);
 void mglAssignDrawFramebuffer(GLMContext ctx, Framebuffer *fbo);
 Texture *mglAttachmentBackingTexture(const FBOAttachment *a);
 bool mglValidateReadFramebuffer(GLMContext ctx);
+bool mglImplementationColorRead(GLMContext ctx, GLenum pname, GLint *value);
+GLboolean mglGetCapState(GLMContext ctx, GLenum cap, GLboolean *enabled);
 
 
 #ifdef __cplusplus

@@ -6330,8 +6330,8 @@ void mglPauseTransformFeedback(GLMContext ctx)
 
 void mglPolygonOffsetClamp(GLMContext ctx, GLfloat factor, GLfloat units, GLfloat clamp)
 {
-	(void)clamp;
 	mglPolygonOffset(ctx, factor, units);
+	STATE(var).polygon_offset_clamp = clamp;
 }
 
 void mglMaxShaderCompilerThreadsKHR(GLMContext ctx, GLuint count)

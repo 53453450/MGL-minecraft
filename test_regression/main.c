@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 165
+#define MAX_TESTS 166
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19353,6 +19353,127 @@ static int test_generic_buffer_binding_queries(unsigned char *pixels, const char
     return fail;
 }
 
+/* GL 4.6 §22.1: simple queries cover IsEnabled state and every state-table
+ * pname; any other pname is INVALID_ENUM and leaves the output untouched. */
+static int test_simple_query_pnames(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+    while (glGetError() != GL_NO_ERROR) {}
+
+    static const GLenum caps[] = { GL_SCISSOR_TEST, GL_DEPTH_CLAMP, GL_CLIP_DISTANCE0 };
+    for (size_t i = 0; i < sizeof(caps) / sizeof(caps[0]); i++) {
+        GLboolean on = GL_FALSE;
+        GLint off = -1;
+        glEnable(caps[i]);
+        glGetBooleanv(caps[i], &on);
+        glDisable(caps[i]);
+        glGetIntegerv(caps[i], &off);
+        if (on != GL_TRUE || off != 0 || glGetError() != GL_NO_ERROR) {
+            fprintf(stderr, "simple_query_pnames: cap 0x%04x on=%d off=%d\n", caps[i], on, off);
+            fail = 1;
+        }
+    }
+
+    GLint hint = 0;
+    glHint(GL_FRAGMENT_SHADER_DERIVATIVE_HINT, GL_NICEST);
+    glGetIntegerv(GL_FRAGMENT_SHADER_DERIVATIVE_HINT, &hint);
+    glHint(GL_FRAGMENT_SHADER_DERIVATIVE_HINT, GL_DONT_CARE);
+    if (hint != GL_NICEST) { fprintf(stderr, "simple_query_pnames: hint %d\n", hint); fail = 1; }
+
+    GLint iv = 0x55;
+    GLint64 i64 = 0x55;
+    GLfloat fv = 5.0f;
+    GLboolean bv = 0x55;
+    glGetIntegerv(GL_RGBA, &iv);
+    GLenum e0 = glGetError();
+    glGetInteger64v(GL_RGBA, &i64);
+    GLenum e1 = glGetError();
+    glGetFloatv(GL_RGBA, &fv);
+    GLenum e2 = glGetError();
+    glGetBooleanv(GL_RGBA, &bv);
+    GLenum e3 = glGetError();
+    if (e0 != GL_INVALID_ENUM || e1 != GL_INVALID_ENUM || e2 != GL_INVALID_ENUM ||
+        e3 != GL_INVALID_ENUM || iv != 0x55 || i64 != 0x55 || fv != 5.0f || bv != 0x55) {
+        fprintf(stderr, "simple_query_pnames: unknown pname errors 0x%x 0x%x 0x%x 0x%x\n",
+                e0, e1, e2, e3);
+        fail = 1;
+    }
+
+    GLint db = -1;
+    glGetIntegerv(GL_DRAW_BUFFER0, &db);
+    if (db == -1 || glGetError() != GL_NO_ERROR) { fprintf(stderr, "simple_query_pnames: DRAW_BUFFER0\n"); fail = 1; }
+
+    GLfloat fade = 0.0f;
+    GLint origin = 0;
+    glPointParameterf(GL_POINT_FADE_THRESHOLD_SIZE, 2.5f);
+    glPointParameterf(GL_POINT_SPRITE_COORD_ORIGIN, (GLfloat)GL_LOWER_LEFT);
+    glGetFloatv(GL_POINT_FADE_THRESHOLD_SIZE, &fade);
+    glGetIntegerv(GL_POINT_SPRITE_COORD_ORIGIN, &origin);
+    glPointParameterf(GL_POINT_FADE_THRESHOLD_SIZE, 1.0f);
+    glPointParameteri(GL_POINT_SPRITE_COORD_ORIGIN, GL_UPPER_LEFT);
+    if (fade != 2.5f || origin != GL_LOWER_LEFT || glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "simple_query_pnames: fade %f origin 0x%x\n", fade, origin);
+        fail = 1;
+    }
+
+    GLfloat clampSet = 0.0f, clampReset = 1.0f;
+    glPolygonOffsetClamp(1.0f, 2.0f, 0.25f);
+    glGetFloatv(GL_POLYGON_OFFSET_CLAMP, &clampSet);
+    glPolygonOffset(0.0f, 0.0f);
+    glGetFloatv(GL_POLYGON_OFFSET_CLAMP, &clampReset);
+    if (clampSet != 0.25f || clampReset != 0.0f || glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "simple_query_pnames: offset clamp %f reset %f\n", clampSet, clampReset);
+        fail = 1;
+    }
+
+    static const struct { GLenum internal; GLenum type; } ints[] = {
+        { GL_RGBA32UI, GL_UNSIGNED_INT }, { GL_RGBA32I, GL_INT },
+    };
+    GLint prevRead = 0, prevDraw = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDraw);
+    for (size_t i = 0; i < sizeof(ints) / sizeof(ints[0]); i++) {
+        GLuint tex = 0, fbo = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexStorage2D(GL_TEXTURE_2D, 1, ints[i].internal, 4, 4);
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        GLint fmt = 0, type = 0;
+        GLboolean dbl = GL_TRUE;
+        glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_FORMAT, &fmt);
+        glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_TYPE, &type);
+        glGetBooleanv(GL_DOUBLEBUFFER, &dbl);
+        GLenum e = glGetError();
+        glReadBuffer(GL_NONE);
+        GLint none = 0x55;
+        glGetIntegerv(GL_IMPLEMENTATION_COLOR_READ_FORMAT, &none);
+        GLenum eNone = glGetError();
+        if (fmt != GL_RGBA_INTEGER || type != (GLint)ints[i].type || dbl != GL_FALSE ||
+            e != GL_NO_ERROR || eNone != GL_INVALID_OPERATION || none != 0x55) {
+            fprintf(stderr, "simple_query_pnames: color read 0x%x fmt 0x%x type 0x%x dbl %d err 0x%x/0x%x\n",
+                    ints[i].internal, fmt, type, dbl, e, eNone);
+            fail = 1;
+        }
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prevRead);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prevDraw);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+    }
+
+    GLint64 t0 = 0, t1 = 0;
+    glGetInteger64v(GL_TIMESTAMP, &t0);
+    glGetInteger64v(GL_TIMESTAMP, &t1);
+    if (t0 <= 0 || t1 < t0 || glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "simple_query_pnames: timestamp %lld %lld\n", (long long)t0, (long long)t1);
+        fail = 1;
+    }
+    return fail;
+}
+
 static int test_ms_integer_texel_fetch(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -24473,6 +24594,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("depth_readback_clear_types", test_depth_readback_clear_types),
     SELF_CHECK_TEST("ms_integer_texel_fetch", test_ms_integer_texel_fetch),
     SELF_CHECK_TEST("generic_buffer_binding_queries", test_generic_buffer_binding_queries),
+    SELF_CHECK_TEST("simple_query_pnames", test_simple_query_pnames),
     SELF_CHECK_TEST("large_uniform_array", test_large_uniform_array),
     SELF_CHECK_TEST("xfb_atomic_counters", test_xfb_atomic_counters),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),

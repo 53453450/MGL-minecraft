@@ -173,6 +173,8 @@ typedef struct GLMParams_t {
      * way the equation was transformed). */
     GLdouble clip_planes[MAX_CLIP_DISTANCES][4];
     GLfloat point_size;
+    GLfloat point_fade_threshold_size;
+    GLenum point_sprite_coord_origin;
     GLfloat point_size_range[2];
     GLuint point_size_granularity;
     GLfloat line_width;
@@ -279,6 +281,7 @@ typedef struct GLMParams_t {
     GLuint map2_grid_segments;
     GLfloat polygon_offset_units;
     GLfloat polygon_offset_factor;
+    GLfloat polygon_offset_clamp;
     GLuint texture_binding_1d;
     GLuint texture_binding_2d;
     GLuint client_attrib_stack_depth;
