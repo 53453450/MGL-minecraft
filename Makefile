@@ -1041,9 +1041,11 @@ MCREPRO_CSRC := MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
 	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c \
 	MGL/src/mgl_legacy_compat.c MGL/src/mgl_frontend_session.c MGL/src/mgl_env_flag.c
 MCREPRO_COBJ := $(patsubst MGL/src/%.c,$(build_dir)/mcrepro_%.o,$(MCREPRO_CSRC))
+deps += $(MCREPRO_COBJ:.o=.d)
 
 $(build_dir)/mcrepro_%.o: MGL/src/%.c
-	$(LLVM_CXX) -x c -std=c11 -g -O0 -isysroot $(SDK_ROOT) -IMGL/include \
+	@mkdir -p $(dir $@)
+	$(LLVM_CXX) -x c -std=c11 -g -O0 -MMD -isysroot $(SDK_ROOT) -IMGL/include \
 		-IMGL/include/GL -IMGL/src -c $< -o $@
 
 $(build_dir)/test_mcrepro: test_legacy_compat/test_mcrepro.mm \
@@ -1192,61 +1194,61 @@ $(build_dir):
 	@mkdir -p $@
 
 test-frontends:
-	$(MAKE) test-legacy-compat
-	$(MAKE) test-mglir
-	$(MAKE) test-mgl-air-type
-	$(MAKE) test-mgllex
-	$(MAKE) test-mglparse
-	$(MAKE) test-mglsema
+	$(MAKE) build_dir=$(build_dir) test-legacy-compat
+	$(MAKE) build_dir=$(build_dir) test-mglir
+	$(MAKE) build_dir=$(build_dir) test-mgl-air-type
+	$(MAKE) build_dir=$(build_dir) test-mgllex
+	$(MAKE) build_dir=$(build_dir) test-mglparse
+	$(MAKE) build_dir=$(build_dir) test-mglsema
 
 test-air:
-	$(MAKE) test-mglair
-	$(MAKE) test-mglair-gtest
-	$(MAKE) test-mcrepro
-	$(MAKE) test-metalcpp
+	$(MAKE) build_dir=$(build_dir) test-mglair
+	$(MAKE) build_dir=$(build_dir) test-mglair-gtest
+	$(MAKE) build_dir=$(build_dir) test-mcrepro
+	$(MAKE) build_dir=$(build_dir) test-metalcpp
 
 # Keep the local gate serial: the GPU suites share Metal compiler/archive state.
 # The interactive GLFW application and performance benchmark remain explicit.
 test-all:
-	$(MAKE) verify-gl-api
-	$(MAKE) check-c-duplicates
-	$(MAKE) test-state-invariants
-	$(MAKE) test-state-dataflow
-	$(MAKE) test-state-snapshot-share
-	$(MAKE) test-frontends
-	$(MAKE) test-air
-	$(MAKE) test-dirty-hash
-	$(MAKE) test-arch-correctness
-	$(MAKE) test-tess-domain
-	$(MAKE) test-xfb-plan
-	$(MAKE) test-batch-path
-	$(MAKE) test-batch-hazard
-	$(MAKE) test-batch-icb
-	$(MAKE) test-batch-restore
-	$(MAKE) test-batch-issue
-	$(MAKE) test-process-gl-state-plan
-	$(MAKE) test-render-pass-clear-plan
-	$(MAKE) test-buffer-plan
-	$(MAKE) test-reference-query
-	$(MAKE) test-per-vertex-signature
-	$(MAKE) test-render-pass-load-store
-	$(MAKE) test-blit-plan
-	$(MAKE) test-binding-stage
-	$(MAKE) test-geometry-gather
-	$(MAKE) test-validate-arrays-early
-	$(MAKE) test-tess-air
+	$(MAKE) build_dir=$(build_dir) verify-gl-api
+	$(MAKE) build_dir=$(build_dir) check-c-duplicates
+	$(MAKE) build_dir=$(build_dir) test-state-invariants
+	$(MAKE) build_dir=$(build_dir) test-state-dataflow
+	$(MAKE) build_dir=$(build_dir) test-state-snapshot-share
+	$(MAKE) build_dir=$(build_dir) test-frontends
+	$(MAKE) build_dir=$(build_dir) test-air
+	$(MAKE) build_dir=$(build_dir) test-dirty-hash
+	$(MAKE) build_dir=$(build_dir) test-arch-correctness
+	$(MAKE) build_dir=$(build_dir) test-tess-domain
+	$(MAKE) build_dir=$(build_dir) test-xfb-plan
+	$(MAKE) build_dir=$(build_dir) test-batch-path
+	$(MAKE) build_dir=$(build_dir) test-batch-hazard
+	$(MAKE) build_dir=$(build_dir) test-batch-icb
+	$(MAKE) build_dir=$(build_dir) test-batch-restore
+	$(MAKE) build_dir=$(build_dir) test-batch-issue
+	$(MAKE) build_dir=$(build_dir) test-process-gl-state-plan
+	$(MAKE) build_dir=$(build_dir) test-render-pass-clear-plan
+	$(MAKE) build_dir=$(build_dir) test-buffer-plan
+	$(MAKE) build_dir=$(build_dir) test-reference-query
+	$(MAKE) build_dir=$(build_dir) test-per-vertex-signature
+	$(MAKE) build_dir=$(build_dir) test-render-pass-load-store
+	$(MAKE) build_dir=$(build_dir) test-blit-plan
+	$(MAKE) build_dir=$(build_dir) test-binding-stage
+	$(MAKE) build_dir=$(build_dir) test-geometry-gather
+	$(MAKE) build_dir=$(build_dir) test-validate-arrays-early
+	$(MAKE) build_dir=$(build_dir) test-tess-air
 # The self-contained ObjC / AIR gates below were previously reachable only by
 # naming them individually.  A tessellation-factor contract change (3a979a0)
 # stayed red for two days because test-mglair -- the only consumer that
 # caught it -- was not in any aggregate target.  They need llvm@15, which
 # test-tess-air above already requires.
-	$(MAKE) test-mglair
-	$(MAKE) test-mcrepro
-	$(MAKE) test-metalcpp
-	$(MAKE) test-air-loader-cache
-	$(MAKE) test-legacy-compat
-	$(MAKE) test-es-smoke
-	$(MAKE) test-regression
+	$(MAKE) build_dir=$(build_dir) test-mglair
+	$(MAKE) build_dir=$(build_dir) test-mcrepro
+	$(MAKE) build_dir=$(build_dir) test-metalcpp
+	$(MAKE) build_dir=$(build_dir) test-air-loader-cache
+	$(MAKE) build_dir=$(build_dir) test-legacy-compat
+	$(MAKE) build_dir=$(build_dir) test-es-smoke
+	$(MAKE) build_dir=$(build_dir) test-regression
 
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
 	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-batch-path test-batch-hazard test-batch-icb test-batch-restore test-batch-issue test-process-gl-state-plan test-binding-stage test-geometry-gather test-validate-arrays-early test-tess-air test-benchmark \
