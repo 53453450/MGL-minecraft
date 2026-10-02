@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 152
+#define MAX_TESTS 153
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18716,6 +18716,97 @@ static int test_depth_blit_orientation(unsigned char *pixels, const char *out_pa
     return fail ? 1 : 0;
 }
 
+/* GL_PACK_SWAP_BYTES applies to GetTexImage and GetTextureSubImage whichever
+ * storage holds the texels, and both return rendered contents (GL 4.6
+ * §8.11.4, §18.2). */
+static int test_get_tex_image_swap_bytes(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint prog = link_program(
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n",
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(4660.0, 22136.0, 65535.0, 0.0) / 65535.0; }\n");
+    if (!prog) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+
+    static GLushort up[4 * 4 * 4], out[2 * 4 * 4 * 4];
+    for (int i = 0; i < 4 * 4; i++) {
+        up[i * 4 + 0] = 0x1234;
+        up[i * 4 + 1] = 0x5678;
+        up[i * 4 + 2] = 0xffff;
+        up[i * 4 + 3] = 0x0000;
+    }
+    int fail = 0;
+    for (int c = 0; c < 3; c++) {
+        const GLenum target = c == 2 ? GL_TEXTURE_2D_ARRAY : GL_TEXTURE_2D;
+        GLuint tex = 0, fbo = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(target, tex);
+        if (c == 2)
+            glTexImage3D(target, 0, GL_RGBA16, 4, 4, 2, 0, GL_RGBA,
+                         GL_UNSIGNED_SHORT, NULL);
+        else
+            glTexImage2D(target, 0, GL_RGBA16, 4, 4, 0, GL_RGBA,
+                         GL_UNSIGNED_SHORT, c == 0 ? up : NULL);
+        glTexParameteri(target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        if (c > 0) {
+            glGenFramebuffers(1, &fbo);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            if (c == 2)
+                glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                          tex, 0, 1);
+            else
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                       GL_TEXTURE_2D, tex, 0);
+            glViewport(0, 0, 4, 4);
+            glUseProgram(prog);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
+        memset(out, 0, sizeof(out));
+        glPixelStorei(GL_PACK_SWAP_BYTES, GL_TRUE);
+        glGetTexImage(target, 0, GL_RGBA, GL_UNSIGNED_SHORT, out);
+        GLushort sub[4] = {0, 0, 0, 0};
+        if (c > 0)
+            glGetTextureSubImage(tex, 0, 1, 2, c == 2 ? 1 : 0, 1, 1, 1, GL_RGBA,
+                                 GL_UNSIGNED_SHORT, sizeof(sub), sub);
+        glPixelStorei(GL_PACK_SWAP_BYTES, GL_FALSE);
+        const GLushort *px = out + (c == 2 ? 4 * 4 * 4 : 0) + (2 * 4 + 1) * 4;
+        static const GLushort want[4] = {0x3412, 0x7856, 0xffff, 0x0000};
+        if (c > 0 && memcmp(sub, want, sizeof(sub)) != 0) {
+            fprintf(stderr, "get_tex_image_swap_bytes: case %d sub got %04x %04x %04x %04x\n",
+                    c, sub[0], sub[1], sub[2], sub[3]);
+            fail |= 0x100 << c;
+        }
+        for (int k = 0; k < 4; k++) {
+            if (px[k] != want[k]) {
+                fprintf(stderr, "get_tex_image_swap_bytes: case %d got %04x %04x %04x %04x\n",
+                        c, px[0], px[1], px[2], px[3]);
+                fail |= 1 << c;
+                break;
+            }
+        }
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+    }
+
+    if (glGetError() != GL_NO_ERROR) fail |= 0x10;
+    glUseProgram(0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "get_tex_image_swap_bytes: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* Stencil texturing: usampler2D reads (s, 0, 0, 1) from STENCIL_INDEX8 and
  * from depth-stencil textures in STENCIL_INDEX mode (GL 4.6 §8.23.1). */
 static int test_stencil_texturing(unsigned char *pixels, const char *out_path)
@@ -23228,6 +23319,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("clear_buffer_forms", test_clear_buffer_forms),
     SELF_CHECK_TEST("get_tex_image_depth_types", test_get_tex_image_depth_types),
     SELF_CHECK_TEST("stencil_texturing", test_stencil_texturing),
+    SELF_CHECK_TEST("get_tex_image_swap_bytes", test_get_tex_image_swap_bytes),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
     SELF_CHECK_TEST("depth_blit_orientation", test_depth_blit_orientation),

@@ -5620,6 +5620,18 @@ void mglCopyTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint
 
 #pragma mark get tex image
 
+static void mglApplyPackSwapBytes(GLMContext ctx, uint8_t *dst, size_t pitch,
+                                  size_t row_bytes, size_t rows, GLenum type)
+{
+    size_t elem_size = mglPixelTypeDatumBytes(type);
+    if (STATE(pack).swap_bytes != GL_TRUE || elem_size <= 1u) {
+        return;
+    }
+    for (size_t r = 0; r < rows; r++) {
+        mglSwapPixelBytes(dst + r * pitch, row_bytes, elem_size);
+    }
+}
+
 /* §8.11.4.  `tex` NULL means the texture bound to `target`; a negative
  * bufSize means no bufSize limit (GetTexImage). */
 static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
@@ -5871,6 +5883,9 @@ static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
                 if (STATE(error) != GL_NO_ERROR) {
                     return;
                 }
+                mglApplyPackSwapBytes(ctx, dst_base + ((size_t)z * slice_image_size),
+                                      pack_layout.dst_pitch, (size_t)width * pixel_size,
+                                      (size_t)slice_height, type);
             }
             return;
         }
@@ -5915,6 +5930,9 @@ static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
                                   type,
                                   level,
                                   slice);
+    mglApplyPackSwapBytes(ctx, (uint8_t *)pixels + pack_layout.skip_offset_bytes,
+                          pack_layout.dst_pitch, (size_t)width * pixel_size,
+                          (size_t)height, type);
 }
 
 void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, GLenum type, void *pixels)
@@ -6062,7 +6080,13 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
         return;
     }
 
-    if (tex->target == GL_TEXTURE_CUBE_MAP) {
+    mglFlushPendingDraws(ctx);
+    bool gpu_authoritative =
+        (tex->is_render_target && tex->mtl_render_target_write_version != 0u) ||
+        tex->metal_data_authoritative ||
+        lvl->metal_data_authoritative;
+
+    if (!gpu_authoritative && tex->target == GL_TEXTURE_CUBE_MAP) {
         uint8_t *dst_base = (uint8_t *)pixels + pack_layout.skip_offset_bytes;
         for (GLsizei z = 0; z < depth; z++) {
             GLuint cube_face = (GLuint)(zoffset + z);
@@ -6088,7 +6112,8 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
         return;
     }
 
-    if (mglCopyTextureSubRectToPackBuffer(lvl,
+    if (!gpu_authoritative &&
+        mglCopyTextureSubRectToPackBuffer(lvl,
                                           tex->internalformat,
                                           xoffset,
                                           yoffset,
@@ -6110,19 +6135,25 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
     }
 
     mglFlushCommandBuffer(ctx);
-    mglRendererGetTexImage(ctx,
-                                  tex,
-                                  (uint8_t *)pixels + pack_layout.skip_offset_bytes,
-                                  (GLuint)pack_layout.dst_pitch,
-                                  (GLuint)pack_layout.dst_image_size,
-                                  xoffset,
-                                  yoffset,
-                                  width,
-                                  height,
-                                  format,
-                                  type,
-                                  level,
-                                  level_zoffset);
+    uint8_t *dst_base = (uint8_t *)pixels + pack_layout.skip_offset_bytes;
+    for (GLsizei z = 0; z < depth; z++) {
+        uint8_t *dst = dst_base + (size_t)z * pack_layout.dst_image_size;
+        mglRendererGetTexImage(ctx,
+                                      tex,
+                                      dst,
+                                      (GLuint)pack_layout.dst_pitch,
+                                      (GLuint)pack_layout.dst_image_size,
+                                      xoffset,
+                                      yoffset,
+                                      width,
+                                      height,
+                                      format,
+                                      type,
+                                      level,
+                                      (GLuint)(zoffset + z));
+        mglApplyPackSwapBytes(ctx, dst, pack_layout.dst_pitch,
+                              (size_t)width * pixel_size, (size_t)height, type);
+    }
 }
 
 void mglGetCompressedTexImage(GLMContext ctx, GLenum target, GLint level, void *img)
