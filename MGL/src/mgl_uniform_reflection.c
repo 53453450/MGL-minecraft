@@ -364,9 +364,9 @@ static MGLShaderResource *mglFindAssignedPlainUniformResource(Program *program,
 }
 
 static GLint mglFirstFreePlainUniformLocation(
-    const bool used[MAX_BINDABLE_BUFFERS])
+    const bool used[MAX_PLAIN_UNIFORM_LOCATIONS])
 {
-    for (GLint location = 0; location < MAX_BINDABLE_BUFFERS; location++) {
+    for (GLint location = 0; location < MAX_PLAIN_UNIFORM_LOCATIONS; location++) {
         if (!used[location]) {
             return location;
         }
@@ -376,8 +376,8 @@ static GLint mglFirstFreePlainUniformLocation(
 
 void mglAssignPlainUniformLocations(Program *program)
 {
-    bool used[MAX_BINDABLE_BUFFERS] = {false};
-    const char *used_by[MAX_BINDABLE_BUFFERS] = {NULL};
+    bool used[MAX_PLAIN_UNIFORM_LOCATIONS] = {false};
+    const char *used_by[MAX_PLAIN_UNIFORM_LOCATIONS] = {NULL};
     if (!program) {
         return;
     }
@@ -395,7 +395,7 @@ void mglAssignPlainUniformLocations(Program *program)
             }
 
             if (resource->location != 0xffffffffu &&
-                resource->location < MAX_BINDABLE_BUFFERS) {
+                resource->location < MAX_PLAIN_UNIFORM_LOCATIONS) {
                 GLint candidate = (GLint)resource->location;
                 bool same_name = used_by[candidate] && resource->name &&
                     strcmp(used_by[candidate], resource->name) == 0;
@@ -408,11 +408,8 @@ void mglAssignPlainUniformLocations(Program *program)
                 } else {
                     resource->uniform_location = -1;
                 }
-            } else if (resource->location != 0xffffffffu &&
-                       resource->location < 1024u) {
-                resource->uniform_location = (GLint)resource->location;
             } else if (resource->uniform_location >= 0 &&
-                       resource->uniform_location < MAX_BINDABLE_BUFFERS) {
+                       resource->uniform_location < MAX_PLAIN_UNIFORM_LOCATIONS) {
                 used[resource->uniform_location] = true;
                 if (resource->name) {
                     used_by[resource->uniform_location] = resource->name;
@@ -437,16 +434,16 @@ void mglAssignPlainUniformLocations(Program *program)
             MGLShaderResource *assigned =
                 mglFindAssignedPlainUniformResource(program, resource->name);
             if (assigned && assigned->uniform_location >= 0 &&
-                assigned->uniform_location < MAX_BINDABLE_BUFFERS) {
+                assigned->uniform_location < MAX_PLAIN_UNIFORM_LOCATIONS) {
                 resource->uniform_location = assigned->uniform_location;
                 continue;
             }
 
             GLint preferred = -1;
-            if (resource->location < MAX_BINDABLE_BUFFERS &&
+            if (resource->location < MAX_PLAIN_UNIFORM_LOCATIONS &&
                 !used[resource->location]) {
                 preferred = (GLint)resource->location;
-            } else if (resource->gl_binding < MAX_BINDABLE_BUFFERS &&
+            } else if (resource->gl_binding < MAX_PLAIN_UNIFORM_LOCATIONS &&
                        !used[resource->gl_binding]) {
                 preferred = (GLint)resource->gl_binding;
             } else {

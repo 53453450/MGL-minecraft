@@ -402,7 +402,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
 
                     GLint member_loc = sm->member_loc;
                     if (!mglRenderBindableLocValid(member_loc,
-                                                   MAX_BINDABLE_BUFFERS)) {
+                                                   MAX_PLAIN_UNIFORM_LOCATIONS)) {
                         continue;
                     }
 
@@ -413,7 +413,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                         for (GLint ai = 0; ai < (GLint)sm->member_size; ai++) {
                             GLint elem_loc = member_loc + ai;
                             if (!mglRenderBindableLocValid(elem_loc,
-                                                           MAX_BINDABLE_BUFFERS)) {
+                                                           MAX_PLAIN_UNIFORM_LOCATIONS)) {
                                 continue;
                             }
                             BufferBaseTarget *mb = &buffers[elem_loc];
@@ -549,14 +549,17 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
         for (GLuint element = 0; element < entry->element_count; element++) {
             GLuint metal_binding = mglBufferPlanMetalBindingForElement(entry, element);
             GLuint client_binding = mglBufferPlanClientBindingForElement(entry, resource, element);
-            if (!mglRenderClientBindingInRange(client_binding,
-                                               MAX_BINDABLE_BUFFERS)) {
+            const uint32_t loc_cap =
+                mglRenderUsePlainUniformBuffers(spvc_type)
+                    ? (uint32_t)MAX_PLAIN_UNIFORM_LOCATIONS
+                    : (uint32_t)MAX_BINDABLE_BUFFERS;
+            if (!mglRenderClientBindingInRange(client_binding, loc_cap)) {
                 static uint64_t s_planOverflowHits = 0;
                 uint64_t hit = ++s_planOverflowHits;
                 if (hit <= 16ull || (hit % 4096ull) == 0ull) {
                     fprintf(stderr,
-                            "MGL WARNING: mapShaderBufferResourcesViaPlan: stage=%d type=%d binding=%u exceeds MAX_BINDABLE_BUFFERS=%d, skipping (hit=%llu)\n",
-                            stage, spvc_type, client_binding, MAX_BINDABLE_BUFFERS,
+                            "MGL WARNING: mapShaderBufferResourcesViaPlan: stage=%d type=%d binding=%u exceeds cap=%u, skipping (hit=%llu)\n",
+                            stage, spvc_type, client_binding, loc_cap,
                             (unsigned long long)hit);
                 }
                 continue;

@@ -397,13 +397,13 @@ static void mglProgramClearPlainUniformStorage(GLMContext ctx, Program *pptr)
     if (!ctx || !pptr) {
         return;
     }
-    for (GLuint w = 0u; w < 2u; w++) {
+    for (GLuint w = 0u; w < MGL_PLAIN_UNIFORM_ACTIVE_WORDS; w++) {
         uint64_t bits = pptr->plain_uniform_active_mask[w];
         while (bits) {
             unsigned b = (unsigned)__builtin_ctzll(bits);
             bits &= bits - 1ull;
             GLuint i = w * 64u + (GLuint)b;
-            if (i >= MAX_BINDABLE_BUFFERS) {
+            if (i >= MAX_PLAIN_UNIFORM_LOCATIONS) {
                 continue;
             }
             BufferBaseTarget *slot = &pptr->plain_uniform_buffers[i];

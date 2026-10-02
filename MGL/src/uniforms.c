@@ -2153,7 +2153,7 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
     const GLuint padded_words =
         mglPlainUniformMatrixElementBytes(gl_type) / sizeof(uint32_t);
 
-    Buffer *direct = location < MAX_BINDABLE_BUFFERS
+    Buffer *direct = location < MAX_PLAIN_UNIFORM_LOCATIONS
         ? ptr->plain_uniform_buffers[location].buf : NULL;
     if (direct && direct->data.buffer_data && direct->size > 0) {
         buf = direct;
@@ -2166,7 +2166,7 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
             stored_words =
                 mglMatrixElementStrideWords(avail, padded_words, comps);
         }
-    } else if (element > 0 && base_loc < MAX_BINDABLE_BUFFERS) {
+    } else if (element > 0 && base_loc < MAX_PLAIN_UNIFORM_LOCATIONS) {
         Buffer *base_buf = ptr->plain_uniform_buffers[base_loc].buf;
         if (base_buf && base_buf->data.buffer_data && base_buf->size > 0) {
             buf = base_buf;
@@ -3120,17 +3120,21 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
     GLsizeiptr elemBytes = mglPlainUniformScalarVectorBytes(glType);
     if (elemBytes == 0)
         elemBytes = mglPlainUniformMatrixElementBytes(glType);
+    if (glType == 0u) {
+        mglUniformSetError(ctx, GL_INVALID_OPERATION);
+        return;
+    }
 
     /* Storage is indexed by location.  An array that runs past the last
      * slot keeps all of its elements in the slot of element 0. */
     if (arraySize > 1 && elemBytes > 0 && arrayBase >= 0 &&
-        arrayBase < MAX_BINDABLE_BUFFERS &&
-        arrayBase + arraySize > MAX_BINDABLE_BUFFERS) {
+        arrayBase < MAX_PLAIN_UNIFORM_LOCATIONS &&
+        arrayBase + arraySize > MAX_PLAIN_UNIFORM_LOCATIONS) {
         mglUniformStoreArrayRange(ctx, program, arrayBase, arraySize,
                                   location - arrayBase, elemBytes, ptr, size);
         return;
     }
-    if (location >= MAX_BINDABLE_BUFFERS) {
+    if (location >= MAX_PLAIN_UNIFORM_LOCATIONS) {
         mglUniformSetError(ctx, GL_INVALID_OPERATION);
         return;
     }
@@ -3141,7 +3145,7 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         if (n > remaining)
             n = remaining;
         for (GLsizeiptr i = 0;
-             i < n && location + i < MAX_BINDABLE_BUFFERS; i++) {
+             i < n && location + i < MAX_PLAIN_UNIFORM_LOCATIONS; i++) {
             mglUniformStore(ctx, program, location + (GLint)i,
                             (uint8_t *)ptr + i * elemBytes, elemBytes);
         }

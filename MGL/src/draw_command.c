@@ -2361,7 +2361,7 @@ static uint64_t mglComputeDrawBufferBindingHashScan(GLMContext ctx, bool use_mas
         uint64_t hash_before_plain = hash;
         /* DEBUG path: linear scan + assert that mask-scan produces the same
          * incremental contribution.  Run both to detect mask drift. */
-        for (int i = 0; i < MAX_BINDABLE_BUFFERS; i++) {
+        for (int i = 0; i < MAX_PLAIN_UNIFORM_LOCATIONS; i++) {
             mglHashBufferBaseBinding(&hash,
                                      &program->plain_uniform_buffers[i],
                                      0x700u + (uint64_t)i);
@@ -2369,7 +2369,7 @@ static uint64_t mglComputeDrawBufferBindingHashScan(GLMContext ctx, bool use_mas
         static uint32_t s_plainMaskCheck = 0;
         if ((++s_plainMaskCheck & 0xFFu) == 0u) {
             uint64_t verify = hash_before_plain;
-            for (int w = 0; w < 2; w++) {
+            for (int w = 0; w < (int)MGL_PLAIN_UNIFORM_ACTIVE_WORDS; w++) {
                 uint64_t bits = program->plain_uniform_active_mask[w];
                 while (bits) {
                     int i = (int)((w * 64) + __builtin_ctzll(bits));
@@ -2382,7 +2382,7 @@ static uint64_t mglComputeDrawBufferBindingHashScan(GLMContext ctx, bool use_mas
             assert(verify == hash);
         }
 #else
-        for (int w = 0; w < 2; w++) {
+        for (int w = 0; w < (int)MGL_PLAIN_UNIFORM_ACTIVE_WORDS; w++) {
             uint64_t bits = program->plain_uniform_active_mask[w];
             while (bits) {
                 int i = (int)((w * 64) + __builtin_ctzll(bits));
@@ -3655,7 +3655,7 @@ static void mglTrackPendingBaseBufferReads(GLMContext ctx)
     if (program) {
         /* plain_uniform_active_mask bitmap scan replaces the 84-slot linear
          * scan; only slots with buf != NULL are visited. */
-        for (int w = 0; w < 2; w++) {
+        for (int w = 0; w < (int)MGL_PLAIN_UNIFORM_ACTIVE_WORDS; w++) {
             uint64_t bits = program->plain_uniform_active_mask[w];
             while (bits) {
                 int i = (int)((w * 64) + __builtin_ctzll(bits));

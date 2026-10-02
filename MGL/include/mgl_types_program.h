@@ -416,13 +416,10 @@ typedef struct Program_t {
     uint64_t pipeline_cache_instance_id;
     uint64_t pipeline_cache_generation;
     GLboolean program_separable;
-    BufferBaseTarget plain_uniform_buffers[MAX_BINDABLE_BUFFERS];
+    BufferBaseTarget plain_uniform_buffers[MAX_PLAIN_UNIFORM_LOCATIONS];
     /* Active-binding bitmap for plain_uniform_buffers: bit i is set iff
-     * plain_uniform_buffers[i].buf != NULL.  Maintained at uniform upload
-     * (uniforms.c) and link-time reflection (program.c / mgl_program_reflection.c) so
-     * mglComputeDrawBufferBindingHashScan and mglTrackPendingBaseBufferReads
-     * can skip the ~84-slot linear scan.  84 bits fit in 2 × uint64_t. */
-    uint64_t plain_uniform_active_mask[2];
+     * plain_uniform_buffers[i].buf != NULL. */
+    uint64_t plain_uniform_active_mask[MGL_PLAIN_UNIFORM_ACTIVE_WORDS];
     /* Cached uniform locations for the legacy clip-plane derivation
      * uniforms (_mglClipPlane / _mglClipPlaneEnabled); -1 when the program
      * does not use gl_ClipVertex.  Looked up at link end, refreshed per
@@ -515,12 +512,12 @@ void mglReleaseProgramReference(GLMContext ctx, Program *program);
 /* plain_uniform_active_mask helper.  Called at uniform upload / link-time
  * reflection to keep the bitmap in sync with which plain_uniform_buffers
  * slots have buf != NULL.  Draw-command hot paths (hash + hazard tracker)
- * use the bitmap to skip the ~84-slot linear scan.  Slots are only ever
+ * use the bitmap to skip empty slots.  Slots are only ever
  * populated (never cleared) while a program is alive, so this is the only
  * helper the maintenance sites need. */
 static inline void mglProgramPlainUniformSetActive(Program *program, GLuint index)
 {
-    if (!program || index >= MAX_BINDABLE_BUFFERS) return;
+    if (!program || index >= MAX_PLAIN_UNIFORM_LOCATIONS) return;
     program->plain_uniform_active_mask[index >> 6] |= (uint64_t)1u << (index & 63u);
 }
 

@@ -143,13 +143,13 @@ uint32_t mglRenderClientBufferBindingForResource(uint32_t resource_type,
             return (uint32_t)known;
         }
         if (uniform_location >= 0 &&
-            (uint32_t)uniform_location < 84u /* MAX_BINDABLE_BUFFERS */) {
+            (uint32_t)uniform_location < 1024u /* MAX_PLAIN_UNIFORM_LOCATIONS */) {
             return (uint32_t)uniform_location;
         }
-        if (location < 84u /* MAX_BINDABLE_BUFFERS */) {
+        if (location < 1024u /* MAX_PLAIN_UNIFORM_LOCATIONS */) {
             return location;
         }
-        if (gl_binding < 84u /* MAX_BINDABLE_BUFFERS */) {
+        if (gl_binding < 1024u /* MAX_PLAIN_UNIFORM_LOCATIONS */) {
             return gl_binding;
         }
     }

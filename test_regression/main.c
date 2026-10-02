@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 170
+#define MAX_TESTS 171
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -20084,6 +20084,75 @@ static int test_large_uniform_array(unsigned char *pixels, const char *out_path)
     return fail ? 1 : 0;
 }
 
+/* GL 4.6 §7.6.1: MAX_UNIFORM_LOCATIONS is 1024; a non-array uniform at
+ * location 84 must store and draw. Location 1024 is out of range. */
+static int test_high_uniform_location(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "uniform float pad[84];\n"
+        "uniform vec4 u;\n"
+        "layout(location = 0) out vec4 frag;\n"
+        "void main() { frag = u + vec4(pad[0]) * 0.0; }\n";
+    GLuint program = link_program(vs, fs);
+    if (!program) return 1;
+    GLuint fbo = 0, color = 0, vao = 0;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glUseProgram(program);
+    GLint loc = glGetUniformLocation(program, "u");
+    int fail = 0;
+    if (loc < 84) {
+        fprintf(stderr, "high_uniform_location: loc=%d\n", loc);
+        fail = 1;
+    } else {
+        glUniform4f(loc, 0.0f, 1.0f, 0.0f, 1.0f);
+        GLenum err = glGetError();
+        if (err != GL_NO_ERROR) {
+            fprintf(stderr, "high_uniform_location: Uniform 0x%x\n", err);
+            fail = 1;
+        }
+        GLfloat back[4] = {0};
+        glGetUniformfv(program, loc, back);
+        if (back[1] < 0.99f) {
+            fprintf(stderr, "high_uniform_location: GetUniform %g\n", back[1]);
+            fail = 1;
+        }
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *px = &pixels[(REG_H / 2 * REG_W + REG_W / 2) * 4];
+        if (px[1] < 200u) {
+            fprintf(stderr, "high_uniform_location: pixel (%u,%u,%u)\n",
+                    px[0], px[1], px[2]);
+            fail = 1;
+        }
+        glUniform4f(1024, 1.0f, 0.0f, 0.0f, 1.0f);
+        if ((err = glGetError()) != GL_INVALID_OPERATION) {
+            fprintf(stderr, "high_uniform_location: loc 1024 error 0x%x\n", err);
+            fail = 1;
+        }
+    }
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(program);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &color);
+    return fail;
+}
+
 static int test_depth_readback_clear_types(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -24876,6 +24945,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("tess_indexed_patch_draw", test_tess_indexed_patch_draw),
     SELF_CHECK_TEST("patch_primitive_restart_disabled", test_patch_primitive_restart_disabled),
     SELF_CHECK_TEST("large_uniform_array", test_large_uniform_array),
+    SELF_CHECK_TEST("high_uniform_location", test_high_uniform_location),
     SELF_CHECK_TEST("xfb_atomic_counters", test_xfb_atomic_counters),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),

@@ -253,6 +253,11 @@ typedef struct BufferBaseTarget_t {
 } BufferBaseTarget;
 
 #define MAX_BINDABLE_BUFFERS    84
+/* Default-block uniform locations (GL 4.6 §7.6.1 / MAX_UNIFORM_LOCATIONS).
+ * Distinct from MAX_BINDABLE_BUFFERS, which is UBO/SSBO/atomic binding points. */
+#define MAX_PLAIN_UNIFORM_LOCATIONS 1024
+#define MGL_PLAIN_UNIFORM_ACTIVE_WORDS \
+    ((MAX_PLAIN_UNIFORM_LOCATIONS + 63u) / 64u)
 #define MGL_MAX_VERTEX_ATTRIB_BINDINGS MAX_VERTEX_BUFFER_BINDINGS
 #define MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX 25u  /* Metal buffer slot for spvBufferSizeConstants */
 
