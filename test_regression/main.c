@@ -19464,6 +19464,45 @@ static int test_simple_query_pnames(unsigned char *pixels, const char *out_path)
         glDeleteTextures(1, &tex);
     }
 
+    GLint numFormats = 0;
+    glGetIntegerv(GL_NUM_COMPRESSED_TEXTURE_FORMATS, &numFormats);
+    if (numFormats > 0 && numFormats <= 64) {
+        GLint formats[64] = {0};
+        GLint64 formats64[64 + 1];
+        for (int i = 0; i <= 64; i++) formats64[i] = -1;
+        glGetIntegerv(GL_COMPRESSED_TEXTURE_FORMATS, formats);
+        glGetInteger64v(GL_COMPRESSED_TEXTURE_FORMATS, formats64);
+        for (GLint i = 0; i < numFormats; i++) {
+            if (formats64[i] != formats[i]) {
+                fprintf(stderr, "simple_query_pnames: compressed format %d: %lld want 0x%x\n",
+                        i, (long long)formats64[i], formats[i]);
+                fail = 1;
+                break;
+            }
+        }
+        if (formats64[numFormats] != -1) { fprintf(stderr, "simple_query_pnames: compressed formats overrun\n"); fail = 1; }
+    } else {
+        fprintf(stderr, "simple_query_pnames: NUM_COMPRESSED_TEXTURE_FORMATS %d\n", numFormats);
+        fail = 1;
+    }
+
+    static const GLenum multi[] = {
+        GL_VIEWPORT, GL_BLEND_COLOR, GL_PATCH_DEFAULT_INNER_LEVEL, GL_PATCH_DEFAULT_OUTER_LEVEL,
+    };
+    for (size_t m = 0; m < sizeof(multi) / sizeof(multi[0]); m++) {
+        GLint v32[4] = {-1, -1, -1, -1};
+        GLint64 v64[4] = {-1, -1, -1, -1};
+        glGetIntegerv(multi[m], v32);
+        glGetInteger64v(multi[m], v64);
+        for (int i = 0; i < 4; i++) {
+            if (v64[i] != v32[i]) {
+                fprintf(stderr, "simple_query_pnames: 0x%04x[%d] int64 %lld int %d\n",
+                        multi[m], i, (long long)v64[i], v32[i]);
+                fail = 1;
+            }
+        }
+    }
+
     GLint64 t0 = 0, t1 = 0;
     glGetInteger64v(GL_TIMESTAMP, &t0);
     glGetInteger64v(GL_TIMESTAMP, &t1);
