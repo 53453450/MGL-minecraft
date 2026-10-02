@@ -88,6 +88,20 @@ int mglRenderCreateTextureView(void* texture,
     return 0;
 }
 
+uint32_t mglRenderSampledViewPixelFormat(uint32_t depth_stencil_mode,
+                                         uint32_t pixel_format) {
+    /* GL 4.6 §8.23.1: STENCIL_INDEX mode samples the stencil aspect. */
+    if (depth_stencil_mode != GL_STENCIL_INDEX) return pixel_format;
+    switch (static_cast<MTL::PixelFormat>(pixel_format)) {
+    case MTL::PixelFormatDepth32Float_Stencil8:
+        return static_cast<uint32_t>(MTL::PixelFormatX32_Stencil8);
+    case MTL::PixelFormatDepth24Unorm_Stencil8:
+        return static_cast<uint32_t>(MTL::PixelFormatX24_Stencil8);
+    default:
+        return pixel_format;
+    }
+}
+
 int mglRenderSampledTextureViewForBaseLevel(
     Texture *texture_object,
     void *source_texture,
@@ -114,10 +128,12 @@ int mglRenderSampledTextureViewForBaseLevel(
     if (type == MTL::TextureTypeCube || type == MTL::TextureTypeCubeArray) {
         slice_count *= 6u;
     }
+    const uint32_t source_format = static_cast<uint32_t>(source->pixelFormat());
+    const uint32_t view_format = mglRenderSampledViewPixelFormat(
+        texture_object->params.depth_stencil_mode, source_format);
     /* GL 4.6 §11.1.3.5: depth lookups return (D, 0, 0, 1). */
     const uint32_t components =
-        mglRenderTextureDataKindForPixelFormat(
-            static_cast<uint32_t>(source->pixelFormat())) ==
+        mglRenderTextureDataKindForPixelFormat(source_format) ==
                 MGL_RENDER_TEXTURE_DATA_KIND_DEPTH
             ? 1u
             : mglRenderStoredColorComponents(texture_object->internalformat);
@@ -149,12 +165,14 @@ int mglRenderSampledTextureViewForBaseLevel(
         swizzle_alpha == static_cast<uint32_t>(MTL::TextureSwizzleAlpha);
     if (level_count == 0u ||
         (base == 0u && level_count >= source->mipmapLevelCount() &&
-         identity)) {
+         identity && view_format == source_format)) {
         *view_out = source_texture;
         return 0;
     }
     if (texture_object->mtl_base_level_view &&
         texture_object->mtl_base_level_view_source == source_texture &&
+        static_cast<uint32_t>(static_cast<MTL::Texture *>(
+            texture_object->mtl_base_level_view)->pixelFormat()) == view_format &&
         texture_object->mtl_base_level_view_base == base &&
         texture_object->mtl_base_level_view_max == max_level &&
         texture_object->mtl_base_level_view_swizzle_r ==
@@ -171,7 +189,7 @@ int mglRenderSampledTextureViewForBaseLevel(
 
     void *view_handle = nullptr;
     if (mglRenderCreateTextureViewRange(
-            source_texture, static_cast<uint32_t>(source->pixelFormat()),
+            source_texture, view_format,
             static_cast<uint32_t>(type), base, level_count, 0u, slice_count,
             identity ? 0 : 1, swizzle_red, swizzle_green, swizzle_blue,
             swizzle_alpha, &view_handle) != 0 || !view_handle) {
@@ -369,6 +387,9 @@ uint32_t mglRenderTextureDataKindForPixelFormat(uint32_t pixel_format) {
         case MTL::PixelFormatRG32Uint:
         case MTL::PixelFormatRGBA32Uint:
         case MTL::PixelFormatRGB10A2Uint:
+        case MTL::PixelFormatStencil8:
+        case MTL::PixelFormatX32_Stencil8:
+        case MTL::PixelFormatX24_Stencil8:
             return MGL_RENDER_TEXTURE_DATA_KIND_UINT;
 
         case MTL::PixelFormatInvalid:

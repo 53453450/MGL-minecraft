@@ -290,7 +290,10 @@ bool mglSampledRenderTargetCopyPlan(
             : 0,
         sampled_copy &&
                 mglTexturePixelFormatCompatibleWithExpectedDataKind(
-                    mglSsTexturePixelFormat(sampled_copy), expected_kind)
+                    mglRenderSampledViewPixelFormat(
+                        ptr->params.depth_stencil_mode,
+                        mglSsTexturePixelFormat(sampled_copy)),
+                    expected_kind)
             ? 1
             : 0);
 

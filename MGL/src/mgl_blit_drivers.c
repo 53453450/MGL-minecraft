@@ -3605,7 +3605,10 @@ void *mglBlitFreshGLSampledRenderTargetCopyForSampling(
         (expected_type == 0 ||
          mglBdTextureInfo(sampled_copy).texture_type == expected_type) &&
         mglTexturePixelFormatCompatibleWithExpectedDataKind(
-            mglBdTextureInfo(sampled_copy).pixel_format, expected_kind);
+            mglRenderSampledViewPixelFormat(
+                tex->params.depth_stencil_mode,
+                mglBdTextureInfo(sampled_copy).pixel_format),
+            expected_kind);
     if (sampled_copy && mglBdGLSampledCopyContentFresh(tex) && copy_type_ok) {
         return sampled_copy;
     }
@@ -3700,7 +3703,10 @@ void *mglBlitFreshGLSampledRenderTargetCopyForSampling(
           (expected_type == 0 ||
            mglBdTextureInfo(sampled_copy).texture_type == expected_type) &&
           mglTexturePixelFormatCompatibleWithExpectedDataKind(
-              mglBdTextureInfo(sampled_copy).pixel_format, expected_kind))) {
+              mglRenderSampledViewPixelFormat(
+                  tex->params.depth_stencil_mode,
+                  mglBdTextureInfo(sampled_copy).pixel_format),
+              expected_kind))) {
         source = tex->mtl_data;
         if (source) {
             (void)mglBlitUpdateGLSampledRenderTargetCopy(
@@ -3724,7 +3730,10 @@ void *mglBlitFreshGLSampledRenderTargetCopyForSampling(
         (expected_type == 0 ||
          mglBdTextureInfo(sampled_copy).texture_type == expected_type) &&
         mglTexturePixelFormatCompatibleWithExpectedDataKind(
-            mglBdTextureInfo(sampled_copy).pixel_format, expected_kind);
+            mglRenderSampledViewPixelFormat(
+                tex->params.depth_stencil_mode,
+                mglBdTextureInfo(sampled_copy).pixel_format),
+            expected_kind);
     if (mglTraceLogIsEnabled()) {
         mglTraceLog(
             "RT_SAMPLE_COPY_REPAIR stage=%s program=%u binding=%u unit=%u tex=%u "

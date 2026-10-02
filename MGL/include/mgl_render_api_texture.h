@@ -66,6 +66,11 @@ int mglRenderSampledTextureViewForBaseLevel(
     void *source_texture,
     void **view_out);
 
+/* Pixel format samplers read from a texture of `pixel_format`: its stencil
+ * aspect in DEPTH_STENCIL_TEXTURE_MODE == STENCIL_INDEX. */
+uint32_t mglRenderSampledViewPixelFormat(uint32_t depth_stencil_mode,
+                                         uint32_t pixel_format);
+
 int mglRenderTextureTargetPlan(
     uint32_t gl_target,
     uint32_t sample_count,

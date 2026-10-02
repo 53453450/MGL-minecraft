@@ -196,6 +196,10 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
         if (!depthCopy) {
             desc.usage |= MGLTextureUsageShaderWrite;
         }
+        /* Stencil texturing samples a stencil-format view of the copy. */
+        if (mglMetalPixelFormatIsPackedDepthStencil(desc.pixel_format)) {
+            desc.usage |= MGLTextureUsagePixelFormatView;
+        }
         desc.storage_mode = MGLStorageModePrivate;
 
         void *copy = NULL;
