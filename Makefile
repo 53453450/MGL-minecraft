@@ -383,7 +383,7 @@ $(build_dir)/libglfw.dylib: external/glfw/build/src/libglfw3.a $(mgl_lib)
 		-o $@ \
 		$(GLFW_FRAMEWORKS) \
 		-install_name @rpath/libglfw.dylib
-	@install_name_tool -change build/libmgl.dylib @loader_path/libmgl.dylib $@ 2>/dev/null || true
+	@install_name_tool -change $(mgl_lib) @loader_path/libmgl.dylib $@ 2>/dev/null || true
 	@install_name_tool -change @rpath/libmgl.dylib @loader_path/libmgl.dylib $@ 2>/dev/null || true
 	@echo "✅ GLFW shared library built: $@"
 	@echo "This enables compatibility with Minecraft mods and Prism Launcher"
