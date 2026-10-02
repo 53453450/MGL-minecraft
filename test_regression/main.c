@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 172
+#define MAX_TESTS 173
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19835,6 +19835,164 @@ static int test_patch_primitive_restart_disabled(unsigned char *pixels, const ch
     return patch_index_probe(pixels, 1, "patch_primitive_restart_disabled");
 }
 
+/* TCS/TES interface-block / struct-array members named like swizzle letters
+ * (`.a`, `.b`) must compile and round-trip (not be treated as vector swizzles).
+ * Also covers TES point_mode reading those members. */
+static int test_tess_swizzle_named_members(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) in vec3 te_color;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(te_color, 1.0); }\n";
+    static const char *tcs_block =
+        "#version 450 core\n"
+        "layout(vertices=3) out;\n"
+        "out ColorBlk { float a; float b; } tco[];\n"
+        "void main() {\n"
+        "  gl_out[gl_InvocationID].gl_Position =\n"
+        "      gl_in[gl_InvocationID].gl_Position;\n"
+        "  tco[gl_InvocationID].a = 0.0;\n"
+        "  tco[gl_InvocationID].b = 1.0;\n"
+        "  if (gl_InvocationID == 0) {\n"
+        "    gl_TessLevelOuter[0] = 1.0;\n"
+        "    gl_TessLevelOuter[1] = 1.0;\n"
+        "    gl_TessLevelOuter[2] = 1.0;\n"
+        "    gl_TessLevelInner[0] = 1.0;\n"
+        "  }\n"
+        "}\n";
+    static const char *tes_block =
+        "#version 450 core\n"
+        "layout(triangles, equal_spacing, cw) in;\n"
+        "in ColorBlk { float a; float b; } tei[];\n"
+        "layout(location=0) out vec3 te_color;\n"
+        "void main() {\n"
+        "  gl_Position = gl_in[0].gl_Position * gl_TessCoord.x +\n"
+        "                gl_in[1].gl_Position * gl_TessCoord.y +\n"
+        "                gl_in[2].gl_Position * gl_TessCoord.z;\n"
+        "  te_color = vec3(tei[0].a, tei[0].b, tei[1].a);\n"
+        "}\n";
+    static const char *tcs_struct =
+        "#version 450 core\n"
+        "layout(vertices=3) out;\n"
+        "out struct { float a; float b; } tcs_s[];\n"
+        "void main() {\n"
+        "  gl_out[gl_InvocationID].gl_Position =\n"
+        "      gl_in[gl_InvocationID].gl_Position;\n"
+        "  tcs_s[gl_InvocationID].a = 0.0;\n"
+        "  tcs_s[gl_InvocationID].b = 1.0;\n"
+        "  if (gl_InvocationID == 0) {\n"
+        "    gl_TessLevelOuter[0] = 1.0;\n"
+        "    gl_TessLevelOuter[1] = 1.0;\n"
+        "    gl_TessLevelOuter[2] = 1.0;\n"
+        "    gl_TessLevelInner[0] = 1.0;\n"
+        "  }\n"
+        "}\n";
+    static const char *tes_struct =
+        "#version 450 core\n"
+        "layout(triangles, equal_spacing, cw) in;\n"
+        "in struct { float a; float b; } tcs_s[];\n"
+        "layout(location=0) out vec3 te_color;\n"
+        "void main() {\n"
+        "  gl_Position = gl_in[0].gl_Position * gl_TessCoord.x +\n"
+        "                gl_in[1].gl_Position * gl_TessCoord.y +\n"
+        "                gl_in[2].gl_Position * gl_TessCoord.z;\n"
+        "  te_color = vec3(tcs_s[0].a, tcs_s[0].b, tcs_s[1].a);\n"
+        "}\n";
+    static const char *tes_point =
+        "#version 450 core\n"
+        "layout(triangles, equal_spacing, point_mode) in;\n"
+        "in ColorBlk { float a; float b; } tei[];\n"
+        "layout(location=0) out vec3 te_color;\n"
+        "void main() {\n"
+        "  gl_Position = gl_in[0].gl_Position * gl_TessCoord.x +\n"
+        "                gl_in[1].gl_Position * gl_TessCoord.y +\n"
+        "                gl_in[2].gl_Position * gl_TessCoord.z;\n"
+        "  gl_PointSize = 32.0;\n"
+        "  te_color = vec3(tei[0].a, tei[0].b, tei[1].a);\n"
+        "}\n";
+
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint vao = 0u, vbo = 0u;
+    int fail = 0;
+    if (!fbo) return 1;
+    make_pos2_vao(TRI_VERTS, sizeof(TRI_VERTS), &vao, &vbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glEnable(GL_PROGRAM_POINT_SIZE);
+
+    struct {
+        const char *label;
+        const char *tcs;
+        const char *tes;
+        int require_center_green;
+    } cases[] = {
+        {"block", tcs_block, tes_block, 1},
+        {"struct", tcs_struct, tes_struct, 1},
+        {"point_mode", tcs_block, tes_point, 0},
+    };
+    for (int c = 0; c < 3; c++) {
+        GLuint program =
+            link_program_with_tessellation(vs, cases[c].tcs, cases[c].tes, fs);
+        if (!program) {
+            fprintf(stderr, "tess_swizzle_named_members: %s link failed\n",
+                    cases[c].label);
+            fail |= 1 << c;
+            continue;
+        }
+        clear_color(0.0f, 0.0f, 0.0f);
+        glUseProgram(program);
+        glPatchParameteri(GL_PATCH_VERTICES, 3);
+        glDrawArrays(GL_PATCHES, 0, 3);
+        glFinish();
+        GLenum err = glGetError();
+        if (err != GL_NO_ERROR) {
+            fprintf(stderr, "tess_swizzle_named_members: %s draw error 0x%x\n",
+                    cases[c].label, err);
+            fail |= 1 << (c + 3);
+        }
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        if (cases[c].require_center_green) {
+            const unsigned char *center =
+                &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+            if (center[0] > 20u || center[1] < 220u || center[2] > 20u) {
+                fprintf(stderr,
+                        "tess_swizzle_named_members: %s center (%u,%u,%u)\n",
+                        cases[c].label, center[0], center[1], center[2]);
+                fail |= 1 << (c + 6);
+            }
+        } else {
+            int any_green = 0;
+            for (int i = 0; i < REG_W * REG_H; i++) {
+                const unsigned char *px = &pixels[i * 4];
+                if (px[0] <= 20u && px[1] >= 220u && px[2] <= 20u) {
+                    any_green = 1;
+                    break;
+                }
+            }
+            if (!any_green) {
+                fprintf(stderr,
+                        "tess_swizzle_named_members: point_mode no green\n");
+                fail |= 1 << (c + 6);
+            }
+        }
+        glDeleteProgram(program);
+        while (glGetError() != GL_NO_ERROR) { }
+    }
+
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    if (fail) fprintf(stderr, "tess_swizzle_named_members: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 static int test_ms_integer_texel_fetch(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -25030,6 +25188,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("point_sprite_coord_origin", test_point_sprite_coord_origin),
     SELF_CHECK_TEST("tess_indexed_patch_draw", test_tess_indexed_patch_draw),
     SELF_CHECK_TEST("patch_primitive_restart_disabled", test_patch_primitive_restart_disabled),
+    SELF_CHECK_TEST("tess_swizzle_named_members", test_tess_swizzle_named_members),
     SELF_CHECK_TEST("large_uniform_array", test_large_uniform_array),
     SELF_CHECK_TEST("high_uniform_location", test_high_uniform_location),
     SELF_CHECK_TEST("xfb_atomic_counters", test_xfb_atomic_counters),

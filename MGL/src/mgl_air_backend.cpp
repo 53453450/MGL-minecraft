@@ -2780,7 +2780,9 @@ static bool emitTessStageArrayStore(
 }
 
 /* TCS/TES: instance[i].field — flattened interface-block member.
- * Reject swizzle fields (`.xyz`) so they take the vector swizzle path. */
+ * Do not reject rgba/xyzw field names here: they are legal GLSL member
+ * identifiers (CTS uses `.a` / `.b`). Callers that need a vector swizzle
+ * on an indexed value fall through when codegenBlockMember fails. */
 static bool tessBlockMemberPath(const MGLExpr *e, const char **instOut,
                                 const MGLExpr **indexOut, const char **fieldOut)
 {
@@ -2794,15 +2796,9 @@ static bool tessBlockMemberPath(const MGLExpr *e, const char **instOut,
     const char *inst = idxE->u.index.object->u.var_ref.name;
     if (!inst || !strcmp(inst, "gl_in") || !strcmp(inst, "gl_out"))
         return false;
-    const char *field = e->u.member.field;
-    if (field) {
-        std::vector<uint32_t> swz;
-        if (swizzleIndices(field, &swz))
-            return false;
-    }
     if (instOut) *instOut = inst;
     if (indexOut) *indexOut = idxE->u.index.index;
-    if (fieldOut) *fieldOut = field;
+    if (fieldOut) *fieldOut = e->u.member.field;
     return true;
 }
 
@@ -2941,7 +2937,10 @@ static llvm::Value *emitTessBlockMemberLoad(
         return loadFromRecord(cg.stageInPtr, cg.stageInStride, record);
     }
     if (cg.isTessEval) {
-        if (cg.isTESCompute) {
+        /* isolines/point_mode render-vertex (isTESVertex) and compute
+         * expansions share the stage_in control-point record stream; only
+         * Metal post-tessellation uses controlPointGetter. */
+        if (cg.isTESCompute || cg.isTESVertex) {
             if (!cg.stageInPtr || !cg.indirectPtr || !cg.patchId) return nullptr;
             llvm::Value *patchInfo = cg.b->CreateBitCast(
                 cg.indirectPtr, cg.b->getInt32Ty()->getPointerTo(1));
@@ -2970,7 +2969,8 @@ static llvm::Value *emitTessBlockMemberLoad(
 /* TCS/TES: instance[k].field[e] -- a flattened interface-block member that
  * is itself an array or matrix.  Each element consumes one location, so the
  * record slot is (member location + element); the element index may be
- * dynamic.  Distinguished from tessBlockMemberPath by the trailing index. */
+ * dynamic.  Distinguished from tessBlockMemberPath by the trailing index.
+ * Same rule as tessBlockMemberPath: rgba/xyzw names may be real members. */
 static bool tessBlockArrayPath(const MGLExpr *e, const char **instOut,
                                const MGLExpr **vertexOut,
                                const char **fieldOut,
@@ -2987,14 +2987,9 @@ static bool tessBlockArrayPath(const MGLExpr *e, const char **instOut,
     const char *inst = instE->u.index.object->u.var_ref.name;
     if (!inst || !strcmp(inst, "gl_in") || !strcmp(inst, "gl_out"))
         return false;
-    const char *field = memberE->u.member.field;
-    if (field) {
-        std::vector<uint32_t> swz;
-        if (swizzleIndices(field, &swz)) return false;
-    }
     if (instOut) *instOut = inst;
     if (vertexOut) *vertexOut = instE->u.index.index;
-    if (fieldOut) *fieldOut = field;
+    if (fieldOut) *fieldOut = memberE->u.member.field;
     if (elemOut) *elemOut = e->u.index.index;
     return true;
 }
@@ -3073,7 +3068,7 @@ static llvm::Value *emitTessBlockArrayLoad(
             base = cg.stageInPtr;
             stride = cg.stageInStride;
         }
-    } else if (cg.isTESCompute) {
+    } else if (cg.isTESCompute || cg.isTESVertex) {
         if (!cg.stageInPtr || !cg.indirectPtr || !cg.patchId) return nullptr;
         llvm::Value *patchInfo = cg.b->CreateBitCast(
             cg.indirectPtr, cg.b->getInt32Ty()->getPointerTo(1));
@@ -8634,33 +8629,41 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 const char *inst = nullptr, *field = nullptr;
                 const MGLExpr *indexE = nullptr;
                 if (tessBlockMemberPath(lhs, &inst, &indexE, &field)) {
+                    llvm::Value *storeV = v;
                     if (e->u.assign.op != MGL_OP_ASSIGN) {
                         llvm::Value *old =
                             emitTessBlockMemberLoad(cg, lhs, mod, locals);
-                        if (!old) return nullptr;
-                        uint32_t binop = 0;
-                        switch (e->u.assign.op) {
-                        case MGL_OP_ADD_ASSIGN: binop = MGL_OP_ADD; break;
-                        case MGL_OP_SUB_ASSIGN: binop = MGL_OP_SUB; break;
-                        case MGL_OP_MUL_ASSIGN: binop = MGL_OP_MUL; break;
-                        case MGL_OP_DIV_ASSIGN: binop = MGL_OP_DIV; break;
-                        default: break;
+                        /* Path may match rgba/xyzw names that are vector
+                         * swizzles, not block members — fall through. */
+                        if (old) {
+                            uint32_t binop = 0;
+                            switch (e->u.assign.op) {
+                            case MGL_OP_ADD_ASSIGN: binop = MGL_OP_ADD; break;
+                            case MGL_OP_SUB_ASSIGN: binop = MGL_OP_SUB; break;
+                            case MGL_OP_MUL_ASSIGN: binop = MGL_OP_MUL; break;
+                            case MGL_OP_DIV_ASSIGN: binop = MGL_OP_DIV; break;
+                            default: break;
+                            }
+                            if (!binop) {
+                                cg.err = 1;
+                                cg.errmsg =
+                                    "codegen: compound TCS interface-block "
+                                    "member assignment is not implemented";
+                                return nullptr;
+                            }
+                            storeV = emitNumericBinOp(
+                                cg, binop, old, rhsV,
+                                exprType(cg, lhs, mod, locals),
+                                exprType(cg, e->u.assign.rhs, mod, locals));
+                            if (!storeV) return nullptr;
+                            if (emitTessBlockMemberStore(cg, lhs, storeV, mod,
+                                                         locals))
+                                return storeV;
                         }
-                        if (!binop) {
-                            cg.err = 1;
-                            cg.errmsg =
-                                "codegen: compound TCS interface-block "
-                                "member assignment is not implemented";
-                            return nullptr;
-                        }
-                        v = emitNumericBinOp(
-                            cg, binop, old, rhsV,
-                            exprType(cg, lhs, mod, locals),
-                            exprType(cg, e->u.assign.rhs, mod, locals));
-                        if (!v) return nullptr;
+                    } else if (emitTessBlockMemberStore(cg, lhs, storeV, mod,
+                                                        locals)) {
+                        return storeV;
                     }
-                    if (emitTessBlockMemberStore(cg, lhs, v, mod, locals))
-                        return v;
                 }
             }
         }
