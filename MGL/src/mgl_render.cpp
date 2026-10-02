@@ -3065,10 +3065,11 @@ void mglRenderFillFragCoordSlot(int use_fragcoord, int use_sample,
                                 uint32_t pass_height, int lower_left,
                                 uint32_t num_samples, uint32_t sample_buffers,
                                 int ms_loop, uint32_t forced_sample_id,
-                                float out[4]) {
+                                int point_coord_lower_left, float out[5]) {
     if (!out) {
         return;
     }
+    out[4] = point_coord_lower_left ? 1.f : 0.f;
     uint32_t sb_bits = sample_buffers;
     if (ms_loop) {
         sb_bits = 1u | 0x80000000u | ((forced_sample_id & 0xffu) << 8);

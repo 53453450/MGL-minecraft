@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 166
+#define MAX_TESTS 167
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19527,6 +19527,63 @@ static int test_simple_query_pnames(unsigned char *pixels, const char *out_path)
     return fail;
 }
 
+/* GL 4.6 §14.4.1: gl_PointCoord.t is 0 at the top of the point for
+ * POINT_SPRITE_COORD_ORIGIN UPPER_LEFT and at the bottom for LOWER_LEFT;
+ * s is 0 at the left edge either way. */
+static int test_point_sprite_coord_origin(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint color = 0;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint prog = link_program(
+        "#version 450\n"
+        "void main() { gl_PointSize = 32.0; gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }\n",
+        "#version 450\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(gl_PointCoord, 0.0, 1.0); }\n");
+    if (!fbo || !prog) return 1;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glUseProgram(prog);
+    glEnable(GL_PROGRAM_POINT_SIZE);
+    int fail = 0;
+    static const GLenum origins[2] = { GL_UPPER_LEFT, GL_LOWER_LEFT };
+    for (int v = 0; v < 4; v++) {
+        const int o = v & 1;
+        const GLenum clipOrigin = (v & 2) ? GL_UPPER_LEFT : GL_LOWER_LEFT;
+        glClipControl(clipOrigin, GL_NEGATIVE_ONE_TO_ONE);
+        glPointParameteri(GL_POINT_SPRITE_COORD_ORIGIN, origins[o]);
+        clear_color(0.0f, 0.0f, 1.0f);
+        glDrawArrays(GL_POINTS, 0, 1);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const int cx = REG_W / 2, cy = REG_H / 2;
+        const unsigned char *top = &pixels[((cy + 12) * REG_W + cx) * 4];
+        const unsigned char *bottom = &pixels[((cy - 12) * REG_W + cx) * 4];
+        const unsigned char *left = &pixels[(cy * REG_W + cx - 12) * 4];
+        const unsigned char *right = &pixels[(cy * REG_W + cx + 12) * 4];
+        const int topLow = origins[o] == GL_UPPER_LEFT;
+        if (top[2] != 0 || bottom[2] != 0 || left[0] > 64 || right[0] < 192 ||
+            (topLow ? (top[1] > 64 || bottom[1] < 192) : (top[1] < 192 || bottom[1] > 64))) {
+            fprintf(stderr, "point_sprite_coord_origin: clip 0x%x origin 0x%x top t=%u bottom t=%u left s=%u right s=%u\n",
+                    clipOrigin, origins[o], top[1], bottom[1], left[0], right[0]);
+            fail = 1;
+        }
+    }
+    glClipControl(GL_LOWER_LEFT, GL_NEGATIVE_ONE_TO_ONE);
+    glPointParameteri(GL_POINT_SPRITE_COORD_ORIGIN, GL_UPPER_LEFT);
+    glDisable(GL_PROGRAM_POINT_SIZE);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &color);
+    if (glGetError() != GL_NO_ERROR) fail = 1;
+    return fail;
+}
+
 static int test_ms_integer_texel_fetch(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -24648,6 +24705,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("ms_integer_texel_fetch", test_ms_integer_texel_fetch),
     SELF_CHECK_TEST("generic_buffer_binding_queries", test_generic_buffer_binding_queries),
     SELF_CHECK_TEST("simple_query_pnames", test_simple_query_pnames),
+    SELF_CHECK_TEST("point_sprite_coord_origin", test_point_sprite_coord_origin),
     SELF_CHECK_TEST("large_uniform_array", test_large_uniform_array),
     SELF_CHECK_TEST("xfb_atomic_counters", test_xfb_atomic_counters),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),

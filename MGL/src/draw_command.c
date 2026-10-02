@@ -2556,6 +2556,7 @@ static uint64_t mglComputeRenderStateHash(GLMContext ctx)
     hash ^= mglRotateLeft64((uint64_t)var->clip_origin, 40);
     hash ^= mglRotateLeft64((uint64_t)var->clip_depth_mode, 41);
     hash ^= mglRotateLeft64((uint64_t)var->provoking_vertex, 42);
+    hash ^= mglRotateLeft64((uint64_t)var->point_sprite_coord_origin, 43);
 
     return hash;
 }

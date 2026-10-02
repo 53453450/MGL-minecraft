@@ -1470,8 +1470,10 @@ void mglPointParameteri(GLMContext ctx, GLenum pname, GLint param)
         case GL_POINT_SPRITE_COORD_ORIGIN:
             if (param != GL_LOWER_LEFT && param != GL_UPPER_LEFT)
                 ERROR_RETURN(GL_INVALID_ENUM);
-            else
+            else {
                 STATE(var).point_sprite_coord_origin = (GLenum)param;
+                mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
+            }
             return;
         default:
             ERROR_RETURN(GL_INVALID_ENUM);

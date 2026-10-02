@@ -83,6 +83,7 @@ enum {
     MGL_AIR_BUILTIN_INTERPOLATE_AT_SAMPLE = 1u << 13,
     MGL_AIR_BUILTIN_INTERPOLATE_AT_OFFSET = 1u << 14,
     MGL_AIR_BUILTIN_SAMPLE_INTERPOLATION  = 1u << 15,
+    MGL_AIR_BUILTIN_POINT_COORD    = 1u << 16, /* gl_PointCoord              */
 };
 
 typedef struct MGLAIRStageInfo {

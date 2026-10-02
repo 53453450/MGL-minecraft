@@ -4462,13 +4462,15 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
                 }
             }
         }
-        float fragCoordParams[4] = {0.f, 0.f, 0.f, 0.f};
+        float fragCoordParams[5] = {0.f, 0.f, 0.f, 0.f, 0.f};
         mglRenderFillFragCoordSlot(
             useFragCoordParams, useSampleParams, (uint32_t)passHeight,
             mglRenderClipOriginIsLowerLeft(
                 (uint32_t)glState->var.clip_origin),
             numSamples, sampleBuffers, mglPlatformShellMSSampleInLoop(renderer),
-            (uint32_t)areas.mssample_forced_id, fragCoordParams);
+            (uint32_t)areas.mssample_forced_id,
+            glState->var.point_sprite_coord_origin == GL_LOWER_LEFT,
+            fragCoordParams);
         mglRenderSetRenderBytesForOwner(
             commandState->currentRenderEncoderOwner, fragCoordParams,
             sizeof(fragCoordParams), MGL_RENDER_BINDING_STAGE_FRAGMENT,

@@ -1275,7 +1275,7 @@ void mglRenderFillFragCoordSlot(int use_fragcoord, int use_sample,
                                 uint32_t pass_height, int lower_left,
                                 uint32_t num_samples, uint32_t sample_buffers,
                                 int ms_loop, uint32_t forced_sample_id,
-                                float out[4]);
+                                int point_coord_lower_left, float out[5]);
 
 void mglRenderClampLodBiasArray(float *bias, uint32_t count, float biasmax);
 

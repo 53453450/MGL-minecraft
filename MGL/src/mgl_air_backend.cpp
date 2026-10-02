@@ -10597,10 +10597,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         usesNumSamples || usesSampleMask || usesSamplePosition ||
         usesSampleID || usesInterpolateAtSample || hasSampleVarying;
     /* Metal [[position]] is top-left; GL gl_FragCoord is bottom-left.  Slot 30
-     * carries {height, lower_left, num_samples, sample_buffers} so the FS can
-     * flip Y (see RenderPass fragCoordParams). */
+     * carries {height, lower_left, num_samples, sample_buffers,
+     * point_coord_lower_left} so the FS can flip Y (see RenderPass
+     * fragCoordParams). */
     const bool needFragCoordParams = usesFragCoord;
-    const bool needParamsBuffer = needFragCoordParams || needSampleParams;
+    const bool needParamsBuffer =
+        needFragCoordParams || needSampleParams || usesPointCoord;
     const bool usesWorkGroupID =
         isCompute && mglFrontendBuiltinUsed(&mod, tu, "gl_WorkGroupID");
     const bool usesNumWorkGroups =
@@ -11685,6 +11687,23 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     cg.b->CreateSelect(useFlip, flipped, y);
                 cg.fragPos = cg.b->CreateInsertElement(
                     cg.fragPos, newY, cg.b->getInt32(1));
+            }
+            if (usesPointCoord) {
+                /* Metal point_coord has GL's UPPER_LEFT orientation. */
+                llvm::Value *pointLowerLeft = cg.b->CreateAlignedLoad(
+                    f32,
+                    cg.b->CreateGEP(f32, fptr, cg.b->getInt32(4)),
+                    llvm::Align(4));
+                llvm::Value *pc = cg.lvalues["gl_PointCoord"];
+                llvm::Value *t = cg.b->CreateExtractElement(
+                    pc, cg.b->getInt32(1));
+                llvm::Value *flippedT = cg.b->CreateFSub(
+                    llvm::ConstantFP::get(f32, 1.0), t);
+                llvm::Value *useFlip = cg.b->CreateFCmpOGT(
+                    pointLowerLeft, llvm::ConstantFP::get(f32, 0.5));
+                cg.lvalues["gl_PointCoord"] = cg.b->CreateInsertElement(
+                    pc, cg.b->CreateSelect(useFlip, flippedT, t),
+                    cg.b->getInt32(1));
             }
             if (needSampleParams) {
                 llvm::Value *nsBits = cg.b->CreateAlignedLoad(
@@ -14492,6 +14511,8 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_VERTEX_ID;
     if (mglFrontendBuiltinUsed(mod, tu, "gl_FragCoord"))
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_FRAG_COORD;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_PointCoord"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_POINT_COORD;
     if (mglFrontendBuiltinUsed(mod, tu, "gl_NumSamples"))
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_NUM_SAMPLES;
     if (mglFrontendBuiltinUsed(mod, tu, "gl_SampleID"))
