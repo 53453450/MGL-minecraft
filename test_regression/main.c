@@ -18958,13 +18958,17 @@ static int test_stencil_texturing(unsigned char *pixels, const char *out_path)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
     int fail = 0;
-    for (int c = 0; c < 3; c++) {
-        if (c == 2) {
-            /* Rows 8..15 of the depth-stencil texture become 9. */
-            glGenFramebuffers(1, &fds);
-            glBindFramebuffer(GL_FRAMEBUFFER, fds);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
-                                   GL_TEXTURE_2D, tds, 0);
+    GLuint fs8 = 0;
+    for (int c = 0; c < 4; c++) {
+        if (c >= 2) {
+            /* Rows 8..15 of the stencil texture become 9. */
+            GLuint *f = c == 2 ? &fds : &fs8;
+            glGenFramebuffers(1, f);
+            glBindFramebuffer(GL_FRAMEBUFFER, *f);
+            glFramebufferTexture2D(GL_FRAMEBUFFER,
+                                   c == 2 ? GL_DEPTH_STENCIL_ATTACHMENT
+                                          : GL_STENCIL_ATTACHMENT,
+                                   GL_TEXTURE_2D, c == 2 ? tds : ts8, 0);
             glDrawBuffer(GL_NONE);
             glUseProgram(pstencil);
             glEnable(GL_STENCIL_TEST);
@@ -18975,17 +18979,40 @@ static int test_stencil_texturing(unsigned char *pixels, const char *out_path)
             glDrawArrays(GL_TRIANGLES, 0, 3);
             glDisable(GL_SCISSOR_TEST);
             glDisable(GL_STENCIL_TEST);
+            if (c == 3) {
+                static const int srows[2] = {2, 13};
+                static GLubyte img[16 * 16];
+                glBindTexture(GL_TEXTURE_2D, ts8);
+                glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                glGetTexImage(GL_TEXTURE_2D, 0, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, img);
+                for (int k = 0; k < 2; k++) {
+                    const unsigned want = srows[k] >= 8 ? 9u : (unsigned)srows[k];
+                    GLubyte s = 0;
+                    glReadPixels(4, srows[k], 1, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, &s);
+                    if (s != want) {
+                        fprintf(stderr, "stencil_texturing: S8 ReadPixels row %d got %u\n",
+                                srows[k], s);
+                        fail |= 0x100 << k;
+                    }
+                    if (img[srows[k] * 16 + 4] != want) {
+                        fprintf(stderr, "stencil_texturing: S8 GetTexImage row %d got %u\n",
+                                srows[k], img[srows[k] * 16 + 4]);
+                        fail |= 0x400 << k;
+                    }
+                }
+                glPixelStorei(GL_PACK_ALIGNMENT, 4);
+            }
             glBindFramebuffer(GL_FRAMEBUFFER, fcolor);
         }
         glUseProgram(psample);
         glUniform1i(glGetUniformLocation(psample, "s"), 0);
-        glBindTexture(GL_TEXTURE_2D, c == 1 ? ts8 : tds);
+        glBindTexture(GL_TEXTURE_2D, (c & 1) ? ts8 : tds);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         static const int rows[2] = {2, 13};
         for (int k = 0; k < 2; k++) {
             unsigned char b[4] = {0};
             glReadPixels(4, rows[k], 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
-            const unsigned want = c == 2 && rows[k] >= 8 ? 9u : (unsigned)rows[k];
+            const unsigned want = c >= 2 && rows[k] >= 8 ? 9u : (unsigned)rows[k];
             if (b[0] != want || b[1] != 0 || b[2] != 0 || b[3] != 1) {
                 fprintf(stderr, "stencil_texturing: case %d row %d got %u,%u,%u,%u want %u\n",
                         c, rows[k], b[0], b[1], b[2], b[3], want);
@@ -18994,11 +19021,12 @@ static int test_stencil_texturing(unsigned char *pixels, const char *out_path)
         }
     }
 
-    if (glGetError() != GL_NO_ERROR) fail |= 0x40;
+    if (glGetError() != GL_NO_ERROR) fail |= 0x1000;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glUseProgram(0);
     glDeleteFramebuffers(1, &fcolor);
     glDeleteFramebuffers(1, &fds);
+    glDeleteFramebuffers(1, &fs8);
     glDeleteTextures(1, &color);
     glDeleteTextures(1, &tds);
     glDeleteTextures(1, &ts8);

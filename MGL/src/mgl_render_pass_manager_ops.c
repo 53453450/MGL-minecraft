@@ -1059,6 +1059,9 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
             }
         }
         if (tex && tex->mtl_data) {
+            if (!mglBlitFlipRenderTargetStorageForFirstWrite(renderer, tex)) {
+                return false;
+            }
             MGLMetalAttachmentSubresource subresource =
                 mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
             mglPdSetPersistentAttachment(

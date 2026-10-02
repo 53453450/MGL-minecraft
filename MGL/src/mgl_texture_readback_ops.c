@@ -1335,9 +1335,13 @@ int mglTextureReadStencilPixels(void *renderer, GLMContext glm_ctx,
     FBOAttachment *attachment = fbo ? &fbo->stencil : NULL;
     Texture *tex = mglRendererAttachmentTextureFor(glm_ctx, attachment);
     if (!tex || tex->samples > 1u || !mglRendererBindMTLTexture(renderer, tex) ||
-        !tex->mtl_data ||
-        !mglMetalPixelFormatIsPackedDepthStencil(
-            (uint32_t)mglPdTextureInfo(tex->mtl_data).pixel_format)) {
+        !tex->mtl_data) {
+        return 0;
+    }
+    const uint32_t pixelFormat =
+        (uint32_t)mglPdTextureInfo(tex->mtl_data).pixel_format;
+    if (!mglMetalPixelFormatIsPackedDepthStencil(pixelFormat) &&
+        pixelFormat != 253u /* Stencil8 */) {
         return 0;
     }
     void *texture = tex->mtl_data;

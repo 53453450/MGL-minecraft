@@ -17,6 +17,7 @@
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_blit_sampled_copy.h"
 #include "mgl_render.h"
+#include "pixel_utils.h"        /* MGLPixelFormatStencil8 */
 #include "mgl_renderer_ports.h"  /* state areas, ensure-writable command buffer */
 #include "mgl_blit_pipelines.h"  /* scaled copy pipeline / compute pipeline / sampler */
 #include "mgl_texture_compat.h"  /* release sampled copy, data kind name, trace label */
@@ -61,10 +62,11 @@ int mglBlitTextureCanUseGLSampledRenderTargetCopy(Texture *tex, void *source)
         return 0;
     }
 
-    /* Color, depth-only and packed depth-stencil RTs get the Y-flipped copy;
-     * stencil-only formats stay out. */
+    /* Color, depth, packed depth-stencil and Stencil8 RTs get the Y-flipped
+     * copy. */
     MGLTextureDataKind kind = mglTextureDataKindForPixelFormat(sourceFormat);
     if (kind != MGLTextureDataKindDepth &&
+        sourceFormat != MGLPixelFormatStencil8 &&
         (mglMetalPixelFormatIsDepthOrStencil(sourceFormat) ||
          (kind != MGLTextureDataKindFloat &&
           kind != MGLTextureDataKindUint &&
@@ -155,6 +157,7 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
     const MGLRenderTextureInfo sourceInfo = mglBlitSampledCopyTextureInfo(source);
     const int depthCopy = mglTextureDataKindForPixelFormat(sourceInfo.pixel_format) ==
                           MGLTextureDataKindDepth;
+    const int stencilCopy = sourceInfo.pixel_format == MGLPixelFormatStencil8;
     const MGLRenderTextureInfo oldCopyInfo =
         mglBlitSampledCopyTextureInfo(tex->mtl_gl_sampled_data);
     const int sameLayout = oldCopyInfo.texture_type == sourceInfo.texture_type &&
@@ -193,7 +196,7 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
         desc.sample_count = 1;
         desc.array_length = sourceInfo.array_length ? sourceInfo.array_length : 1u;
         desc.usage = MGLTextureUsageShaderRead | MGLTextureUsageRenderTarget;
-        if (!depthCopy) {
+        if (!depthCopy && !stencilCopy) {
             desc.usage |= MGLTextureUsageShaderWrite;
         }
         /* Stencil texturing samples a stencil-format view of the copy. */
@@ -280,6 +283,7 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
      * textures; the depth copy is a depth draw, which cannot carry stencil.
      * Those mirror rows with the blit engine, all depth planes at once. */
     const int rowBlit = sourceInfo.texture_type == MGLTextureType3D ||
+                        stencilCopy ||
                         mglMetalPixelFormatIsPackedDepthStencil(sourceInfo.pixel_format);
     if (rowBlit) {
         void *blit = mglRenderCreateBlitEncoderBorrowed(
