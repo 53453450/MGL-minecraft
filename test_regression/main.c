@@ -19417,6 +19417,20 @@ static int test_simple_query_pnames(unsigned char *pixels, const char *out_path)
         fprintf(stderr, "simple_query_pnames: fade %f origin 0x%x\n", fade, origin);
         fail = 1;
     }
+    /* Core §14.4 accepts only the fade threshold and sprite origin. */
+    static const GLfloat attenuation[3] = {1.0f, 0.0f, 0.0f};
+    glPointParameterf(0x8126 /* POINT_SIZE_MIN */, 1.0f);
+    GLenum eMin = glGetError();
+    glPointParameterfv(0x8129 /* POINT_DISTANCE_ATTENUATION */, attenuation);
+    GLenum eAtt = glGetError();
+    glPointParameterf(GL_POINT_FADE_THRESHOLD_SIZE, -1.0f);
+    GLenum eNeg = glGetError();
+    glGetFloatv(GL_POINT_FADE_THRESHOLD_SIZE, &fade);
+    if (eMin != GL_INVALID_ENUM || eAtt != GL_INVALID_ENUM || eNeg != GL_INVALID_VALUE || fade != 1.0f) {
+        fprintf(stderr, "simple_query_pnames: point parameter errors 0x%x 0x%x 0x%x fade %f\n",
+                eMin, eAtt, eNeg, fade);
+        fail = 1;
+    }
 
     GLfloat clampSet = 0.0f, clampReset = 1.0f;
     glPolygonOffsetClamp(1.0f, 2.0f, 0.25f);

@@ -1440,11 +1440,6 @@ void mglPointParameterf(GLMContext ctx, GLenum pname, GLfloat param)
             else
                 STATE(var).point_fade_threshold_size = param;
             return;
-        case 0x8126: // GL_POINT_SIZE_MIN
-        case 0x8127: // GL_POINT_SIZE_MAX
-            if (param < 0.0f)
-                ERROR_RETURN(GL_INVALID_VALUE);
-            return;
         case GL_POINT_SPRITE_COORD_ORIGIN:
             mglPointParameteri(ctx, pname, (GLint)param);
             return;
@@ -1462,14 +1457,7 @@ void mglPointParameterfv(GLMContext ctx, GLenum pname, const GLfloat *params)
         return;
     }
 
-    switch (pname)
-    {
-        case 0x8129: // GL_POINT_DISTANCE_ATTENUATION
-            return;
-        default:
-            mglPointParameterf(ctx, pname, *params);
-            return;
-    }
+    mglPointParameterf(ctx, pname, *params);
 }
 
 void mglPointParameteri(GLMContext ctx, GLenum pname, GLint param)
@@ -1478,11 +1466,6 @@ void mglPointParameteri(GLMContext ctx, GLenum pname, GLint param)
     {
         case GL_POINT_FADE_THRESHOLD_SIZE:
             mglPointParameterf(ctx, pname, (GLfloat)param);
-            return;
-        case 0x8126: // GL_POINT_SIZE_MIN
-        case 0x8127: // GL_POINT_SIZE_MAX
-            if (param < 0)
-                ERROR_RETURN(GL_INVALID_VALUE);
             return;
         case GL_POINT_SPRITE_COORD_ORIGIN:
             if (param != GL_LOWER_LEFT && param != GL_UPPER_LEFT)
@@ -1504,12 +1487,5 @@ void mglPointParameteriv(GLMContext ctx, GLenum pname, const GLint *params)
         return;
     }
 
-    switch (pname)
-    {
-        case 0x8129: // GL_POINT_DISTANCE_ATTENUATION
-            return;
-        default:
-            mglPointParameteri(ctx, pname, *params);
-            return;
-    }
+    mglPointParameteri(ctx, pname, *params);
 }
