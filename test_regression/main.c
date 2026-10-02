@@ -18808,8 +18808,8 @@ static int test_get_tex_image_swap_bytes(unsigned char *pixels, const char *out_
 }
 
 /* GetTexImage / GetTextureSubImage into a PIXEL_PACK_BUFFER must be visible
- * to later GPU reads of that buffer, and packing past its end is
- * INVALID_OPERATION (GL 4.6 §8.11.4, §18.2). */
+ * to later GPU reads of that buffer; packing past its end or at an offset
+ * not a multiple of the type size is INVALID_OPERATION (GL 4.6 §8.11.4). */
 static int test_get_tex_image_pack_buffer(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -18878,6 +18878,13 @@ static int test_get_tex_image_pack_buffer(unsigned char *pixels, const char *out
             glGetTextureSubImage(tex, 0, 0, 0, 0, 3, 1, 1, GL_RGBA, GL_FLOAT,
                                  sizeof(tri), (void *)(uintptr_t)16);
         if (glGetError() != GL_INVALID_OPERATION) fail |= 0x100 << c;
+        for (int off = 4; off >= 2; off -= 2) {
+            glGetTextureSubImage(tex, 0, 0, 0, 0, 1, 1, 1, GL_RGBA, GL_FLOAT,
+                                 16, (void *)(uintptr_t)off);
+            if (glGetError() != (off == 4 ? GL_NO_ERROR : GL_INVALID_OPERATION))
+                fail |= 0x1000 << (c * 2 + off / 4);
+            while (glGetError() != GL_NO_ERROR) { }
+        }
         glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
         glDisableVertexAttribArray(0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);

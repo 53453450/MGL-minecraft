@@ -5665,12 +5665,17 @@ static bool mglResolvePackBufferDst(GLMContext ctx, const char *api,
     return true;
 }
 
-/* Packing past the end of the bound pack buffer is INVALID_OPERATION
- * (§8.11.4). */
+/* A pack buffer offset that is not a multiple of the type's datum size, or
+ * packing past the end of the buffer, is INVALID_OPERATION (§8.11.4). */
 static bool mglCheckPackBufferRange(GLMContext ctx, const Buffer *pack_buffer,
-                                    uintptr_t offset, size_t bytes)
+                                    uintptr_t offset, size_t bytes, GLenum type)
 {
-    if (pack_buffer && bytes > (size_t)pack_buffer->size - offset) {
+    if (!pack_buffer) {
+        return true;
+    }
+    size_t datum = mglPixelTypeDatumBytes(type);
+    if ((datum > 1u && offset % datum != 0u) ||
+        bytes > (size_t)pack_buffer->size - offset) {
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
     }
     return true;
@@ -5808,7 +5813,7 @@ static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
                        pack_layout.required_bytes <= (size_t)bufSize,
                        GL_INVALID_OPERATION);
     if (!mglCheckPackBufferRange(ctx, pack_buffer, pack_offset,
-                                 pack_layout.required_bytes)) {
+                                 pack_layout.required_bytes, type)) {
         return;
     }
 
@@ -6094,7 +6099,7 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
         return;
     }
     if (!mglCheckPackBufferRange(ctx, pack_buffer, pack_offset,
-                                 pack_layout.required_bytes)) {
+                                 pack_layout.required_bytes, type)) {
         return;
     }
 
