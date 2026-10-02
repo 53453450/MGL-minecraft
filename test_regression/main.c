@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 164
+#define MAX_TESTS 165
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19436,6 +19436,141 @@ static int test_ms_integer_texel_fetch(unsigned char *pixels, const char *out_pa
     return fail ? 1 : 0;
 }
 
+/* Atomic counters in a vertex-processing stage whose outputs are captured
+ * with transform feedback.  The counters start at 7 and 77; with one buffer
+ * they live at offsets 8 and 16. */
+static int xfb_atomic_counter_case(const char *label, const char *vs,
+                                   const char *gs, int one_buffer)
+{
+    enum { N = 32 };
+    static const char *varyings[2] = { "o_inc", "o_dec" };
+    int fail = 0;
+    GLuint shaders[2] = {
+        compile_shader(GL_VERTEX_SHADER, vs),
+        gs ? compile_shader(GL_GEOMETRY_SHADER, gs) : 0,
+    };
+    GLuint prog = glCreateProgram();
+    if (!shaders[0] || (gs && !shaders[1]) || !prog) return 1;
+    for (int i = 0; i < 2; i++) {
+        if (shaders[i]) glAttachShader(prog, shaders[i]);
+    }
+    glTransformFeedbackVaryings(prog, 2, varyings, GL_SEPARATE_ATTRIBS);
+    glLinkProgram(prog);
+    for (int i = 0; i < 2; i++) {
+        if (shaders[i]) glDeleteShader(shaders[i]);
+    }
+    GLint ok = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        fprintf(stderr, "xfb_atomic_counters: %s link failed\n", label);
+        glDeleteProgram(prog);
+        return 1;
+    }
+
+    static const GLuint zeros[N] = { 0 };
+    const GLuint init[2] = { 7u, 77u };
+    const GLintptr offs[2] = { one_buffer ? 8 : 0, one_buffer ? 16 : 0 };
+    GLuint vao = 0, vbo = 0, ac[2] = { 0, 0 }, xfb[2] = { 0, 0 };
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(zeros), zeros, GL_STATIC_DRAW);
+    glVertexAttribIPointer(0, 1, GL_UNSIGNED_INT, 0, 0);
+    glEnableVertexAttribArray(0);
+    glGenBuffers(one_buffer ? 1 : 2, ac);
+    if (one_buffer) ac[1] = ac[0];
+    glGenBuffers(2, xfb);
+    for (int i = 0; i < 2; i++) {
+        glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, ac[i]);
+        if (i == 0 || !one_buffer)
+            glBufferData(GL_ATOMIC_COUNTER_BUFFER, 32, NULL, GL_DYNAMIC_COPY);
+        glBufferSubData(GL_ATOMIC_COUNTER_BUFFER, offs[i], 4, &init[i]);
+        glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, (GLuint)i, ac[i]);
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, xfb[i]);
+        glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, N * 4, NULL, GL_STREAM_COPY);
+        glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, (GLuint)i, xfb[i]);
+    }
+
+    glUseProgram(prog);
+    glEnable(GL_RASTERIZER_DISCARD);
+    glBeginTransformFeedback(GL_POINTS);
+    glDrawArrays(GL_POINTS, 0, N);
+    glEndTransformFeedback();
+    glDisable(GL_RASTERIZER_DISCARD);
+    glFinish();
+
+    GLuint counters[2] = { 0, 0 };
+    GLuint captured[2][N];
+    for (int i = 0; i < 2; i++) {
+        glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, ac[i]);
+        glGetBufferSubData(GL_ATOMIC_COUNTER_BUFFER, offs[i], 4, &counters[i]);
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, xfb[i]);
+        glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, N * 4, captured[i]);
+    }
+    if (counters[0] != 7u + N || counters[1] != 77u - N) {
+        fprintf(stderr, "xfb_atomic_counters: %s counters %u %u want %u %u\n",
+                label, counters[0], counters[1], 7u + N, 77u - N);
+        fail = 1;
+    }
+    /* Increment returns the old value, decrement the new one. */
+    const GLuint lo[2] = { 7u, 77u - N };
+    for (int i = 0; i < 2; i++) {
+        unsigned char seen[N] = { 0 };
+        for (int v = 0; v < N; v++) {
+            GLuint k = captured[i][v] - lo[i];
+            if (k >= N || seen[k]) {
+                fprintf(stderr, "xfb_atomic_counters: %s buffer %d [%d] = %u\n",
+                        label, i, v, captured[i][v]);
+                fail = 1;
+                break;
+            }
+            seen[k] = 1;
+        }
+    }
+
+    glUseProgram(0);
+    glDeleteProgram(prog);
+    glDeleteBuffers(2, xfb);
+    glDeleteBuffers(one_buffer ? 1 : 2, ac);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
+static int test_xfb_atomic_counters(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs_two =
+        "#version 420 core\n"
+        "layout(location = 0) in uint i_zero;\n"
+        "out uint o_inc;\n"
+        "out uint o_dec;\n"
+        "layout(binding = 0, offset = 0) uniform atomic_uint ac_inc;\n"
+        "layout(binding = 1, offset = 0) uniform atomic_uint ac_dec;\n"
+        "void main() {\n"
+        "  o_inc = i_zero + atomicCounterIncrement(ac_inc);\n"
+        "  o_dec = i_zero + atomicCounterDecrement(ac_dec);\n"
+        "}\n";
+    static const char *vs_one =
+        "#version 420 core\n"
+        "layout(location = 0) in uint i_zero;\n"
+        "out uint o_inc;\n"
+        "out uint o_dec;\n"
+        "layout(binding = 0, offset = 8) uniform atomic_uint ac_inc;\n"
+        "layout(binding = 0, offset = 16) uniform atomic_uint ac_dec;\n"
+        "void main() {\n"
+        "  o_inc = i_zero + atomicCounterIncrement(ac_inc);\n"
+        "  o_dec = i_zero + atomicCounterDecrement(ac_dec);\n"
+        "}\n";
+    int fail = 0;
+    fail |= xfb_atomic_counter_case("VS two buffers", vs_two, NULL, 0);
+    fail |= xfb_atomic_counter_case("VS one buffer", vs_one, NULL, 1);
+    return fail;
+}
+
 static int test_large_uniform_array(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -24319,6 +24454,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("ms_integer_texel_fetch", test_ms_integer_texel_fetch),
     SELF_CHECK_TEST("generic_buffer_binding_queries", test_generic_buffer_binding_queries),
     SELF_CHECK_TEST("large_uniform_array", test_large_uniform_array),
+    SELF_CHECK_TEST("xfb_atomic_counters", test_xfb_atomic_counters),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
     SELF_CHECK_TEST("depth_blit_orientation", test_depth_blit_orientation),

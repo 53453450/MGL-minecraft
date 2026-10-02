@@ -11453,7 +11453,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 }
                 cg.lvalues[v.name] = agg;
                 } else {
-                    if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
+                    if (v.kind == VarSym::VARYING &&
+                        uintUsesSplitFloatCarrier(v.type, has_gs)) {
                         llvm::Value *lo = fn->getArg(argSlot++);
                         llvm::Value *hi = fn->getArg(argSlot++);
                         cg.lvalues[v.name] = decodeUintSplitFloatCarrier(
