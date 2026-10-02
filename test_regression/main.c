@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 168
+#define MAX_TESTS 169
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -9738,8 +9738,8 @@ static int test_air_tessellation_isolines_indexed(unsigned char *pixels,
     /* Indexed TES-only isolines through the AIR TES compute kernel's
      * gather path: a shuffled element stream (patch 0 reads gl_in in order
      * C,A,B) exercises the gather mapping, two instances exercise the
-     * per-instance sparse-capture offset decomposition, and a restart
-     * marker splits the stream into two patches with shared indices. */
+     * per-instance sparse-capture offset decomposition, and two patches
+     * share indices. */
     (void)out_path;
     static const char *vs =
         "#version 450 core\n"
@@ -9765,9 +9765,9 @@ static int test_air_tessellation_isolines_indexed(unsigned char *pixels,
         -0.7f, -0.3f, 0.7f, -0.3f, 0.0f, -0.9f, /* A B C */
     };
     /* Patch 0: {2,0,1} -> gl_in = (C,A,B); line 0 spans C->A.
-     * Restart (0xFFFFFFFF) then patch 1: {1,0,2} -> gl_in = (B,A,C). */
-    static const GLuint indices[8] = {
-        2u, 0u, 1u, 0xFFFFFFFFu, 1u, 0u, 2u,
+     * Patch 1: {1,0,2} -> gl_in = (B,A,C). */
+    static const GLuint indices[6] = {
+        2u, 0u, 1u, 1u, 0u, 2u,
     };
 
     GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, ebo = 0u, q = 0u;
@@ -9799,12 +9799,9 @@ static int test_air_tessellation_isolines_indexed(unsigned char *pixels,
         glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
         glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
     }
-    glEnable(GL_PRIMITIVE_RESTART);
-    glPrimitiveRestartIndex(0xFFFFFFFFu);
-    /* Restart splits 7 indices into two 3-vertex patches; two instances ->
-     * 2 patches * 8 lines * 2 instances = 32 primitives. */
+    /* 2 patches * 8 lines * 2 instances = 32 primitives. */
     glBeginQuery(GL_PRIMITIVES_GENERATED, q);
-    glDrawElementsInstanced(GL_PATCHES, 7, GL_UNSIGNED_INT, 0, 2);
+    glDrawElementsInstanced(GL_PATCHES, 6, GL_UNSIGNED_INT, 0, 2);
     glEndQuery(GL_PRIMITIVES_GENERATED);
     glFinish();
     {
@@ -19675,6 +19672,18 @@ static int test_tess_indexed_patch_draw(unsigned char *pixels, const char *out_p
     return patch_index_probe(pixels, 0, "tess_indexed_patch_draw");
 }
 
+/* GL 4.6 §10.3.6: with PRIMITIVE_RESTART_FOR_PATCHES_SUPPORTED false,
+ * primitive restart is treated as disabled for PATCHES, so an index equal to
+ * the restart index is an ordinary control point. */
+static int test_patch_primitive_restart_disabled(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLboolean supported = GL_TRUE;
+    glGetBooleanv(GL_PRIMITIVE_RESTART_FOR_PATCHES_SUPPORTED, &supported);
+    if (supported) return 0;
+    return patch_index_probe(pixels, 1, "patch_primitive_restart_disabled");
+}
+
 static int test_ms_integer_texel_fetch(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -24798,6 +24807,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("simple_query_pnames", test_simple_query_pnames),
     SELF_CHECK_TEST("point_sprite_coord_origin", test_point_sprite_coord_origin),
     SELF_CHECK_TEST("tess_indexed_patch_draw", test_tess_indexed_patch_draw),
+    SELF_CHECK_TEST("patch_primitive_restart_disabled", test_patch_primitive_restart_disabled),
     SELF_CHECK_TEST("large_uniform_array", test_large_uniform_array),
     SELF_CHECK_TEST("xfb_atomic_counters", test_xfb_atomic_counters),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),

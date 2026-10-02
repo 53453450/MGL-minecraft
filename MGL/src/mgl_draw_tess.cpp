@@ -14,7 +14,6 @@
 #include "glcorearb.h"
 #include "glm_limits.h"
 #include "mgl_draw_encode.h"
-#include "mgl_index_buffer.h"
 #include "mgl_program_resource.h"
 #include "mgl_render.h"
 #include "mgl_renderer_backend.h"
@@ -107,10 +106,6 @@ extern "C" void mglTessFillDrawContract(MGLAIRTessDrawContract *contract,
     const GLuint patchVertices =
         MAX(1u, (GLuint)ctx->active_state->var.patch_vertices);
     const GLuint patchCount = (GLuint)count / patchVertices;
-    uint32_t restartIndex = 0u;
-    const bool restartEnabled =
-        indexType != 0u &&
-        mglPrimitiveRestartIndexForType(ctx, indexType, &restartIndex);
 
     contract->patch_vertices = patchVertices;
     contract->vertex_count = (uint32_t)count;
@@ -123,8 +118,10 @@ extern "C" void mglTessFillDrawContract(MGLAIRTessDrawContract *contract,
     contract->index_source = (uint64_t)(uintptr_t)indices;
     contract->index_count = indexType != 0u ? (uint64_t)count : 0u;
     contract->base_vertex = baseVertex;
-    contract->primitive_restart = restartEnabled ? 1u : 0u;
-    contract->restart_index = restartIndex;
+    /* PRIMITIVE_RESTART_FOR_PATCHES_SUPPORTED is FALSE: restart is treated as
+     * disabled for PATCHES (GL 4.6 §10.3.6). */
+    contract->primitive_restart = 0u;
+    contract->restart_index = 0u;
     contract->tess_factor_bytes_per_patch = MGL_AIR_TESS_FACTOR_RECORD_BYTES;
     contract->tess_gen_mode =
         tes ? (uint32_t)tes->tess_gen_mode : (uint32_t)GL_TRIANGLES;
@@ -2711,6 +2708,9 @@ extern "C" void *mglTessRunVertexCaptureIndexed(
         ops->primitive_restart
             ? ops->primitive_restart(ctx, (GLenum)index_type, &restartIndex)
             : 0;
+    /* Only a restart index beyond the captured range must be rewritten; one
+     * inside it may be a real vertex (patches ignore restart). */
+    const int restartOutOfRange = restartEnabled && restartIndex > maxIndex;
     const int contentsReadable =
         (ops->buffer_contents && ops->buffer_contents(index_mtl)) ? 1 : 0;
     MGLTessIndexedCaptureIndexPrep prep = {};
@@ -2718,7 +2718,7 @@ extern "C" void *mglTessRunVertexCaptureIndexed(
         !mglTessPlanIndexedCaptureIndexPrep(
             (uint32_t)index_type, index_offset, (uint32_t)count,
             ops->buffer_length(index_mtl), contentsReadable,
-            restartEnabled ? 1 : 0, restartIndex, &prep)) {
+            restartOutOfRange, restartIndex, &prep)) {
         ops->set_capture_active(ops->renderer, 0);
         CFRelease(capture);
         return nullptr;

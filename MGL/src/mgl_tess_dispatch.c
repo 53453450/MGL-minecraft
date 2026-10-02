@@ -51,7 +51,6 @@
 #include "mgl_air_tess_abi.h"            /* mglRenderFillDefaultTessFactorBuffer */
 #include "mgl_vertex_attrib_query.h"     /* mglRendererGetValidatedVAO */
 #include "mgl_vertex_attrib_binding.h"   /* mglRendererResolveVertexAttribBinding */
-#include "mgl_index_buffer.h"            /* mglPrimitiveRestartIndexForType */
 #include "mgl_buffer_slots.h"            /* kMGLPointSizeBufferIndex */
 #include "mgl_draw_support.h"            /* rasterization predicates, polygon offset */
 #include "mgl_draw_issue.h"              /* mglDrawHostHandleGeometry */
@@ -336,8 +335,6 @@ static void *mglTessDispatchNewTCSStageInBuffer(
 
     const uint8_t *index_bytes = NULL;
     size_t index_offset = (size_t)(uintptr_t)indices;
-    uint32_t restart_index = 0u;
-    int primitive_restart = 0;
     if (index_type != 0u) {
         Buffer *ebo = getElementBuffer(draw_ctx);
         if (!ebo || !mglRendererProcessBuffer(renderer, ebo)) {
@@ -360,8 +357,6 @@ static void *mglTessDispatchNewTCSStageInBuffer(
             return NULL;
         }
         index_bytes = ebo_bytes + index_offset;
-        primitive_restart = mglPrimitiveRestartIndexForType(
-            draw_ctx, index_type, &restart_index);
     }
 
     size_t tcs_in_size = (size_t)stage_plan.bytes;
@@ -420,7 +415,7 @@ static void *mglTessDispatchNewTCSStageInBuffer(
     }
     if (!mglTessPackStageInRecords(
             stage_in_contents, tcs_in_vertices, tcs_in_stride, first, count,
-            index_bytes, index_type, primitive_restart != 0, restart_index,
+            index_bytes, index_type, false, 0u,
             base_vertex, base_instance, members, (uint32_t)member_count, srcs)) {
         return NULL;
     }
