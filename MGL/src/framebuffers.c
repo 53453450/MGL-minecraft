@@ -3257,7 +3257,7 @@ Texture *mglAttachmentBackingTexture(const FBOAttachment *a)
  * attachments.  Returns 0 for single-sample, or the number of samples
  * (1, 2, 4, ...) for multisample.  For framebuffers with no attachments,
  * falls back to default_samples. */
-GLuint mglFramebufferSamples(Framebuffer *fbo)
+static GLuint mglFramebufferSamples(Framebuffer *fbo)
 {
     if (!fbo)
         return 0u;
@@ -3283,6 +3283,19 @@ GLuint mglFramebufferSamples(Framebuffer *fbo)
     if (max_samples == 0u)
         max_samples = (GLuint)(fbo->default_samples > 0 ? fbo->default_samples : 0);
     return max_samples;
+}
+
+/* GL 4.6 §8.6 / §18.2.1: shared read-framebuffer errors of ReadPixels and
+ * CopyTex*. */
+bool mglValidateReadFramebuffer(GLMContext ctx)
+{
+    if (!STATE(readbuffer))
+        return true;
+    if (mglCheckFramebufferStatus(ctx, GL_READ_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        ERROR_RETURN_VALUE(GL_INVALID_FRAMEBUFFER_OPERATION, false);
+    if (mglFramebufferSamples(STATE(readbuffer)) > 0u)
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    return true;
 }
 
 void mglGetFramebufferParameteriv(GLMContext ctx, GLenum target, GLenum pname, GLint *params)

@@ -2146,11 +2146,15 @@ bool mglCopyTextureSubImageValidate(GLMContext ctx,
                                            GLsizei width,
                                            GLsizei height)
 {
+    if (level < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return false;
+    }
     if (!tex ||
-        level < 0 ||
         level >= (GLint)tex->num_levels ||
         !tex->faces[0].levels ||
         !tex->faces[0].levels[level].complete) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
         return false;
     }
 

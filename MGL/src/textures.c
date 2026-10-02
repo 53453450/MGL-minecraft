@@ -5272,6 +5272,9 @@ static void mglCopyTexImageCommon(GLMContext ctx, GLenum target, GLuint face, GL
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
+    if (!mglValidateReadFramebuffer(ctx)) {
+        return;
+    }
     if (!checkInternalFormatForMetal(ctx, internalformat)) {
         ERROR_RETURN(GL_INVALID_ENUM);
         return;
@@ -5394,15 +5397,15 @@ void mglCopyTexSubImage1D(GLMContext ctx, GLenum target, GLint level, GLint xoff
         ERROR_RETURN(GL_INVALID_ENUM);
         return;
     }
+    if (!mglValidateReadFramebuffer(ctx)) {
+        return;
+    }
     if (width == 0) {
         return;
     }
 
     Texture *tex = getTex(ctx, 0, target);
     if (!mglCopyTextureSubImageValidate(ctx, tex, level, xoffset, 0, 0, width, 1)) {
-        if (STATE(error) == GL_NO_ERROR) {
-            ERROR_RETURN(GL_INVALID_OPERATION);
-        }
         return;
     }
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
@@ -5430,6 +5433,9 @@ void mglCopyTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoff
     }
     if (target == GL_TEXTURE_RECTANGLE && level != 0) {
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (!mglValidateReadFramebuffer(ctx)) {
         return;
     }
     if (width == 0 || height == 0) {
@@ -5480,15 +5486,15 @@ void mglCopyTexSubImage3D(GLMContext ctx, GLenum target, GLint level, GLint xoff
         ERROR_RETURN(GL_INVALID_ENUM);
         return;
     }
+    if (!mglValidateReadFramebuffer(ctx)) {
+        return;
+    }
     if (width == 0 || height == 0) {
         return;
     }
 
     Texture *tex = getTex(ctx, 0, target);
     if (!mglCopyTextureSubImageValidate(ctx, tex, level, xoffset, yoffset, zoffset, width, height)) {
-        if (STATE(error) == GL_NO_ERROR) {
-            ERROR_RETURN(GL_INVALID_OPERATION);
-        }
         return;
     }
     if ((GLuint)zoffset >= tex->faces[0].levels[level].depth) {
@@ -5512,6 +5518,9 @@ void mglCopyTextureSubImage1D(GLMContext ctx, GLuint texture, GLint level, GLint
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
+    if (!mglValidateReadFramebuffer(ctx)) {
+        return;
+    }
     if (width == 0) {
         return;
     }
@@ -5522,9 +5531,6 @@ void mglCopyTextureSubImage1D(GLMContext ctx, GLuint texture, GLint level, GLint
         return;
     }
     if (!mglCopyTextureSubImageValidate(ctx, tex, level, xoffset, 0, 0, width, 1)) {
-        if (STATE(error) == GL_NO_ERROR) {
-            ERROR_RETURN(GL_INVALID_OPERATION);
-        }
         return;
     }
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
@@ -5545,11 +5551,20 @@ void mglCopyTextureSubImage2D(GLMContext ctx, GLuint texture, GLint level, GLint
         ERROR_RETURN(texture == 0 ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
         return;
     }
+    if (!mglValidateReadFramebuffer(ctx)) {
+        return;
+    }
     if (width == 0 || height == 0) {
         return;
     }
 
     Texture *tex = getTex(ctx, texture, 0);
+    if (tex &&
+        tex->target != GL_TEXTURE_2D &&
+        tex->target != GL_TEXTURE_1D_ARRAY &&
+        tex->target != GL_TEXTURE_RECTANGLE) {
+        tex = NULL;
+    }
     if (tex) {
         if (level >= (GLint)tex->num_levels ||
             !tex->faces[0].levels ||
@@ -5585,6 +5600,9 @@ void mglCopyTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
+    if (!mglValidateReadFramebuffer(ctx)) {
+        return;
+    }
     if (width == 0 || height == 0) {
         return;
     }
@@ -5598,9 +5616,6 @@ void mglCopyTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint
         return;
     }
     if (!mglCopyTextureSubImageValidate(ctx, tex, level, xoffset, yoffset, zoffset, width, height)) {
-        if (STATE(error) == GL_NO_ERROR) {
-            ERROR_RETURN(GL_INVALID_OPERATION);
-        }
         return;
     }
     if ((GLuint)zoffset >= tex->faces[0].levels[level].depth) {
@@ -6186,8 +6201,11 @@ void mglGetCompressedTexImage(GLMContext ctx, GLenum target, GLint level, void *
     }
 
     Texture *tex = getTex(ctx, 0, target);
+    if (tex && level >= (GLint)tex->num_levels) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
     if (!tex || !mglTexLevelInternalFormatCompressed(tex->internalformat) ||
-        level >= (GLint)tex->num_levels ||
         !tex->faces[0].levels ||
         !tex->faces[0].levels[level].complete) {
         ERROR_RETURN(GL_INVALID_OPERATION);
@@ -6212,8 +6230,11 @@ void mglGetnCompressedTexImage(GLMContext ctx, GLenum target, GLint lod, GLsizei
     }
 
     Texture *tex = getTex(ctx, 0, target);
+    if (tex && lod >= (GLint)tex->num_levels) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
     if (!tex || !mglTexLevelInternalFormatCompressed(tex->internalformat) ||
-        lod >= (GLint)tex->num_levels ||
         !tex->faces[0].levels ||
         !tex->faces[0].levels[lod].complete) {
         ERROR_RETURN(GL_INVALID_OPERATION);
@@ -6890,8 +6911,11 @@ void mglGetCompressedTextureImage(GLMContext ctx, GLuint texture, GLint level, G
     }
 
     Texture *tex = getTex(ctx, texture, 0);
+    if (tex && level >= (GLint)tex->num_levels) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
     if (!tex || !mglTexLevelInternalFormatCompressed(tex->internalformat) ||
-        level >= (GLint)tex->num_levels ||
         !tex->faces[0].levels ||
         !tex->faces[0].levels[level].complete) {
         ERROR_RETURN(GL_INVALID_OPERATION);

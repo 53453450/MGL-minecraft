@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 156
+#define MAX_TESTS 157
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18982,6 +18982,92 @@ static int test_read_pixels_framebuffer_errors(unsigned char *pixels, const char
     return fail ? 1 : 0;
 }
 
+/* CopyTex* read-framebuffer, level and target errors (GL 4.6 §8.6) and the
+ * GetCompressedTextureImage level error (§8.11.4). */
+static int test_copy_tex_errors(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint rb[2] = {0, 0}, fbo[3] = {0, 0, 0}, tex[4] = {0, 0, 0, 0};
+    glGenRenderbuffers(2, rb);
+    glBindRenderbuffer(GL_RENDERBUFFER, rb[0]);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 4, 4);
+    glBindRenderbuffer(GL_RENDERBUFFER, rb[1]);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_RGBA8, 4, 4);
+    glGenFramebuffers(3, fbo);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[0]);
+    glFramebufferRenderbuffer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              GL_RENDERBUFFER, rb[0]);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[1]);
+    glFramebufferRenderbuffer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              GL_RENDERBUFFER, rb[1]);
+
+    glGenTextures(4, tex);
+    glBindTexture(GL_TEXTURE_1D, tex[0]);
+    glTexImage1D(GL_TEXTURE_1D, 0, GL_RGBA8, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glBindTexture(GL_TEXTURE_2D, tex[1]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glBindTexture(GL_TEXTURE_3D, tex[2]);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, 4, 4, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    static const GLubyte rgtc1[8] = {0};
+    glBindTexture(GL_TEXTURE_2D, tex[3]);
+    glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_RED_RGTC1, 4, 4, 0,
+                           (GLsizei)sizeof(rgtc1), rgtc1);
+    glBindTexture(GL_TEXTURE_2D, tex[1]);
+    int fail = 0;
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) {
+        fprintf(stderr, "copy_tex_errors: setup error 0x%x\n", err);
+        fail |= 0x80000;
+    }
+
+    static const GLenum want[3] = {GL_NO_ERROR, GL_INVALID_OPERATION,
+                                   GL_INVALID_FRAMEBUFFER_OPERATION};
+    for (int c = 0; c < 3; c++) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[c]);
+        GLenum got[4];
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, 4, 4);
+        got[0] = glGetError();
+        glCopyTextureSubImage1D(tex[0], 0, 0, 0, 0, 4);
+        got[1] = glGetError();
+        glCopyTextureSubImage3D(tex[2], 0, 0, 0, 0, 0, 0, 4, 4);
+        got[2] = glGetError();
+        glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 0, 0, 4, 4, 0);
+        got[3] = glGetError();
+        for (int k = 0; k < 4; k++) {
+            if (got[k] != want[c]) {
+                fprintf(stderr, "copy_tex_errors: fbo %d call %d error 0x%x\n", c, k, got[k]);
+                fail |= 1 << (c * 4 + k);
+            }
+        }
+    }
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[0]);
+    glCopyTextureSubImage1D(tex[0], -1, 0, 0, 0, 4);
+    if ((err = glGetError()) != GL_INVALID_VALUE) fail |= 0x1000;
+    glCopyTextureSubImage3D(tex[2], -1, 0, 0, 0, 0, 0, 4, 4);
+    if ((err = glGetError()) != GL_INVALID_VALUE) fail |= 0x2000;
+    glCopyTextureSubImage2D(tex[2], 0, 0, 0, 0, 0, 4, 4);
+    if ((err = glGetError()) != GL_INVALID_OPERATION) fail |= 0x4000;
+    glCopyTextureSubImage2D(tex[1], 0, 0, 0, 0, 0, 4, 4);
+    if ((err = glGetError()) != GL_NO_ERROR) fail |= 0x8000;
+
+    GLubyte block[8];
+    glGetCompressedTextureImage(tex[3], 0, (GLsizei)sizeof(block), block);
+    if ((err = glGetError()) != GL_NO_ERROR) fail |= 0x10000;
+    glGetCompressedTextureImage(tex[3], 20, (GLsizei)sizeof(block), block);
+    if ((err = glGetError()) != GL_INVALID_VALUE) fail |= 0x20000;
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDeleteTextures(4, tex);
+    glDeleteFramebuffers(3, fbo);
+    glDeleteRenderbuffers(2, rb);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "copy_tex_errors: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* Stencil texturing: usampler2D reads (s, 0, 0, 1) from STENCIL_INDEX8 and
  * from depth-stencil textures in STENCIL_INDEX mode (GL 4.6 §8.23.1). */
 static int test_stencil_texturing(unsigned char *pixels, const char *out_path)
@@ -23526,6 +23612,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("get_tex_image_pack_buffer", test_get_tex_image_pack_buffer),
     SELF_CHECK_TEST("read_pixels_framebuffer_errors", test_read_pixels_framebuffer_errors),
     SELF_CHECK_TEST("error_flag_dedup", test_error_flag_dedup),
+    SELF_CHECK_TEST("copy_tex_errors", test_copy_tex_errors),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
     SELF_CHECK_TEST("depth_blit_orientation", test_depth_blit_orientation),
