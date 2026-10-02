@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 161
+#define MAX_TESTS 162
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19225,6 +19225,89 @@ static int test_depth_integer_upload(unsigned char *pixels, const char *out_path
 
 /* Depth-only GetTexImage of uploaded data and ClearTexImage convert between
  * the requested type and the stored depth (GL 4.6 §8.11.4, §8.21, §8.5). */
+static int test_ms_integer_texel_fetch(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    GLuint prog_ms = link_program(vs,
+        "#version 450\n"
+        "layout(pixel_center_integer) in vec4 gl_FragCoord;\n"
+        "uniform isampler2D s;\n"
+        "out ivec4 c;\n"
+        "void main() { c = texelFetch(s, ivec2(gl_FragCoord.xy), 0); }\n");
+    GLuint prog_aux = link_program(vs,
+        "#version 450\n"
+        "layout(pixel_center_integer) in vec4 gl_FragCoord;\n"
+        "uniform isampler2DMS s;\n"
+        "uniform int smp;\n"
+        "out ivec4 c;\n"
+        "void main() { c = texelFetch(s, ivec2(gl_FragCoord.xy), smp); }\n");
+    if (!prog_ms || !prog_aux) return 1;
+    static const GLint src[4] = {-7, 3, 100000, -2};
+    int fail = 0;
+    /* v0: one sample; v1: the 2D texture also bound to the unit; v2: sample 1
+     * of a two-sample texture. */
+    for (int v = 0; v < 3; v++) {
+        GLuint vao = 0, tex[3] = {0}, fbo[2] = {0};
+        glGenVertexArrays(1, &vao);
+        glBindVertexArray(vao);
+        glGenTextures(3, tex);
+        glGenFramebuffers(2, fbo);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tex[0]);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32I, 2, 2);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 2, 2, GL_RED_INTEGER, GL_INT, src);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, tex[1]);
+        glTextureStorage2DMultisample(tex[1], v == 2 ? 2 : 1, GL_R32I, 2, 2, GL_FALSE);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo[0]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, tex[1], 0);
+        glViewport(0, 0, 2, 2);
+        glUseProgram(prog_ms);
+        glBindTexture(GL_TEXTURE_2D, tex[0]);
+        glUniform1i(glGetUniformLocation(prog_ms, "s"), 0);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+        glBindTexture(GL_TEXTURE_2D, tex[2]);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32I, 2, 2);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo[1]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex[2], 0);
+        glUseProgram(prog_aux);
+        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, tex[1]);
+        if (v == 1) glBindTextureUnit(0, tex[0]);
+        glUniform1i(glGetUniformLocation(prog_aux, "s"), 0);
+        glUniform1i(glGetUniformLocation(prog_aux, "smp"), v == 2 ? 1 : 0);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+        GLint got[4] = {0};
+        glBindTexture(GL_TEXTURE_2D, tex[2]);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_INT, got);
+        for (int i = 0; i < 4; i++) {
+            if (got[i] != src[i]) {
+                fprintf(stderr, "ms_integer_texel_fetch: v%d [%d] got %d want %d\n", v, i, got[i], src[i]);
+                fail |= 1 << v;
+            }
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(2, fbo);
+        glDeleteTextures(3, tex);
+        glDeleteVertexArrays(1, &vao);
+    }
+    glUseProgram(0);
+    glDeleteProgram(prog_ms);
+    glDeleteProgram(prog_aux);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail ? 1 : 0;
+}
+
 static int test_depth_readback_clear_types(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -24009,6 +24092,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("blit_framebuffer_errors", test_blit_framebuffer_errors),
     SELF_CHECK_TEST("depth_integer_upload", test_depth_integer_upload),
     SELF_CHECK_TEST("depth_readback_clear_types", test_depth_readback_clear_types),
+    SELF_CHECK_TEST("ms_integer_texel_fetch", test_ms_integer_texel_fetch),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
     SELF_CHECK_TEST("depth_blit_orientation", test_depth_blit_orientation),

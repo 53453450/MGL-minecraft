@@ -62,7 +62,9 @@ static inline bool mglTextureCanUseGLSampledRenderTargetCopy(Texture *tex)
             tex->target == GL_TEXTURE_3D ||
             tex->target == GL_TEXTURE_2D_ARRAY ||
             tex->target == GL_TEXTURE_CUBE_MAP ||
-            tex->target == GL_TEXTURE_CUBE_MAP_ARRAY) &&
+            tex->target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+            tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+            tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) &&
            tex->is_render_target;
 }
 

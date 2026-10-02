@@ -19,6 +19,7 @@
 #include "mgl_render.h"
 #include "mgl_metal_ref.h"
 #include "mgl_sync.h"                  /* mglMetalAttachmentSubresourceForAttachment */
+#include "mgl_texture_compat.h"        /* mglMarkTextureLevelRenderTargetWrittenImpl */
 
 #include <stdint.h>
 
@@ -111,4 +112,5 @@ void mglRendererBroadcastEmulatedMSSamplePlanesAfterDrawIfNeeded(void *renderer,
             info.height, 1u, tex->mtl_data, baseSlice + s, level, 0u, 0u, 0u);
     }
     (void)mglRenderEndBlitEncoder(blit);
+    mglMarkTextureLevelRenderTargetWrittenImpl(tex, (GLuint)level, __func__, __LINE__);
 }
