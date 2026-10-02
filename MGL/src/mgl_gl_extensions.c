@@ -5880,12 +5880,9 @@ void mglGetnPixelMapusv(GLMContext ctx, GLenum map, GLsizei bufSize, GLushort *v
 	(void)ctx;
 }
 
-/* A full queue drops new errors, so a raise cannot be told apart from none;
- * treat it as raised so params stay untouched. */
-static bool mglQueryRaisedError(GLMContext ctx, GLuint queued_before)
+static bool mglQueryRaisedError(GLMContext ctx, GLuint raises_before)
 {
-	return LIVE_STATE(error_count) != queued_before ||
-	       queued_before >= MGL_ERROR_QUEUE_SIZE;
+	return LIVE_STATE(error_raises) != raises_before;
 }
 
 void mglGetnUniformdv(GLMContext ctx, GLuint program, GLint location, GLsizei bufSize, GLdouble *params)
@@ -5903,7 +5900,7 @@ void mglGetnUniformdv(GLMContext ctx, GLuint program, GLint location, GLsizei bu
 		return;
 	}
 	{
-		GLuint queued = LIVE_STATE(error_count);
+		GLuint queued = LIVE_STATE(error_raises);
 		mglGetUniformfv(ctx, program, location, tmp);
 		if (mglQueryRaisedError(ctx, queued))
 			return;
@@ -5926,7 +5923,7 @@ void mglGetnUniformfv(GLMContext ctx, GLuint program, GLint location, GLsizei bu
 		return;
 	}
 	{
-		GLuint queued = LIVE_STATE(error_count);
+		GLuint queued = LIVE_STATE(error_raises);
 		mglGetUniformfv(ctx, program, location, tmp);
 		if (mglQueryRaisedError(ctx, queued))
 			return;
@@ -5953,7 +5950,7 @@ void mglGetnUniformiv(GLMContext ctx, GLuint program, GLint location, GLsizei bu
 		return;
 	}
 	{
-		GLuint queued = LIVE_STATE(error_count);
+		GLuint queued = LIVE_STATE(error_raises);
 		mglGetUniformiv(ctx, program, location, tmp);
 		if (mglQueryRaisedError(ctx, queued))
 			return;
@@ -5980,7 +5977,7 @@ void mglGetnUniformuiv(GLMContext ctx, GLuint program, GLint location, GLsizei b
 		return;
 	}
 	{
-		GLuint queued = LIVE_STATE(error_count);
+		GLuint queued = LIVE_STATE(error_raises);
 		mglGetUniformuiv(ctx, program, location, tmp);
 		if (mglQueryRaisedError(ctx, queued))
 			return;

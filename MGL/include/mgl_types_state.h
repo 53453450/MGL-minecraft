@@ -83,6 +83,7 @@ typedef struct {
     GLenum error_queue[MGL_ERROR_QUEUE_SIZE];
     GLuint error_head;
     GLuint error_count;
+    GLuint error_raises;   // every raised error, including codes already queued
 
     GLuint draw_buffer; // GL_DRAW_BUFFER / GL_DRAW_BUFFER0
     GLsizei draw_buffer_count;

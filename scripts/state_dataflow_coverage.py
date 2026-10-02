@@ -76,6 +76,7 @@ CHECK3_BASELINE = frozenset({
     "error_count",
     "error_head",
     "error_queue",
+    "error_raises",
     "fragment_buffer_map_list",
     "framebuffer_table",
     "hints",

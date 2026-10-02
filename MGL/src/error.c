@@ -118,8 +118,17 @@ void error_func(GLMContext ctx, const char *func, GLenum error)
     if (mglCtxActiveIsReplayWorkspace(ctx))
         MGL_FRAME_INC(g_mglReplayErrorRedirectsSinceSwap);
 
-    /* Push into the live queue only (T0-2). Per GL 4.6 §2.3.1 the queue holds
-     * at least 16 errors; when full, the new error is dropped. */
+    LIVE_STATE(error_raises)++;
+
+    /* One flag per code: a code already recorded is not recorded again until
+     * GetError returns it (GL 4.6 §2.3.1). */
+    for (GLuint i = 0u; i < LIVE_STATE(error_count); i++) {
+        if (LIVE_STATE(error_queue)[(LIVE_STATE(error_head) + i) % MGL_ERROR_QUEUE_SIZE] == error)
+            return;
+    }
+
+    /* Push into the live queue only (T0-2); when full, the new error is
+     * dropped. */
     if (LIVE_STATE(error_count) < MGL_ERROR_QUEUE_SIZE)
     {
         GLuint tail =

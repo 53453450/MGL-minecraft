@@ -6013,13 +6013,12 @@ void mglGetTextureImage(GLMContext ctx, GLuint texture, GLint level, GLenum form
     ERROR_CHECK_RETURN(STATE(buffers[_PIXEL_PACK_BUFFER]) ||
                        layout.required_bytes <= (size_t)bufSize,
                        GL_INVALID_OPERATION);
-    GLuint queued_before = LIVE_STATE(error_count);
+    GLuint raises_before = LIVE_STATE(error_raises);
     for (GLuint face = 0; face < 6u; face++) {
         mglGetTexImageImpl(ctx, tex, GL_TEXTURE_CUBE_MAP_POSITIVE_X + face,
                            level, format, type, -1,
                            (uint8_t *)pixels + face * layout.dst_image_size);
-        if (LIVE_STATE(error_count) != queued_before ||
-            queued_before >= MGL_ERROR_QUEUE_SIZE) {
+        if (LIVE_STATE(error_raises) != raises_before) {
             return;
         }
     }

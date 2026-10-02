@@ -1708,16 +1708,13 @@ bool mglResolveTexSubImageSource(GLMContext ctx,
 }
 bool mglVerifyInternalFormatAndFormatTypeForCall(GLMContext ctx, GLint internalformat, GLenum format, GLenum type)
 {
-    GLuint old_error_count = ctx ? LIVE_STATE(error_count) : 0u;
-    GLenum old_error = ctx ? LIVE_STATE(error) : GL_NO_ERROR;
+    GLuint old_error_raises = ctx ? LIVE_STATE(error_raises) : 0u;
 
     if (verifyInternalFormatAndFormatType(ctx, internalformat, format, type)) {
         return true;
     }
 
-    if (ctx &&
-        LIVE_STATE(error_count) == old_error_count &&
-        LIVE_STATE(error) == old_error) {
+    if (ctx && LIVE_STATE(error_raises) == old_error_raises) {
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
     }
 

@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 155
+#define MAX_TESTS 156
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18903,6 +18903,36 @@ static int test_get_tex_image_pack_buffer(unsigned char *pixels, const char *out
     return fail ? 1 : 0;
 }
 
+/* A repeated error code does not record again until GetError clears it
+ * (GL 4.6 §2.3.1). */
+static int test_error_flag_dedup(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    while (glGetError() != GL_NO_ERROR) { }
+    int fail = 0;
+
+    glBindBuffer(0xdead, 0);
+    glBindBuffer(0xdead, 0);
+    if (glGetError() != GL_INVALID_ENUM) fail |= 0x1;
+    if (glGetError() != GL_NO_ERROR) fail |= 0x2;
+
+    GLuint name = 0;
+    glBindBuffer(0xdead, 0);
+    glGenBuffers(-1, &name);
+    glBindBuffer(0xdead, 0);
+    const GLenum e0 = glGetError();
+    const GLenum e1 = glGetError();
+    if (!((e0 == GL_INVALID_ENUM && e1 == GL_INVALID_VALUE) ||
+          (e0 == GL_INVALID_VALUE && e1 == GL_INVALID_ENUM)))
+        fail |= 0x4;
+    if (glGetError() != GL_NO_ERROR) fail |= 0x8;
+
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "error_flag_dedup: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* ReadPixels from an incomplete read framebuffer is INVALID_FRAMEBUFFER_OPERATION
  * and from a multisample one INVALID_OPERATION (GL 4.6 §18.2.1). */
 static int test_read_pixels_framebuffer_errors(unsigned char *pixels, const char *out_path)
@@ -23495,6 +23525,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("get_tex_image_swap_bytes", test_get_tex_image_swap_bytes),
     SELF_CHECK_TEST("get_tex_image_pack_buffer", test_get_tex_image_pack_buffer),
     SELF_CHECK_TEST("read_pixels_framebuffer_errors", test_read_pixels_framebuffer_errors),
+    SELF_CHECK_TEST("error_flag_dedup", test_error_flag_dedup),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
     SELF_CHECK_TEST("depth_blit_orientation", test_depth_blit_orientation),
