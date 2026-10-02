@@ -209,7 +209,6 @@ extern "C" bool mglTessPlanDrawPath(GLMContext ctx, GLenum mode, GLsizei count,
     if (out->native_ok || out->air_tes) {
         if (out->indexed && out->has_tcs) {
             out->capture = MGL_TESS_CAPTURE_INDEXED_COMPACT;
-            out->native_ok = 0u;
         } else if (out->indexed) {
             out->capture = MGL_TESS_CAPTURE_INDEXED_GATHER;
         } else {
@@ -3090,7 +3089,6 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
     ops->reset_tess_draw_state(ops->renderer);
 
     if (path.capture == MGL_TESS_CAPTURE_INDEXED_COMPACT) {
-        nativeTES = 0;
         int sparseCompactOk = 0;
         Buffer *ebo = getElementBuffer(ctx);
         if (ebo && ops->process_buffer(ops->renderer, ebo) &&

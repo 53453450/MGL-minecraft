@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 167
+#define MAX_TESTS 168
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19584,6 +19584,97 @@ static int test_point_sprite_coord_origin(unsigned char *pixels, const char *out
     return fail;
 }
 
+/* Indexed one-patch draw with and without a TCS; the probe is covered only
+ * when control point 1 is fetched through index 1. */
+static int patch_index_probe(unsigned char *pixels, int restart, const char *label)
+{
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *tcs =
+        "#version 450 core\n"
+        "layout(vertices = 3) out;\n"
+        "void main() {\n"
+        "  gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;\n"
+        "  gl_TessLevelOuter[0] = 1.0; gl_TessLevelOuter[1] = 1.0;\n"
+        "  gl_TessLevelOuter[2] = 1.0; gl_TessLevelInner[0] = 1.0;\n"
+        "}\n";
+    static const char *tes =
+        "#version 450 core\n"
+        "layout(triangles, equal_spacing, ccw) in;\n"
+        "void main() {\n"
+        "  gl_Position = gl_in[0].gl_Position * gl_TessCoord.x +\n"
+        "                gl_in[1].gl_Position * gl_TessCoord.y +\n"
+        "                gl_in[2].gl_Position * gl_TessCoord.z;\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const float positions[6] = { -0.8f, -0.8f, 0.8f, -0.8f, 0.0f, 0.8f };
+    static const GLuint indices[3] = { 0u, 1u, 2u };
+
+    GLuint color = 0;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint progs[2] = {
+        link_program_tess_eval_only(vs, tes, fs),
+        link_program_with_tessellation(vs, tcs, tes, fs),
+    };
+    if (!fbo || !progs[0] || !progs[1]) return 1;
+    GLuint vao = 0, vbo = 0, ebo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    if (restart) {
+        glEnable(GL_PRIMITIVE_RESTART);
+        glPrimitiveRestartIndex(1u);
+    }
+    int fail = 0;
+    for (int p = 0; p < 2; p++) {
+        glUseProgram(progs[p]);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawElements(GL_PATCHES, 3, GL_UNSIGNED_INT, (void *)0);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const int sx = (int)((0.3f + 1.0f) * 0.5f * REG_W);
+        const int sy = (int)((-0.5f + 1.0f) * 0.5f * REG_H);
+        const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+        if (px[1] < 200u) {
+            fprintf(stderr, "%s: %s probe (%u,%u,%u)\n",
+                    label, p ? "TCS" : "TES-only", px[0], px[1], px[2]);
+            fail = 1;
+        }
+    }
+    glDisable(GL_PRIMITIVE_RESTART);
+    glPrimitiveRestartIndex(0u);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteBuffers(1, &ebo);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(progs[0]);
+    glDeleteProgram(progs[1]);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &color);
+    if (glGetError() != GL_NO_ERROR) fail = 1;
+    return fail;
+}
+
+static int test_tess_indexed_patch_draw(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    return patch_index_probe(pixels, 0, "tess_indexed_patch_draw");
+}
+
 static int test_ms_integer_texel_fetch(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -24706,6 +24797,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("generic_buffer_binding_queries", test_generic_buffer_binding_queries),
     SELF_CHECK_TEST("simple_query_pnames", test_simple_query_pnames),
     SELF_CHECK_TEST("point_sprite_coord_origin", test_point_sprite_coord_origin),
+    SELF_CHECK_TEST("tess_indexed_patch_draw", test_tess_indexed_patch_draw),
     SELF_CHECK_TEST("large_uniform_array", test_large_uniform_array),
     SELF_CHECK_TEST("xfb_atomic_counters", test_xfb_atomic_counters),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
