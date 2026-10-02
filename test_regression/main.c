@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 163
+#define MAX_TESTS 164
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19342,6 +19342,102 @@ static int test_ms_integer_texel_fetch(unsigned char *pixels, const char *out_pa
     return fail ? 1 : 0;
 }
 
+static int test_large_uniform_array(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    enum { N = 1024, NVS = 256 };
+    static const char *vs_sum =
+        "#version 450\n"
+        "uniform ivec4 a[256];\n"
+        "flat out uint sum;\n"
+        "void main() {\n"
+        "  uint s = 0u;\n"
+        "  for (int i = 0; i < 256; i++) s += uint(a[i].x + a[i].y + a[i].z + a[i].w);\n"
+        "  sum = s;\n"
+        "  gl_PointSize = 1.0; gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+    static const char *vs_pass =
+        "#version 450\n"
+        "void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }\n";
+    static const char *gs_sum =
+        "#version 450\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices = 1) out;\n"
+        "uniform ivec4 a[1024];\n"
+        "flat out uint sum;\n"
+        "void main() {\n"
+        "  uint s = 0u;\n"
+        "  for (int i = 0; i < 1024; i++) s += uint(a[i].x + a[i].y + a[i].z + a[i].w);\n"
+        "  sum = s;\n"
+        "  gl_PointSize = 1.0; gl_Position = gl_in[0].gl_Position;\n"
+        "  EmitVertex(); EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 450\n"
+        "flat in uint sum;\n"
+        "out uint c;\n"
+        "void main() { c = sum; }\n";
+    GLint *data = (GLint *)malloc(N * 4 * sizeof(GLint));
+    if (!data) return 1;
+    for (int i = 0; i < N * 4; i++) data[i] = i + 1;
+
+    GLuint vao = 0, rt = 0, fbo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenTextures(1, &rt);
+    glBindTexture(GL_TEXTURE_2D, rt);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32UI, 1, 1);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rt, 0);
+    glViewport(0, 0, 1, 1);
+    glEnable(GL_PROGRAM_POINT_SIZE);
+
+    int fail = 0;
+    GLuint progs[2] = { link_program(vs_sum, fs),
+                        link_program_with_geometry(vs_pass, gs_sum, fs) };
+    for (int i = 0; i < 2; i++) {
+        if (!progs[i]) { fail |= 1 << i; continue; }
+        const GLuint n = i ? N : NVS;
+        GLuint want = (n * 4u) * (n * 4u + 1u) / 2u;
+        glUseProgram(progs[i]);
+        glUniform4iv(glGetUniformLocation(progs[i], "a"), (GLsizei)n, data);
+        if (i) {
+            /* Element past the per-location slots: a single-element update
+             * and a readback must address it. */
+            glUniform4i(glGetUniformLocation(progs[i], "a[1000]"), 0, 0, 0, 0);
+            want -= 4001u + 4002u + 4003u + 4004u;
+            GLint back[4] = { 0 };
+            glGetUniformiv(progs[i], glGetUniformLocation(progs[i], "a[1001]"), back);
+            if (back[0] != 4005 || back[3] != 4008) {
+                fprintf(stderr, "large_uniform_array: a[1001] = %d..%d\n", back[0], back[3]);
+                fail |= 4;
+            }
+        }
+        GLuint zero = 0;
+        glClearBufferuiv(GL_COLOR, 0, &zero);
+        glDrawArrays(GL_POINTS, 0, 1);
+        GLuint got = 0;
+        glReadPixels(0, 0, 1, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, &got);
+        if (got != want) {
+            fprintf(stderr, "large_uniform_array: %s sum %u want %u\n",
+                    i ? "GS" : "VS", got, want);
+            fail |= 1 << i;
+        }
+        glDeleteProgram(progs[i]);
+    }
+    free(data);
+    glUseProgram(0);
+    glDisable(GL_PROGRAM_POINT_SIZE);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &rt);
+    glDeleteVertexArrays(1, &vao);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail ? 1 : 0;
+}
+
 static int test_depth_readback_clear_types(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -24128,6 +24224,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("depth_readback_clear_types", test_depth_readback_clear_types),
     SELF_CHECK_TEST("ms_integer_texel_fetch", test_ms_integer_texel_fetch),
     SELF_CHECK_TEST("generic_buffer_binding_queries", test_generic_buffer_binding_queries),
+    SELF_CHECK_TEST("large_uniform_array", test_large_uniform_array),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
     SELF_CHECK_TEST("depth_blit_orientation", test_depth_blit_orientation),

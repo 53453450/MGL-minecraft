@@ -2084,7 +2084,7 @@ static GLuint mglMatrixElementStrideWords(size_t avail_words,
 static GLuint mglReadPlainUniform(Program *ptr, GLint location,
                                   uint32_t out[16], GLboolean *is_float_out)
 {
-    if (!ptr || location < 0 || location >= MAX_BINDABLE_BUFFERS) {
+    if (!ptr || location < 0) {
         return 0;
     }
 
@@ -2153,7 +2153,8 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
     const GLuint padded_words =
         mglPlainUniformMatrixElementBytes(gl_type) / sizeof(uint32_t);
 
-    Buffer *direct = ptr->plain_uniform_buffers[location].buf;
+    Buffer *direct = location < MAX_BINDABLE_BUFFERS
+        ? ptr->plain_uniform_buffers[location].buf : NULL;
     if (direct && direct->data.buffer_data && direct->size > 0) {
         buf = direct;
         first = 0;
@@ -3053,6 +3054,33 @@ static GLsizeiptr mglPlainUniformScalarVectorBytes(GLuint gl_type)
     }
 }
 
+static void mglUniformStoreArrayRange(GLMContext ctx, Program *program,
+                                      GLint base, GLint arraySize,
+                                      GLint element, GLsizeiptr elemBytes,
+                                      const void *ptr, GLsizeiptr size)
+{
+    GLsizeiptr total = (GLsizeiptr)arraySize * elemBytes;
+    GLsizeiptr offset = (GLsizeiptr)element * elemBytes;
+    if (size > total - offset)
+        size = total - offset;
+    if (size <= 0)
+        return;
+
+    uint8_t *data = (uint8_t *)calloc(1, (size_t)total);
+    if (!data) {
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return;
+    }
+    const BufferBaseTarget *slot = &program->plain_uniform_buffers[base];
+    if (slot->buf && slot->buf->data.buffer_data && slot->size == total) {
+        memcpy(data, (const void *)(uintptr_t)slot->buf->data.buffer_data,
+               (size_t)total);
+    }
+    memcpy(data + offset, ptr, (size_t)size);
+    mglUniformStore(ctx, program, base, data, total);
+    free(data);
+}
+
 void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
 {
     ctx = mglUniformResolveContext(ctx, __FUNCTION__);
@@ -3082,12 +3110,6 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         mglUniformSetError(ctx, GL_INVALID_OPERATION);
         return;
     }
-    /* Uniform storage is indexed by location. */
-    if (location >= MAX_BINDABLE_BUFFERS) {
-        mglUniformSetError(ctx, GL_INVALID_OPERATION);
-        return;
-    }
-
     /* Each array element owns its location's storage (GL 4.6 §7.6.1):
      * Uniform*v writes count elements from the named one, dropping values
      * past the end of the array. */
@@ -3098,6 +3120,21 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
     GLsizeiptr elemBytes = mglPlainUniformScalarVectorBytes(glType);
     if (elemBytes == 0)
         elemBytes = mglPlainUniformMatrixElementBytes(glType);
+
+    /* Storage is indexed by location.  An array that runs past the last
+     * slot keeps all of its elements in the slot of element 0. */
+    if (arraySize > 1 && elemBytes > 0 && arrayBase >= 0 &&
+        arrayBase < MAX_BINDABLE_BUFFERS &&
+        arrayBase + arraySize > MAX_BINDABLE_BUFFERS) {
+        mglUniformStoreArrayRange(ctx, program, arrayBase, arraySize,
+                                  location - arrayBase, elemBytes, ptr, size);
+        return;
+    }
+    if (location >= MAX_BINDABLE_BUFFERS) {
+        mglUniformSetError(ctx, GL_INVALID_OPERATION);
+        return;
+    }
+
     if (arraySize > 1 && elemBytes > 0 && size > elemBytes) {
         GLsizeiptr n = size / elemBytes;
         GLsizeiptr remaining = (GLsizeiptr)(arrayBase + arraySize - location);
