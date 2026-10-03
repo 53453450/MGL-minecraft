@@ -28559,6 +28559,29 @@ static int test_air_atomic_counter_validation(unsigned char *pixels,
                         "air_atomic_counter_validation: same counter in VS+FS "
                         "must link\n");
                 local_fail = 1;
+            } else {
+                GLuint idx = GL_INVALID_INDEX;
+                const char *nm = "ac_counter";
+                GLint off = -2, stride = -2, mstride = -2, bufi = -2;
+                glGetUniformIndices(prog, 1, &nm, &idx);
+                if (idx != GL_INVALID_INDEX) {
+                    glGetActiveUniformsiv(prog, 1, &idx, GL_UNIFORM_OFFSET, &off);
+                    glGetActiveUniformsiv(prog, 1, &idx,
+                                          GL_UNIFORM_ARRAY_STRIDE, &stride);
+                    glGetActiveUniformsiv(prog, 1, &idx,
+                                          GL_UNIFORM_MATRIX_STRIDE, &mstride);
+                    glGetActiveUniformsiv(prog, 1, &idx,
+                                          GL_UNIFORM_ATOMIC_COUNTER_BUFFER_INDEX,
+                                          &bufi);
+                }
+                if (off != 0 || stride != 0 || mstride != 0 || bufi != 0) {
+                    fprintf(stderr,
+                            "air_atomic_counter_validation: "
+                            "GetActiveUniformsiv offset=%d stride=%d "
+                            "matrix_stride=%d buffer_index=%d\n",
+                            off, stride, mstride, bufi);
+                    local_fail = 1;
+                }
             }
         }
         if (a) glDeleteShader(a);

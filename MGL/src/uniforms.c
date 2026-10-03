@@ -466,6 +466,47 @@ static const int mglActiveUniformResourceTypes[] = {
     _ATOMIC_COUNTER_RES
 };
 
+/* Sequential GL_ATOMIC_COUNTER_BUFFER index for a binding (sorted unique
+ * bindings, same order as GetActiveAtomicCounterBufferiv). */
+static GLint mglAtomicCounterUniformBufferIndex(Program *ptr, GLuint binding)
+{
+    GLuint bindings[MAX_BINDABLE_BUFFERS];
+    GLboolean seen[MAX_BINDABLE_BUFFERS];
+    GLuint count = 0;
+    GLuint i;
+
+    if (!ptr)
+        return -1;
+    memset(seen, 0, sizeof(seen));
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *list =
+            &ptr->shader_resources_list[stage][_ATOMIC_COUNTER_RES];
+        for (i = 0; i < list->count; i++) {
+            GLuint b = list->list[i].gl_binding;
+            if (b < MAX_BINDABLE_BUFFERS && !seen[b]) {
+                seen[b] = GL_TRUE;
+                if (count < MAX_BINDABLE_BUFFERS)
+                    bindings[count] = b;
+                count++;
+            }
+        }
+    }
+    for (i = 1; i < count && i < MAX_BINDABLE_BUFFERS; i++) {
+        GLuint key = bindings[i];
+        GLuint j = i;
+        while (j > 0 && bindings[j - 1] > key) {
+            bindings[j] = bindings[j - 1];
+            j--;
+        }
+        bindings[j] = key;
+    }
+    for (i = 0; i < count && i < MAX_BINDABLE_BUFFERS; i++) {
+        if (bindings[i] == binding)
+            return (GLint)i;
+    }
+    return -1;
+}
+
 static GLboolean mglActiveUniformResourceHasName(const MGLShaderResource *res)
 {
     return res && mglSafeCStringLength(res->name, NULL);
@@ -2440,10 +2481,11 @@ void mglGetActiveUniformsiv(GLMContext ctx, GLuint program, GLsizei uniformCount
                 }
                 break;
             case GL_UNIFORM_OFFSET:
-                /* Only UBO members carry a meaningful byte offset; plain
-                 * struct uniform members are not in a named block. */
+                /* UBO members and atomic counters (GL 4.6 §7.3.1.1). */
                 if (res->ubo_member && res_type == _UNIFORM_BUFFER_RES) {
                     params[i] = (GLint)res->ubo_member->offset;
+                } else if (res_type == _ATOMIC_COUNTER_RES) {
+                    params[i] = (GLint)res->location;
                 } else {
                     params[i] = -1;
                 }
@@ -2451,6 +2493,9 @@ void mglGetActiveUniformsiv(GLMContext ctx, GLuint program, GLsizei uniformCount
             case GL_UNIFORM_ARRAY_STRIDE:
                 if (res->ubo_member && res_type == _UNIFORM_BUFFER_RES) {
                     params[i] = res->ubo_member->array_stride;
+                } else if (res_type == _ATOMIC_COUNTER_RES) {
+                    params[i] = (res->is_array || res->gl_array_size > 1)
+                        ? 4 : 0;
                 } else {
                     params[i] = -1;
                 }
@@ -2458,12 +2503,19 @@ void mglGetActiveUniformsiv(GLMContext ctx, GLuint program, GLsizei uniformCount
             case GL_UNIFORM_MATRIX_STRIDE:
                 if (res->ubo_member && res_type == _UNIFORM_BUFFER_RES) {
                     params[i] = res->ubo_member->matrix_stride;
+                } else if (res_type == _ATOMIC_COUNTER_RES) {
+                    params[i] = 0;
                 } else {
                     params[i] = -1;
                 }
                 break;
             case GL_UNIFORM_ATOMIC_COUNTER_BUFFER_INDEX:
-                params[i] = -1;
+                if (res_type == _ATOMIC_COUNTER_RES) {
+                    params[i] = mglAtomicCounterUniformBufferIndex(
+                        ptr, res->gl_binding);
+                } else {
+                    params[i] = -1;
+                }
                 break;
             case GL_UNIFORM_IS_ROW_MAJOR:
                 if (res->ubo_member && res_type == _UNIFORM_BUFFER_RES) {

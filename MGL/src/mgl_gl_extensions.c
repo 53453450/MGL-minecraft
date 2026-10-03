@@ -1638,12 +1638,20 @@ static GLboolean mgl_get_program_uniform_resourceiv(GLMContext ctx,
 				}
 				break;
 			case GL_ARRAY_STRIDE:
-				params[i] = (res->ubo_member && res_type == _UNIFORM_BUFFER_RES)
-					? res->ubo_member->array_stride : -1;
+				if (res->ubo_member && res_type == _UNIFORM_BUFFER_RES)
+					params[i] = res->ubo_member->array_stride;
+				else if (res_type == _ATOMIC_COUNTER_RES)
+					params[i] = (res->is_array || res->gl_array_size > 1) ? 4 : 0;
+				else
+					params[i] = -1;
 				break;
 			case GL_MATRIX_STRIDE:
-				params[i] = (res->ubo_member && res_type == _UNIFORM_BUFFER_RES)
-					? res->ubo_member->matrix_stride : -1;
+				if (res->ubo_member && res_type == _UNIFORM_BUFFER_RES)
+					params[i] = res->ubo_member->matrix_stride;
+				else if (res_type == _ATOMIC_COUNTER_RES)
+					params[i] = 0;
+				else
+					params[i] = -1;
 				break;
 			case GL_BUFFER_DATA_SIZE:
 			case GL_NUM_ACTIVE_VARIABLES:
