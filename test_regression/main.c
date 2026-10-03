@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 204
+#define MAX_TESTS 205
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -7560,6 +7560,72 @@ static int test_compute_shared_simple(unsigned char *pixels,
                     i, data[i]);
             fail = 1;
         }
+    }
+    glDeleteProgram(program);
+    glDeleteBuffers(1, &ssbo);
+    return fail;
+}
+
+static int test_compute_shared_atomic(unsigned char *pixels,
+                                      const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *cs =
+        "#version 430 core\n"
+        "layout(local_size_x = 8) in;\n"
+        "layout(std430, binding = 0) buffer Output {\n"
+        "  uint g_add_output[8];\n"
+        "  int g_sub_output[8];\n"
+        "};\n"
+        "shared uint g_add_value;\n"
+        "shared int g_sub_value;\n"
+        "void main() {\n"
+        "  if (gl_LocalInvocationIndex == 0u) {\n"
+        "    g_add_value = 0u;\n"
+        "    g_sub_value = 7;\n"
+        "  }\n"
+        "  groupMemoryBarrier();\n"
+        "  barrier();\n"
+        "  g_add_output[gl_LocalInvocationIndex] = atomicAdd(g_add_value, 1u);\n"
+        "  g_sub_output[gl_LocalInvocationIndex] = atomicAdd(g_sub_value, -1);\n"
+        "}\n";
+    GLuint program = link_compute_program(cs);
+    if (!program) {
+        fprintf(stderr, "compute_shared_atomic: link failed\n");
+        return 1;
+    }
+    GLuint ssbo = 0;
+    GLuint addv[8];
+    GLint subv[8];
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(addv) + sizeof(subv),
+                 NULL, GL_DYNAMIC_COPY);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glUseProgram(program);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glFinish();
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(addv), addv);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, sizeof(addv), sizeof(subv),
+                       subv);
+    int seen_add[8] = {0};
+    int seen_sub[8] = {0};
+    int fail = 0;
+    for (int i = 0; i < 8; i++) {
+        if (addv[i] > 7u || seen_add[addv[i]]) {
+            fprintf(stderr, "compute_shared_atomic: add[%d]=%u\n", i, addv[i]);
+            fail = 1;
+            break;
+        }
+        seen_add[addv[i]] = 1;
+        if (subv[i] < 0 || subv[i] > 7 || seen_sub[subv[i]]) {
+            fprintf(stderr, "compute_shared_atomic: sub[%d]=%d\n", i, subv[i]);
+            fail = 1;
+            break;
+        }
+        seen_sub[subv[i]] = 1;
     }
     glDeleteProgram(program);
     glDeleteBuffers(1, &ssbo);
@@ -28150,6 +28216,7 @@ static const TestCase TESTS[] = {
                     test_air_geometry_ssbo_visibility),
     SELF_CHECK_TEST("compute_dispatch_ssbo", test_compute_dispatch_ssbo),
     SELF_CHECK_TEST("compute_shared_simple", test_compute_shared_simple),
+    SELF_CHECK_TEST("compute_shared_atomic", test_compute_shared_atomic),
     SELF_CHECK_TEST("compute_shared_struct", test_compute_shared_struct),
     SELF_CHECK_TEST("compute_uniform_array_init",
                     test_compute_uniform_array_init),

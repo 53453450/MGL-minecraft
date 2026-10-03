@@ -5678,6 +5678,19 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
              * are visible (CTS indirectAddressing-case2). */
             return cg.lvalues[e->u.var_ref.name];
         }
+        {
+            auto amit = cg.arrayMem.find(e->u.var_ref.name);
+            if (amit != cg.arrayMem.end()) {
+                llvm::Type *ty = nullptr;
+                auto tit = cg.arrayMemTypes.find(e->u.var_ref.name);
+                if (tit != cg.arrayMemTypes.end())
+                    ty = tit->second;
+                else
+                    ty = llvmType(typeFromIR(s->type), *cg.ctx);
+                return cg.b->CreateAlignedLoad(ty, amit->second,
+                                               llvm::Align(4));
+            }
+        }
         if (s->qualifiers & MGL_AST_Q_BUFFER)
             return emitSSBORead(cg, e, s, mod, locals);
         if (cg.isTessEval && (s->qualifiers & MGL_AST_Q_PATCH)) {
@@ -8878,15 +8891,32 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     return nullptr;
                 }
                 const MGLIRSymbol *sb = ssboRootSym(e->u.call.args[0], mod);
-                if (!sb) {
-                    cg.err = 1;
-                    cg.errmsg = std::string("codegen: ") + name +
-                                " target must be an SSBO member";
-                    return nullptr;
-                }
                 const MGLIRType *ty = nullptr;
-                llvm::Value *p = ssboAddress(cg, e->u.call.args[0], sb, mod,
-                                             locals, &ty);
+                llvm::Value *p = nullptr;
+                unsigned as = 1;
+                if (sb) {
+                    p = ssboAddress(cg, e->u.call.args[0], sb, mod,
+                                    locals, &ty);
+                } else {
+                    /* GLSL 4.60 §8.11: atomic* also apply to shared. */
+                    llvm::Type *elemTy = nullptr;
+                    p = arrayMemLValuePtr(cg, e->u.call.args[0], mod,
+                                          locals, &elemTy);
+                    if (p)
+                        as = p->getType()->getPointerAddressSpace();
+                    const MGLExpr *r = e->u.call.args[0];
+                    while (r && (r->kind == MGL_EXPR_INDEX ||
+                                 r->kind == MGL_EXPR_MEMBER))
+                        r = r->kind == MGL_EXPR_INDEX ? r->u.index.object
+                                                      : r->u.member.object;
+                    if (r && r->kind == MGL_EXPR_VAR_REF && r->u.var_ref.name) {
+                        const MGLIRSymbol *sh =
+                            findSymbol(mod, r->u.var_ref.name);
+                        ty = sh ? sh->type : nullptr;
+                        while (ty && ty->kind == MGLIR_TYPE_ARRAY)
+                            ty = ty->elem_type;
+                    }
+                }
                 if (!p) return nullptr;
                 llvm::Value *data = emitExpr(cg, e->u.call.args[1], mod, locals);
                 if (!data) return nullptr;
@@ -8894,7 +8924,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                     ty && ty->scalar == MGLIR_SCALAR_UINT
                                         ? MGLIR_SCALAR_UINT
                                         : MGLIR_SCALAR_INT);
-                p = cg.b->CreateBitCast(p, data->getType()->getPointerTo(1));
+                p = cg.b->CreateBitCast(p, data->getType()->getPointerTo(as));
                 if (isCompSwap) {
                     llvm::Value *cmp = data;
                     llvm::Value *neu =
@@ -8908,7 +8938,6 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         p, cmp, neu, llvm::MaybeAlign(),
                         llvm::AtomicOrdering::Monotonic,
                         llvm::AtomicOrdering::Monotonic);
-                    /* CmpXchg returns { old, success }; GLSL wants old. */
                     return cg.b->CreateExtractValue(cx, 0);
                 }
                 if (strcmp(name, "atomicMin") == 0) {
@@ -10163,6 +10192,13 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         const MGLIRSymbol *sym = findSymbol(mod, name);
         if (!sym) { cg.err = 1; return nullptr; }
         v = coerceScalar(cg, v, typeFromIR(sym->type).scalar);
+        {
+            auto amit = cg.arrayMem.find(name);
+            if (amit != cg.arrayMem.end()) {
+                cg.b->CreateAlignedStore(v, amit->second, llvm::Align(4));
+                return v;
+            }
+        }
         if (sym->qualifiers & MGL_AST_Q_BUFFER) {
             emitSSBOWrite(cg, lhs, sym, mod, locals, v);
             return v;
