@@ -883,6 +883,8 @@ static int air_push_opaque_leaves(MGLShaderResourceList *list,
         if (owner->binding != UINT32_MAX) {
             last->gl_binding = owner->binding;
             last->sampler_unit = (GLint)owner->binding;
+        } else {
+            last->gl_binding = 0;
         }
         last->uniform_location = mglSyntheticSamplerUniformLocation(
             stage, _STORAGE_IMAGE_RES, *texture_binding);
@@ -1139,6 +1141,12 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         /* Same as samplers: layout(binding=N) is the image-unit
                          * initial value for GetUniformiv / array expansion. */
                         last->sampler_unit = (GLint)s->binding;
+                    } else {
+                        /* Metal slot is texture_binding; the GL image unit
+                         * defaults to 0 (GL 4.6 §7.10). Using the Metal slot
+                         * here made compute shaders with an unbound
+                         * samplerCubeArray + image2D write to unit 1. */
+                        last->gl_binding = 0;
                     }
                     last->uniform_location =
                         (s->location != UINT32_MAX)

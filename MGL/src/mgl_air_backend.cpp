@@ -8090,6 +8090,39 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     cmpName = "air.sample_compare_depth_2d_array.f32";
                 } else if (sampleKind == MGLIR_TEX_CUBE) {
                     cmpName = "air.sample_compare_depth_cube.f32";
+                } else if (sampleKind == MGLIR_TEX_CUBE_ARRAY) {
+                    cmpName = "air.sample_compare_depth_cube_array.f32";
+                }
+                if (tex && smp && cmpName &&
+                    sampleKind == MGLIR_TEX_CUBE_ARRAY) {
+                    /* GLSL texture(samplerCubeArrayShadow, vec4 P, float d):
+                     * P.xyz direction, P.w layer. AIR:
+                     *   sample_compare_depth_cube_array.f32(
+                     *     tex, smp, i32 1, <3 x float>, i32 layer, float ref,
+                     *     i1, float, float, i32) */
+                    llvm::Value *sampleCoord = uv;
+                    llvm::Value *arrayLayer = nullptr;
+                    if (!splitSampleArrayCoord(cg, sampleKind, uv,
+                                               &sampleCoord, &arrayLayer) ||
+                        e->u.call.arg_count < 3) {
+                        return llvm::ConstantFP::get(f32, 0.0);
+                    }
+                    llvm::Value *ref = emitExpr(cg, e->u.call.args[2], mod,
+                                                locals);
+                    if (!ref) return nullptr;
+                    ref = coerceScalar(cg, ref, MGLIR_SCALAR_FLOAT);
+                    std::vector<llvm::Value *> cmpArgs = {
+                        tex, smp, cg.b->getInt32(1), sampleCoord,
+                        arrayLayer ? arrayLayer : cg.b->getInt32(0), ref,
+                        cg.b->getInt1(false),
+                        llvm::ConstantFP::get(f32, 0.0),
+                        llvm::ConstantFP::get(f32, 0.0),
+                        cg.b->getInt32(0)};
+                    llvm::Type *cmpRet = llvm::StructType::get(
+                        *cg.ctx, {f32, cg.b->getInt8Ty()});
+                    llvm::Value *cmp =
+                        callAirFn(cg, cmpName, cmpRet, cmpArgs);
+                    return cg.b->CreateExtractValue(cmp, 0);
                 }
                 bool coordUsable = false;
                 if (uv && uv->getType()->isVectorTy()) {
@@ -13869,7 +13902,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 samplerType && samplerType->kind == MGLIR_TYPE_SAMPLER &&
                 samplerType->tex_depth != 0;
             std::string sampledType = isDepthSampler
-                                  ? (is2dArray ? "depth2d_array<"
+                                  ? (isCubeArray ? "depthcube_array<"
+                                     : is2dArray ? "depth2d_array<"
                                      : isCube ? "depthcube<"
                                               : "depth2d<")
                                   : is3d ? "texture3d<"

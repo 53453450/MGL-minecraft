@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 186
+#define MAX_TESTS 187
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -21100,6 +21100,96 @@ static int test_texture_cube_array_sample(unsigned char *pixels,
     return fail;
 }
 
+/* Compute path: unbound image2D must use image unit 0, not the Metal
+ * texture slot after the cube-array sampler. */
+static int test_texture_cube_array_sample_cs(unsigned char *pixels,
+                                             const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *cs =
+        "#version 450 core\n"
+        "uniform samplerCubeArray sampler;\n"
+        "layout(rgba8) writeonly uniform image2D image;\n"
+        "layout(local_size_x = 1, local_size_y = 1) in;\n"
+        "void main() {\n"
+        "  vec4 c = texture(sampler, vec4(0.0, 0.0, 1.0, 1.0));\n"
+        "  imageStore(image, ivec2(0, 0), c);\n"
+        "}\n";
+    GLuint prog = link_compute_program(cs);
+    if (!prog) {
+        fprintf(stderr, "texture_cube_array_sample_cs: link failed\n");
+        return 1;
+    }
+    const int csize = 8;
+    float *fill0 = (float *)malloc((size_t)csize * (size_t)csize * 4u *
+                                   sizeof(float));
+    float *fill1 = (float *)malloc((size_t)csize * (size_t)csize * 4u *
+                                   sizeof(float));
+    if (!fill0 || !fill1) {
+        free(fill0);
+        free(fill1);
+        glDeleteProgram(prog);
+        return 1;
+    }
+    for (int i = 0; i < csize * csize; i++) {
+        fill0[i * 4 + 0] = 1.f;
+        fill0[i * 4 + 1] = 0.f;
+        fill0[i * 4 + 2] = 0.f;
+        fill0[i * 4 + 3] = 1.f;
+        fill1[i * 4 + 0] = 0.f;
+        fill1[i * 4 + 1] = 1.f;
+        fill1[i * 4 + 2] = 0.f;
+        fill1[i * 4 + 3] = 1.f;
+    }
+    GLuint cube = 0, img = 0;
+    int fail = 0;
+    while (glGetError() != GL_NO_ERROR) { }
+    glGenTextures(1, &cube);
+    glBindTexture(GL_TEXTURE_CUBE_MAP_ARRAY, cube);
+    glTexImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, 0, GL_RGBA8, csize, csize, 12, 0,
+                 GL_RGBA, GL_FLOAT, NULL);
+    for (int j = 0; j < 6; ++j) {
+        glTexSubImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, 0, 0, 0, j, csize, csize, 1,
+                        GL_RGBA, GL_FLOAT, fill0);
+        glTexSubImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, 0, 0, 0, j + 6, csize, csize,
+                        1, GL_RGBA, GL_FLOAT, fill1);
+    }
+    glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_MIN_FILTER,
+                    GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_MAG_FILTER,
+                    GL_NEAREST);
+    glGenTextures(1, &img);
+    glBindTexture(GL_TEXTURE_2D, img);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 1, 1);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindImageTexture(0, img, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+    glUseProgram(prog);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_CUBE_MAP_ARRAY, cube);
+    glUniform1i(glGetUniformLocation(prog, "sampler"), 0);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    glFinish();
+    unsigned char px[4] = {0, 0, 0, 0};
+    glBindTexture(GL_TEXTURE_2D, img);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    if (px[0] != 0 || px[1] < 200 || px[2] != 0) {
+        fprintf(stderr,
+                "texture_cube_array_sample_cs: (%u,%u,%u,%u) want green\n",
+                px[0], px[1], px[2], px[3]);
+        fail = 1;
+    }
+    glDeleteProgram(prog);
+    if (cube) glDeleteTextures(1, &cube);
+    if (img) glDeleteTextures(1, &img);
+    free(fill0);
+    free(fill1);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
 /* ARB_shading_language_420pack: scalar.xxxx is vec4. */
 static int test_scalar_swizzle(unsigned char *pixels, const char *out_path)
 {
@@ -26731,6 +26821,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("texture_size_cube_array", test_texture_size_cube_array),
     SELF_CHECK_TEST("texture_cube_array_sample",
                     test_texture_cube_array_sample),
+    SELF_CHECK_TEST("texture_cube_array_sample_cs",
+                    test_texture_cube_array_sample_cs),
     SELF_CHECK_TEST("scalar_swizzle", test_scalar_swizzle),
     SELF_CHECK_TEST("snorm_fbo_color_renderable", test_snorm_fbo_color_renderable),
     SELF_CHECK_TEST("image_size", test_image_size),
