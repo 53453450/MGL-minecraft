@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 201
+#define MAX_TESTS 202
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -7797,6 +7797,33 @@ static int test_compute_link_local_size(unsigned char *pixels,
         fprintf(stderr, "compute_link_local_size: conflicting local_size linked\n");
         return 1;
     }
+    return 0;
+}
+
+static int test_gs_pervertex_clip(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *gs =
+        "#version 410\n"
+        "layout (points) in;\n"
+        "layout (points, max_vertices = 4) out;\n"
+        "in gl_PerVertex {\n"
+        "    float gl_ClipDistance[];\n"
+        "} gl_in[];\n"
+        "out gl_PerVertex {\n"
+        "    float gl_ClipDistance[];\n"
+        "};\n"
+        "void main() {\n"
+        "    gl_ClipDistance[0] = 0.5;\n"
+        "    EmitVertex();\n"
+        "}\n";
+    GLuint s = compile_shader(GL_GEOMETRY_SHADER, gs);
+    if (!s) {
+        fprintf(stderr, "gs_pervertex_clip: compile failed\n");
+        return 1;
+    }
+    glDeleteShader(s);
     return 0;
 }
 
@@ -27945,6 +27972,7 @@ static const TestCase TESTS[] = {
                     test_compute_uniform_array_init),
     SELF_CHECK_TEST("compute_multi_tu", test_compute_multi_tu),
     SELF_CHECK_TEST("compute_link_local_size", test_compute_link_local_size),
+    SELF_CHECK_TEST("gs_pervertex_clip", test_gs_pervertex_clip),
     SELF_CHECK_TEST("air_pipeline_safe_fallback",
                     test_air_pipeline_safe_fallback),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),

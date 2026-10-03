@@ -4233,15 +4233,24 @@ static void layout_block(Sema *s, const MGLDecl *d, MGLIRType *block_type)
         if (member && member->kind == MGLIR_TYPE_ARRAY &&
             member->array_size == 0) {
             const int is_last = (i + 1 == block_type->member_count);
-            if (is_ssbo && !is_last) {
+            const char *mn = block_type->member_names[i];
+            const int is_clip_cull =
+                mn && (strcmp(mn, "gl_ClipDistance") == 0 ||
+                       strcmp(mn, "gl_CullDistance") == 0);
+            const int is_io =
+                (d->qualifiers & (MGL_AST_Q_IN | MGL_AST_Q_OUT)) != 0;
+            if (is_io && is_clip_cull) {
+                member->array_size = ssbo_unsized_member_size_from_ast(
+                    s, d->name, mn);
+            } else if (is_ssbo && !is_last) {
                 /* Non-final unsized SSBO member (CTS basic-syntax): size from
                  * constant indices so later members lay out correctly. */
                 member->array_size = ssbo_unsized_member_size_from_ast(
-                    s, d->name, block_type->member_names[i]);
+                    s, d->name, mn);
             } else if (!is_ssbo || !is_last) {
                 sema_error(s, d->line,
                            "runtime array '%s' must be the final member of a shader storage block",
-                           block_type->member_names[i]);
+                           mn);
             }
         }
     }

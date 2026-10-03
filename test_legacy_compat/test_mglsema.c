@@ -155,6 +155,19 @@ static void test_tess_geom_m3(void)
                MGL_STAGE_GEOMETRY, &module, &errors, &error_count);
     CHECK(error_count == 0, "GS layout/builtins parse+sema");
     teardown();
+
+    analyze_ex("#version 410\n"
+               "layout (points) in;\n"
+               "layout (points, max_vertices = 4) out;\n"
+               "in gl_PerVertex { float gl_ClipDistance[]; } gl_in[];\n"
+               "out gl_PerVertex { float gl_ClipDistance[]; };\n"
+               "void main() {\n"
+               "    gl_ClipDistance[0] = 0.5;\n"
+               "    EmitVertex();\n"
+               "}\n",
+               MGL_STAGE_GEOMETRY, &module, &errors, &error_count);
+    CHECK(error_count == 0, "GS unsized gl_ClipDistance PerVertex redecl");
+    teardown();
 }
 
 static void test_swizzle_checks(void)
