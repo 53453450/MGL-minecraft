@@ -2860,6 +2860,14 @@ more_qualifiers:
     parse_array_specifier_list(p, d);
     uint32_t type_prefix_dims = d->array_count;
 
+    /* GLSL 4.60 §4.4.6: `layout(binding=N, offset=M) uniform atomic_uint;`
+     * has no variable; it only sets the default offset for that binding. */
+    if (!at_any_ident(p) && ops_at(p, ";") && d->type &&
+        d->type->base == MGL_AST_TYPE_ATOMIC_UINT) {
+        expect_punct(p, ";");
+        return d;
+    }
+
     if (!at_any_ident(p)) {
         parse_error(p, "expected identifier at line %u", tk_line(p));
         free_decl(d);

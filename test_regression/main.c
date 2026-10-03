@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 191
+#define MAX_TESTS 193
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -21481,6 +21481,83 @@ static int test_sampler_array_size1(unsigned char *pixels, const char *out_path)
     return fail;
 }
 
+/* GLSL 4.60 §4.4.6: nameless atomic_uint sets the default offset. */
+static int test_atomic_uint_default_offset(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 440 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 440 core\n"
+        "layout(binding=2, offset=4) uniform atomic_uint;\n"
+        "layout(binding=2) uniform atomic_uint atomic0;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(float(atomicCounter(atomic0)), 1.0, 0.0, 1.0); }\n";
+    GLuint program = link_program(vs, fs);
+    if (!program) return 1;
+    int fail = 0;
+    GLuint idx = glGetProgramResourceIndex(program, GL_UNIFORM, "atomic0");
+    GLenum prop = GL_OFFSET;
+    GLint off = -1;
+    glGetProgramResourceiv(program, GL_UNIFORM, idx, 1, &prop, 1, NULL, &off);
+    if (off != 4) {
+        fprintf(stderr, "atomic_uint_default_offset: offset=%d want 4 (idx=%u)\n",
+                off, idx);
+        fail = 1;
+    }
+    glDeleteProgram(program);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
+/* Same sampler name, different layout(binding) across stages must not link. */
+static int test_cross_stage_binding_mismatch(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 440 core\n"
+        "layout(binding=1) uniform sampler2D sampler0;\n"
+        "flat out vec4 fragColor;\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  fragColor = texture(sampler0, vec2(0.0));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 440 core\n"
+        "layout(binding=3) uniform sampler2D sampler0;\n"
+        "flat in vec4 fragColor;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = fragColor + texture(sampler0, vec2(0.0)); }\n";
+    GLuint vs_s = compile_shader(GL_VERTEX_SHADER, vs);
+    GLuint fs_s = compile_shader(GL_FRAGMENT_SHADER, fs);
+    if (!vs_s || !fs_s) {
+        if (vs_s) glDeleteShader(vs_s);
+        if (fs_s) glDeleteShader(fs_s);
+        return 1;
+    }
+    GLuint p = glCreateProgram();
+    glAttachShader(p, vs_s);
+    glAttachShader(p, fs_s);
+    glLinkProgram(p);
+    glDeleteShader(vs_s);
+    glDeleteShader(fs_s);
+    GLint ok = 1;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    glDeleteProgram(p);
+    if (ok) {
+        fprintf(stderr, "cross_stage_binding_mismatch: linked\n");
+        return 1;
+    }
+    return 0;
+}
+
 /* ARB_shading_language_420pack: scalar.xxxx is vec4. */
 static int test_scalar_swizzle(unsigned char *pixels, const char *out_path)
 {
@@ -27118,6 +27195,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("image_size_array_index", test_image_size_array_index),
     SELF_CHECK_TEST("glsl_nondecimal_literals", test_glsl_nondecimal_literals),
     SELF_CHECK_TEST("sampler_array_size1", test_sampler_array_size1),
+    SELF_CHECK_TEST("atomic_uint_default_offset", test_atomic_uint_default_offset),
+    SELF_CHECK_TEST("cross_stage_binding_mismatch", test_cross_stage_binding_mismatch),
     SELF_CHECK_TEST("scalar_swizzle", test_scalar_swizzle),
     SELF_CHECK_TEST("snorm_fbo_color_renderable", test_snorm_fbo_color_renderable),
     SELF_CHECK_TEST("image_size", test_image_size),

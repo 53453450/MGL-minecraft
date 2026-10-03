@@ -2218,6 +2218,55 @@ static bool mglValidateCombinedClipAndCullDistances(GLMContext ctx,
     return false;
 }
 
+/* GLSL 4.60 §4.3.5: the same uniform in multiple stages of one program
+ * must use the same layout(binding). */
+static bool mglValidateCrossStageLayoutBindings(Program *pptr)
+{
+    static const int types[] = {
+        _SAMPLED_IMAGE_RES,
+        _STORAGE_IMAGE_RES,
+        _ATOMIC_COUNTER_RES,
+        _UNIFORM_BUFFER_RES,
+        _STORAGE_BUFFER_RES
+    };
+    if (!pptr) {
+        return false;
+    }
+    for (size_t ti = 0; ti < sizeof(types) / sizeof(types[0]); ti++) {
+        int rt = types[ti];
+        for (int s1 = 0; s1 < _MAX_SHADER_TYPES; s1++) {
+            const MGLShaderResourceList *a =
+                &pptr->shader_resources_list[s1][rt];
+            for (GLuint i = 0u; i < a->count; i++) {
+                const char *name = a->list[i].name;
+                if (!name || name[0] == '\0') {
+                    continue;
+                }
+                GLuint ba = a->list[i].gl_binding;
+                for (int s2 = s1 + 1; s2 < _MAX_SHADER_TYPES; s2++) {
+                    const MGLShaderResourceList *b =
+                        &pptr->shader_resources_list[s2][rt];
+                    for (GLuint j = 0u; j < b->count; j++) {
+                        if (!b->list[j].name ||
+                            strcmp(name, b->list[j].name) != 0) {
+                            continue;
+                        }
+                        if (ba != b->list[j].gl_binding) {
+                            fprintf(stderr,
+                                    "MGL LINK ERROR: program %u uniform '%s' "
+                                    "binding %u vs %u across stages\n",
+                                    pptr->name, name, ba,
+                                    b->list[j].gl_binding);
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
 void mglLinkProgram(GLMContext ctx, GLuint program)
 {
     Program *pptr;
@@ -2822,6 +2871,9 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     /* GL 4.6 §7.7.2: distinct atomic counters sharing a binding must not
      * overlap in the counter buffer. */
     if (!mglValidateAtomicCounterOffsetOverlap(pptr)) {
+        goto link_fail;
+    }
+    if (!mglValidateCrossStageLayoutBindings(pptr)) {
         goto link_fail;
     }
 

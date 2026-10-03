@@ -4613,6 +4613,27 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             }
         }
     }
+    /* GLSL 4.60 §4.4.6: nameless `uniform atomic_uint;` sets the default
+     * offset for subsequent counters on that binding without occupying a
+     * counter slot. */
+    {
+        const MGLIRType *at = t;
+        while (at && at->kind == MGLIR_TYPE_ARRAY)
+            at = at->elem_type;
+        if (!d->name && at && at->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
+            uint32_t bind = d->layout_binding >= 0
+                                ? (uint32_t)d->layout_binding : 0u;
+            uint32_t off = 0u;
+            if (d->layout_offset >= 0)
+                off = (uint32_t)d->layout_offset;
+            else if (bind < 128u)
+                off = s->ac_default_offset[bind];
+            if (bind < 128u)
+                s->ac_default_offset[bind] = off;
+            mglIRTypeDestroy(t);
+            return;
+        }
+    }
     /* Anonymous blocks (uniform DrawColor { ... }; with no instance name)
      * take their interface name from the block type name; their members
      * are registered as block-scoped uniform symbols so the body can
