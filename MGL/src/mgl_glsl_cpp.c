@@ -177,26 +177,21 @@ static int taking(const PP *pp)
     return pp->depth == 0 || pp->cond[pp->depth - 1].taking;
 }
 
-static char *collapse_continuations(const char *src, size_t len, size_t *out_len)
+/* GLSL 4.60 §3.1: backslash immediately followed by a newline is a line
+ * continuation.  The two characters are deleted so tokens join across the
+ * physical break, but the discarded newline still increments __LINE__. */
+static int line_cont_len(const char *src, size_t len, size_t i)
 {
-    char *o = (char *)malloc(len + 1);
-    size_t n = 0;
-    size_t i = 0;
-    if (!o) {
-        return NULL;
+    if (src[i] != '\\' || i + 1 >= len) {
+        return 0;
     }
-    while (i < len) {
-        if (src[i] == '\\' && i + 1 < len &&
-            (src[i + 1] == '\n' ||
-             (src[i + 1] == '\r' && i + 2 < len && src[i + 2] == '\n'))) {
-            i += (src[i + 1] == '\r') ? 3 : 2;
-            continue;
-        }
-        o[n++] = src[i++];
+    if (src[i + 1] == '\n') {
+        return 2;
     }
-    o[n] = 0;
-    *out_len = n;
-    return o;
+    if (src[i + 1] == '\r' && i + 2 < len && src[i + 2] == '\n') {
+        return 3;
+    }
+    return 0;
 }
 
 /* Read until a newline outside comments.  Comments become a single space.
@@ -212,7 +207,15 @@ static char *read_logical_line(PP *pp, const char *src, size_t len, size_t *pos,
         return NULL;
     }
     while (*pos < len) {
-        char c = src[*pos];
+        int clen;
+        char c;
+        clen = line_cont_len(src, len, *pos);
+        if (clen) {
+            *pos += (size_t)clen;
+            nl++;
+            continue;
+        }
+        c = src[*pos];
         if (in_block) {
             if (c == '*' && *pos + 1 < len && src[*pos + 1] == '/') {
                 in_block = 0;
@@ -235,7 +238,16 @@ static char *read_logical_line(PP *pp, const char *src, size_t len, size_t *pos,
         }
         if (c == '/' && *pos + 1 < len && src[*pos + 1] == '/') {
             *pos += 2;
-            while (*pos < len && src[*pos] != '\n') {
+            while (*pos < len) {
+                int q = line_cont_len(src, len, *pos);
+                if (q) {
+                    *pos += (size_t)q;
+                    nl++;
+                    continue;
+                }
+                if (src[*pos] == '\n') {
+                    break;
+                }
                 (*pos)++;
             }
             continue;
@@ -1774,8 +1786,7 @@ static int process_directive(PP *pp, const char *line, int phys)
 char *mglGLSLPreprocess(const char *src, size_t len, char *err, size_t err_cap)
 {
     PP pp;
-    size_t clen = 0, pos = 0;
-    char *collapsed;
+    size_t pos = 0;
     memset(&pp, 0, sizeof(pp));
     pp.line = 1;
     pp.file_no = 0;
@@ -1784,31 +1795,23 @@ char *mglGLSLPreprocess(const char *src, size_t len, char *err, size_t err_cap)
         src = "";
         len = 0;
     }
-    collapsed = collapse_continuations(src, len, &clen);
-    if (!collapsed) {
-        if (err && err_cap) {
-            snprintf(err, err_cap, "preprocessor: out of memory");
-        }
-        return NULL;
-    }
     if (add_predef(&pp, "__LINE__", 1, "0", 0) != 0 ||
         add_predef(&pp, "__FILE__", 2, "0", 0) != 0 ||
         add_predef(&pp, "__VERSION__", 3, "0", 0) != 0 ||
         add_predef(&pp, "GL_core_profile", 0, "1", 1) != 0) {
-        free(collapsed);
         if (err && err_cap) {
             snprintf(err, err_cap, "%s", pp.err);
         }
         return NULL;
     }
-    while (pos < clen && !pp.failed) {
+    while (pos < len && !pp.failed) {
         int phys = 0;
-        char *line = read_logical_line(&pp, collapsed, clen, &pos, &phys);
+        char *line = read_logical_line(&pp, src, len, &pos, &phys);
         if (!line) {
             pp_fail(&pp, "preprocessor: out of memory");
             break;
         }
-        if (phys == 0 && pos >= clen && line[0] == 0) {
+        if (phys == 0 && pos >= len && line[0] == 0) {
             free(line);
             break;
         }
@@ -1818,7 +1821,6 @@ char *mglGLSLPreprocess(const char *src, size_t len, char *err, size_t err_cap)
         pp.line += (phys ? phys : 1);
         free(line);
     }
-    free(collapsed);
     if (!pp.failed && pp.depth != 0) {
         pp_fail(&pp, "preprocessor: unterminated #if");
     }

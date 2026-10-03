@@ -396,6 +396,24 @@ static void test_preprocessor(void)
         CHECK(pp_contains(src, "int x = 0 + 1 + 1"),
               "macro body over 1 KB defines and redefines");
     }
+    CHECK(pp_contains("#version 420\n"
+                      "\n"
+                      "out vec4 vs_tcs_result;\n"
+                      "\n"
+                      "ivec4 glsl\\\n"
+                      "Test\\\n"
+                      "Function(in ivec3 arg)\n"
+                      "{\n"
+                      "    return ivec4(__LINE__, arg.xyz);\n"
+                      "}\n",
+                      "ivec4 ( 9 , arg . xyz )"),
+          "__LINE__ counts physical lines after continuations");
+    CHECK(pp_contains("#version 420\n"
+                      "ivec4 glsl\\\n"
+                      "Test\\\n"
+                      "Function(in ivec3 arg);\n",
+                      "glslTestFunction"),
+          "line continuation joins identifier tokens");
 }
 
 static void test_array_type_syntax(void)

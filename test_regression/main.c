@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 195
+#define MAX_TESTS 196
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -21830,6 +21830,76 @@ static int test_scalar_swizzle(unsigned char *pixels, const char *out_path)
     return fail;
 }
 
+/* GLSL 4.60 §3.1: \\n is deleted but still increments __LINE__.
+ * CTS KHR-GL46.shading_language_420pack.line_numbering (VS 420) expects 9
+ * with two continuations in the function name. */
+static int test_line_numbering(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 420\n"
+        "\n"
+        "out vec4 vs_tcs_result;\n"
+        "\n"
+        "ivec4 glsl\\\n"
+        "Test\\\n"
+        "Function(in ivec3 arg)\n"
+        "{\n"
+        "    return ivec4(__LINE__, arg.xyz);\n"
+        "}\n"
+        "\n"
+        "void main()\n"
+        "{\n"
+        "    vec4 result = vec4(1, 0, 0, 1);\n"
+        "    if (ivec4(9, 1, 2, 3) == glslTestFunction(ivec3(1, 2, 3)))\n"
+        "        result = vec4(0, 1, 0, 1);\n"
+        "    vs_tcs_result = result;\n"
+        "    gl_Position = vec4(-1.0, -1.0, 0.0, 1.0);\n"
+        "    if (gl_VertexID == 1) gl_Position = vec4(3.0, -1.0, 0.0, 1.0);\n"
+        "    if (gl_VertexID == 2) gl_Position = vec4(-1.0, 3.0, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 420\n"
+        "in vec4 vs_tcs_result;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vs_tcs_result; }\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) {
+        fprintf(stderr, "line_numbering: link failed\n");
+        return 1;
+    }
+    GLuint color = 0, fbo = 0, vao = 0;
+    glGenTextures(1, &color);
+    glBindTexture(GL_TEXTURE_2D, color);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, REG_W, REG_H, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, NULL);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           color, 0);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(prog);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    const unsigned char *c =
+        &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+    int fail = 0;
+    if (c[0] > 20u || c[1] < 220u || c[2] > 20u) {
+        fprintf(stderr, "line_numbering: center (%u,%u,%u,%u) want green\n",
+                c[0], c[1], c[2], c[3]);
+        fail = 1;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteProgram(prog);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return fail;
+}
+
 /* Table 8.12: SNORM formats are color-renderable (CR), so an R8_SNORM
  * color attachment is FRAMEBUFFER_COMPLETE and Clear is not IFO. */
 static int test_snorm_fbo_color_renderable(unsigned char *pixels,
@@ -27494,6 +27564,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("glsl_empty_declarator", test_glsl_empty_declarator),
     SELF_CHECK_TEST("glsl_any_all", test_glsl_any_all),
     SELF_CHECK_TEST("scalar_swizzle", test_scalar_swizzle),
+    SELF_CHECK_TEST("line_numbering", test_line_numbering),
     SELF_CHECK_TEST("snorm_fbo_color_renderable", test_snorm_fbo_color_renderable),
     SELF_CHECK_TEST("image_size", test_image_size),
     SELF_CHECK_TEST("image_size_tess_discard", test_image_size_tess_discard),
