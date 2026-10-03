@@ -10438,6 +10438,50 @@ static llvm::Value *emitSamplePositionFromId(Codegen &cg, llvm::Value *sampleId,
     return pos;
 }
 
+/* GLSL `out float`/`out uint` to an RGBA8/RGBA32UI color buffer: Metal's
+ * fragment return type has to match the attachment (typically a 4-vector).
+ * GL writes the scalar into the first component (4.6 §15.2.3). */
+static bool fragColorNeedsVec4RT(const MType &t)
+{
+    return !t.isArray() && !t.isMatrix() && t.vec == 0 &&
+           (t.scalar == MGLIR_SCALAR_FLOAT || t.scalar == MGLIR_SCALAR_INT ||
+            t.scalar == MGLIR_SCALAR_UINT);
+}
+
+static MType fragColorRTType(const MType &t)
+{
+    if (!fragColorNeedsVec4RT(t)) {
+        return t;
+    }
+    MType r = t;
+    r.vec = 4;
+    return r;
+}
+
+static llvm::Value *packScalarFragColor(Codegen &cg, llvm::Value *v,
+                                        const MType &t)
+{
+    if (!v || !fragColorNeedsVec4RT(t)) {
+        return v;
+    }
+    llvm::Type *el = llvmScalar(t.scalar, *cg.ctx);
+    llvm::Type *v4 = llvm::FixedVectorType::get(el, 4);
+    llvm::Value *z =
+        t.scalar == MGLIR_SCALAR_FLOAT
+            ? (llvm::Value *)llvm::ConstantFP::get(el, 0.0)
+            : (llvm::Value *)llvm::ConstantInt::get(el, 0);
+    llvm::Value *one =
+        t.scalar == MGLIR_SCALAR_FLOAT
+            ? (llvm::Value *)llvm::ConstantFP::get(el, 1.0)
+            : (llvm::Value *)llvm::ConstantInt::get(el, 1);
+    llvm::Value *r = llvm::UndefValue::get(v4);
+    r = cg.b->CreateInsertElement(r, v, cg.b->getInt32(0));
+    r = cg.b->CreateInsertElement(r, z, cg.b->getInt32(1));
+    r = cg.b->CreateInsertElement(r, z, cg.b->getInt32(2));
+    r = cg.b->CreateInsertElement(r, one, cg.b->getInt32(3));
+    return r;
+}
+
 llvm::Value *assembleReturn(Codegen &cg) {
     if (cg.isVS) {
         if (cg.retTy->isStructTy()) {
@@ -10671,6 +10715,7 @@ llvm::Value *assembleReturn(Codegen &cg) {
             llvm::Value *color = cg.lvalues.count(out->name)
                 ? cg.lvalues[out->name]
                 : llvm::UndefValue::get(llvmType(out->type, *cg.ctx));
+            color = packScalarFragColor(cg, color, out->type);
             ret = cg.b->CreateInsertValue(ret, color, field++);
         }
         if (cg.fragOutputs.empty()) field = 1u;
@@ -10694,6 +10739,9 @@ llvm::Value *assembleReturn(Codegen &cg) {
                   ? llvm::FixedVectorType::get(
                         llvm::Type::getFloatTy(*cg.ctx), 4)
                   : cg.retElems[0]);
+        if (out) {
+            color = packScalarFragColor(cg, color, out->type);
+        }
         /* Single color + sample_mask: promote to struct return. */
         if (cg.retTy->isStructTy()) {
             ret = cg.b->CreateInsertValue(ret, color, 0);
@@ -10701,8 +10749,10 @@ llvm::Value *assembleReturn(Codegen &cg) {
             return ret;
         }
     }
-    return (out && cg.lvalues.count(out->name))
-        ? cg.lvalues[out->name] : llvm::UndefValue::get(cg.retTy);
+    if (out && cg.lvalues.count(out->name)) {
+        return packScalarFragColor(cg, cg.lvalues[out->name], out->type);
+    }
+    return llvm::UndefValue::get(cg.retTy);
 }
 
 /* ---- statements (C1g) ------------------------------------------------ */
@@ -11385,7 +11435,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                    usesSampleMask) {
             std::vector<llvm::Type *> fields;
             for (VarSym *out : fragOutputs)
-                fields.push_back(llvmType(out->type, ctx));
+                fields.push_back(llvmType(fragColorRTType(out->type), ctx));
             if (fields.empty())
                 fields.push_back(llvm::FixedVectorType::get(
                     llvm::Type::getFloatTy(ctx), 4));
@@ -11396,7 +11446,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             retTy = llvm::StructType::get(ctx, fields);
         } else {
             retTy = !fragOutputs.empty()
-                ? llvmType(fragOutputs[0]->type, ctx)
+                ? llvmType(fragColorRTType(fragOutputs[0]->type), ctx)
                 : llvm::FixedVectorType::get(
                       llvm::Type::getFloatTy(ctx), 4);
         }
@@ -14769,7 +14819,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                         llvm::Type::getInt32Ty(ctx), 0)),
                     llvm::MDString::get(ctx, "air.arg_type_name"),
-                    llvm::MDString::get(ctx, mslTypeName(out->type)),
+                    llvm::MDString::get(ctx, mslTypeName(fragColorRTType(out->type))),
                     llvm::MDString::get(ctx, "air.arg_name"),
                     llvm::MDString::get(ctx, out->name)}));
             }
