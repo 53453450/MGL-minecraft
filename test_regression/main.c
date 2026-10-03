@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 185
+#define MAX_TESTS 186
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -20897,20 +20897,207 @@ static int test_texture_size_cube_array(unsigned char *pixels,
         "#version 450 core\n"
         "uniform samplerCubeArray tex;\n"
         "uniform samplerCubeArrayShadow shw;\n"
+        "uniform isamplerCubeArray itex;\n"
+        "uniform usamplerCubeArray utex;\n"
         "flat out uvec3 sz;\n"
-        "flat out uvec3 szs;\n"
         "void main() {\n"
-        "    sz = uvec3(textureSize(tex, 0));\n"
-        "    szs = uvec3(textureSize(shw, 0));\n"
+        "    sz = uvec3(textureSize(tex, 0)) +\n"
+        "         uvec3(textureSize(shw, 0)) +\n"
+        "         uvec3(textureSize(itex, 0)) +\n"
+        "         uvec3(textureSize(utex, 0));\n"
         "    gl_Position = vec4(0.0);\n"
         "}\n";
-    GLuint s = compile_shader(GL_VERTEX_SHADER, vs);
-    if (!s) {
-        fprintf(stderr, "texture_size_cube_array: compile failed\n");
+    static const char *fs =
+        "#version 450 core\n"
+        "flat in uvec3 sz;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(sz, 1.0) / 256.0; }\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) {
+        fprintf(stderr, "texture_size_cube_array: link failed\n");
         return 1;
     }
-    glDeleteShader(s);
-    return 0;
+    static const struct {
+        const char *name;
+        GLenum type;
+    } want[] = {
+        {"tex", GL_SAMPLER_CUBE_MAP_ARRAY},
+        {"shw", GL_SAMPLER_CUBE_MAP_ARRAY_SHADOW},
+        {"itex", GL_INT_SAMPLER_CUBE_MAP_ARRAY},
+        {"utex", GL_UNSIGNED_INT_SAMPLER_CUBE_MAP_ARRAY},
+    };
+    int fail = 0;
+    GLint n = 0;
+    glGetProgramiv(prog, GL_ACTIVE_UNIFORMS, &n);
+    for (size_t w = 0; w < sizeof(want) / sizeof(want[0]); w++) {
+        int found = 0;
+        for (GLint i = 0; i < n; i++) {
+            char uname[64];
+            GLsizei len = 0;
+            GLint usize = 0;
+            GLenum utype = 0;
+            glGetActiveUniform(prog, (GLuint)i, (GLsizei)sizeof(uname), &len,
+                               &usize, &utype, uname);
+            if (strcmp(uname, want[w].name) != 0) {
+                continue;
+            }
+            found = 1;
+            if (utype != want[w].type) {
+                fprintf(stderr,
+                        "texture_size_cube_array: %s type 0x%x want 0x%x\n",
+                        want[w].name, utype, want[w].type);
+                fail = 1;
+            }
+        }
+        if (!found) {
+            fprintf(stderr, "texture_size_cube_array: %s not active\n",
+                    want[w].name);
+            fail = 1;
+        }
+    }
+    glDeleteProgram(prog);
+    return fail;
+}
+
+/* GLSL 4.60: texture / textureLod / textureGrad on samplerCubeArray.
+ * P is vec4; P.w selects the array layer. */
+static int test_texture_cube_array_sample(unsigned char *pixels,
+                                          const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "const vec2 kPos[3] = vec2[](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));\n"
+        "void main() { gl_Position = vec4(kPos[gl_VertexID], 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "uniform samplerCubeArray tex;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() {\n"
+        "  vec4 a = texture(tex, vec4(0.0, 0.0, 1.0, 0.0));\n"
+        "  vec4 b = texture(tex, vec4(0.0, 0.0, 1.0, 1.0));\n"
+        "  vec4 c = textureLod(tex, vec4(0.0, 0.0, 1.0, 1.0), 0.0);\n"
+        "  vec4 d = textureGrad(tex, vec4(0.0, 0.0, 1.0, 0.0),\n"
+        "                       vec3(0.0), vec3(0.0));\n"
+        "  bool ok = distance(a, vec4(1.0, 0.0, 0.0, 1.0)) < 0.02 &&\n"
+        "            distance(b, vec4(0.0, 1.0, 0.0, 1.0)) < 0.02 &&\n"
+        "            distance(c, vec4(0.0, 1.0, 0.0, 1.0)) < 0.02 &&\n"
+        "            distance(d, vec4(1.0, 0.0, 0.0, 1.0)) < 0.02;\n"
+        "  frag = ok ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(a.r, b.g, c.b, 1.0);\n"
+        "}\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) {
+        fprintf(stderr, "texture_cube_array_sample: link failed\n");
+        return 1;
+    }
+    const int csize = 8;
+    float red[4] = {1.f, 0.f, 0.f, 1.f};
+    float green[4] = {0.f, 1.f, 0.f, 1.f};
+    float *fill0 = (float *)malloc((size_t)csize * (size_t)csize * 4u *
+                                   sizeof(float));
+    float *fill1 = (float *)malloc((size_t)csize * (size_t)csize * 4u *
+                                   sizeof(float));
+    if (!fill0 || !fill1) {
+        free(fill0);
+        free(fill1);
+        glDeleteProgram(prog);
+        return 1;
+    }
+    for (int i = 0; i < csize * csize; i++) {
+        fill0[i * 4 + 0] = red[0];
+        fill0[i * 4 + 1] = red[1];
+        fill0[i * 4 + 2] = red[2];
+        fill0[i * 4 + 3] = red[3];
+        fill1[i * 4 + 0] = green[0];
+        fill1[i * 4 + 1] = green[1];
+        fill1[i * 4 + 2] = green[2];
+        fill1[i * 4 + 3] = green[3];
+    }
+    GLuint tex = 0, color = 0, fbo = 0, vao = 0;
+    int fail = 0;
+    while (glGetError() != GL_NO_ERROR) { }
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_CUBE_MAP_ARRAY, tex);
+    glTexImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, 0, GL_RGBA8, csize, csize, 12, 0,
+                 GL_RGBA, GL_FLOAT, NULL);
+    for (int j = 0; j < 6; ++j) {
+        glTexSubImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, 0, 0, 0, j, csize, csize, 1,
+                        GL_RGBA, GL_FLOAT, fill0);
+        glTexSubImage3D(GL_TEXTURE_CUBE_MAP_ARRAY, 0, 0, 0, j + 6, csize, csize,
+                        1, GL_RGBA, GL_FLOAT, fill1);
+    }
+    glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_MIN_FILTER,
+                    GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_MAG_FILTER,
+                    GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_WRAP_S,
+                    GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_WRAP_T,
+                    GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_WRAP_R,
+                    GL_CLAMP_TO_EDGE);
+    fbo = make_fbo(REG_W, REG_H, &color);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, REG_W, REG_H);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glUseProgram(prog);
+    {
+        GLint n = 0, found_tex = 0;
+        glGetProgramiv(prog, GL_ACTIVE_UNIFORMS, &n);
+        for (GLint i = 0; i < n; i++) {
+            char uname[64];
+            GLsizei len = 0;
+            GLint usize = 0;
+            GLenum utype = 0;
+            glGetActiveUniform(prog, (GLuint)i, (GLsizei)sizeof(uname), &len,
+                               &usize, &utype, uname);
+            if (strcmp(uname, "tex") == 0) {
+                found_tex = 1;
+                if (utype != GL_SAMPLER_CUBE_MAP_ARRAY) {
+                    fprintf(stderr,
+                            "texture_cube_array_sample: GetActiveUniform "
+                            "type 0x%x want SAMPLER_CUBE_MAP_ARRAY\n",
+                            utype);
+                    fail = 1;
+                }
+            }
+        }
+        if (!found_tex) {
+            fprintf(stderr,
+                    "texture_cube_array_sample: uniform tex not active\n");
+            fail = 1;
+        }
+    }
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_CUBE_MAP_ARRAY, tex);
+    glUniform1i(glGetUniformLocation(prog, "tex"), 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    GLenum e = glGetError();
+    if (e != GL_NO_ERROR) {
+        fprintf(stderr, "texture_cube_array_sample: draw 0x%x\n", e);
+        fail = 1;
+    }
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    unsigned char *c = pixels + ((REG_H / 2) * REG_W + (REG_W / 2)) * 4;
+    if (c[0] != 0 || c[1] < 200 || c[2] != 0) {
+        fprintf(stderr,
+                "texture_cube_array_sample: center (%u,%u,%u,%u) want green\n",
+                c[0], c[1], c[2], c[3]);
+        fail = 1;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteProgram(prog);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    if (tex) glDeleteTextures(1, &tex);
+    free(fill0);
+    free(fill1);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
 }
 
 /* ARB_shading_language_420pack: scalar.xxxx is vec4. */
@@ -26542,6 +26729,8 @@ static const TestCase TESTS[] = {
                     test_gpu_shader5_gather_offset_vs),
     SELF_CHECK_TEST("gpu_shader5_overloading", test_gpu_shader5_overloading),
     SELF_CHECK_TEST("texture_size_cube_array", test_texture_size_cube_array),
+    SELF_CHECK_TEST("texture_cube_array_sample",
+                    test_texture_cube_array_sample),
     SELF_CHECK_TEST("scalar_swizzle", test_scalar_swizzle),
     SELF_CHECK_TEST("snorm_fbo_color_renderable", test_snorm_fbo_color_renderable),
     SELF_CHECK_TEST("image_size", test_image_size),

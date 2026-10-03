@@ -937,6 +937,23 @@ static bool splitSampleArrayCoord(Codegen &cg, MGLIRTexKind kind,
         *outCoord = expanded;
         return true;
     }
+    if (kind == MGLIR_TEX_CUBE_ARRAY) {
+        auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(uv->getType());
+        if (!vt || vt->getElementCount().getFixedValue() < 4u) {
+            cg.err = 1;
+            cg.errmsg = "codegen: samplerCubeArray texture access expects vec4 "
+                        "coordinates";
+            return false;
+        }
+        /* GLSL texture*(gsamplerCubeArray, vec4): P.xyz direction, P.w layer.
+         * AIR sample_texture_cube_array takes <3 x float> + i32 layer. */
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+        *outLayer = cg.b->CreateFPToSI(
+            cg.b->CreateExtractElement(uv, cg.b->getInt32(3)), i32);
+        *outCoord = cg.b->CreateShuffleVector(
+            uv, llvm::UndefValue::get(uv->getType()), {0, 1, 2});
+        return true;
+    }
     return true;
 }
 
@@ -8156,9 +8173,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                            sampleKind == MGLIR_TEX_2D_MS_ARRAY ||
                            sampleKind == MGLIR_TEX_1D_ARRAY) {
                     gradName = "air.sample_texture_2d_array_grad.v4f32";
-                } else if (sampleKind == MGLIR_TEX_CUBE ||
-                           sampleKind == MGLIR_TEX_CUBE_ARRAY) {
+                } else if (sampleKind == MGLIR_TEX_CUBE) {
                     gradName = "air.sample_texture_cube_grad.v4f32";
+                } else if (sampleKind == MGLIR_TEX_CUBE_ARRAY) {
+                    gradName = "air.sample_texture_cube_array_grad.v4f32";
                 } else if (sampleKind == MGLIR_TEX_2D_MS) {
                     gradName = "air.sample_texture_2d_ms_grad.v4f32";
                 } else if (sampleKind == MGLIR_TEX_2D_MS_ARRAY) {
@@ -8179,14 +8197,33 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                                &arrayLayer)) {
                         return nullptr;
                     }
-                    std::vector<llvm::Value *> gradArgs = {
-                        t, sp, sampleCoord, dPdx, dPdy,
-                        llvm::ConstantFP::get(f32, 0.0),
-                        cg.b->getInt1(false),
-                        gradOffset,
-                        cg.b->getInt32(0)};
-                    if (arrayLayer) {
-                        gradArgs.insert(gradArgs.begin() + 3, arrayLayer);
+                    /* AIR cube[_array]_grad has no offset pair:
+                     *   cube:      tex, smp, coord3, dPdx, dPdy, float, i32
+                     *   cube_array: tex, smp, coord3, i32 layer, dPdx, dPdy,
+                     *               float, i32 */
+                    const bool cubeGrad =
+                        sampleKind == MGLIR_TEX_CUBE ||
+                        sampleKind == MGLIR_TEX_CUBE_ARRAY;
+                    std::vector<llvm::Value *> gradArgs;
+                    if (cubeGrad) {
+                        gradArgs = {t, sp, sampleCoord};
+                        if (arrayLayer) {
+                            gradArgs.push_back(arrayLayer);
+                        }
+                        gradArgs.push_back(dPdx);
+                        gradArgs.push_back(dPdy);
+                        gradArgs.push_back(llvm::ConstantFP::get(f32, 0.0));
+                        gradArgs.push_back(cg.b->getInt32(0));
+                    } else {
+                        gradArgs = {
+                            t, sp, sampleCoord, dPdx, dPdy,
+                            llvm::ConstantFP::get(f32, 0.0),
+                            cg.b->getInt1(false),
+                            gradOffset,
+                            cg.b->getInt32(0)};
+                        if (arrayLayer) {
+                            gradArgs.insert(gradArgs.begin() + 3, arrayLayer);
+                        }
                     }
                     llvm::Value *r = callAirFn(
                         cg,
@@ -8294,6 +8331,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 fallback = cg.b->CreateInsertElement(
                     fallback, llvm::ConstantFP::get(f32, 0.0),
                     cg.b->getInt32(2));
+                unsigned nEl = llvm::cast<llvm::FixedVectorType>(uv->getType())
+                                   ->getNumElements();
+                for (unsigned i = 3; i < nEl; ++i) {
+                    fallback = cg.b->CreateInsertElement(
+                        fallback,
+                        cg.b->CreateExtractElement(uv, cg.b->getInt32(i)),
+                        cg.b->getInt32(i));
+                }
                 uv = cg.b->CreateSelect(isZero, fallback, uv);
             }
             auto doSampleVec =

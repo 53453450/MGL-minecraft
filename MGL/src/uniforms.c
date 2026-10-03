@@ -1129,12 +1129,16 @@ static GLint mglSamplerUniformGLType(const MGLShaderResource *res, int res_type)
 
 GLint mglProgramActiveUniformGLType(const MGLShaderResource *res, int res_type)
 {
+    /* GL 4.6 §7.3.1: GetActiveUniform TYPE is the declared GLSL type.
+     * AIR reflection already encodes sampler/image signedness and shadow
+     * in res->gl_type; the image_dim fallback collapses isampler/usampler/
+     * *Shadow to the float non-shadow enum and fails CTS. */
+    if (res && res->gl_type != 0) {
+        return (GLint)res->gl_type;
+    }
     GLint sampler_type = mglSamplerUniformGLType(res, res_type);
     if (sampler_type != 0) {
         return sampler_type;
-    }
-    if (res && res->gl_type != 0) {
-        return (GLint)res->gl_type;
     }
     return mglKnownPlainUniformType(res ? res->name : NULL);
 }
