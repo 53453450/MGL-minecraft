@@ -1799,6 +1799,7 @@ static const BiFn kBuiltins[] = {
     { "clamp",     3, { BI_ARG_GENF, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_GENF },
     { "mix",       3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
     { "mix",       3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_FLOAT }, BI_RET_GENF },
+    { "fma",       3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
     /* trigonometric */
     { "sin",  1, { BI_ARG_GENF }, BI_RET_GENF },
     { "cos",  1, { BI_ARG_GENF }, BI_RET_GENF },

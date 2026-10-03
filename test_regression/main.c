@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 180
+#define MAX_TESTS 182
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -20566,6 +20566,92 @@ static int test_texture_gather_cube_array(unsigned char *pixels,
     return fail;
 }
 
+/* GLSL 4.00 / gpu_shader5: genType fma(a, b, c) = a * b + c. */
+static int test_fma(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "const vec2 kPos[3] = vec2[](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));\n"
+        "void main() { gl_Position = vec4(kPos[gl_VertexID], 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() {\n"
+        "  float s = fma(2.0, 3.0, 4.0);\n"
+        "  vec3 v = fma(vec3(1.0, 2.0, 3.0), vec3(4.0, 5.0, 6.0), vec3(7.0, 8.0, 9.0));\n"
+        "  bool ok = abs(s - 10.0) < 1e-5 &&\n"
+        "            abs(v.x - 11.0) < 1e-5 &&\n"
+        "            abs(v.y - 18.0) < 1e-5 &&\n"
+        "            abs(v.z - 27.0) < 1e-5;\n"
+        "  frag = ok ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) {
+        fprintf(stderr, "fma: link failed\n");
+        return 1;
+    }
+    GLuint color = 0, fbo = 0, vao = 0;
+    glGenTextures(1, &color);
+    glBindTexture(GL_TEXTURE_2D, color);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, REG_W, REG_H, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, NULL);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           color, 0);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(prog);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    const unsigned char *c =
+        &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+    int fail = 0;
+    if (c[0] > 20u || c[1] < 220u || c[2] > 20u) {
+        fprintf(stderr, "fma: center (%u,%u,%u,%u) want green\n",
+                c[0], c[1], c[2], c[3]);
+        fail = 1;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteProgram(prog);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return fail;
+}
+
+/* gpu_shader5 CTS gathers in the VS with a dynamic ivec2 offset attrib. */
+static int test_gpu_shader5_gather_offset_vs(unsigned char *pixels,
+                                             const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "#extension GL_ARB_gpu_shader5 : require\n"
+        "precision highp float;\n"
+        "precision highp isampler2D;\n"
+        "uniform isampler2D sampler;\n"
+        "in ivec2 offsets;\n"
+        "in vec2  texCoords;\n"
+        "flat out ivec4 without_offset_0;\n"
+        "flat out ivec4 with_offset_0;\n"
+        "void main() {\n"
+        "    without_offset_0 = textureGather(sampler, texCoords, 0);\n"
+        "    with_offset_0 = textureGatherOffset(sampler, texCoords, offsets, 0);\n"
+        "}\n";
+    GLuint s = compile_shader(GL_VERTEX_SHADER, vs);
+    if (!s) {
+        fprintf(stderr, "gpu_shader5_gather_offset_vs: compile failed\n");
+        return 1;
+    }
+    glDeleteShader(s);
+    return 0;
+}
+
 /* Table 8.12: SNORM formats are color-renderable (CR), so an R8_SNORM
  * color attachment is FRAMEBUFFER_COMPLETE and Clear is not IFO. */
 static int test_snorm_fbo_color_renderable(unsigned char *pixels,
@@ -26074,6 +26160,9 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("texture_gather_incomplete", test_texture_gather_incomplete),
     SELF_CHECK_TEST("texture_gather_cube", test_texture_gather_cube),
     SELF_CHECK_TEST("texture_gather_cube_array", test_texture_gather_cube_array),
+    SELF_CHECK_TEST("fma", test_fma),
+    SELF_CHECK_TEST("gpu_shader5_gather_offset_vs",
+                    test_gpu_shader5_gather_offset_vs),
     SELF_CHECK_TEST("snorm_fbo_color_renderable", test_snorm_fbo_color_renderable),
     SELF_CHECK_TEST("image_size", test_image_size),
     SELF_CHECK_TEST("image_size_tess_discard", test_image_size_tess_discard),

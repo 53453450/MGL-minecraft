@@ -9697,7 +9697,8 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         } else if (strcmp(name, "normalize") == 0 ||
                    strcmp(name, "abs") == 0 ||
                    strcmp(name, "clamp") == 0 ||
-                   strcmp(name, "mix") == 0) {
+                   strcmp(name, "mix") == 0 ||
+                   strcmp(name, "fma") == 0) {
             /* genType result: width follows the first argument. */
             t.scalar = MGLIR_SCALAR_FLOAT;
             if (e->u.call.arg_count > 0)

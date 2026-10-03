@@ -398,6 +398,21 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         return cg.b->CreateIntrinsic(llvm::Intrinsic::fma, {t},
                                      {a1, a2, term});
     }
+    /* GLSL 4.00 / gpu_shader5: fma(a, b, c) = a * b + c. */
+    if (strcmp(name, "fma") == 0) {
+        if (!need(3)) return nullptr;
+        a0 = farg(0);
+        a1 = farg(1);
+        a2 = farg(2);
+        if (!a0 || !a1 || !a2) return nullptr;
+        llvm::Type *t = a0->getType();
+        if (t->isVectorTy()) {
+            a1 = deps.broadcastTo(cg, a1, t);
+            a2 = deps.broadcastTo(cg, a2, t);
+        }
+        return cg.b->CreateIntrinsic(llvm::Intrinsic::fma, {t},
+                                     {a0, a1, a2});
+    }
     if (strcmp(name, "abs") == 0) {
         if (!need(1)) return nullptr;
         a0 = arg(0);
