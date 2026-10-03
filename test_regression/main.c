@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 207
+#define MAX_TESTS 208
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -7708,6 +7708,37 @@ static int test_compute_ubo_referenced(unsigned char *pixels,
         fprintf(stderr, "compute_ubo_referenced: referenced=%d\n", ref);
         return 1;
     }
+    return 0;
+}
+
+static int test_compute_texture_proj_overloads(unsigned char *pixels,
+                                               const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *cs =
+        "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "uniform sampler1D s1;\n"
+        "uniform sampler2DRect sr;\n"
+        "uniform sampler3D s3;\n"
+        "uniform samplerBuffer sb;\n"
+        "uniform sampler2DMS sms;\n"
+        "layout(std430, binding = 0) buffer Output { vec4 o; };\n"
+        "void main() {\n"
+        "  o = texelFetch(s1, int(gl_GlobalInvocationID), 0);\n"
+        "  o += textureProjOffset(sr, vec3(vec2(gl_GlobalInvocationID), 1.0),\n"
+        "                         ivec2(0));\n"
+        "  o += textureProj(s3, vec4(0.5, 0.5, 0.5, 1.0));\n"
+        "  o += texelFetch(sb, int(gl_GlobalInvocationID.x));\n"
+        "  o += texelFetch(sms, ivec2(gl_GlobalInvocationID), 0);\n"
+        "}\n";
+    GLuint program = link_compute_program(cs);
+    if (!program) {
+        fprintf(stderr, "compute_texture_proj_overloads: link failed\n");
+        return 1;
+    }
+    glDeleteProgram(program);
     return 0;
 }
 
@@ -28298,6 +28329,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("compute_shared_atomic", test_compute_shared_atomic),
     SELF_CHECK_TEST("compute_max_limits", test_compute_max_limits),
     SELF_CHECK_TEST("compute_ubo_referenced", test_compute_ubo_referenced),
+    SELF_CHECK_TEST("compute_texture_proj_overloads",
+                    test_compute_texture_proj_overloads),
     SELF_CHECK_TEST("compute_shared_struct", test_compute_shared_struct),
     SELF_CHECK_TEST("compute_uniform_array_init",
                     test_compute_uniform_array_init),

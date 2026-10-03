@@ -1040,6 +1040,67 @@ llvm::Value *dotProduct(Codegen &cg, llvm::Value *a, llvm::Value *b) {
     return acc;
 }
 
+/* GLSL 4.60 §8.9 textureProj*: divide by the last used component.
+ * 1D: vec2 → s/t, vec4 → s/q; 2D/rect: vec3 → xy/z, vec4 → xy/w;
+ * 3D: vec4 → xyz/w. */
+static llvm::Value *applyTextureProj(Codegen &cg, MGLIRTexKind kind,
+                                     llvm::Value *p)
+{
+    auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(p ? p->getType() : nullptr);
+    if (!vt || !vt->getElementType()->isFloatTy()) {
+        cg.err = 1;
+        cg.errmsg = "codegen: textureProj expects a float vector coordinate";
+        return nullptr;
+    }
+    unsigned n = vt->getNumElements();
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+    auto extr = [&](unsigned i) {
+        return cg.b->CreateExtractElement(p, cg.b->getInt32(i));
+    };
+    if (kind == MGLIR_TEX_1D) {
+        if (n < 2) {
+            cg.err = 1;
+            cg.errmsg = "codegen: textureProj on sampler1D expects vec2 or vec4";
+            return nullptr;
+        }
+        unsigned q = n >= 4u ? 3u : n - 1u;
+        return cg.b->CreateFDiv(extr(0), extr(q));
+    }
+    if (kind == MGLIR_TEX_3D) {
+        if (n < 4) {
+            cg.err = 1;
+            cg.errmsg = "codegen: textureProj on sampler3D expects vec4";
+            return nullptr;
+        }
+        llvm::Value *xyz = cg.b->CreateShuffleVector(
+            p, llvm::UndefValue::get(p->getType()),
+            llvm::ConstantVector::get(
+                {llvm::ConstantInt::get(i32, 0),
+                 llvm::ConstantInt::get(i32, 1),
+                 llvm::ConstantInt::get(i32, 2)}));
+        return cg.b->CreateFDiv(xyz, cg.b->CreateVectorSplat(3, extr(3)));
+    }
+    if (n == 3) {
+        llvm::Value *xy = cg.b->CreateShuffleVector(
+            p, llvm::UndefValue::get(p->getType()),
+            llvm::ConstantVector::get(
+                {llvm::ConstantInt::get(i32, 0),
+                 llvm::ConstantInt::get(i32, 1)}));
+        return cg.b->CreateFDiv(xy, cg.b->CreateVectorSplat(2, extr(2)));
+    }
+    if (n >= 4) {
+        llvm::Value *xy = cg.b->CreateShuffleVector(
+            p, llvm::UndefValue::get(p->getType()),
+            llvm::ConstantVector::get(
+                {llvm::ConstantInt::get(i32, 0),
+                 llvm::ConstantInt::get(i32, 1)}));
+        return cg.b->CreateFDiv(xy, cg.b->CreateVectorSplat(2, extr(3)));
+    }
+    cg.err = 1;
+    cg.errmsg = "codegen: textureProj on sampler2D expects vec3 or vec4";
+    return nullptr;
+}
+
 static bool isTextureSampleBuiltin(const char *name)
 {
     return strcmp(name, "texture") == 0 ||
@@ -1175,7 +1236,8 @@ static llvm::Value *addTexelOffset(Codegen &cg, llvm::Value *coord,
             if (cvt->getNumElements() == 3) {
                 expanded = cg.b->CreateInsertElement(
                     expanded,
-                    cg.b->CreateExtractElement(coord, cg.b->getInt32(2)),
+                    llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(*cg.ctx), 0),
                     cg.b->getInt32(2));
             }
             return cg.b->CreateAdd(coord, expanded);
@@ -1193,7 +1255,8 @@ static llvm::Value *addTexelOffset(Codegen &cg, llvm::Value *coord,
                     cg.b->getInt32(1));
                 expanded = cg.b->CreateInsertElement(
                     expanded,
-                    cg.b->CreateExtractElement(coord, cg.b->getInt32(2)),
+                    llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(*cg.ctx), 0),
                     cg.b->getInt32(2));
                 return cg.b->CreateAdd(coord, expanded);
             }
@@ -8422,28 +8485,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Value *uv = emitExpr(cg, e->u.call.args[1], mod, locals);
             if (!uv) return nullptr;
             if (isProj) {
-                /* textureProj(sampler, vec4): sample at uv.xy / uv.w. */
-                if (auto *uvt = llvm::dyn_cast<llvm::FixedVectorType>(
-                        uv->getType());
-                    !uvt || uvt->getNumElements() != 4) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: textureProj expects a vec4 "
-                                "coordinate";
-                    return nullptr;
-                }
-                llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
-                llvm::Value *w = cg.b->CreateExtractElement(
-                    uv, cg.b->getInt32(3));
-                llvm::Type *v2f32 = llvm::FixedVectorType::get(f32, 2);
-                llvm::Value *xy = cg.b->CreateShuffleVector(
-                    uv, llvm::UndefValue::get(uv->getType()),
-                    llvm::ConstantVector::get(
-                        {llvm::ConstantInt::get(
-                             llvm::Type::getInt32Ty(*cg.ctx), 0),
-                         llvm::ConstantInt::get(
-                             llvm::Type::getInt32Ty(*cg.ctx), 1)}));
-                llvm::Value *pw = cg.b->CreateVectorSplat(2, w);
-                uv = cg.b->CreateFDiv(xy, pw);
+                uv = applyTextureProj(cg, sampleKind, uv);
+                if (!uv) return nullptr;
             }
             /* For sampler arrays, the expression is an index node and the
              * union's var_ref member is not valid.  Use the resolved base
