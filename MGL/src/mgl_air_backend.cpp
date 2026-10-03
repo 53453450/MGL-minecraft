@@ -12074,7 +12074,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
             if (ts) cg.samplerIRTypes[v.name] = ts->type;
         }
-        if (elements == 1u) {
+        if (v.type.arr == 0) {
             cg.texValues[v.name] = fn->getArg(argSlot++);
             cg.smpValues[v.name] = fn->getArg(argSlot++);
         } else {
@@ -12090,7 +12090,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     for (VarSym &v : syms) {
         if (v.kind != VarSym::IMAGE) continue;
         uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
-        if (elements == 1u) {
+        if (v.type.arr == 0) {
             cg.texValues[v.name] = fn->getArg(argSlot++);
         } else {
             std::vector<llvm::Value *> texes;

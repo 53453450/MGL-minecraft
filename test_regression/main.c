@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 189
+#define MAX_TESTS 191
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -21331,7 +21331,152 @@ static int test_image_size_array_index(unsigned char *pixels, const char *out_pa
     glDeleteTextures(2, tex);
     if (vao) glDeleteVertexArrays(1, &vao);
     if (fbo) glDeleteFramebuffers(1, &fbo);
-    if (color) glDeleteTextures(1, &color);
+    if (color)     glDeleteTextures(1, &color);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
+/* GLSL 4.60 §4.1.3: 047 is octal 39; 0x10 is hex 16. */
+static int test_glsl_nondecimal_literals(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(binding = 047) uniform sampler2D sampler0;\n"
+        "layout(location = 0) out vec4 frag;\n"
+        "void main() {\n"
+        "  bool ok = (047 == 39) && (0x10 == 16);\n"
+        "  frag = ok ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);\n"
+        "  if (textureSize(sampler0, 0).x < 0) frag = vec4(1.0, 1.0, 0.0, 1.0);\n"
+        "}\n";
+    {
+        static const char *bad =
+            "#version 450 core\n"
+            "layout(binding = 0.0) uniform sampler2D s;\n"
+            "layout(location = 0) out vec4 frag;\n"
+            "void main() { frag = vec4(0.0); }\n";
+        GLuint sh = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(sh, 1, &bad, NULL);
+        glCompileShader(sh);
+        GLint ok = 1;
+        glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+        glDeleteShader(sh);
+        if (ok) {
+            fprintf(stderr, "glsl_nondecimal_literals: binding=0.0 compiled\n");
+            return 1;
+        }
+    }
+    {
+        static const char *bad =
+            "#version 450 core\n"
+            "layout(binding = 80) uniform sampler2D s;\n"
+            "layout(location = 0) out vec4 frag;\n"
+            "void main() { frag = vec4(0.0); }\n";
+        GLuint sh = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(sh, 1, &bad, NULL);
+        glCompileShader(sh);
+        GLint ok = 1;
+        glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+        glDeleteShader(sh);
+        if (ok) {
+            fprintf(stderr, "glsl_nondecimal_literals: binding=80 compiled\n");
+            return 1;
+        }
+    }
+    GLuint program = link_program(vs, fs);
+    if (!program) return 1;
+    int fail = 0;
+    GLint unit = -1;
+    GLint sloc = glGetUniformLocation(program, "sampler0");
+    glGetUniformiv(program, sloc, &unit);
+    if (unit != 39) {
+        fprintf(stderr, "glsl_nondecimal_literals: sampler binding=%d want 39\n", unit);
+        fail = 1;
+    }
+    GLuint fbo = 0, color = 0, vao = 0;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(program);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    const unsigned char *mid = &pixels[(REG_H / 2 * REG_W + REG_W / 2) * 4];
+    if (mid[1] < 200u) {
+        fprintf(stderr, "glsl_nondecimal_literals: pixel (%u,%u,%u,%u)\n",
+                mid[0], mid[1], mid[2], mid[3]);
+        fail = 1;
+    }
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(program);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &color);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
+/* sampler2D s[1] must be an array so texture(s[0], ...) is legal. */
+static int test_sampler_array_size1(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(binding = 0) uniform sampler2D sampler0[1];\n"
+        "layout(location = 0) out vec4 frag;\n"
+        "void main() { frag = texture(sampler0[0], vec2(0.5)); }\n";
+    GLuint program = link_program(vs, fs);
+    if (!program) return 1;
+    GLuint fbo = 0, color = 0, vao = 0, tex = 0;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenTextures(1, &tex);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    const unsigned char px[4] = {0, 255, 0, 255};
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(program);
+    glClearColor(1, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    const unsigned char *mid = &pixels[(REG_H / 2 * REG_W + REG_W / 2) * 4];
+    int fail = 0;
+    if (mid[1] < 200u) {
+        fprintf(stderr, "sampler_array_size1: pixel (%u,%u,%u,%u)\n",
+                mid[0], mid[1], mid[2], mid[3]);
+        fail = 1;
+    }
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(program);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &color);
+    glDeleteTextures(1, &tex);
     while (glGetError() != GL_NO_ERROR) { }
     return fail;
 }
@@ -26971,6 +27116,8 @@ static const TestCase TESTS[] = {
                     test_texture_cube_array_sample_cs),
     SELF_CHECK_TEST("frag_out_float_rgba8", test_frag_out_float_rgba8),
     SELF_CHECK_TEST("image_size_array_index", test_image_size_array_index),
+    SELF_CHECK_TEST("glsl_nondecimal_literals", test_glsl_nondecimal_literals),
+    SELF_CHECK_TEST("sampler_array_size1", test_sampler_array_size1),
     SELF_CHECK_TEST("scalar_swizzle", test_scalar_swizzle),
     SELF_CHECK_TEST("snorm_fbo_color_renderable", test_snorm_fbo_color_renderable),
     SELF_CHECK_TEST("image_size", test_image_size),

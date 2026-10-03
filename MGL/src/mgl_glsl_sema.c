@@ -46,6 +46,9 @@
  * Keep the two in sync. */
 #define MGL_SEMA_MAX_ATOMIC_COUNTER_BUFFER_SIZE 16384u
 #define MGL_SEMA_MAX_PATCH_VERTICES 32u
+/* Must match glm_params.c advertised GL_MAX_* for layout(binding) range. */
+#define MGL_SEMA_MAX_COMBINED_TEXTURE_IMAGE_UNITS 80u
+#define MGL_SEMA_MAX_IMAGE_UNITS 8u
 
 /* Comma-separated declarators (`int a, b;`) share one AST node chain via
  * next_declarator.  Struct / interface-block member lists store only the
@@ -4517,8 +4520,9 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             }
         }
     }
-    /* layout(binding) range for SSBOs (and SSBO instance arrays). */
-    if ((d->qualifiers & MGL_AST_Q_BUFFER) && d->layout_binding >= 0 &&
+    /* layout(binding) range for uniform / shader-storage blocks. */
+    if ((d->qualifiers & (MGL_AST_Q_BUFFER | MGL_AST_Q_UNIFORM)) &&
+        d->layout_binding >= 0 &&
         d->struct_members && d->struct_member_count > 0) {
         uint32_t n = 1u;
         if (d->array_count > 0 && d->array_dims && d->array_dims[0] > 0)
@@ -4590,6 +4594,23 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
         if (!binding_ok) {
             sema_error(s, d->line,
                        "layout(binding) is not allowed on this declaration");
+        } else if (bt) {
+            uint32_t n = 1u;
+            if (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 0u)
+                n = t->array_size;
+            uint32_t maxb = 0u;
+            if (bt->kind == MGLIR_TYPE_SAMPLER)
+                maxb = MGL_SEMA_MAX_COMBINED_TEXTURE_IMAGE_UNITS;
+            else if (bt->kind == MGLIR_TYPE_IMAGE)
+                maxb = MGL_SEMA_MAX_IMAGE_UNITS;
+            else if (bt->kind == MGLIR_TYPE_ATOMIC_COUNTER)
+                maxb = (uint32_t)MAX_BINDABLE_BUFFERS;
+            if (maxb &&
+                (uint64_t)(uint32_t)d->layout_binding + (uint64_t)n > maxb) {
+                sema_error(s, d->line,
+                           "invalid value %d for layout specifier 'binding'",
+                           d->layout_binding);
+            }
         }
     }
     /* Anonymous blocks (uniform DrawColor { ... }; with no instance name)

@@ -286,6 +286,12 @@ static int at_num(MGLParser *p)
            k == MGLGLSL_TOK_FLOAT;
 }
 
+static int at_int_num(MGLParser *p)
+{
+    MGLGLSLTokenKind k = (MGLGLSLTokenKind)tk(p, 0)->kind;
+    return k == MGLGLSL_TOK_INT || k == MGLGLSL_TOK_UINT;
+}
+
 static int eat_punct(MGLParser *p, const char *s)
 {
     if (ops_at(p, s)) {
@@ -2554,7 +2560,25 @@ more_qualifiers:
             if (has_value) {
                 expect_punct(p, "=");
                 if (at_num(p)) {
-                    if (n == 8 && memcmp(s, "location", 8) == 0) {
+                    /* GLSL 4.60 §4.4: binding/location/offset/etc. take an
+                     * integer-constant-expression, not a float like 0.0. */
+                    int need_int =
+                        (n == 8 && memcmp(s, "location", 8) == 0) ||
+                        (n == 9 && memcmp(s, "component", 9) == 0) ||
+                        (n == 7 && memcmp(s, "binding", 7) == 0) ||
+                        (n == 6 && memcmp(s, "offset", 6) == 0) ||
+                        (n == 8 && memcmp(s, "vertices", 8) == 0) ||
+                        (n == 12 && memcmp(s, "max_vertices", 12) == 0) ||
+                        (n == 11 && memcmp(s, "invocations", 11) == 0) ||
+                        (n == 6 && memcmp(s, "stream", 6) == 0) ||
+                        (n == 12 && memcmp(s, "local_size_x", 12) == 0) ||
+                        (n == 12 && memcmp(s, "local_size_y", 12) == 0) ||
+                        (n == 12 && memcmp(s, "local_size_z", 12) == 0);
+                    if (need_int && !at_int_num(p)) {
+                        parse_error(p,
+                            "layout(%.*s) requires an integer constant at line %u",
+                            n, s, tk_line(p));
+                    } else if (n == 8 && memcmp(s, "location", 8) == 0) {
                         d->layout_location = (int32_t)cur_double(p);
                     } else if (n == 9 && memcmp(s, "component", 9) == 0) {
                         d->layout_component = (int32_t)cur_double(p);

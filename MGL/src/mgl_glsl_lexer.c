@@ -319,6 +319,24 @@ int mglGLSLexerLiteral(const MGLGLSLexer *lx, const MGLGLSLToken *tok,
         return -1;
     }
 
+    /* GLSL 4.60 §4.1.3: a leading 0 (and no 0x) is octal. */
+    if ((tok->kind == MGLGLSL_TOK_INT || tok->kind == MGLGLSL_TOK_UINT) &&
+        buf[0] == '0') {
+        unsigned long v = 0;
+        char *p = buf + 1;
+        while (*p && *p != 'u' && *p != 'U') {
+            if (*p < '0' || *p > '7') {
+                free(buf);
+                return -1;
+            }
+            v = v * 8ul + (unsigned long)(*p - '0');
+            p++;
+        }
+        *out = (double)v;
+        free(buf);
+        return 0;
+    }
+
     /* Strip the u/U and f/F suffix char before strtod. */
     if (n > 0) {
         char last = buf[n - 1];
