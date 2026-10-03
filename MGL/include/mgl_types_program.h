@@ -549,6 +549,9 @@ typedef struct TransformFeedback_t {
     GLuint64 stream_vertices[4];
     GLuint64 draw_vertices[4];
     GLboolean ended;
+    /* VS-only XFB capture already ran this draw; raster VS must not RMW the
+     * same atomic counters again. */
+    GLboolean vs_capture_replay;
     char *debug_label;
 } TransformFeedback;
 

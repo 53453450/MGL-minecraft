@@ -2997,6 +2997,7 @@ extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
     if (ctx->active_state->caps.rasterizer_discard) {
         return 1;
     }
+    xfb->vs_capture_replay = GL_TRUE;
     return 0;
 }
 

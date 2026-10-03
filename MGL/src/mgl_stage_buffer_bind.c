@@ -321,6 +321,20 @@ bool mglBindingStateBindStageBufferMapEntries(
         if (mglBindingStagePlanMapEntry(&bin, &plan) != 0) {
             continue;
         }
+        /* XFB already executed this VS (including atomicCounter RMW). Raster
+         * VS binds a throwaway copy so the same counters are not incremented
+         * a second time. */
+        if (!is_fragment &&
+            map->resource_type == (GLuint)_ATOMIC_COUNTER_RES &&
+            areas.ctx && areas.ctx->active_state &&
+            areas.ctx->active_state->transform_feedback &&
+            areas.ctx->active_state->transform_feedback->vs_capture_replay) {
+            plan.action = MGL_SB_ACTION_ISOLATE;
+            plan.needs_copy_back = 0;
+            if (plan.required_bytes < (uint32_t)sizeof(GLuint)) {
+                plan.required_bytes = (uint32_t)sizeof(GLuint);
+            }
+        }
         uint32_t binding_index = plan.metal_slot;
         if (plan.mark_base_present && gl_binding_index < MAX_BINDABLE_BUFFERS) {
             base_binding_present[gl_binding_index] = true;

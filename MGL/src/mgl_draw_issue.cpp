@@ -100,6 +100,16 @@ extern "C" void mglIssueDrawArrays(GLMContext ctx, void *renderer, GLenum mode,
                              instanceCount, baseInstance)) {
         return;
     }
+    struct MGLXfbReplayClear {
+        GLMContext ctx;
+        ~MGLXfbReplayClear() {
+            if (ctx && ctx->active_state &&
+                ctx->active_state->transform_feedback) {
+                ctx->active_state->transform_feedback->vs_capture_replay =
+                    GL_FALSE;
+            }
+        }
+    } xfb_replay_clear{ctx};
 
     (void)mglDrawHostCaptureCullDistanceArray(renderer, ctx, first, count,
                                               instanceCount, baseInstance);
