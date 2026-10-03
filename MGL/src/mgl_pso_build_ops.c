@@ -509,6 +509,9 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
         } else {
             fprintf(stderr,
                     "MGL CRITICAL: VIRTUALIZED AGX - Metal pipeline creation crashed\n");
+            if (cppError[0]) {
+                fprintf(stderr, "MGL CRITICAL: %s\n", cppError);
+            }
         }
         const int forceSafeFallback =
             mgl_env_flag_enabled("MGL_FORCE_SAFE_FALLBACK_PIPELINE");

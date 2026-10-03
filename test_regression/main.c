@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 216
+#define MAX_TESTS 217
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -434,6 +434,26 @@ static GLuint link_program(const char *vs_src, const char *fs_src)
         char log[2048];
         glGetProgramInfoLog(p, sizeof(log), NULL, log);
         fprintf(stderr, "  [program link FAIL] %s\n", log);
+        glDeleteProgram(p);
+        return 0;
+    }
+    return p;
+}
+
+static GLuint link_program_vs_only(const char *vs_src)
+{
+    GLuint vs = compile_shader(GL_VERTEX_SHADER, vs_src);
+    if (!vs) return 0;
+    GLuint p = glCreateProgram();
+    glAttachShader(p, vs);
+    glLinkProgram(p);
+    glDeleteShader(vs);
+    GLint ok = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[2048];
+        glGetProgramInfoLog(p, sizeof(log), NULL, log);
+        fprintf(stderr, "  [vs-only program link FAIL] %s\n", log);
         glDeleteProgram(p);
         return 0;
     }
@@ -23753,6 +23773,97 @@ static int test_image_buffer_vs_memory_order(unsigned char *pixels,
     }
 }
 
+/* CTS advanced-sync-imageAccess: VS-only + RASTERIZER_DISCARD writes
+ * RG32F imageBuffer (no gl_Position), barrier, then imageLoad/texelFetch
+ * drive gl_Position of a fullscreen strip. */
+static int test_image_buffer_vs_discard_sync(unsigned char *pixels,
+                                             const char *out_path)
+{
+    (void)out_path;
+    (void)pixels;
+    const int W = 64, H = 64;
+    GLuint fbo, tex;
+    fbo = make_fbo(W, H, &tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+
+    static const char *store_vs =
+        "#version 420 core\n"
+        "writeonly uniform imageBuffer g_output_data;\n"
+        "void main() {\n"
+        "  vec2[4] data = vec2[4](vec2(-1, -1), vec2(1, -1), vec2(-1, 1), vec2(1, 1));\n"
+        "  imageStore(g_output_data, gl_VertexID, vec4(data[gl_VertexID], 0.0, 1.0));\n"
+        "}\n";
+    static const char *draw_vs =
+        "#version 420 core\n"
+        "out vec4 vs_color;\n"
+        "layout(rg32f) readonly uniform imageBuffer g_image;\n"
+        "uniform samplerBuffer g_sampler;\n"
+        "void main() {\n"
+        "  vec4 pi = imageLoad(g_image, gl_VertexID);\n"
+        "  vec4 ps = texelFetch(g_sampler, gl_VertexID);\n"
+        "  if (pi != ps) vs_color = vec4(1.0, 0.0, 0.0, 1.0);\n"
+        "  else vs_color = vec4(0.0, 1.0, 0.0, 1.0);\n"
+        "  gl_Position = pi;\n"
+        "}\n";
+    static const char *draw_fs =
+        "#version 420 core\n"
+        "in vec4 vs_color;\n"
+        "layout(location = 0) out vec4 o_color;\n"
+        "void main() { o_color = vs_color; }\n";
+    GLuint store_prog = link_program_vs_only(store_vs);
+    GLuint draw_prog = link_program(draw_vs, draw_fs);
+    if (!store_prog || !draw_prog) {
+        fprintf(stderr, "image_buffer_vs_discard_sync: link failed\n");
+        return 1;
+    }
+
+    GLuint vao = 0, buf = 0, tbo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &buf);
+    glBindBuffer(GL_TEXTURE_BUFFER, buf);
+    glBufferData(GL_TEXTURE_BUFFER, (GLsizeiptr)(sizeof(float) * 2 * 4), NULL,
+                 GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_TEXTURE_BUFFER, 0);
+    glGenTextures(1, &tbo);
+    glBindTexture(GL_TEXTURE_BUFFER, tbo);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RG32F, buf);
+    glBindImageTexture(0, tbo, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RG32F);
+
+    glEnable(GL_RASTERIZER_DISCARD);
+    glUseProgram(store_prog);
+    glDrawArrays(GL_POINTS, 0, 4);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
+                    GL_TEXTURE_FETCH_BARRIER_BIT);
+    glDisable(GL_RASTERIZER_DISCARD);
+
+    glClear(GL_COLOR_BUFFER_BIT);
+    glViewport(0, 0, W, H);
+    glUseProgram(draw_prog);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glFinish();
+
+    unsigned char px[4] = {0};
+    glReadPixels(W / 2, H / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &buf);
+    glDeleteTextures(1, &tbo);
+    glDeleteProgram(store_prog);
+    glDeleteProgram(draw_prog);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    if (px[0] > 8 || px[1] < 240 || px[2] > 8 || px[3] < 240) {
+        fprintf(stderr,
+                "image_buffer_vs_discard_sync: center=%u %u %u %u\n",
+                (unsigned)px[0], (unsigned)px[1], (unsigned)px[2],
+                (unsigned)px[3]);
+        return 1;
+    }
+    return 0;
+}
+
 /* CTS shader_image_size TES/TCS uses GL_RASTERIZER_DISCARD + point_mode.
  * TES-vertex raster must still evaluate TES (imageStore). */
 static int test_image_size_tess_discard(unsigned char *pixels, const char *out_path)
@@ -29363,6 +29474,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("image_store_array_index", test_image_store_array_index),
     SELF_CHECK_TEST("image_buffer_vs_memory_order",
                     test_image_buffer_vs_memory_order),
+    SELF_CHECK_TEST("image_buffer_vs_discard_sync",
+                    test_image_buffer_vs_discard_sync),
     SELF_CHECK_TEST("image_size_tess_discard", test_image_size_tess_discard),
     SELF_CHECK_TEST("large_uniform_array", test_large_uniform_array),
     SELF_CHECK_TEST("high_uniform_location", test_high_uniform_location),

@@ -18,6 +18,7 @@
 #include "mgl_trace_log.h"
 #include "mgl_types_buffer.h"
 #include "mgl_render.h"
+#include "mgl_types_program.h"
 
 #include <climits>
 #include <cstdint>
@@ -82,6 +83,16 @@ extern "C" void mglIssueDrawArrays(GLMContext ctx, void *renderer, GLenum mode,
 {
     if (!ctx || !renderer || count <= 0 || instanceCount <= 0) {
         return;
+    }
+
+    /* AGX's compiler dies (XPC_ERROR_CONNECTION_INTERRUPTED) on a Point-class
+     * PSO whose VS writes textures.  VS-only + RASTERIZER_DISCARD still runs
+     * the VS for imageStore; a triangle strip of the same vertex count is a
+     * legal stand-in (CTS advanced-sync-imageAccess uses GL_POINTS, 4 verts). */
+    if (ctx->active_state && ctx->active_state->caps.rasterizer_discard &&
+        mode == GL_POINTS && count >= 3 &&
+        !mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER)) {
+        mode = GL_TRIANGLE_STRIP;
     }
 
     mglDrawHostBindContext(renderer, ctx);

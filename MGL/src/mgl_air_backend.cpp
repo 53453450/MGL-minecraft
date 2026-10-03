@@ -6856,7 +6856,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             vlanes = (uint32_t)(vn[0] - '0');
             llvm::Type *eltTy = llvmScalar(velt, *cg.ctx);
             llvm::Type *vt = llvm::FixedVectorType::get(eltTy, vlanes);
-            llvm::Value *res = llvm::UndefValue::get(vt);
+            llvm::Value *res = llvm::Constant::getNullValue(vt);
             /* Source signedness, refreshed per constructor argument below.
              * coerceScalar cannot recover it from the LLVM value (i32 has no
              * signedness), so the vector-constructor path must pass it: a
@@ -7202,7 +7202,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
             llvm::Type *v4i32 = llvm::FixedVectorType::get(i32, 4);
             auto toIvec2X0 = [&](llvm::Value *x) -> llvm::Value * {
-                llvm::Value *v = llvm::UndefValue::get(v2i32);
+                llvm::Value *v = llvm::Constant::getNullValue(v2i32);
                 v = cg.b->CreateInsertElement(v, x, cg.b->getInt32(0));
                 return cg.b->CreateInsertElement(v, cg.b->getInt32(0),
                                                  cg.b->getInt32(1));
@@ -7428,7 +7428,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                        (storage == MGLIR_SCALAR_UINT ? ".u.v4i32" : ".s.v4i32");
             };
             auto toIvec2X0 = [&](llvm::Value *x) -> llvm::Value * {
-                llvm::Value *v = llvm::UndefValue::get(v2i32);
+                llvm::Value *v = llvm::Constant::getNullValue(v2i32);
                 v = cg.b->CreateInsertElement(v, x, cg.b->getInt32(0));
                 return cg.b->CreateInsertElement(v, cg.b->getInt32(0),
                                                  cg.b->getInt32(1));
@@ -7979,16 +7979,25 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                  * barriers (CTS advanced-sync-imageAccess).  Integer
                  * usamplerBuffer/isamplerBuffer must use .u/.s reads —
                  * always-float was returning 0 for integer formats. */
-                llvm::Value *xy = llvm::UndefValue::get(v2i32);
+                llvm::Value *xy = llvm::Constant::getNullValue(v2i32);
                 xy = cg.b->CreateInsertElement(xy, coord, cg.b->getInt32(0));
                 xy = cg.b->CreateInsertElement(xy, cg.b->getInt32(0),
                                                cg.b->getInt32(1));
+                llvm::StructType *smpT = llvm::StructType::getTypeByName(
+                    *cg.ctx, "struct._sampler_t");
+                if (!smpT)
+                    smpT = llvm::StructType::create(*cg.ctx,
+                                                   "struct._sampler_t");
+                llvm::Value *rdSmp = callAirFn(
+                    cg, "air.get_read_sampler", smpT->getPointerTo(2), {});
+                llvm::Value *off2 = llvm::Constant::getNullValue(v2i32);
                 auto doBufFetch =
                     [&](llvm::Value *t, llvm::Value *) -> llvm::Value * {
                     llvm::Value *r = callAirFn(
                         cg, readIntrinsic("air.read_texture_2d.v4f32").c_str(),
                         retTy,
-                        {t, xy, cg.b->getInt32(0), cg.b->getInt32(3)});
+                        {t, rdSmp, xy, off2, cg.b->getInt32(0),
+                         cg.b->getInt32(3)});
                     return cg.b->CreateExtractValue(r, 0);
                 };
                 if (dynamicSamplerArray) {
@@ -10748,6 +10757,17 @@ static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
  * fragment = render target color.  Unknown outputs fall back to undef. */
 /* Metal's clip-space z range is [0,1] while GLSL writes [-1,1]; convert
  * before returning the position: z' = z*0.5 + w*0.5 (clip space). */
+/* VS that never write gl_Position (CTS VS-only imageStore + rasterizer
+ * discard) still need a defined [[position]].  Undef clip coords make
+ * Metal pipeline creation throw, and the draw then uses the dummy
+ * fallback PSO that does not run imageStore. */
+static llvm::Value *defaultClipPosition(Codegen &cg) {
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    return llvm::ConstantVector::get(
+        {llvm::ConstantFP::get(f32, 0.0), llvm::ConstantFP::get(f32, 0.0),
+         llvm::ConstantFP::get(f32, 0.0), llvm::ConstantFP::get(f32, 1.0)});
+}
+
 static llvm::Value *fixClipZ(Codegen &cg, llvm::Value *pos) {
     if (!pos->getType()->isVectorTy()) return pos;
     llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
@@ -11114,7 +11134,7 @@ llvm::Value *assembleReturn(Codegen &cg) {
             llvm::Value *ret = llvm::UndefValue::get(cg.retTy);
             llvm::Value *pos = cg.lvalues.count("gl_Position")
                                    ? cg.lvalues["gl_Position"]
-                                   : llvm::UndefValue::get(cg.retElems[0]);
+                                   : defaultClipPosition(cg);
             pos = fixClipZ(cg, pos);
             if (cg.usesPatchCullDistance)
                 pos = applyCullDistanceFromPatchInputs(cg, pos);
@@ -11288,7 +11308,7 @@ llvm::Value *assembleReturn(Codegen &cg) {
         }
         llvm::Value *pos = cg.lvalues.count("gl_Position")
                                ? cg.lvalues["gl_Position"]
-                               : llvm::UndefValue::get(cg.retTy);
+                               : defaultClipPosition(cg);
         pos = fixClipZ(cg, pos);
         if (cg.usesPatchCullDistance)
             pos = applyCullDistanceFromPatchInputs(cg, pos);
