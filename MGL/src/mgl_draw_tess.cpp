@@ -223,15 +223,15 @@ extern "C" bool mglTessPlanDrawPath(GLMContext ctx, GLenum mode, GLsizei count,
          * compile the TES as a render vertex function; the default-on
          * MGL_TES_VERTEX_RENDER flag gates that path for risk containment and
          * A/B comparison. */
-        if (tes && tes->tess_eval_render_vertex &&
-            mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER") &&
-            !out->indexed) {
-            out->exec = MGL_TESS_EXEC_TES_VERTEX;
-        } else {
-            out->exec = tes && tes->tess_eval_compute
-                            ? MGL_TESS_EXEC_TES_COMPUTE
-                            : MGL_TESS_EXEC_UNSUPPORTED;
-        }
+        const int rasterizer_discard =
+            ctx && ctx->active_state && ctx->active_state->caps.rasterizer_discard
+                ? 1
+                : 0;
+        out->exec = (MGLTessExecKind)mglTessSelectAirExec(
+            tes && tes->tess_eval_render_vertex ? 1 : 0,
+            tes && tes->tess_eval_compute ? 1 : 0, out->indexed ? 1 : 0,
+            mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER") ? 1 : 0,
+            rasterizer_discard);
     }
     return true;
 }
@@ -737,6 +737,19 @@ extern "C" void mglTessPlanRasterQuery(const Program *tes,
     }
     out->prims = prims;
     out->written = written;
+}
+
+extern "C" int mglTessSelectAirExec(int tes_vertex, int tes_compute, int indexed,
+                                    int vertex_gate_on, int rasterizer_discard)
+{
+    if (tes_vertex && vertex_gate_on && !indexed &&
+        !(rasterizer_discard && tes_compute)) {
+        return MGL_TESS_EXEC_TES_VERTEX;
+    }
+    if (tes_compute) {
+        return MGL_TESS_EXEC_TES_COMPUTE;
+    }
+    return MGL_TESS_EXEC_UNSUPPORTED;
 }
 
 extern "C" int mglTessPlanEvalAfterCompute(int has_gs, int rasterizer_discard,
@@ -3376,9 +3389,18 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
     }
 
     if (airTES) {
-        if (tesProgram && tesProgram->tess_eval_render_vertex &&
-            mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER") &&
-            !path.indexed) {
+        const int rasterizer_discard =
+            ctx && ctx->active_state &&
+                    ctx->active_state->caps.rasterizer_discard
+                ? 1
+                : 0;
+        const int air_exec = mglTessSelectAirExec(
+            tesProgram && tesProgram->tess_eval_render_vertex ? 1 : 0,
+            tesProgram && tesProgram->tess_eval_compute ? 1 : 0,
+            path.indexed ? 1 : 0,
+            mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER") ? 1 : 0,
+            rasterizer_discard);
+        if (air_exec == MGL_TESS_EXEC_TES_VERTEX) {
             const int dispatched = ops->dispatch_air_tes_vertex(
                 ops->renderer, ctx, tesProgram, &contract, patchCount,
                 instanceCount, baseInstance);
@@ -3390,7 +3412,8 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
             ops->set_tess_vertex_capture(ops->renderer, NULL, 0u, 0u, 0);
             return 1;
         }
-        if (tesProgram && tesProgram->tess_eval_compute) {
+        if (air_exec == MGL_TESS_EXEC_TES_COMPUTE && tesProgram &&
+            tesProgram->tess_eval_compute) {
             const int dispatched = ops->dispatch_air_tes(
                 ops->renderer, ctx, tesProgram, &contract, patchCount,
                 instanceCount, baseInstance);

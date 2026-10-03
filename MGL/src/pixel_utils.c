@@ -2831,7 +2831,8 @@ GLboolean mglIsColorRenderableInternalFormat(GLint internalformat)
         case GL_LUMINANCE_ALPHA16F_ARB:
             return GL_FALSE;
 
-        /* SNORM formats - not in the required color-renderable list. */
+        /* Table 8.12 CR is set for SNORM (not "Req. rend.").  Metal maps
+         * these to *Snorm render targets, so FBO attach is complete. */
         case GL_R8_SNORM:
         case GL_RG8_SNORM:
         case GL_RGB8_SNORM:
@@ -2840,7 +2841,7 @@ GLboolean mglIsColorRenderableInternalFormat(GLint internalformat)
         case GL_RG16_SNORM:
         case GL_RGB16_SNORM:
         case GL_RGBA16_SNORM:
-            return GL_FALSE;
+            return GL_TRUE;
 
         /* RGB-only sized formats not in the required list. */
         case GL_RGB8:

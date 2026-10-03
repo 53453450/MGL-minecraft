@@ -519,12 +519,19 @@ static void test_builtins(void)
 {
     analyze("#version 450 core\n"
             "uniform sampler2D uTex;\n"
+            "uniform sampler2DShadow uShadow;\n"
             "layout(location = 0) in vec2 uv;\n"
             "layout(location = 0) in vec3 pos;\n"
             "layout(location = 0) out vec4 o;\n"
             "void main() {\n"
             "    vec4 t = texture(uTex, uv);\n"
             "    vec4 tl = textureLod(uTex, uv, 0.0);\n"
+            "    vec4 tg = textureGather(uTex, uv);\n"
+            "    vec4 tg1 = textureGather(uTex, uv, 1);\n"
+            "    vec4 tgo = textureGatherOffset(uTex, uv, ivec2(1, 0));\n"
+            "    ivec2 offs[4] = ivec2[4](ivec2(0), ivec2(1,0), ivec2(0,1), ivec2(1));\n"
+            "    vec4 tgos = textureGatherOffsets(uTex, uv, offs);\n"
+            "    vec4 tgs = textureGather(uShadow, uv, 0.5);\n"
             "    vec2 ts = textureSize(uTex, 0);\n"
             "    vec3 n = normalize(pos);\n"
             "    float d = dot(pos, normalize(pos));\n"
@@ -537,7 +544,8 @@ static void test_builtins(void)
             "    vec3 a = abs(pos);\n"
             "    float af = abs(-1.0);\n"
             "    bool lte = all(lessThanEqual(pos, vec3(1.0)));\n"
-            "    o = t + tl + vec4(n * d + len + dist, 1.0) +\n"
+            "    o = t + tl + tg + tg1 + tgo + tgos + tgs +\n"
+            "        vec4(n * d + len + dist, 1.0) +\n"
             "        c + c2 + m + m2 + a + vec4(ts, af, 0.0);\n"
             "    if (lte) o.w = 1.0;\n"
             "}\n");
@@ -573,6 +581,20 @@ static void test_builtins(void)
             "    vec3 c = clamp(vec3(1.0), vec2(0.0), vec2(1.0));\n"
             "}\n");
     CHECK(error_count == 1, "clamp gen dimension conflict rejected");
+    teardown();
+
+    analyze("#version 450 core\n"
+            "layout(rgba32f) uniform image2D i2;\n"
+            "layout(rgba32f) uniform image3D i3;\n"
+            "layout(rgba32f) uniform image2DArray ia;\n"
+            "layout(rgba32f) uniform image1D i1;\n"
+            "void main() {\n"
+            "    ivec2 a = imageSize(i2);\n"
+            "    ivec3 b = imageSize(i3);\n"
+            "    ivec3 c = imageSize(ia);\n"
+            "    int d = imageSize(i1);\n"
+            "}\n");
+    CHECK(error_count == 0, "imageSize return types by dimension");
     teardown();
 }
 

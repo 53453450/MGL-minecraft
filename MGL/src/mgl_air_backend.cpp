@@ -744,6 +744,13 @@ static bool isTextureSampleBuiltin(const char *name)
            strcmp(name, "textureProjGradOffset") == 0;
 }
 
+static bool isTextureGatherBuiltin(const char *name)
+{
+    return strcmp(name, "textureGather") == 0 ||
+           strcmp(name, "textureGatherOffset") == 0 ||
+           strcmp(name, "textureGatherOffsets") == 0;
+}
+
 static llvm::Value *emitAirSampleOffset(Codegen &cg, llvm::Value *off)
 {
     llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
@@ -2309,6 +2316,16 @@ static void flushTCSTessLevels(Codegen &cg)
         llvm::Value *v = b.CreateExtractValue(cg.lvalues[name], index);
         if (llvm::isa<llvm::UndefValue>(v))
             return;
+        /* GLSL gl_TessLevel* is float; `= 1` is an int. FPTrunc/store of
+         * i32 is invalid AIR and AGX materializeAll fails. */
+        if (v->getType()->isIntegerTy()) {
+            v = v->getType()->isIntegerTy(1) ? b.CreateUIToFP(v, f32Ty)
+                                             : b.CreateSIToFP(v, f32Ty);
+        } else if (v->getType()->isDoubleTy()) {
+            v = b.CreateFPTrunc(v, f32Ty);
+        } else if (v->getType() != f32Ty) {
+            return;
+        }
         llvm::Value *hp = b.CreateBitCast(
             b.CreateGEP(b.getInt8Ty(), factorBase, b.getInt64(halfOff)),
             halfTy->getPointerTo(1));
@@ -6787,28 +6804,134 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                                  cg.b->getInt32(1));
             };
             if (strcmp(name, "imageSize") == 0) {
-                /* Enough for current CTS; return ivec2(width, height-or-1). */
-                const char *wFn = "air.get_width_texture_2d";
-                const char *hFn = "air.get_height_texture_2d";
-                if (tk == MGLIR_TEX_3D) {
-                    wFn = "air.get_width_texture_3d";
-                    hFn = "air.get_height_texture_3d";
-                } else if (tk == MGLIR_TEX_2D_ARRAY ||
-                           tk == MGLIR_TEX_1D_ARRAY) {
-                    wFn = "air.get_width_texture_2d_array";
-                    hFn = "air.get_height_texture_2d_array";
-                } else if (tk == MGLIR_TEX_CUBE ||
-                           tk == MGLIR_TEX_CUBE_ARRAY) {
-                    wFn = "air.get_width_texture_cube";
-                    hFn = "air.get_height_texture_cube";
+                /* GLSL 4.60 §8.12.  Metal image uniforms are read_write
+                 * textures; 1D/buffer/MS share the 2D/2D-array backing used
+                 * in IMAGE metadata. */
+                auto emitSize = [&](llvm::Value *t) -> llvm::Value * {
+                    llvm::Value *lod = cg.b->getInt32(0);
+                    auto pack2 = [&](llvm::Value *x, llvm::Value *y) {
+                        llvm::Value *s = llvm::UndefValue::get(v2i32);
+                        s = cg.b->CreateInsertElement(s, x, cg.b->getInt32(0));
+                        return cg.b->CreateInsertElement(s, y,
+                                                         cg.b->getInt32(1));
+                    };
+                    auto pack3 = [&](llvm::Value *x, llvm::Value *y,
+                                     llvm::Value *z) {
+                        llvm::Value *s = llvm::UndefValue::get(v3i32);
+                        s = cg.b->CreateInsertElement(s, x, cg.b->getInt32(0));
+                        s = cg.b->CreateInsertElement(s, y, cg.b->getInt32(1));
+                        return cg.b->CreateInsertElement(s, z,
+                                                         cg.b->getInt32(2));
+                    };
+                    if (tk == MGLIR_TEX_3D) {
+                        llvm::Value *w = callAirFn(
+                            cg, "air.get_width_texture_3d", i32, {t, lod});
+                        llvm::Value *h = callAirFn(
+                            cg, "air.get_height_texture_3d", i32, {t, lod});
+                        llvm::Value *d = callAirFn(
+                            cg, "air.get_depth_texture_3d", i32, {t, lod});
+                        return pack3(w, h, d);
+                    }
+                    if (tk == MGLIR_TEX_CUBE) {
+                        llvm::Value *w = callAirFn(
+                            cg, "air.get_width_texture_cube", i32, {t, lod});
+                        llvm::Value *h = callAirFn(
+                            cg, "air.get_height_texture_cube", i32, {t, lod});
+                        return pack2(w, h);
+                    }
+                    if (tk == MGLIR_TEX_CUBE_ARRAY) {
+                        llvm::Value *w = callAirFn(
+                            cg, "air.get_width_texture_cube_array", i32,
+                            {t, lod});
+                        llvm::Value *n = callAirFn(
+                            cg, "air.get_array_size_texture_cube_array", i32,
+                            {t});
+                        return pack3(w, w, n);
+                    }
+                    if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY ||
+                        tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY) {
+                        llvm::Value *w = callAirFn(
+                            cg, "air.get_width_texture_2d_array", i32,
+                            {t, lod});
+                        llvm::Value *h = callAirFn(
+                            cg, "air.get_height_texture_2d_array", i32,
+                            {t, lod});
+                        llvm::Value *n = callAirFn(
+                            cg, "air.get_array_size_texture_2d_array", i32,
+                            {t});
+                        if (tk == MGLIR_TEX_1D_ARRAY)
+                            return pack2(w, n);
+                        if (tk == MGLIR_TEX_2D_MS)
+                            return pack2(w, h);
+                        return pack3(w, h, n);
+                    }
+                    llvm::Value *w = callAirFn(
+                        cg, "air.get_width_texture_2d", i32, {t, lod});
+                    if (tk == MGLIR_TEX_1D || tk == MGLIR_TEX_BUFFER)
+                        return w;
+                    llvm::Value *h = callAirFn(
+                        cg, "air.get_height_texture_2d", i32, {t, lod});
+                    return pack2(w, h);
+                };
+                const MGLExpr *idxE = nullptr;
+                if (ia && ia->kind == MGL_EXPR_INDEX)
+                    idxE = ia->u.index.index;
+                if (idxE) {
+                    llvm::Value *index = emitExpr(cg, idxE, mod, locals);
+                    if (!index) return nullptr;
+                    index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
+                    const char *imageName =
+                        ia->u.index.object &&
+                                ia->u.index.object->kind == MGL_EXPR_VAR_REF
+                            ? ia->u.index.object->u.var_ref.name
+                            : nullptr;
+                    auto ti = imageName ? cg.texArrayValues.find(imageName)
+                                        : cg.texArrayValues.end();
+                    if (ti == cg.texArrayValues.end() || ti->second.empty())
+                        return emitSize(tex);
+                    const bool scalarSize =
+                        tk == MGLIR_TEX_1D || tk == MGLIR_TEX_BUFFER;
+                    llvm::Type *retTy =
+                        scalarSize ? (llvm::Type *)i32
+                        : (tk == MGLIR_TEX_3D || tk == MGLIR_TEX_2D_ARRAY ||
+                           tk == MGLIR_TEX_CUBE_ARRAY ||
+                           tk == MGLIR_TEX_2D_MS_ARRAY)
+                              ? (llvm::Type *)v3i32
+                              : (llvm::Type *)v2i32;
+                    if (scalarSize) {
+                        llvm::Function *fn = cg.b->GetInsertBlock()->getParent();
+                        llvm::BasicBlock *mergeBB = llvm::BasicBlock::Create(
+                            *cg.ctx, "imgsz.merge", fn);
+                        llvm::BasicBlock *defBB = llvm::BasicBlock::Create(
+                            *cg.ctx, "imgsz.def", fn);
+                        size_t n = ti->second.size();
+                        llvm::SwitchInst *sw =
+                            cg.b->CreateSwitch(index, defBB, (unsigned)n);
+                        llvm::PHINode *phi = llvm::PHINode::Create(
+                            i32, (unsigned)(n + 1), "imgsz", mergeBB);
+                        for (size_t i = 0; i < n; ++i) {
+                            llvm::BasicBlock *bb = llvm::BasicBlock::Create(
+                                *cg.ctx, "imgsz.case", fn);
+                            sw->addCase(cg.b->getInt32((uint32_t)i), bb);
+                            cg.b->SetInsertPoint(bb);
+                            llvm::Value *s = emitSize(ti->second[i]);
+                            phi->addIncoming(s, bb);
+                            cg.b->CreateBr(mergeBB);
+                        }
+                        cg.b->SetInsertPoint(defBB);
+                        llvm::Value *ds = emitSize(ti->second.back());
+                        phi->addIncoming(ds, defBB);
+                        cg.b->CreateBr(mergeBB);
+                        cg.b->SetInsertPoint(mergeBB);
+                        return phi;
+                    }
+                    return sampleArrayElementBySwitch(
+                        cg, index, ti->second, {}, retTy,
+                        [&](llvm::Value *t, llvm::Value *) {
+                            return emitSize(t);
+                        });
                 }
-                llvm::Value *w = callAirFn(cg, wFn, i32, {tex, cg.b->getInt32(0)});
-                llvm::Value *h = (tk == MGLIR_TEX_1D || tk == MGLIR_TEX_BUFFER)
-                    ? cg.b->getInt32(1)
-                    : callAirFn(cg, hFn, i32, {tex, cg.b->getInt32(0)});
-                llvm::Value *size = llvm::UndefValue::get(v2i32);
-                size = cg.b->CreateInsertElement(size, w, cg.b->getInt32(0));
-                return cg.b->CreateInsertElement(size, h, cg.b->getInt32(1));
+                return emitSize(tex);
             }
             llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod, locals);
             if (!coord) return nullptr;
@@ -7376,17 +7499,28 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return doFetchVec(tex, nullptr);
         }
-        /* texture / textureLod / textureSize: the sampler argument maps
-         * to paired AIR texture + sampler parameters. */
-        if (isTextureSampleBuiltin(name) || strcmp(name, "textureSize") == 0) {
+        /* texture / textureLod / textureGather / textureSize: the sampler
+         * argument maps to paired AIR texture + sampler parameters. */
+        if (isTextureSampleBuiltin(name) || isTextureGatherBuiltin(name) ||
+            strcmp(name, "textureSize") == 0) {
             const bool isProj = strstr(name, "Proj") != nullptr;
             const bool isLod = strstr(name, "Lod") != nullptr;
             const bool isGrad = strstr(name, "Grad") != nullptr;
             const bool hasOffset = strstr(name, "Offset") != nullptr;
+            const bool isGather = isTextureGatherBuiltin(name);
+            const bool isGatherOffsets =
+                strcmp(name, "textureGatherOffsets") == 0;
             if (strcmp(name, "textureSize") == 0) {
                 if (e->u.call.arg_count != 2) {
                     cg.err = 1;
                     cg.errmsg = "codegen: textureSize expects 2 arguments";
+                    return nullptr;
+                }
+            } else if (isGather) {
+                if (e->u.call.arg_count < 2 || e->u.call.arg_count > 4) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: '") + name +
+                                "' expects 2 to 4 arguments";
                     return nullptr;
                 }
             } else if (e->u.call.arg_count < 2 || e->u.call.arg_count > 5) {
@@ -7517,6 +7651,221 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 sz = cg.b->CreateInsertElement(sz, w, cg.b->getInt32(0));
                 sz = cg.b->CreateInsertElement(sz, h, cg.b->getInt32(1));
                 return sz;
+            }
+            if (isGather) {
+                /* AIR gather signatures (from xcrun metal -emit-llvm):
+                 *   air.gather_texture_2d.v4f32(
+                 *       tex, smp, <2 x float>, i1 has_offset, <2 x i32>,
+                 *       i32 component, i32) -> { <4 x T>, i8 }
+                 *   air.gather_texture_2d_array.v4f32(
+                 *       tex, smp, <2 x float>, i32 layer, i1, <2 x i32>,
+                 *       i32 component, i32)
+                 *   air.gather_texture_cube.v4f32(
+                 *       tex, smp, <3 x float>, i32 component, i32)
+                 *   air.gather_texture_cube_array.v4f32(
+                 *       tex, smp, <3 x float>, i32 layer, i32 component, i32)
+                 *   air.gather_compare_depth_2d.f32(
+                 *       depth, smp, i32 1, <2 x float>, float ref,
+                 *       i1 has_offset, <2 x i32>, i32) -> { <4 x float>, i8 }
+                 * GLSL textureGatherOffsets: each result lane is the .w
+                 * (i0j0) of gatherOffset(P, offsets[i]) — the single texel
+                 * at floor(P*size-0.5)+offsets[i]. */
+                llvm::Value *uv = emitExpr(cg, e->u.call.args[1], mod, locals);
+                if (!uv) return nullptr;
+                const MGLIRSymbol *sampsym = findSymbol(mod, samplerName);
+                const MGLIRType *sampleType = sampsym ? sampsym->type : nullptr;
+                if (sampleType && sampleType->kind == MGLIR_TYPE_ARRAY &&
+                    sampleType->elem_type)
+                    sampleType = sampleType->elem_type;
+                MGLIRScalar texel = sampleType &&
+                                            sampleType->kind == MGLIR_TYPE_SAMPLER
+                                        ? sampleType->tex_storage
+                                        : MGLIR_SCALAR_FLOAT;
+                const bool isShadow = sampleType &&
+                                      sampleType->kind == MGLIR_TYPE_SAMPLER &&
+                                      sampleType->tex_depth;
+                llvm::Type *vecTy =
+                    (texel == MGLIR_SCALAR_FLOAT || isShadow)
+                        ? (llvm::Type *)llvm::FixedVectorType::get(f32, 4)
+                        : (llvm::Type *)llvm::FixedVectorType::get(i32, 4);
+                llvm::Type *retTy = llvm::StructType::get(
+                    *cg.ctx, {vecTy, cg.b->getInt8Ty()});
+                auto gatherIntrinsic =
+                    [&](const char *floatName) -> std::string {
+                    std::string n(floatName);
+                    if (isShadow || texel == MGLIR_SCALAR_FLOAT) return n;
+                    std::string from = ".v4f32";
+                    size_t pos = n.find(from);
+                    if (pos != std::string::npos) {
+                        n.replace(pos, from.size(),
+                                  texel == MGLIR_SCALAR_INT ? ".s.v4i32"
+                                                            : ".u.v4i32");
+                    }
+                    return n;
+                };
+                uint32_t argIdx = 2;
+                llvm::Value *refZ = nullptr;
+                if (isShadow) {
+                    if (argIdx >= e->u.call.arg_count) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: shadow textureGather expects "
+                                    "a reference depth";
+                        return nullptr;
+                    }
+                    refZ = emitExpr(cg, e->u.call.args[argIdx++], mod, locals);
+                    if (!refZ) return nullptr;
+                    refZ = coerceScalar(cg, refZ, MGLIR_SCALAR_FLOAT);
+                }
+                const MGLExpr *offsetsArg = nullptr;
+                llvm::Value *singleOffset = llvm::Constant::getNullValue(
+                    llvm::FixedVectorType::get(i32, 2));
+                if (isGatherOffsets) {
+                    if (argIdx >= e->u.call.arg_count) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: textureGatherOffsets expects "
+                                    "ivec2[4] offsets";
+                        return nullptr;
+                    }
+                    offsetsArg = e->u.call.args[argIdx++];
+                } else if (hasOffset) {
+                    if (argIdx >= e->u.call.arg_count) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: textureGatherOffset expects "
+                                    "an ivec2 offset";
+                        return nullptr;
+                    }
+                    llvm::Value *off =
+                        emitExpr(cg, e->u.call.args[argIdx++], mod, locals);
+                    if (!off) return nullptr;
+                    singleOffset = emitAirSampleOffset(cg, off);
+                }
+                llvm::Value *comp = cg.b->getInt32(0);
+                if (argIdx < e->u.call.arg_count && !isShadow) {
+                    llvm::Value *c =
+                        emitExpr(cg, e->u.call.args[argIdx++], mod, locals);
+                    if (!c) return nullptr;
+                    comp = coerceScalar(cg, c, MGLIR_SCALAR_INT);
+                }
+                auto emitOneGather =
+                    [&](llvm::Value *t, llvm::Value *s,
+                        llvm::Value *off) -> llvm::Value * {
+                    llvm::Value *sp = s;
+                    if (!sp) {
+                        llvm::Type *smpT = llvm::StructType::get(
+                            *cg.ctx, "struct._sampler_t");
+                        sp = callAirFn(cg, "air.get_read_sampler",
+                                       smpT->getPointerTo(2), {});
+                    }
+                    llvm::Value *sampleCoord = uv;
+                    llvm::Value *arrayLayer = nullptr;
+                    if (sampleKind == MGLIR_TEX_CUBE_ARRAY) {
+                        auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(
+                            uv->getType());
+                        if (!vt || vt->getNumElements() < 4) {
+                            cg.err = 1;
+                            cg.errmsg = "codegen: samplerCubeArray "
+                                        "textureGather expects vec4";
+                            return nullptr;
+                        }
+                        arrayLayer = cg.b->CreateFPToSI(
+                            cg.b->CreateExtractElement(uv, cg.b->getInt32(3)),
+                            i32);
+                        sampleCoord = cg.b->CreateShuffleVector(
+                            uv, llvm::UndefValue::get(uv->getType()),
+                            {0, 1, 2});
+                    } else if (!splitSampleArrayCoord(cg, sampleKind, uv,
+                                                      &sampleCoord,
+                                                      &arrayLayer)) {
+                        return nullptr;
+                    }
+                    if (arrayLayer &&
+                        arrayLayer->getType()->isFloatingPointTy()) {
+                        arrayLayer = cg.b->CreateFPToSI(arrayLayer, i32);
+                    }
+                    std::vector<llvm::Value *> args;
+                    const char *iname = nullptr;
+                    if (isShadow) {
+                        if (sampleKind == MGLIR_TEX_2D_ARRAY ||
+                            sampleKind == MGLIR_TEX_1D_ARRAY) {
+                            iname = "air.gather_compare_depth_2d_array.f32";
+                            args = {t, sp, cg.b->getInt32(1), sampleCoord,
+                                    arrayLayer ? arrayLayer : cg.b->getInt32(0),
+                                    refZ, cg.b->getInt1(true), off,
+                                    cg.b->getInt32(0)};
+                        } else if (sampleKind == MGLIR_TEX_CUBE) {
+                            iname = "air.gather_compare_depth_cube.f32";
+                            args = {t, sp, cg.b->getInt32(1), sampleCoord, refZ,
+                                    cg.b->getInt32(0)};
+                        } else if (sampleKind == MGLIR_TEX_CUBE_ARRAY) {
+                            iname = "air.gather_compare_depth_cube_array.f32";
+                            args = {t, sp, cg.b->getInt32(1), sampleCoord,
+                                    arrayLayer ? arrayLayer : cg.b->getInt32(0),
+                                    refZ, cg.b->getInt32(0)};
+                        } else {
+                            iname = "air.gather_compare_depth_2d.f32";
+                            args = {t, sp, cg.b->getInt32(1), sampleCoord, refZ,
+                                    cg.b->getInt1(true), off, cg.b->getInt32(0)};
+                        }
+                    } else if (sampleKind == MGLIR_TEX_CUBE) {
+                        iname = "air.gather_texture_cube.v4f32";
+                        args = {t, sp, sampleCoord, comp, cg.b->getInt32(0)};
+                    } else if (sampleKind == MGLIR_TEX_CUBE_ARRAY) {
+                        iname = "air.gather_texture_cube_array.v4f32";
+                        args = {t, sp, sampleCoord,
+                                arrayLayer ? arrayLayer : cg.b->getInt32(0),
+                                comp, cg.b->getInt32(0)};
+                    } else if (sampleKind == MGLIR_TEX_2D_ARRAY ||
+                               sampleKind == MGLIR_TEX_1D_ARRAY) {
+                        iname = "air.gather_texture_2d_array.v4f32";
+                        args = {t, sp, sampleCoord,
+                                arrayLayer ? arrayLayer : cg.b->getInt32(0),
+                                cg.b->getInt1(true), off, comp,
+                                cg.b->getInt32(0)};
+                    } else {
+                        iname = "air.gather_texture_2d.v4f32";
+                        args = {t, sp, sampleCoord, cg.b->getInt1(true), off,
+                                comp, cg.b->getInt32(0)};
+                    }
+                    llvm::Value *r = callAirFn(
+                        cg, gatherIntrinsic(iname).c_str(), retTy, args);
+                    return cg.b->CreateExtractValue(r, 0);
+                };
+                auto doGatherVec =
+                    [&](llvm::Value *t, llvm::Value *s) -> llvm::Value * {
+                    if (!isGatherOffsets) {
+                        return emitOneGather(t, s, singleOffset);
+                    }
+                    /* Four gathers with per-lane offsets; take .w (i0j0). */
+                    llvm::Value *result = llvm::UndefValue::get(vecTy);
+                    for (uint32_t i = 0; i < 4; i++) {
+                        MGLExpr idxLit = {};
+                        idxLit.kind = MGL_EXPR_LITERAL;
+                        idxLit.u.literal.base = MGL_AST_TYPE_INT;
+                        idxLit.u.literal.value = (double)i;
+                        MGLExpr indexExpr = {};
+                        indexExpr.kind = MGL_EXPR_INDEX;
+                        indexExpr.u.index.object = (MGLExpr *)offsetsArg;
+                        indexExpr.u.index.index = &idxLit;
+                        llvm::Value *off_i =
+                            emitExpr(cg, &indexExpr, mod, locals);
+                        if (!off_i) return nullptr;
+                        off_i = emitAirSampleOffset(cg, off_i);
+                        llvm::Value *g = emitOneGather(t, s, off_i);
+                        if (!g) return nullptr;
+                        llvm::Value *lane = cg.b->CreateExtractElement(
+                            g, cg.b->getInt32(3));
+                        result = cg.b->CreateInsertElement(
+                            result, lane, cg.b->getInt32(i));
+                    }
+                    return result;
+                };
+                if (dynamicSamplerArray) {
+                    std::vector<llvm::Value *> smps =
+                        smpArray ? *smpArray : std::vector<llvm::Value *>();
+                    return sampleArrayElementBySwitch(
+                        cg, arrayIndex, *texArray, smps, vecTy, doGatherVec);
+                }
+                return doGatherVec(tex, smp);
             }
             llvm::Value *uv = emitExpr(cg, e->u.call.args[1], mod, locals);
             if (!uv) return nullptr;

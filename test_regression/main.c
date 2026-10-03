@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 173
+#define MAX_TESTS 177
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19993,6 +19993,388 @@ static int test_tess_swizzle_named_members(unsigned char *pixels, const char *ou
     return fail ? 1 : 0;
 }
 
+/* GLSL 4.60 §8.9.2 textureGather / Offset / Offsets → AIR gather. */
+static int test_texture_gather(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "const vec2 kPos[3] = vec2[](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));\n"
+        "void main() { gl_Position = vec4(kPos[gl_VertexID], 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "uniform sampler2D tex;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() {\n"
+        "  vec4 g = textureGather(tex, vec2(0.5));\n"
+        "  vec4 go = textureGatherOffset(tex, vec2(0.5), ivec2(0));\n"
+        "  ivec2 offs[4] = ivec2[4](ivec2(0,0), ivec2(1,0),\n"
+        "                           ivec2(0,1), ivec2(1,1));\n"
+        "  vec4 gos = textureGatherOffsets(tex, vec2(0.5), offs);\n"
+        "  /* gather .r = (TL,TR,BR,BL)=(3,4,2,1); Offsets → (1,2,3,4). */\n"
+        "  bool ok = distance(g, vec4(3.0, 4.0, 2.0, 1.0)) < 0.02 &&\n"
+        "            distance(go, g) < 0.02 &&\n"
+        "            distance(gos, vec4(1.0, 2.0, 3.0, 4.0)) < 0.02;\n"
+        "  frag = ok ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) {
+        fprintf(stderr, "texture_gather: link failed\n");
+        return 1;
+    }
+
+    /* 2x2 R32F: BL=1, BR=2, TL=3, TR=4 (GL origin bottom-left). */
+    float texels[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    GLuint tex = 0, color = 0, fbo = 0, vao = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, 2, 2, 0, GL_RED, GL_FLOAT, texels);
+
+    fbo = make_fbo(REG_W, REG_H, &color);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, REG_W, REG_H);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glUseProgram(prog);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glUniform1i(glGetUniformLocation(prog, "tex"), 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    int fail = 0;
+    const unsigned char *c =
+        &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+    if (c[0] > 20u || c[1] < 220u || c[2] > 20u) {
+        fprintf(stderr, "texture_gather: center (%u,%u,%u,%u) want green\n",
+                c[0], c[1], c[2], c[3]);
+        fail = 1;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteProgram(prog);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    if (tex) glDeleteTextures(1, &tex);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
+/* Table 8.12: SNORM formats are color-renderable (CR), so an R8_SNORM
+ * color attachment is FRAMEBUFFER_COMPLETE and Clear is not IFO. */
+static int test_snorm_fbo_color_renderable(unsigned char *pixels,
+                                           const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint tex = 0, fbo = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8_SNORM, 8, 8, 0, GL_RED, GL_BYTE, NULL);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           tex, 0);
+    int fail = 0;
+    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (st != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "snorm_fbo_color_renderable: status 0x%x\n", st);
+        fail = 1;
+    }
+    while (glGetError() != GL_NO_ERROR) { }
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) {
+        fprintf(stderr, "snorm_fbo_color_renderable: Clear 0x%x\n", err);
+        fail = 1;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (tex) glDeleteTextures(1, &tex);
+    return fail;
+}
+
+/* GLSL 4.60 §8.12 imageSize: 2D→ivec2, 3D/2DArray→ivec3. */
+static int test_image_size(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *cs =
+        "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(rgba32f, binding = 0) uniform image2D img2;\n"
+        "layout(rgba32f, binding = 1) uniform image3D img3;\n"
+        "layout(rgba32f, binding = 2) uniform image2DArray imgA;\n"
+        "layout(std430, binding = 0) buffer Out { ivec4 v[3]; };\n"
+        "void main() {\n"
+        "  v[0] = ivec4(imageSize(img2), 0, 0);\n"
+        "  v[1] = ivec4(imageSize(img3), 0);\n"
+        "  v[2] = ivec4(imageSize(imgA), 0);\n"
+        "}\n";
+    GLuint prog = link_compute_program(cs);
+    if (!prog) {
+        fprintf(stderr, "image_size: link failed\n");
+        return 1;
+    }
+    GLuint t2 = 0, t3 = 0, ta = 0, ssbo = 0;
+    glGenTextures(1, &t2);
+    glBindTexture(GL_TEXTURE_2D, t2);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, 8, 4);
+    glGenTextures(1, &t3);
+    glBindTexture(GL_TEXTURE_3D, t3);
+    glTexStorage3D(GL_TEXTURE_3D, 1, GL_RGBA32F, 8, 4, 2);
+    glGenTextures(1, &ta);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, ta);
+    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_RGBA32F, 8, 4, 3);
+    glBindImageTexture(0, t2, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+    glBindImageTexture(1, t3, 0, GL_TRUE, 0, GL_READ_ONLY, GL_RGBA32F);
+    glBindImageTexture(2, ta, 0, GL_TRUE, 0, GL_READ_ONLY, GL_RGBA32F);
+    GLint outv[12] = {0};
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(outv), outv, GL_DYNAMIC_COPY);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glUseProgram(prog);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glFinish();
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(outv), outv);
+    int fail = 0;
+    if (outv[0] != 8 || outv[1] != 4) {
+        fprintf(stderr, "image_size: 2D %d %d want 8 4\n", outv[0], outv[1]);
+        fail |= 1;
+    }
+    if (outv[4] != 8 || outv[5] != 4 || outv[6] != 2) {
+        fprintf(stderr, "image_size: 3D %d %d %d want 8 4 2\n",
+                outv[4], outv[5], outv[6]);
+        fail |= 2;
+    }
+    if (outv[8] != 8 || outv[9] != 4 || outv[10] != 3) {
+        fprintf(stderr, "image_size: 2DArray %d %d %d want 8 4 3\n",
+                outv[8], outv[9], outv[10]);
+        fail |= 4;
+    }
+    glDeleteProgram(prog);
+    if (ssbo) glDeleteBuffers(1, &ssbo);
+    if (t2) glDeleteTextures(1, &t2);
+    if (t3) glDeleteTextures(1, &t3);
+    if (ta) glDeleteTextures(1, &ta);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail ? 1 : 0;
+}
+
+/* CTS shader_image_size TES/TCS uses GL_RASTERIZER_DISCARD + point_mode.
+ * TES-vertex raster must still evaluate TES (imageStore). */
+static int test_image_size_tess_discard(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 430 core\n"
+        "void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }\n";
+    static const char *vs_sso =
+        "#version 430 core\n"
+        "out gl_PerVertex { vec4 gl_Position; };\n"
+        "void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 430 core\n"
+        "layout(location=0) out vec4 o;\n"
+        "void main() { o = vec4(0.0); }\n";
+    static const char *tes =
+        "#version 430 core\n"
+        "layout(quads, point_mode) in;\n"
+        "layout(binding = 0, rgba32i) writeonly uniform iimage2D g_result;\n"
+        "layout(binding = 1, rgba32f) uniform image2D g_image_2d;\n"
+        "layout(binding = 2, rgba32f) uniform image3D g_image_3d;\n"
+        "void main() {\n"
+        "  int coord = gl_PrimitiveID;\n"
+        "  imageStore(g_result, ivec2(coord, 0), ivec4(imageSize(g_image_2d), 0, 0));\n"
+        "  imageStore(g_result, ivec2(coord, 1), ivec4(imageSize(g_image_3d), 0));\n"
+        "}\n";
+    static const char *tcs =
+        "#version 430 core\n"
+        "layout(vertices = 1) out;\n"
+        "layout(binding = 0, rgba32i) writeonly uniform iimage2D g_result;\n"
+        "layout(binding = 1, rgba32f) uniform image2D g_image_2d;\n"
+        "layout(binding = 2, rgba32f) uniform image3D g_image_3d;\n"
+        "layout(binding = 3, rgba32f) uniform imageCube g_image_cube;\n"
+        "layout(binding = 4, rgba32f) uniform imageCubeArray g_image_cube_array;\n"
+        "layout(binding = 5, rgba32f) uniform image2DRect g_image_rect;\n"
+        "layout(binding = 6, rgba32f) uniform image2DArray g_image_2d_array;\n"
+        "layout(binding = 7, rgba32f) uniform imageBuffer g_image_buffer;\n"
+        "void main() {\n"
+        "  gl_TessLevelInner[0] = 1;\n"
+        "  gl_TessLevelInner[1] = 1;\n"
+        "  gl_TessLevelOuter[0] = 1;\n"
+        "  gl_TessLevelOuter[1] = 1;\n"
+        "  gl_TessLevelOuter[2] = 1;\n"
+        "  gl_TessLevelOuter[3] = 1;\n"
+        "  int coord = gl_PrimitiveID;\n"
+        "  imageStore(g_result, ivec2(coord, 0), ivec4(imageSize(g_image_2d), 0, 0));\n"
+        "  imageStore(g_result, ivec2(coord, 1), ivec4(imageSize(g_image_3d), 0));\n"
+        "  imageStore(g_result, ivec2(coord, 2), ivec4(imageSize(g_image_cube), 0, 0));\n"
+        "  imageStore(g_result, ivec2(coord, 3), ivec4(imageSize(g_image_cube_array), 0));\n"
+        "  imageStore(g_result, ivec2(coord, 4), ivec4(imageSize(g_image_rect), 0, 0));\n"
+        "  imageStore(g_result, ivec2(coord, 5), ivec4(imageSize(g_image_2d_array), 0));\n"
+        "  imageStore(g_result, ivec2(coord, 6), ivec4(imageSize(g_image_buffer), 0, 0, 0));\n"
+        "}\n";
+    static const char *tes_empty =
+        "#version 430 core\n"
+        "layout(quads, point_mode) in;\n"
+        "void main() {}\n";
+
+    GLuint tes_prog = link_program_tess_eval_only(vs, tes, fs);
+    GLuint p_vs = glCreateShaderProgramv(GL_VERTEX_SHADER, 1, &vs_sso);
+    GLuint p_tcs = glCreateShaderProgramv(GL_TESS_CONTROL_SHADER, 1, &tcs);
+    GLuint p_tes = glCreateShaderProgramv(GL_TESS_EVALUATION_SHADER, 1, &tes_empty);
+    GLuint pipe = 0;
+    glGenProgramPipelines(1, &pipe);
+    GLint vs_ok = 0, tcs_ok = 0, tes_ok = 0;
+    if (p_vs) glGetProgramiv(p_vs, GL_LINK_STATUS, &vs_ok);
+    if (p_tcs) glGetProgramiv(p_tcs, GL_LINK_STATUS, &tcs_ok);
+    if (p_tes) glGetProgramiv(p_tes, GL_LINK_STATUS, &tes_ok);
+    if (!tes_prog || !vs_ok || !tcs_ok || !tes_ok || !pipe) {
+        if (tes_prog) glDeleteProgram(tes_prog);
+        if (p_vs) glDeleteProgram(p_vs);
+        if (p_tcs) glDeleteProgram(p_tcs);
+        if (p_tes) glDeleteProgram(p_tes);
+        if (pipe) glDeleteProgramPipelines(1, &pipe);
+        fprintf(stderr, "image_size_tess_discard: link failed\n");
+        return 1;
+    }
+    glUseProgramStages(pipe, GL_VERTEX_SHADER_BIT, p_vs);
+    glUseProgramStages(pipe, GL_TESS_CONTROL_SHADER_BIT, p_tcs);
+    glUseProgramStages(pipe, GL_TESS_EVALUATION_SHADER_BIT, p_tes);
+
+    GLuint result = 0, img2 = 0, img3 = 0, cube = 0, cubea = 0, arr = 0, rect = 0, tbo = 0, buf = 0, vao = 0;
+    int fail = 0;
+    glGenTextures(1, &result);
+    glBindTexture(GL_TEXTURE_2D, result);
+    {
+        GLint seed[28];
+        for (int i = 0; i < 28; i++) seed[i] = 100000;
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32I, 1, 7, 0, GL_RGBA_INTEGER,
+                     GL_INT, seed);
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenTextures(1, &img2);
+    glBindTexture(GL_TEXTURE_2D, img2);
+    glTexStorage2D(GL_TEXTURE_2D, 2, GL_RGBA32F, 32, 16);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenTextures(1, &img3);
+    glBindTexture(GL_TEXTURE_3D, img3);
+    glTexStorage3D(GL_TEXTURE_3D, 1, GL_RGBA32F, 8, 8, 4);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenTextures(1, &cube);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+    glTexStorage2D(GL_TEXTURE_CUBE_MAP, 1, GL_RGBA32F, 16, 16);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenTextures(1, &cubea);
+    glBindTexture(GL_TEXTURE_CUBE_MAP_ARRAY, cubea);
+    glTexStorage3D(GL_TEXTURE_CUBE_MAP_ARRAY, 1, GL_RGBA32F, 4, 4, 12);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenTextures(1, &arr);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, arr);
+    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_RGBA32F, 8, 4, 3);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenTextures(1, &rect);
+    glBindTexture(GL_TEXTURE_RECTANGLE, rect);
+    glTexStorage2D(GL_TEXTURE_RECTANGLE, 1, GL_RGBA32F, 16, 8);
+    glGenBuffers(1, &buf);
+    glBindBuffer(GL_TEXTURE_BUFFER, buf);
+    glBufferData(GL_TEXTURE_BUFFER, 256, NULL, GL_STATIC_DRAW);
+    glGenTextures(1, &tbo);
+    glBindTexture(GL_TEXTURE_BUFFER, tbo);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, buf);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+
+    glBindImageTexture(0, result, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32I);
+    glBindImageTexture(1, img2, 1, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+    glBindImageTexture(2, img3, 0, GL_TRUE, 0, GL_READ_ONLY, GL_RGBA32F);
+    glBindImageTexture(3, cube, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+    glBindImageTexture(4, cubea, 0, GL_TRUE, 0, GL_READ_ONLY, GL_RGBA32F);
+    glBindImageTexture(5, rect, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+    glBindImageTexture(6, arr, 0, GL_TRUE, 0, GL_READ_ONLY, GL_RGBA32F);
+    glBindImageTexture(7, tbo, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+
+    glEnable(GL_RASTERIZER_DISCARD);
+    glUseProgram(tes_prog);
+    glPatchParameteri(GL_PATCH_VERTICES, 1);
+    glDrawArrays(GL_PATCHES, 0, 1);
+    glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+    glFinish();
+    GLint tes_got[8] = {0};
+    glBindTexture(GL_TEXTURE_2D, result);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA_INTEGER, GL_INT, tes_got);
+    /* mip 1 of 32x16 is 16x8 */
+    if (tes_got[0] != 16 || tes_got[1] != 8) {
+        fprintf(stderr, "image_size_tess_discard: TES 2D %d %d want 16 8\n",
+                tes_got[0], tes_got[1]);
+        fail |= 1;
+    }
+    if (tes_got[4] != 8 || tes_got[5] != 8 || tes_got[6] != 4) {
+        fprintf(stderr, "image_size_tess_discard: TES 3D %d %d %d want 8 8 4\n",
+                tes_got[4], tes_got[5], tes_got[6]);
+        fail |= 2;
+    }
+
+    GLint tcs_seed[28];
+    for (int i = 0; i < 28; i++) tcs_seed[i] = 100000;
+    glBindTexture(GL_TEXTURE_2D, result);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 7, GL_RGBA_INTEGER, GL_INT,
+                    tcs_seed);
+    glUseProgram(0);
+    glBindProgramPipeline(pipe);
+    glDrawArrays(GL_PATCHES, 0, 1);
+    glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+    glFinish();
+    GLint tcs_got[8] = {0};
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA_INTEGER, GL_INT, tcs_got);
+    if (tcs_got[0] != 16 || tcs_got[1] != 8) {
+        fprintf(stderr, "image_size_tess_discard: TCS 2D %d %d want 16 8\n",
+                tcs_got[0], tcs_got[1]);
+        fail |= 4;
+    }
+    glDisable(GL_RASTERIZER_DISCARD);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    glBindProgramPipeline(0);
+    glUseProgram(0);
+    glDeleteProgram(tes_prog);
+    glDeleteProgram(p_vs);
+    glDeleteProgram(p_tcs);
+    glDeleteProgram(p_tes);
+    glDeleteProgramPipelines(1, &pipe);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (result) glDeleteTextures(1, &result);
+    if (img2) glDeleteTextures(1, &img2);
+    if (img3) glDeleteTextures(1, &img3);
+    if (cube) glDeleteTextures(1, &cube);
+    if (cubea) glDeleteTextures(1, &cubea);
+    if (arr) glDeleteTextures(1, &arr);
+    if (rect) glDeleteTextures(1, &rect);
+    if (tbo) glDeleteTextures(1, &tbo);
+    if (buf) glDeleteBuffers(1, &buf);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail ? 1 : 0;
+}
+
 static int test_ms_integer_texel_fetch(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -25189,6 +25571,10 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("tess_indexed_patch_draw", test_tess_indexed_patch_draw),
     SELF_CHECK_TEST("patch_primitive_restart_disabled", test_patch_primitive_restart_disabled),
     SELF_CHECK_TEST("tess_swizzle_named_members", test_tess_swizzle_named_members),
+    SELF_CHECK_TEST("texture_gather", test_texture_gather),
+    SELF_CHECK_TEST("snorm_fbo_color_renderable", test_snorm_fbo_color_renderable),
+    SELF_CHECK_TEST("image_size", test_image_size),
+    SELF_CHECK_TEST("image_size_tess_discard", test_image_size_tess_discard),
     SELF_CHECK_TEST("large_uniform_array", test_large_uniform_array),
     SELF_CHECK_TEST("high_uniform_location", test_high_uniform_location),
     SELF_CHECK_TEST("xfb_atomic_counters", test_xfb_atomic_counters),

@@ -1532,6 +1532,7 @@ typedef enum {
     BI_ARG_IVEC2,     /* ivec2 */
     BI_ARG_IVEC3,     /* ivec3 */
     BI_ARG_IVEC4,     /* ivec4 */
+    BI_ARG_IVEC2_ARR4, /* ivec2[4] (textureGatherOffsets) */
     BI_ARG_UVEC4,     /* uvec4 */
     BI_ARG_ATOMIC,    /* atomic_uint */
     BI_ARG_BVEC,      /* bool/bvec2/3/4 */
@@ -1558,6 +1559,7 @@ typedef enum {
     BI_RET_MATF,    /* float matrix matching arg0 */
     BI_RET_TRANSPOSE, /* float matrix with rows/cols swapped from arg0 */
     BI_RET_VOID,    /* statement-only builtin (EmitVertex/EndPrimitive, M3) */
+    BI_RET_IMAGESIZE, /* imageSize: int / ivec2 / ivec3 from image dim */
 } BiRetKind;
 
 typedef struct {
@@ -1627,6 +1629,40 @@ static const BiFn kBuiltins[] = {
     { "textureLodOffset", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureLodOffset", 4, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_IVEC3 }, BI_RET_SAMP },
     { "textureLodOffset", 4, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    /* GLSL 4.60 §8.9.2 Texture Gather Functions. */
+    { "textureGather", 2, { BI_ARG_S2D, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureGather", 3, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureGather", 2, { BI_ARG_S2DA, BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "textureGather", 3, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureGather", 2, { BI_ARG_SCUBE, BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "textureGather", 3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureGather", 2, { BI_ARG_SCUBEA, BI_ARG_VEC4 }, BI_RET_SAMP },
+    { "textureGather", 3, { BI_ARG_SCUBEA, BI_ARG_VEC4, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureGather", 2, { BI_ARG_SRECT, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureGather", 3, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureGather", 3, { BI_ARG_S2D_SHADOW, BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_VEC4 },
+    { "textureGather", 3, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
+    { "textureGather", 3, { BI_ARG_SCUBE_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
+    { "textureGather", 3, { BI_ARG_SCUBEA_SHADOW, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_VEC4 },
+    { "textureGather", 3, { BI_ARG_SRECT_SHADOW, BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_VEC4 },
+    { "textureGatherOffset", 3, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureGatherOffset", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureGatherOffset", 3, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureGatherOffset", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_IVEC2, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureGatherOffset", 3, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureGatherOffset", 4, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureGatherOffset", 4, { BI_ARG_S2D_SHADOW, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_VEC4 },
+    { "textureGatherOffset", 4, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_VEC4 },
+    { "textureGatherOffset", 4, { BI_ARG_SRECT_SHADOW, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_VEC4 },
+    { "textureGatherOffsets", 3, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_IVEC2_ARR4 }, BI_RET_SAMP },
+    { "textureGatherOffsets", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_IVEC2_ARR4, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureGatherOffsets", 3, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_IVEC2_ARR4 }, BI_RET_SAMP },
+    { "textureGatherOffsets", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_IVEC2_ARR4, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureGatherOffsets", 3, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_IVEC2_ARR4 }, BI_RET_SAMP },
+    { "textureGatherOffsets", 4, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_IVEC2_ARR4, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureGatherOffsets", 4, { BI_ARG_S2D_SHADOW, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_IVEC2_ARR4 }, BI_RET_VEC4 },
+    { "textureGatherOffsets", 4, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_IVEC2_ARR4 }, BI_RET_VEC4 },
+    { "textureGatherOffsets", 4, { BI_ARG_SRECT_SHADOW, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_IVEC2_ARR4 }, BI_RET_VEC4 },
     { "textureGrad", 4, { BI_ARG_S1D, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureGrad", 4, { BI_ARG_S1DA, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
     { "textureGrad", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
@@ -1720,10 +1756,10 @@ static const BiFn kBuiltins[] = {
     { "imageStore", 4, { BI_ARG_IMAGE_INT, BI_ARG_IVEC3, BI_ARG_INT, BI_ARG_IVEC4 }, BI_RET_VOID },
     { "imageStore", 4, { BI_ARG_IMAGE_UINT, BI_ARG_IVEC2, BI_ARG_INT, BI_ARG_UVEC4 }, BI_RET_VOID },
     { "imageStore", 4, { BI_ARG_IMAGE_UINT, BI_ARG_IVEC3, BI_ARG_INT, BI_ARG_UVEC4 }, BI_RET_VOID },
-    { "imageSize", 1, { BI_ARG_I2D }, BI_RET_IVEC2 },
-    { "imageSize", 1, { BI_ARG_IMAGE }, BI_RET_IVEC2 },
-    { "imageSize", 1, { BI_ARG_IMAGE_INT }, BI_RET_IVEC2 },
-    { "imageSize", 1, { BI_ARG_IMAGE_UINT }, BI_RET_IVEC2 },
+    { "imageSize", 1, { BI_ARG_I2D }, BI_RET_IMAGESIZE },
+    { "imageSize", 1, { BI_ARG_IMAGE }, BI_RET_IMAGESIZE },
+    { "imageSize", 1, { BI_ARG_IMAGE_INT }, BI_RET_IMAGESIZE },
+    { "imageSize", 1, { BI_ARG_IMAGE_UINT }, BI_RET_IMAGESIZE },
     { "textureSize", 2, { BI_ARG_S3D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "textureSize", 2, { BI_ARG_SCUBE, BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "normalize", 1, { BI_ARG_GENF }, BI_RET_GENF },
@@ -2084,6 +2120,11 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
     case BI_ARG_IVEC4:
         return t->kind == MGLIR_TYPE_VECTOR && t->cols == 4 &&
                t->scalar == MGLIR_SCALAR_INT;
+    case BI_ARG_IVEC2_ARR4:
+        return t->kind == MGLIR_TYPE_ARRAY && t->array_size == 4 &&
+               t->elem_type && t->elem_type->kind == MGLIR_TYPE_VECTOR &&
+               t->elem_type->cols == 2 &&
+               t->elem_type->scalar == MGLIR_SCALAR_INT;
     case BI_ARG_UVEC4:
         return t->kind == MGLIR_TYPE_VECTOR && t->cols == 4 &&
                t->scalar == MGLIR_SCALAR_UINT;
@@ -2224,6 +2265,29 @@ static MGLIRType *builtin_call_type(const char *name,
             return NULL;
         case BI_RET_VOID:
             return mglIRTypeScalar(MGLIR_SCALAR_VOID);
+        case BI_RET_IMAGESIZE: {
+            /* GLSL 4.60 §8.12: 1D/buffer → int; 2D/rect/cube/2DMS/1DArray
+             * → ivec2; 3D/2DArray/cubeArray/2DMSArray → ivec3. */
+            const MGLIRType *it = argc >= 1 ? arg_types[0] : NULL;
+            while (it && it->kind == MGLIR_TYPE_ARRAY)
+                it = it->elem_type;
+            MGLIRTexKind tk = (it && (it->kind == MGLIR_TYPE_IMAGE ||
+                                      it->kind == MGLIR_TYPE_SAMPLER))
+                                  ? it->tex_kind
+                                  : MGLIR_TEX_2D;
+            switch (tk) {
+            case MGLIR_TEX_1D:
+            case MGLIR_TEX_BUFFER:
+                return mglIRTypeScalar(MGLIR_SCALAR_INT);
+            case MGLIR_TEX_3D:
+            case MGLIR_TEX_2D_ARRAY:
+            case MGLIR_TEX_CUBE_ARRAY:
+            case MGLIR_TEX_2D_MS_ARRAY:
+                return mglIRTypeVector(MGLIR_SCALAR_INT, 3);
+            default:
+                return mglIRTypeVector(MGLIR_SCALAR_INT, 2);
+            }
+        }
         }
     }
     return NULL;
