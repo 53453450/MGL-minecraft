@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 212
+#define MAX_TESTS 213
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -23378,6 +23378,75 @@ static int test_image_size(unsigned char *pixels, const char *out_path)
     return fail ? 1 : 0;
 }
 
+/* ARB_shader_image_size: #version 420 without the extension must reject
+ * imageSize; 420 + enable and 430 core must accept. sampler2D is not an
+ * image type. */
+static int test_image_size_version_gate(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *v420 =
+        "#version 420 core\n"
+        "layout(rgba32f) uniform image2D g_image;\n"
+        "void main() { ivec2 s = imageSize(g_image); }\n";
+    static const char *v420ext =
+        "#version 420 core\n"
+        "#extension GL_ARB_shader_image_size : enable\n"
+        "layout(rgba32f) uniform image2D g_image;\n"
+        "void main() { ivec2 s = imageSize(g_image); }\n";
+    static const char *v430 =
+        "#version 430 core\n"
+        "layout(rgba32f) uniform image2D g_image;\n"
+        "void main() { ivec2 s = imageSize(g_image); }\n";
+    static const char *samp =
+        "#version 430 core\n"
+        "uniform sampler2D g_tex;\n"
+        "void main() { ivec2 s = imageSize(g_tex); }\n";
+    GLint ok;
+    GLuint sh;
+    sh = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(sh, 1, &v420, NULL);
+    glCompileShader(sh);
+    ok = 1;
+    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+    glDeleteShader(sh);
+    if (ok) {
+        fprintf(stderr, "image_size_version_gate: 420 imageSize compiled\n");
+        return 1;
+    }
+    sh = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(sh, 1, &v420ext, NULL);
+    glCompileShader(sh);
+    ok = 0;
+    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+    glDeleteShader(sh);
+    if (!ok) {
+        fprintf(stderr, "image_size_version_gate: 420+ext failed\n");
+        return 1;
+    }
+    sh = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(sh, 1, &v430, NULL);
+    glCompileShader(sh);
+    ok = 0;
+    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+    glDeleteShader(sh);
+    if (!ok) {
+        fprintf(stderr, "image_size_version_gate: 430 failed\n");
+        return 1;
+    }
+    sh = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(sh, 1, &samp, NULL);
+    glCompileShader(sh);
+    ok = 1;
+    glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+    glDeleteShader(sh);
+    if (ok) {
+        fprintf(stderr, "image_size_version_gate: sampler imageSize compiled\n");
+        return 1;
+    }
+    return 0;
+}
+
 /* CTS shader_image_size TES/TCS uses GL_RASTERIZER_DISCARD + point_mode.
  * TES-vertex raster must still evaluate TES (imageStore). */
 static int test_image_size_tess_discard(unsigned char *pixels, const char *out_path)
@@ -28983,6 +29052,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("line_numbering", test_line_numbering),
     SELF_CHECK_TEST("snorm_fbo_color_renderable", test_snorm_fbo_color_renderable),
     SELF_CHECK_TEST("image_size", test_image_size),
+    SELF_CHECK_TEST("image_size_version_gate", test_image_size_version_gate),
     SELF_CHECK_TEST("image_size_tess_discard", test_image_size_tess_discard),
     SELF_CHECK_TEST("large_uniform_array", test_large_uniform_array),
     SELF_CHECK_TEST("high_uniform_location", test_high_uniform_location),

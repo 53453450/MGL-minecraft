@@ -360,6 +360,8 @@ struct MGLDecl {
 typedef struct MGLTranslationUnit {
     uint32_t version;          /* #version number, 0 if absent */
     char *version_profile;     /* "core"/"compatibility"/"es"/NULL (owned) */
+    /* 1 if #extension GL_ARB_shader_image_size : enable/require/warn. */
+    uint32_t ext_shader_image_size;
     MGLDecl **decls;
     uint32_t decl_count;
     char *error;               /* first parse error message or NULL (owned) */

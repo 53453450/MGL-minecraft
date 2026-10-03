@@ -3683,6 +3683,18 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             MGLIRType *bt = builtin_call_type(e->u.call.name,
                                               (const MGLIRType *const *)atb,
                                               e->u.call.arg_count, &bknown);
+            /* GLSL 4.20: imageSize is ARB_shader_image_size; 4.30 core. */
+            if (bknown && bt && strcmp(e->u.call.name, "imageSize") == 0) {
+                uint32_t ver = s->tu ? s->tu->version : 0;
+                int ext = s->tu && s->tu->ext_shader_image_size;
+                if (ver > 0 && ver < 430 && !ext) {
+                    free(atb);
+                    sema_error(s, e->line,
+                               "imageSize requires #version 430 or "
+                               "GL_ARB_shader_image_size");
+                    return NULL;
+                }
+            }
             if (bknown && bt && e->u.call.arg_count > 0) {
                 /* Memory-qualifier and atomic-format checks for image ops. */
                 const char *bn = e->u.call.name;

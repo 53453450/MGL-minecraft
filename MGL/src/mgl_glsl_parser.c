@@ -3431,6 +3431,29 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
                     }
                 }
             }
+            if (n >= 10 && memcmp(d, "#extension", 10) == 0) {
+                size_t i = 10;
+                static const char kImgSize[] = "GL_ARB_shader_image_size";
+                while (i < n && (d[i] == ' ' || d[i] == '\t')) {
+                    i++;
+                }
+                if (i + sizeof(kImgSize) - 1 <= n &&
+                    memcmp(d + i, kImgSize, sizeof(kImgSize) - 1) == 0) {
+                    i += sizeof(kImgSize) - 1;
+                    while (i < n &&
+                           (d[i] == ' ' || d[i] == '\t' || d[i] == ':')) {
+                        i++;
+                    }
+                    if ((i + 7 <= n && memcmp(d + i, "require", 7) == 0) ||
+                        (i + 6 <= n && memcmp(d + i, "enable", 6) == 0) ||
+                        (i + 4 <= n && memcmp(d + i, "warn", 4) == 0)) {
+                        tu->ext_shader_image_size = 1;
+                    } else if (i + 7 <= n &&
+                               memcmp(d + i, "disable", 7) == 0) {
+                        tu->ext_shader_image_size = 0;
+                    }
+                }
+            }
         }
     }
 
