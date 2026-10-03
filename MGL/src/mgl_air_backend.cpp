@@ -5047,6 +5047,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             return cg.b->getInt32(4);
         if (strcmp(e->u.var_ref.name, "gl_MaxViewports") == 0)
             return cg.b->getInt32(MGL_MAX_VIEWPORTS);
+        if (strcmp(e->u.var_ref.name, "gl_MinProgramTexelOffset") == 0)
+            return cg.b->getInt32(-8);
+        if (strcmp(e->u.var_ref.name, "gl_MaxProgramTexelOffset") == 0)
+            return cg.b->getInt32(7);
         if (strcmp(e->u.var_ref.name, "gl_MaxClipDistances") == 0)
             return cg.b->getInt32(MGL_MAX_CLIP_DISTANCES);
         if (strcmp(e->u.var_ref.name, "gl_MaxCullDistances") == 0)

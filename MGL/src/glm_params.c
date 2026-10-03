@@ -823,11 +823,10 @@ apply_gl46_defaults:
     if (glm_ctx->active_state->var.max_clip_distances < 8u)
         glm_ctx->active_state->var.max_clip_distances = 8u;
 
-    /* Program texel offsets (signed). */
-    if (glm_ctx->active_state->var.min_program_texel_offset > -8)
-        glm_ctx->active_state->var.min_program_texel_offset = -8;
-    if (glm_ctx->active_state->var.max_program_texel_offset < 7)
-        glm_ctx->active_state->var.max_program_texel_offset = 7;
+    /* Program texel offsets (GLSL 4.60 table 23.55 minima). Keep glGet
+     * in lockstep with gl_Min/MaxProgramTexelOffset in the shader. */
+    glm_ctx->active_state->var.min_program_texel_offset = -8;
+    glm_ctx->active_state->var.max_program_texel_offset = 7;
 
     /* Misc scalar limits. */
     if (glm_ctx->active_state->var.subpixel_bits < 4u)

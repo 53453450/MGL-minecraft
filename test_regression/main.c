@@ -20729,21 +20729,28 @@ static int test_gpu_shader5_overloading(unsigned char *pixels,
     glDeleteShader(s);
 
     static const char *vs_bits_draw =
-        "#version 450 core\n"
+        "#version 150\n"
+        "#extension GL_ARB_gpu_shader5 : require\n"
         "uniform int expected_value;\n"
         "uniform float value;\n"
         "out vec4 result;\n"
         "void main() {\n"
-        "    result = vec4(1.0);\n"
+        "    result = vec4(1.0, 1.0, 1.0, 1.0);\n"
         "    int ret_val = floatBitsToInt(value);\n"
-        "    if (expected_value != ret_val) result = vec4(0.0);\n"
-        "    const vec2 kPos[3] = vec2[](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));\n"
-        "    gl_Position = vec4(kPos[gl_VertexID], 0.0, 1.0);\n"
+        "    if (expected_value != ret_val) {\n"
+        "        result = vec4(0.0, 0.0, 0.0, 0.0);\n"
+        "    }\n"
+        "    switch (gl_VertexID) {\n"
+        "      case 0: gl_Position = vec4(-1.0, 1.0, 0.0, 1.0); break;\n"
+        "      case 1: gl_Position = vec4( 1.0, 1.0, 0.0, 1.0); break;\n"
+        "      case 2: gl_Position = vec4(-1.0,-1.0, 0.0, 1.0); break;\n"
+        "      case 3: gl_Position = vec4( 1.0,-1.0, 0.0, 1.0); break;\n"
+        "    }\n"
         "}\n";
     static const char *fs_bits =
-        "#version 450 core\n"
+        "#version 150\n"
         "in vec4 result;\n"
-        "layout(location=0) out vec4 color;\n"
+        "out vec4 color;\n"
         "void main() { color = result; }\n";
     GLuint prog = link_program(vs_bits_draw, fs_bits);
 
@@ -20786,8 +20793,7 @@ static int test_gpu_shader5_overloading(unsigned char *pixels,
     GLuint color = 0, fbo = 0, vao = 0;
     glGenTextures(1, &color);
     glBindTexture(GL_TEXTURE_2D, color);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 8, 8, 0, GL_RGBA,
-                 GL_UNSIGNED_BYTE, NULL);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 8, 8);
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
@@ -20812,7 +20818,7 @@ static int test_gpu_shader5_overloading(unsigned char *pixels,
         glUniform1f(loc_v, value_f);
         glClearColor(0.5f, 0.5f, 0.5f, 0.5f);
         glClear(GL_COLOR_BUFFER_BIT);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         glFinish();
         unsigned char px[4] = {0};
         glReadPixels(4, 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
@@ -20823,10 +20829,33 @@ static int test_gpu_shader5_overloading(unsigned char *pixels,
                     px[0], px[1], px[2]);
             fail = 1;
         }
+        {
+            unsigned char img[8 * 8 * 4];
+            memset(img, 0x00, sizeof(img));
+            glBindTexture(GL_TEXTURE_2D, color);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, img);
+            int white = 0, other = 0;
+            unsigned maxc = 0;
+            for (int i = 0; i < 64; i++) {
+                unsigned char *p = &img[i * 4];
+                if (p[0] > maxc) maxc = p[0];
+                if (p[0] > 200u && p[1] > 200u && p[2] > 200u)
+                    white++;
+                else
+                    other++;
+            }
+            if (white) {
+                fprintf(stderr,
+                        "gpu_shader5_overloading: invalid GetTexImage has "
+                        "%d white / %d other maxR=%u (CTS line 533)\n",
+                        white, other, maxc);
+                fail = 1;
+            }
+        }
         glUniform1i(loc_e, expected_bits);
         glUniform1f(loc_v, value_f);
         glClear(GL_COLOR_BUFFER_BIT);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         glFinish();
         glReadPixels(4, 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
         if (px[0] < 200u || px[1] < 200u || px[2] < 200u) {

@@ -1636,6 +1636,8 @@ static const BiFn kBuiltins[] = {
     { "texture",    3, { BI_ARG_SCUBEA_SHADOW, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_FLOAT },
     { "textureLod", 3, { BI_ARG_S2D,   BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureGrad", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_SCUBEA, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_SAMP },
     { "dFdx", 1, { BI_ARG_GENF }, BI_RET_GENF },
     { "dFdy", 1, { BI_ARG_GENF }, BI_RET_GENF },
     /* ARB_gpu_shader5 / GL 4.0 multisample interpolation. */
@@ -1644,6 +1646,7 @@ static const BiFn kBuiltins[] = {
     { "interpolateAtOffset", 2, { BI_ARG_GENF, BI_ARG_VEC2 }, BI_RET_GENF },
     { "textureLod", 3, { BI_ARG_S3D,   BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureLod", 3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureLod", 3, { BI_ARG_SCUBEA, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureLod", 3, { BI_ARG_S1D,   BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureLod", 3, { BI_ARG_S1DA,  BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureLod", 3, { BI_ARG_S2DA,  BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
@@ -3087,6 +3090,11 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                  * viewport-index words and the raster vertex outputs. */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
             }
+            if (strcmp(e->u.var_ref.name, "gl_MinProgramTexelOffset") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxProgramTexelOffset") == 0) {
+                /* GLSL 4.60 §7.3: implementation-dependent constants. */
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
             if (strcmp(e->u.var_ref.name, "gl_MaxClipDistances") == 0 ||
                 strcmp(e->u.var_ref.name, "gl_MaxCullDistances") == 0 ||
                 strcmp(e->u.var_ref.name,
@@ -3461,6 +3469,31 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 sema_error(s, e->line, "no matching overload of '%s'",
                            e->u.call.name);
                 return NULL;
+            }
+            for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
+                if (!user_param_is_out(s, e->u.call.name,
+                                       e->u.call.arg_count, i)) {
+                    continue;
+                }
+                const MGLExpr *arg = e->u.call.args[i];
+                while (arg && (arg->kind == MGL_EXPR_MEMBER ||
+                               arg->kind == MGL_EXPR_INDEX)) {
+                    arg = arg->kind == MGL_EXPR_MEMBER
+                        ? arg->u.member.object : arg->u.index.object;
+                }
+                if (!arg || arg->kind != MGL_EXPR_VAR_REF ||
+                    !arg->u.var_ref.name) {
+                    continue;
+                }
+                Sym *as = symtab_lookup(tab, arg->u.var_ref.name);
+                if (as && (as->qualifiers & (MGL_AST_Q_CONST |
+                                             MGL_AST_Q_IN |
+                                             MGL_AST_Q_READONLY))) {
+                    sema_error(s, e->line,
+                               "cannot pass '%s' to an out/inout parameter",
+                               arg->u.var_ref.name);
+                    return NULL;
+                }
             }
             return hit->ret_type;
         }
@@ -3846,11 +3879,23 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                                                    : lhs->u.index.object;
             }
             if (lhs && lhs->kind == MGL_EXPR_VAR_REF && lhs->u.var_ref.name) {
-                Sym *ls = symtab_lookup(tab, lhs->u.var_ref.name);
-                if (ls && (ls->qualifiers & MGL_AST_Q_READONLY)) {
+                const char *ln = lhs->u.var_ref.name;
+                if (strcmp(ln, "gl_MinProgramTexelOffset") == 0 ||
+                    strcmp(ln, "gl_MaxProgramTexelOffset") == 0) {
                     sema_error(s, e->line,
-                               "cannot write to readonly variable '%s'",
-                               lhs->u.var_ref.name);
+                               "cannot write to const builtin '%s'", ln);
+                    return NULL;
+                }
+                Sym *ls = symtab_lookup(tab, ln);
+                if (ls && (ls->qualifiers & (MGL_AST_Q_READONLY |
+                                             MGL_AST_Q_CONST |
+                                             MGL_AST_Q_IN))) {
+                    sema_error(s, e->line,
+                               "cannot write to %s variable '%s'",
+                               (ls->qualifiers & MGL_AST_Q_CONST) ? "const"
+                               : (ls->qualifiers & MGL_AST_Q_IN) ? "in"
+                                                                 : "readonly",
+                               ln);
                     return NULL;
                 }
             }
