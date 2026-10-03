@@ -329,11 +329,20 @@ static uint32_t mglEvalConstUniformInit(const MGLExpr *e, uint32_t words[16],
                    strcmp(name, "vec4") == 0) {
             expect_base = MGL_AST_TYPE_FLOAT;
             expect_comps = (uint32_t)(name[3] - '0');
+        } else if (strncmp(name, "mat", 3) == 0 && name[3] >= '2' &&
+                   name[3] <= '4') {
+            expect_base = MGL_AST_TYPE_FLOAT;
+            if (name[4] == '\0') {
+                uint32_t d = (uint32_t)(name[3] - '0');
+                expect_comps = d * d;
+            } else if (name[4] == 'x' && name[5] >= '2' && name[5] <= '4' &&
+                       name[6] == '\0') {
+                expect_comps = (uint32_t)(name[3] - '0') *
+                               (uint32_t)(name[5] - '0');
+            } else {
+                return 0u;
+            }
         } else {
-            return 0u;
-        }
-        if (!is_arr && e->u.call.arg_count != expect_comps &&
-            e->u.call.arg_count != 1u) {
             return 0u;
         }
         if (is_arr) {
@@ -343,50 +352,73 @@ static uint32_t mglEvalConstUniformInit(const MGLExpr *e, uint32_t words[16],
             return 0u;
         }
         *out_base = expect_base;
-        for (uint32_t i = 0; i < expect_comps; i++) {
-            const MGLExpr *arg = e->u.call.args[
-                (!is_arr && e->u.call.arg_count == 1u) ? 0u : i];
+        uint32_t woff = 0u;
+        const int splat = !is_arr && e->u.call.arg_count == 1u &&
+            expect_comps > 1u && strncmp(name, "mat", 3) != 0;
+        for (uint32_t ai = 0u; ai < e->u.call.arg_count; ai++) {
             uint32_t ab = 0u;
             uint32_t tmp[16];
-            if (mglEvalConstUniformInit(arg, tmp, &ab) != 1u) {
+            uint32_t na = mglEvalConstUniformInit(e->u.call.args[ai], tmp, &ab);
+            if (na == 0u) {
                 return 0u;
             }
-            /* GLSL allows int→float in vecN(10,20,30); store the target type. */
-            if (expect_base == MGL_AST_TYPE_FLOAT &&
-                ab != MGL_AST_TYPE_FLOAT) {
-                GLfloat fv = 0.0f;
-                if (ab == MGL_AST_TYPE_INT || ab == MGL_AST_TYPE_BOOL) {
-                    GLint iv;
-                    memcpy(&iv, tmp, sizeof(iv));
-                    fv = (GLfloat)iv;
-                } else if (ab == MGL_AST_TYPE_UINT) {
-                    GLuint uv;
-                    memcpy(&uv, tmp, sizeof(uv));
-                    fv = (GLfloat)uv;
-                } else {
+            if (splat) {
+                if (na != 1u) {
                     return 0u;
                 }
-                memcpy(&words[i], &fv, sizeof(fv));
-            } else if (expect_base != MGL_AST_TYPE_FLOAT &&
-                       ab == MGL_AST_TYPE_FLOAT) {
-                GLfloat fv;
-                memcpy(&fv, tmp, sizeof(fv));
-                if (expect_base == MGL_AST_TYPE_UINT) {
-                    GLuint uv = (GLuint)fv;
-                    memcpy(&words[i], &uv, sizeof(uv));
-                } else {
-                    GLint iv = (GLint)fv;
-                    memcpy(&words[i], &iv, sizeof(iv));
+                na = expect_comps;
+                for (uint32_t k = 1u; k < na; k++) {
+                    tmp[k] = tmp[0];
                 }
-            } else {
-                words[i] = tmp[0];
             }
-            if (expect_base == MGL_AST_TYPE_BOOL) {
-                GLint bv;
-                memcpy(&bv, &words[i], sizeof(bv));
-                bv = bv ? 1 : 0;
-                memcpy(&words[i], &bv, sizeof(bv));
+            if (woff + na > expect_comps) {
+                return 0u;
             }
+            for (uint32_t k = 0u; k < na; k++) {
+                uint32_t src = tmp[splat ? 0u : k];
+                if (expect_base == MGL_AST_TYPE_FLOAT &&
+                    ab != MGL_AST_TYPE_FLOAT) {
+                    GLfloat fv = 0.0f;
+                    if (ab == MGL_AST_TYPE_INT || ab == MGL_AST_TYPE_BOOL) {
+                        GLint iv;
+                        memcpy(&iv, &src, sizeof(iv));
+                        fv = (GLfloat)iv;
+                    } else if (ab == MGL_AST_TYPE_UINT) {
+                        GLuint uv;
+                        memcpy(&uv, &src, sizeof(uv));
+                        fv = (GLfloat)uv;
+                    } else {
+                        return 0u;
+                    }
+                    memcpy(&words[woff], &fv, sizeof(fv));
+                } else if (expect_base != MGL_AST_TYPE_FLOAT &&
+                           ab == MGL_AST_TYPE_FLOAT) {
+                    GLfloat fv;
+                    memcpy(&fv, &src, sizeof(fv));
+                    if (expect_base == MGL_AST_TYPE_UINT) {
+                        GLuint uv = (GLuint)fv;
+                        memcpy(&words[woff], &uv, sizeof(uv));
+                    } else {
+                        GLint iv = (GLint)fv;
+                        memcpy(&words[woff], &iv, sizeof(iv));
+                    }
+                } else {
+                    words[woff] = src;
+                }
+                if (expect_base == MGL_AST_TYPE_BOOL) {
+                    GLint bv;
+                    memcpy(&bv, &words[woff], sizeof(bv));
+                    bv = bv ? 1 : 0;
+                    memcpy(&words[woff], &bv, sizeof(bv));
+                }
+                woff++;
+            }
+            if (splat) {
+                break;
+            }
+        }
+        if (woff != expect_comps) {
+            return 0u;
         }
         return expect_comps;
     }
