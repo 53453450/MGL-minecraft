@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 208
+#define MAX_TESTS 209
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -7740,6 +7740,58 @@ static int test_compute_texture_proj_overloads(unsigned char *pixels,
     }
     glDeleteProgram(program);
     return 0;
+}
+
+static int test_compute_vec4_array_uniform_init(unsigned char *pixels,
+                                                const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *cs =
+        "#version 430 core\n"
+        "layout(local_size_x = 4) in;\n"
+        "layout(std430, binding = 0) buffer Output { vec4 g_output[4]; };\n"
+        "uniform vec4[4] g_input0 = vec4[4](vec4(100), vec4(200),\n"
+        "                                   vec4(300), vec4(400));\n"
+        "void main() {\n"
+        "  g_output[gl_LocalInvocationID.x] =\n"
+        "      g_input0[gl_LocalInvocationID.x];\n"
+        "}\n";
+    GLuint program = link_compute_program(cs);
+    if (!program) {
+        fprintf(stderr, "compute_vec4_array_uniform_init: link failed\n");
+        return 1;
+    }
+    float data[16];
+    for (int i = 0; i < 16; i++)
+        data[i] = -1.0f;
+    GLuint ssbo = 0;
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(data), data, GL_DYNAMIC_COPY);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glUseProgram(program);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glFinish();
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(data), data);
+    int fail = 0;
+    const float want[4] = {100.f, 200.f, 300.f, 400.f};
+    for (int i = 0; i < 4; i++) {
+        if (data[i * 4] != want[i] || data[i * 4 + 1] != want[i] ||
+            data[i * 4 + 2] != want[i] || data[i * 4 + 3] != want[i]) {
+            fprintf(stderr,
+                    "compute_vec4_array_uniform_init: [%d]=(%.1f,%.1f,%.1f,%.1f) "
+                    "want %.1f\n",
+                    i, data[i * 4], data[i * 4 + 1], data[i * 4 + 2],
+                    data[i * 4 + 3], want[i]);
+            fail = 1;
+            break;
+        }
+    }
+    glDeleteProgram(program);
+    glDeleteBuffers(1, &ssbo);
+    return fail;
 }
 
 static int test_compute_shared_struct(unsigned char *pixels,
@@ -28331,6 +28383,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("compute_ubo_referenced", test_compute_ubo_referenced),
     SELF_CHECK_TEST("compute_texture_proj_overloads",
                     test_compute_texture_proj_overloads),
+    SELF_CHECK_TEST("compute_vec4_array_uniform_init",
+                    test_compute_vec4_array_uniform_init),
     SELF_CHECK_TEST("compute_shared_struct", test_compute_shared_struct),
     SELF_CHECK_TEST("compute_uniform_array_init",
                     test_compute_uniform_array_init),

@@ -474,16 +474,23 @@ static void mglSeedUniformInitializers(GLMContext ctx, Program *pptr)
                     (d->init->kind == MGL_EXPR_CALL &&
                      d->init->u.call.is_array_ctor);
                 if (is_init_list || is_arr_ctor) {
-                    n = is_init_list ? d->init->u.init_list.arg_count
-                                     : d->init->u.call.arg_count;
+                    uint32_t argc = is_init_list
+                        ? d->init->u.init_list.arg_count
+                        : d->init->u.call.arg_count;
                     MGLExpr **args = is_init_list
                         ? d->init->u.init_list.args
                         : d->init->u.call.args;
-                    if (n == 0u || !args) {
+                    if (argc == 0u || !args) {
                         continue;
                     }
-                    if (n > 16u) {
-                        words_heap = (uint32_t *)calloc(n, sizeof(uint32_t));
+                    uint32_t elem_comps = 1u;
+                    if (d->type && d->type->vec_size > 1)
+                        elem_comps = (uint32_t)d->type->vec_size;
+                    uint32_t cap = argc * elem_comps;
+                    if (cap < argc)
+                        cap = argc;
+                    if (cap > 16u) {
+                        words_heap = (uint32_t *)calloc(cap, sizeof(uint32_t));
                         if (!words_heap) {
                             continue;
                         }
@@ -492,39 +499,45 @@ static void mglSeedUniformInitializers(GLMContext ctx, Program *pptr)
                     int ok = 1;
                     uint32_t want = (d->type && d->type->base)
                         ? d->type->base : 0u;
-                    for (uint32_t ei = 0u; ei < n; ei++) {
+                    uint32_t woff = 0u;
+                    for (uint32_t ei = 0u; ei < argc; ei++) {
                         uint32_t tmp[16];
                         uint32_t ab = 0u;
-                        if (mglEvalConstUniformInit(args[ei], tmp, &ab) !=
-                            1u) {
+                        uint32_t nw = mglEvalConstUniformInit(args[ei], tmp,
+                                                              &ab);
+                        if (nw == 0u || woff + nw > cap) {
                             ok = 0;
                             break;
                         }
                         if (ei == 0u) {
                             base = want ? want : ab;
                         }
-                        if (want == MGL_AST_TYPE_FLOAT &&
-                            ab != MGL_AST_TYPE_FLOAT) {
-                            GLfloat fv = 0.0f;
-                            if (ab == MGL_AST_TYPE_INT ||
-                                ab == MGL_AST_TYPE_BOOL) {
-                                GLint iv;
-                                memcpy(&iv, tmp, sizeof(iv));
-                                fv = (GLfloat)iv;
-                            } else if (ab == MGL_AST_TYPE_UINT) {
-                                GLuint uv;
-                                memcpy(&uv, tmp, sizeof(uv));
-                                fv = (GLfloat)uv;
+                        for (uint32_t k = 0u; k < nw; k++) {
+                            if (want == MGL_AST_TYPE_FLOAT &&
+                                ab != MGL_AST_TYPE_FLOAT) {
+                                GLfloat fv = 0.0f;
+                                if (ab == MGL_AST_TYPE_INT ||
+                                    ab == MGL_AST_TYPE_BOOL) {
+                                    GLint iv;
+                                    memcpy(&iv, tmp + k, sizeof(iv));
+                                    fv = (GLfloat)iv;
+                                } else if (ab == MGL_AST_TYPE_UINT) {
+                                    GLuint uv;
+                                    memcpy(&uv, tmp + k, sizeof(uv));
+                                    fv = (GLfloat)uv;
+                                }
+                                memcpy(&words[woff], &fv, sizeof(fv));
+                            } else {
+                                words[woff] = tmp[k];
                             }
-                            memcpy(&words[ei], &fv, sizeof(fv));
-                        } else {
-                            words[ei] = tmp[0];
+                            woff++;
                         }
                     }
                     if (!ok) {
                         free(words_heap);
                         continue;
                     }
+                    n = woff;
                     if (want) {
                         base = want;
                     }
