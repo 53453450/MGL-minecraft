@@ -21249,11 +21249,13 @@ static int test_image_size_array_index(unsigned char *pixels, const char *out_pa
         "layout(location = 0) out vec4 c;\n"
         "layout(binding = 0, rgba8) uniform image2D g_image[2];\n"
         "uniform ivec2 g_expected_size[2];\n"
+        "uniform int g_0 = 0, g_1 = 1;\n"
         "void main() {\n"
-        "  c = vec4(float(imageSize(g_image[0]).x) / 255.0,\n"
-        "           float(imageSize(g_image[1]).y) / 255.0, 0.5, 1.0);\n"
-        "  if (imageSize(g_image[0]).xy != g_expected_size[0]) c.a = 0.0;\n"
-        "  if (imageSize(g_image[1]).yx != g_expected_size[1]) c.a = 0.0;\n"
+        "  c = vec4(float(imageSize(g_image[g_0]).x) / 255.0,\n"
+        "           float(imageSize(g_image[g_1]).y) / 255.0,\n"
+        "           float(g_1) * 0.5, 1.0);\n"
+        "  if (imageSize(g_image[g_0]).xy != g_expected_size[g_0]) c.a = 0.0;\n"
+        "  if (imageSize(g_image[g_1]).yx != g_expected_size[g_1]) c.a = 0.0;\n"
         "}\n";
     GLuint pvs = glCreateShaderProgramv(GL_VERTEX_SHADER, 1, &vs);
     GLuint pfs = glCreateShaderProgramv(GL_FRAGMENT_SHADER, 1, &fs);
@@ -21278,6 +21280,21 @@ static int test_image_size_array_index(unsigned char *pixels, const char *out_pa
     glBindVertexArray(vao);
     glBindProgramPipeline(pipe);
     glUseProgram(0);
+    {
+        GLint loc00 = glGetUniformLocation(pfs, "g_expected_size[0]");
+        GLint loc01 = glGetUniformLocation(pfs, "g_expected_size[1]");
+        GLint loc0 = glGetUniformLocation(pfs, "g_0");
+        GLint loc1 = glGetUniformLocation(pfs, "g_1");
+        if (loc00 < 0 || loc01 < 0 || loc0 < 0 || loc1 < 0 ||
+            loc00 == loc01 || loc0 == loc00 || loc0 == loc01 ||
+            loc1 == loc00 || loc1 == loc01 || loc0 == loc1) {
+            fprintf(stderr,
+                    "image_size_array_index: overlapping locations "
+                    "expected[0]=%d [1]=%d g_0=%d g_1=%d\n",
+                    loc00, loc01, loc0, loc1);
+            fail = 1;
+        }
+    }
     for (int it = 0; it < 2; it++) {
         for (int i = 0; i < 2; i++) {
             glBindTexture(GL_TEXTURE_2D, tex[i]);

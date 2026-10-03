@@ -363,11 +363,73 @@ static MGLShaderResource *mglFindAssignedPlainUniformResource(Program *program,
     return NULL;
 }
 
-static GLint mglFirstFreePlainUniformLocation(
-    const bool used[MAX_PLAIN_UNIFORM_LOCATIONS])
+/* GL 4.6 §7.6.1: an array of basic types occupies sequential locations,
+ * one per element. Struct leaves are assigned separately. */
+static GLint mglPlainUniformLocationCount(const MGLShaderResource *resource)
 {
-    for (GLint location = 0; location < MAX_PLAIN_UNIFORM_LOCATIONS; location++) {
-        if (!used[location]) {
+    if (!resource) {
+        return 1;
+    }
+    if (resource->ubo_members && resource->ubo_member_count > 0u) {
+        return 1;
+    }
+    if (resource->gl_array_size > 1) {
+        return resource->gl_array_size;
+    }
+    return 1;
+}
+
+static int mglPlainUniformSpanAvailable(
+    const bool used[MAX_PLAIN_UNIFORM_LOCATIONS],
+    const char *used_by[MAX_PLAIN_UNIFORM_LOCATIONS],
+    GLint base, GLint span, const char *name)
+{
+    if (base < 0 || span < 1 ||
+        (GLint)MAX_PLAIN_UNIFORM_LOCATIONS - span < base) {
+        return 0;
+    }
+    for (GLint i = 0; i < span; i++) {
+        if (!used[base + i]) {
+            continue;
+        }
+        if (!name || !used_by[base + i] ||
+            strcmp(used_by[base + i], name) != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void mglPlainUniformMarkSpan(
+    bool used[MAX_PLAIN_UNIFORM_LOCATIONS],
+    const char *used_by[MAX_PLAIN_UNIFORM_LOCATIONS],
+    GLint base, GLint span, const char *name)
+{
+    for (GLint i = 0; i < span; i++) {
+        used[base + i] = true;
+        if (name) {
+            used_by[base + i] = name;
+        }
+    }
+}
+
+static GLint mglFirstFreePlainUniformSpan(
+    const bool used[MAX_PLAIN_UNIFORM_LOCATIONS], GLint span)
+{
+    if (span < 1) {
+        span = 1;
+    }
+    for (GLint location = 0;
+         location <= (GLint)MAX_PLAIN_UNIFORM_LOCATIONS - span;
+         location++) {
+        int ok = 1;
+        for (GLint i = 0; i < span; i++) {
+            if (used[location + i]) {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok) {
             return location;
         }
     }
@@ -393,27 +455,24 @@ void mglAssignPlainUniformLocations(Program *program)
                                                    _UNIFORM_CONSTANT_RES)) {
                 continue;
             }
+            GLint span = mglPlainUniformLocationCount(resource);
 
             if (resource->location != 0xffffffffu &&
                 resource->location < MAX_PLAIN_UNIFORM_LOCATIONS) {
                 GLint candidate = (GLint)resource->location;
-                bool same_name = used_by[candidate] && resource->name &&
-                    strcmp(used_by[candidate], resource->name) == 0;
-                if (!used[candidate] || same_name) {
+                if (mglPlainUniformSpanAvailable(used, used_by, candidate,
+                                                 span, resource->name)) {
                     resource->uniform_location = candidate;
-                    used[candidate] = true;
-                    if (resource->name) {
-                        used_by[candidate] = resource->name;
-                    }
+                    mglPlainUniformMarkSpan(used, used_by, candidate, span,
+                                            resource->name);
                 } else {
                     resource->uniform_location = -1;
                 }
             } else if (resource->uniform_location >= 0 &&
                        resource->uniform_location < MAX_PLAIN_UNIFORM_LOCATIONS) {
-                used[resource->uniform_location] = true;
-                if (resource->name) {
-                    used_by[resource->uniform_location] = resource->name;
-                }
+                mglPlainUniformMarkSpan(used, used_by,
+                                        resource->uniform_location, span,
+                                        resource->name);
             }
         }
     }
@@ -439,15 +498,20 @@ void mglAssignPlainUniformLocations(Program *program)
                 continue;
             }
 
+            GLint span = mglPlainUniformLocationCount(resource);
             GLint preferred = -1;
             if (resource->location < MAX_PLAIN_UNIFORM_LOCATIONS &&
-                !used[resource->location]) {
+                mglPlainUniformSpanAvailable(used, used_by,
+                                             (GLint)resource->location, span,
+                                             NULL)) {
                 preferred = (GLint)resource->location;
             } else if (resource->gl_binding < MAX_PLAIN_UNIFORM_LOCATIONS &&
-                       !used[resource->gl_binding]) {
+                       mglPlainUniformSpanAvailable(used, used_by,
+                                                    (GLint)resource->gl_binding,
+                                                    span, NULL)) {
                 preferred = (GLint)resource->gl_binding;
             } else {
-                preferred = mglFirstFreePlainUniformLocation(used);
+                preferred = mglFirstFreePlainUniformSpan(used, span);
             }
 
             if (preferred < 0) {
@@ -460,7 +524,8 @@ void mglAssignPlainUniformLocations(Program *program)
                 continue;
             }
             resource->uniform_location = preferred;
-            used[preferred] = true;
+            mglPlainUniformMarkSpan(used, used_by, preferred, span,
+                                    resource->name);
         }
     }
 }

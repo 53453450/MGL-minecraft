@@ -1185,7 +1185,16 @@ static llvm::Value *resolveImageTex(
             cg.errmsg = "codegen: empty image array binding";
             return nullptr;
         }
-        return selectArrayElement(cg, index, ti->second);
+        /* Metal cannot phi texture handles (AIR crashes or always picks
+         * one element). imageSize switches over texArrayValues; Load/Store
+         * still need that same pattern. Returning the first handle is only
+         * a type-bearing fallback. */
+        if (ti->second.empty()) {
+            cg.err = 1;
+            cg.errmsg = "codegen: empty image array binding";
+            return nullptr;
+        }
+        return ti->second.front();
     }
     llvm::Value *tex = samplerTexValue(cg, imageName);
     if (!tex) {

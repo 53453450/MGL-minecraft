@@ -2508,9 +2508,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     alignFragmentInputLocationsToVertexOutputs(pptr);
     mglBridgeSkippedGeometryShaderVaryings(pptr);
     mglAssignPlainUniformLocations(pptr);
-    if (pptr->modules[_VERTEX_SHADER].metallib_bytes) {
-        mglAssignAggregateMemberLocations(pptr);
-    }
+    mglAssignAggregateMemberLocations(pptr);
     mglUnifySamplerUniformLocations(pptr);
 
     /* The AIR compute expansion consumes fixed 32-byte input records
