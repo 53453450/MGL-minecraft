@@ -1552,6 +1552,7 @@ typedef enum {
     BI_RET_VEC3,    /* vec3 */
     BI_RET_VEC4,    /* vec4 */
     BI_RET_IVEC2,   /* ivec2 */
+    BI_RET_IVEC3,   /* ivec3 */
     BI_RET_SAMP,    /* texture fetch: vec4/ivec4/uvec4 per sampler storage */
     BI_RET_MAT2,    /* mat2 */
     BI_RET_MAT3,    /* mat3 */
@@ -1702,6 +1703,8 @@ static const BiFn kBuiltins[] = {
     { "textureProjGradOffset", 5, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_IVEC3 }, BI_RET_SAMP },
     { "textureProjGradOffset", 5, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureSize", 2, { BI_ARG_S2D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
+    { "textureSize", 2, { BI_ARG_S2D_SHADOW, BI_ARG_FLOAT }, BI_RET_IVEC2 },
+    { "textureSize", 2, { BI_ARG_S2DA_SHADOW, BI_ARG_FLOAT }, BI_RET_IVEC3 },
     { "texelFetch", 3, { BI_ARG_S2D, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_S1D, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_S1DA, BI_ARG_IVEC2, BI_ARG_INT }, BI_RET_SAMP },
@@ -2232,6 +2235,8 @@ static MGLIRType *builtin_call_type(const char *name,
             return mglIRTypeVector(MGLIR_SCALAR_FLOAT, 4);
         case BI_RET_IVEC2:
             return mglIRTypeVector(MGLIR_SCALAR_INT, 2);
+        case BI_RET_IVEC3:
+            return mglIRTypeVector(MGLIR_SCALAR_INT, 3);
         case BI_RET_SAMP: {
             MGLIRScalar st = MGLIR_SCALAR_FLOAT;
             for (uint32_t j = 0; j < f->argc; j++) {

@@ -7628,29 +7628,47 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                             locals);
                 if (!lod) return nullptr;
                 lod = coerceScalar(cg, lod, MGLIR_SCALAR_INT);
-                llvm::Value *w = callAirFn(
-                    cg, is3d ? "air.get_width_texture_3d"
-                             : "air.get_width_texture_2d",
-                    i32, {tex, lod});
-                llvm::Value *h = callAirFn(
-                    cg, is3d ? "air.get_height_texture_3d"
-                             : "air.get_height_texture_2d",
-                    i32, {tex, lod});
-                if (is3d) {
-                    llvm::Value *d = callAirFn(cg, "air.get_depth_texture_3d",
-                                               i32, {tex, lod});
-                    llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
-                    llvm::Value *sz = llvm::UndefValue::get(v3i32);
-                    sz = cg.b->CreateInsertElement(sz, w, cg.b->getInt32(0));
-                    sz = cg.b->CreateInsertElement(sz, h, cg.b->getInt32(1));
-                    sz = cg.b->CreateInsertElement(sz, d, cg.b->getInt32(2));
-                    return sz;
-                }
                 llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
-                llvm::Value *sz = llvm::UndefValue::get(v2i32);
-                sz = cg.b->CreateInsertElement(sz, w, cg.b->getInt32(0));
-                sz = cg.b->CreateInsertElement(sz, h, cg.b->getInt32(1));
-                return sz;
+                llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
+                auto pack2 = [&](llvm::Value *x, llvm::Value *y) {
+                    llvm::Value *s = llvm::UndefValue::get(v2i32);
+                    s = cg.b->CreateInsertElement(s, x, cg.b->getInt32(0));
+                    return cg.b->CreateInsertElement(s, y, cg.b->getInt32(1));
+                };
+                auto pack3 = [&](llvm::Value *x, llvm::Value *y,
+                                 llvm::Value *z) {
+                    llvm::Value *s = llvm::UndefValue::get(v3i32);
+                    s = cg.b->CreateInsertElement(s, x, cg.b->getInt32(0));
+                    s = cg.b->CreateInsertElement(s, y, cg.b->getInt32(1));
+                    return cg.b->CreateInsertElement(s, z, cg.b->getInt32(2));
+                };
+                if (is3d) {
+                    llvm::Value *w = callAirFn(
+                        cg, "air.get_width_texture_3d", i32, {tex, lod});
+                    llvm::Value *h = callAirFn(
+                        cg, "air.get_height_texture_3d", i32, {tex, lod});
+                    llvm::Value *d = callAirFn(
+                        cg, "air.get_depth_texture_3d", i32, {tex, lod});
+                    return pack3(w, h, d);
+                }
+                if (sampleKind == MGLIR_TEX_2D_ARRAY ||
+                    sampleKind == MGLIR_TEX_2D_MS_ARRAY) {
+                    llvm::Value *w = callAirFn(
+                        cg, "air.get_width_texture_2d_array", i32,
+                        {tex, lod});
+                    llvm::Value *h = callAirFn(
+                        cg, "air.get_height_texture_2d_array", i32,
+                        {tex, lod});
+                    llvm::Value *n = callAirFn(
+                        cg, "air.get_array_size_texture_2d_array", i32,
+                        {tex});
+                    return pack3(w, h, n);
+                }
+                llvm::Value *w = callAirFn(
+                    cg, "air.get_width_texture_2d", i32, {tex, lod});
+                llvm::Value *h = callAirFn(
+                    cg, "air.get_height_texture_2d", i32, {tex, lod});
+                return pack2(w, h);
             }
             if (isGather) {
                 /* AIR gather signatures (from xcrun metal -emit-llvm):

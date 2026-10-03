@@ -20649,6 +20649,34 @@ static int test_gpu_shader5_gather_offset_vs(unsigned char *pixels,
         return 1;
     }
     glDeleteShader(s);
+
+    static const char *vs_shadow =
+        "#version 450 core\n"
+        "#extension GL_ARB_gpu_shader5 : require\n"
+        "precision highp float;\n"
+        "precision highp sampler2DShadow;\n"
+        "uniform sampler2DShadow sampler;\n"
+        "in ivec2 offsets;\n"
+        "in vec2  texCoords;\n"
+        "flat out ivec4 with_offset;\n"
+        "flat out ivec4 without_offset;\n"
+        "void main() {\n"
+        "    ivec2 texture_size = textureSize(sampler, 0);\n"
+        "    float step = 1.0 / float(texture_size.x);\n"
+        "    without_offset = ivec4(0);\n"
+        "    with_offset = ivec4(0);\n"
+        "    for (int x = 0; x < texture_size.x; ++x) {\n"
+        "        float refZ = float(x) * step;\n"
+        "        without_offset += ivec4(textureGather(sampler, texCoords, refZ));\n"
+        "        with_offset += ivec4(textureGatherOffset(sampler, texCoords, refZ, offsets));\n"
+        "    }\n"
+        "}\n";
+    GLuint sh = compile_shader(GL_VERTEX_SHADER, vs_shadow);
+    if (!sh) {
+        fprintf(stderr, "gpu_shader5_gather_offset_vs: shadow compile failed\n");
+        return 1;
+    }
+    glDeleteShader(sh);
     return 0;
 }
 
