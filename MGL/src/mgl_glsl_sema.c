@@ -1296,6 +1296,37 @@ static int implicit_convert(const MGLIRType *from, const MGLIRType *to)
     return fi <= ti;
 }
 
+/* GLSL 4.00 / ARB_gpu_shader5 overload ranking: exact=0, int→uint=1,
+ * int/uint→float=2.  Negative means not convertible. */
+static int overload_conv_rank(const MGLIRType *from, const MGLIRType *to)
+{
+    if (ir_type_equal(from, to)) {
+        return 0;
+    }
+    if (!from || !to || from->kind != to->kind) {
+        return -1;
+    }
+    if (from->kind == MGLIR_TYPE_VECTOR && from->cols != to->cols) {
+        return -1;
+    }
+    if (from->kind != MGLIR_TYPE_SCALAR && from->kind != MGLIR_TYPE_VECTOR) {
+        return -1;
+    }
+    if (!implicit_convert(from, to)) {
+        return -1;
+    }
+    if (to->scalar == MGLIR_SCALAR_UINT) {
+        return 1;
+    }
+    if (to->scalar == MGLIR_SCALAR_FLOAT || to->scalar == MGLIR_SCALAR_HALF) {
+        return 2;
+    }
+    if (to->scalar == MGLIR_SCALAR_DOUBLE) {
+        return 3;
+    }
+    return 1;
+}
+
 static const char *ir_type_str(const MGLIRType *t, char *buf, size_t cap)
 {
     if (!t) {
@@ -1547,6 +1578,7 @@ typedef enum {
     BI_RET_GENF,    /* float genType matching the gen args */
     BI_RET_GENI,    /* int/uint genType matching the gen args */
     BI_RET_SGENI,   /* always-signed int genType matching gen dim */
+    BI_RET_UGENI,   /* always-unsigned uint genType matching gen dim */
     BI_RET_BVEC,    /* bvec matching the gen args */
     BI_RET_VEC2,    /* vec2 */
     BI_RET_VEC3,    /* vec3 */
@@ -1769,8 +1801,10 @@ static const BiFn kBuiltins[] = {
     { "length",    1, { BI_ARG_GENF }, BI_RET_FLOAT },
     { "distance",  2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_FLOAT },
     { "dot",       2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_FLOAT },
-    { "floatBitsToInt", 1, { BI_ARG_GENF }, BI_RET_GENI },
-    { "floatBitsToUint", 1, { BI_ARG_GENF }, BI_RET_GENI },
+    { "floatBitsToInt", 1, { BI_ARG_GENF }, BI_RET_SGENI },
+    { "floatBitsToUint", 1, { BI_ARG_GENF }, BI_RET_UGENI },
+    { "intBitsToFloat", 1, { BI_ARG_GENI }, BI_RET_GENF },
+    { "uintBitsToFloat", 1, { BI_ARG_GENI }, BI_RET_GENF },
     { "abs",       1, { BI_ARG_GENI }, BI_RET_GENI },
     { "abs",       1, { BI_ARG_GENF }, BI_RET_GENF },
     { "lessThanEqual", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_BVEC },
@@ -2216,6 +2250,9 @@ static MGLIRType *builtin_call_type(const char *name,
         case BI_RET_SGENI:
             return gen_dim > 1 ? mglIRTypeVector(MGLIR_SCALAR_INT, gen_dim)
                                : mglIRTypeScalar(MGLIR_SCALAR_INT);
+        case BI_RET_UGENI:
+            return gen_dim > 1 ? mglIRTypeVector(MGLIR_SCALAR_UINT, gen_dim)
+                               : mglIRTypeScalar(MGLIR_SCALAR_UINT);
         case BI_RET_FLOAT:
             return mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
         case BI_RET_UINT:
@@ -3303,26 +3340,20 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             return scratch_type(s,
                                 mglIRTypeScalar(MGLIR_SCALAR_INT));
         }
-        /* Look up the function; overload resolution is by arity. */
+        /* Look up the function; GLSL 4.00 overload resolution uses arity
+         * plus implicit conversion ranking (ARB_gpu_shader5). */
         Sym *sym = symtab_lookup(tab, e->u.call.name);
         if (sym && sym->kind == SYM_FUNCTION) {
-            Sym *hit = NULL;
-            for (Sym *c = sym; c; c = c->next) {
-                if (c->kind == SYM_FUNCTION &&
-                    strcmp(c->name, e->u.call.name) == 0 &&
-                    c->param_count == e->u.call.arg_count) {
-                    hit = c;
-                    break;
+            MGLIRType **argt = NULL;
+            if (e->u.call.arg_count) {
+                argt = (MGLIRType **)calloc(e->u.call.arg_count,
+                                            sizeof(MGLIRType *));
+                if (!argt) {
+                    return NULL;
                 }
             }
-            if (!hit) {
-                sema_error(s, e->line, "function '%s' expects %u argument(s), got %u",
-                           e->u.call.name, sym->param_count, e->u.call.arg_count);
-                return NULL;
-            }
-            sym = hit;
             for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
-                MGLIRType *at = check_expr(s, tab, e->u.call.args[i]);
+                argt[i] = check_expr(s, tab, e->u.call.args[i]);
                 if (aoa_partial_find(s, e->u.call.args[i]) &&
                     user_param_is_out(s, e->u.call.name,
                                       e->u.call.arg_count, i)) {
@@ -3330,16 +3361,62 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                                "sub-array of an array of arrays as an out "
                                "argument is not supported");
                 }
-                if (at && sym->param_types && sym->param_types[i]) {
-                    if (!check_assign_op(sym->param_types[i], at)) {
-                        sema_error(s, e->line, "argument %u of '%s' expects %s, got %s",
-                                   i + 1, e->u.call.name,
-                                   ir_type_str(sym->param_types[i], ta, sizeof(ta)),
-                                   ir_type_str(at, tb, sizeof(tb)));
+            }
+            Sym *hit = NULL;
+            int best_max = 0, best_sum = 0, best_exact = -1;
+            for (Sym *c = sym; c; c = c->next) {
+                if (c->kind != SYM_FUNCTION ||
+                    strcmp(c->name, e->u.call.name) != 0 ||
+                    c->param_count != e->u.call.arg_count) {
+                    continue;
+                }
+                int maxr = 0, sum = 0, exact = 0, ok = 1;
+                for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
+                    if (!argt[i] || !c->param_types || !c->param_types[i]) {
+                        ok = 0;
+                        break;
+                    }
+                    int r = overload_conv_rank(argt[i], c->param_types[i]);
+                    if (r < 0) {
+                        ok = 0;
+                        break;
+                    }
+                    if (r == 0) {
+                        exact++;
+                    }
+                    sum += r;
+                    if (r > maxr) {
+                        maxr = r;
                     }
                 }
+                if (!ok) {
+                    continue;
+                }
+                int better = 0;
+                if (!hit) {
+                    better = 1;
+                } else if (maxr < best_max) {
+                    better = 1;
+                } else if (maxr == best_max && sum < best_sum) {
+                    better = 1;
+                } else if (maxr == best_max && sum == best_sum &&
+                           exact > best_exact) {
+                    better = 1;
+                }
+                if (better) {
+                    hit = c;
+                    best_max = maxr;
+                    best_sum = sum;
+                    best_exact = exact;
+                }
             }
-            return sym->ret_type;
+            free(argt);
+            if (!hit) {
+                sema_error(s, e->line, "no matching overload of '%s'",
+                           e->u.call.name);
+                return NULL;
+            }
+            return hit->ret_type;
         }
         /* A local variable may shadow a function of the same name
          * (Mojang's notGamma pattern); fall back to the module's
@@ -4107,19 +4184,30 @@ static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
         int is_overload = 0;
         int is_redef = 0;
         if (prev && prev->kind == SYM_FUNCTION) {
-            if (prev->param_count != d->param_count) {
-                is_overload = 1;
-            } else {
-                int match = ir_type_equal(prev->ret_type, sym->ret_type);
+            int same_sig = 0;
+            for (Sym *c = prev; c; c = c->next) {
+                if (c->kind != SYM_FUNCTION ||
+                    strcmp(c->name, d->name) != 0 ||
+                    c->param_count != d->param_count) {
+                    continue;
+                }
+                int match = ir_type_equal(c->ret_type, sym->ret_type);
                 for (uint32_t i = 0; match && i < d->param_count; i++) {
-                    if (!ir_type_equal(prev->param_types[i],
+                    if (!ir_type_equal(c->param_types[i],
                                       sym->param_types[i])) {
                         match = 0;
                     }
                 }
                 if (match) {
-                    is_redef = 1;
+                    same_sig = 1;
+                    prev = c;
+                    break;
                 }
+            }
+            if (same_sig) {
+                is_redef = 1;
+            } else {
+                is_overload = 1;
             }
         }
         if (is_redef) {

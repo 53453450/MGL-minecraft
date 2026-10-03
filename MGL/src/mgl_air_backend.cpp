@@ -269,6 +269,95 @@ const MGLIRSymbol *findSymbol(const MGLIRModule *mod, const char *name) {
     return nullptr;
 }
 
+static std::string userFnKey(const char *name, uint32_t n,
+                             MGLIRType *const *pts)
+{
+    std::string k = std::string(name ? name : "") + "#" + std::to_string(n);
+    for (uint32_t i = 0; i < n; i++) {
+        const MGLIRType *t = pts ? pts[i] : nullptr;
+        k += '_';
+        if (!t) {
+            k += 'x';
+            continue;
+        }
+        char s = 'f';
+        if (t->scalar == MGLIR_SCALAR_INT) s = 'i';
+        else if (t->scalar == MGLIR_SCALAR_UINT) s = 'u';
+        else if (t->scalar == MGLIR_SCALAR_BOOL) s = 'b';
+        k += s;
+        if (t->kind == MGLIR_TYPE_VECTOR) {
+            k += 'v';
+            k += (char)('0' + (t->cols % 10));
+        }
+    }
+    return k;
+}
+
+static int astTypeMatchesIR(const MGLTypeSpec *t, const MGLIRType *ir)
+{
+    if (!t || !ir) return 0;
+    MGLIRScalar sc = MGLIR_SCALAR_FLOAT;
+    switch (t->base) {
+    case MGL_AST_TYPE_INT: sc = MGLIR_SCALAR_INT; break;
+    case MGL_AST_TYPE_UINT: sc = MGLIR_SCALAR_UINT; break;
+    case MGL_AST_TYPE_BOOL: sc = MGLIR_SCALAR_BOOL; break;
+    case MGL_AST_TYPE_DOUBLE: sc = MGLIR_SCALAR_DOUBLE; break;
+    default: break;
+    }
+    if (ir->scalar != sc) return 0;
+    if (t->vec_size > 1)
+        return ir->kind == MGLIR_TYPE_VECTOR &&
+               ir->cols == (uint32_t)t->vec_size;
+    return ir->kind == MGLIR_TYPE_SCALAR;
+}
+
+static int mtypeConvRank(const MType &from, const MGLIRType *to)
+{
+    if (!to) return -1;
+    if (to->kind == MGLIR_TYPE_VECTOR) {
+        if (from.vec != to->cols) return -1;
+    } else if (to->kind == MGLIR_TYPE_SCALAR) {
+        if (from.vec != 0) return -1;
+    } else {
+        return -1;
+    }
+    if (from.scalar == to->scalar) return 0;
+    auto rnk = [](MGLIRScalar s) -> int {
+        if (s == MGLIR_SCALAR_INT) return 0;
+        if (s == MGLIR_SCALAR_UINT) return 1;
+        if (s == MGLIR_SCALAR_FLOAT || s == MGLIR_SCALAR_HALF) return 2;
+        if (s == MGLIR_SCALAR_DOUBLE) return 3;
+        return -1;
+    };
+    int fi = rnk(from.scalar), ti = rnk(to->scalar);
+    if (fi < 0 || ti < 0 || fi > ti) return -1;
+    return ti;
+}
+
+static const MGLIRSymbol *fnSymForDecl(const MGLIRModule *mod, const MGLDecl *d)
+{
+    if (!mod || !d || !d->name) return nullptr;
+    for (uint32_t i = 0; i < mod->symbol_count; i++) {
+        const MGLIRSymbol *fs = mod->symbols[i];
+        if (!fs || !fs->is_function || !fs->name ||
+            strcmp(fs->name, d->name) != 0 ||
+            fs->param_count != d->param_count)
+            continue;
+        int ok = 1;
+        for (uint32_t p = 0; p < d->param_count; p++) {
+            if (!d->params[p] ||
+                !astTypeMatchesIR(d->params[p]->type,
+                                  fs->param_types ? fs->param_types[p]
+                                                  : nullptr)) {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok) return fs;
+    }
+    return nullptr;
+}
+
 bool swizzleIndices(const char *field, std::vector<uint32_t> *out) {
     static const char *valid = "xyzwrgba";
     out->clear();
@@ -8367,8 +8456,47 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
         /* User-defined function call. */
         if (cg.userFns || cg.userFnDecls) {
-            std::string key = std::string(name) + "#" +
-                              std::to_string(e->u.call.arg_count);
+            const MGLIRSymbol *chosen = nullptr;
+            if (mod) {
+                int best_max = 0, best_sum = 0, best_exact = -1;
+                std::vector<MType> argt(e->u.call.arg_count);
+                for (uint32_t i = 0; i < e->u.call.arg_count; i++)
+                    argt[i] = exprType(cg, e->u.call.args[i], mod, locals);
+                for (uint32_t si = 0; si < mod->symbol_count; si++) {
+                    const MGLIRSymbol *fs = mod->symbols[si];
+                    if (!fs || !fs->is_function || !fs->name ||
+                        strcmp(fs->name, name) != 0 ||
+                        fs->param_count != e->u.call.arg_count)
+                        continue;
+                    int maxr = 0, sum = 0, exact = 0, ok = 1;
+                    for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
+                        int r = mtypeConvRank(
+                            argt[i],
+                            fs->param_types ? fs->param_types[i] : nullptr);
+                        if (r < 0) {
+                            ok = 0;
+                            break;
+                        }
+                        if (r == 0) exact++;
+                        sum += r;
+                        if (r > maxr) maxr = r;
+                    }
+                    if (!ok) continue;
+                    int better = !chosen || maxr < best_max ||
+                                 (maxr == best_max && sum < best_sum) ||
+                                 (maxr == best_max && sum == best_sum &&
+                                  exact > best_exact);
+                    if (better) {
+                        chosen = fs;
+                        best_max = maxr;
+                        best_sum = sum;
+                        best_exact = exact;
+                    }
+                }
+            }
+            std::string key = chosen
+                ? userFnKey(name, chosen->param_count, chosen->param_types)
+                : userFnKey(name, e->u.call.arg_count, nullptr);
             /* Prefer inlining when a decl is registered in userFnDecls
              * (GS/TCS/compute always; any stage when a param is out/inout
              * so by-value LLVM calls cannot lose write-back). */
@@ -9725,6 +9853,11 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                    strcmp(name, "floatBitsToUint") == 0) {
             t.scalar = strcmp(name, "floatBitsToUint") == 0
                 ? MGLIR_SCALAR_UINT : MGLIR_SCALAR_INT;
+            if (e->u.call.arg_count > 0)
+                t.vec = exprType(cg, e->u.call.args[0], mod, locals).vec;
+        } else if (strcmp(name, "intBitsToFloat") == 0 ||
+                   strcmp(name, "uintBitsToFloat") == 0) {
+            t.scalar = MGLIR_SCALAR_FLOAT;
             if (e->u.call.arg_count > 0)
                 t.vec = exprType(cg, e->u.call.args[0], mod, locals).vec;
         } else if (strcmp(name, "length") == 0 ||
@@ -12329,20 +12462,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     force_inline = 1;
             }
             if (isGS || isCompute || isTCS || force_inline) {
-                std::string key = std::string(d->name) + "#" +
-                                  std::to_string(d->param_count);
+                const MGLIRSymbol *ks = fnSymForDecl(&mod, d);
+                std::string key = ks
+                    ? userFnKey(d->name, ks->param_count, ks->param_types)
+                    : userFnKey(d->name, d->param_count, nullptr);
                 userFnDecls[key] = d;
             }
         }
-        const MGLIRSymbol *fs = nullptr;
-        for (uint32_t k = 0; k < mod.symbol_count; k++) {
-            if (mod.symbols[k]->is_function &&
-                strcmp(mod.symbols[k]->name, d->name) == 0 &&
-                mod.symbols[k]->param_count == d->param_count) {
-                fs = mod.symbols[k];
-                break;
-            }
-        }
+        const MGLIRSymbol *fs = fnSymForDecl(&mod, d);
         if (!fs) continue;
         /* GS/TCS/compute, or helpers with aggregate return: inline only. */
         if (isGS || isCompute || isTCS)
@@ -12417,8 +12544,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             pts.push_back(cg.bufferPtr->getType());
         for (const auto &kv : cg.outPtrs)
             pts.push_back(kv.second->getType());
-        std::string key = std::string(d->name) + "#" +
-                          std::to_string(fs->param_count);
+        std::string key = userFnKey(d->name, fs->param_count, fs->param_types);
         userFnHidden[key] = (uint32_t)pts.size() - nExplicit;
         if (!rt && mgl_env_flag_enabled("MGL_GS_TRACE")) {
             fprintf(stderr, "MGLGSTRACE site3 NULL rt fn=%s params=%u isGS=%d\n",
@@ -12429,15 +12555,18 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::FunctionType::get(rt, pts, false),
             llvm::Function::ExternalLinkage,
             (std::string("mgl_fn_") + d->name + "_" +
-             std::to_string(fs->param_count)),
+             std::to_string(fs->param_count) + "_" +
+             userFnKey("", fs->param_count, fs->param_types)),
             &module);
         userFns[key] = f;
     }
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         MGLDecl *d = tu->decls[i];
         if (!d->name || !d->body || strcmp(d->name, "main") == 0) continue;
-        auto it = userFns.find(std::string(d->name) + "#" +
-                               std::to_string(d->param_count));
+        const MGLIRSymbol *bfs = fnSymForDecl(&mod, d);
+        if (!bfs) continue;
+        auto it = userFns.find(userFnKey(d->name, bfs->param_count,
+                                         bfs->param_types));
         if (it == userFns.end()) continue;
         llvm::Function *f = it->second;
         llvm::BasicBlock *entry =

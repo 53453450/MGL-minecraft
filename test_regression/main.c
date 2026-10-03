@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 182
+#define MAX_TESTS 183
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -20680,6 +20680,86 @@ static int test_gpu_shader5_gather_offset_vs(unsigned char *pixels,
     return 0;
 }
 
+/* ARB_gpu_shader5: same-arity overloads + bit-encode builtins + precise. */
+static int test_gpu_shader5_overloading(unsigned char *pixels,
+                                        const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs_ovl =
+        "#version 150\n"
+        "#extension GL_ARB_gpu_shader5 : require\n"
+        "uniform ivec4 u1;\n"
+        "uniform uvec4 u2;\n"
+        "out vec4 result;\n"
+        "vec4 f(in vec4 a, in vec4 b) { return a * b; }\n"
+        "vec4 f(in uvec4 a, in uvec4 b) { return vec4(a - b); }\n"
+        "void main() {\n"
+        "    result = f(u1, u2);\n"
+        "    gl_Position = vec4(0.0);\n"
+        "}\n";
+    GLuint s = compile_shader(GL_VERTEX_SHADER, vs_ovl);
+    if (!s) {
+        fprintf(stderr, "gpu_shader5_overloading: f() compile failed\n");
+        return 1;
+    }
+    glDeleteShader(s);
+
+    static const char *vs_bits =
+        "#version 150\n"
+        "#extension GL_ARB_gpu_shader5 : require\n"
+        "uniform int expected_value;\n"
+        "uniform float value;\n"
+        "out vec4 result;\n"
+        "void main() {\n"
+        "    result = vec4(1.0);\n"
+        "    int ret_val = floatBitsToInt(value);\n"
+        "    if (expected_value != ret_val) result = vec4(0.0);\n"
+        "    float back = intBitsToFloat(ret_val);\n"
+        "    uint ub = floatBitsToUint(value);\n"
+        "    float ubf = uintBitsToFloat(ub);\n"
+        "    if (back != value || ubf != value) result = vec4(0.0);\n"
+        "    gl_Position = vec4(0.0);\n"
+        "}\n";
+    s = compile_shader(GL_VERTEX_SHADER, vs_bits);
+    if (!s) {
+        fprintf(stderr, "gpu_shader5_overloading: bits compile failed\n");
+        return 1;
+    }
+    glDeleteShader(s);
+
+    static const char *vs_pr =
+        "#version 150\n"
+        "#extension GL_ARB_gpu_shader5 : require\n"
+        "layout(location = 0) in vec4 positions;\n"
+        "layout(location = 1) in vec4 weights;\n"
+        "out vec4 weightedSum;\n"
+        "void eval(in vec4 p, in vec4 w, precise out float result) {\n"
+        "    result = (p.x*w.x + p.y*w.y) + (p.z*w.z + p.w*w.w);\n"
+        "}\n"
+        "float eval(in vec4 p, in vec4 w) {\n"
+        "    precise float result = (p.x*w.x + p.y*w.y) + (p.z*w.z + p.w*w.w);\n"
+        "    return result;\n"
+        "}\n"
+        "void main() {\n"
+        "    eval(positions, weights, weightedSum.x);\n"
+        "    weightedSum.y = eval(positions, weights);\n"
+        "    precise float result = 0.0;\n"
+        "    result = (positions.x * weights.x + positions.y * weights.y) +\n"
+        "             (positions.z * weights.z + positions.w * weights.w);\n"
+        "    weightedSum.z = result;\n"
+        "    weightedSum.w = result;\n"
+        "    gl_Position = vec4(0.0);\n"
+        "}\n";
+    s = compile_shader(GL_VERTEX_SHADER, vs_pr);
+    if (!s) {
+        fprintf(stderr, "gpu_shader5_overloading: precise compile failed\n");
+        return 1;
+    }
+    glDeleteShader(s);
+    return 0;
+}
+
 /* Table 8.12: SNORM formats are color-renderable (CR), so an R8_SNORM
  * color attachment is FRAMEBUFFER_COMPLETE and Clear is not IFO. */
 static int test_snorm_fbo_color_renderable(unsigned char *pixels,
@@ -26191,6 +26271,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("fma", test_fma),
     SELF_CHECK_TEST("gpu_shader5_gather_offset_vs",
                     test_gpu_shader5_gather_offset_vs),
+    SELF_CHECK_TEST("gpu_shader5_overloading", test_gpu_shader5_overloading),
     SELF_CHECK_TEST("snorm_fbo_color_renderable", test_snorm_fbo_color_renderable),
     SELF_CHECK_TEST("image_size", test_image_size),
     SELF_CHECK_TEST("image_size_tess_discard", test_image_size_tess_discard),

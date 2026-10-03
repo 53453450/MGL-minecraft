@@ -2321,7 +2321,7 @@ static int at_decl_start(MGLParser *p)
         "dmat2", "dmat3", "dmat4", "dmat2x2", "dmat2x3", "dmat2x4",
         "dmat3x2", "dmat3x3", "dmat3x4", "dmat4x2", "dmat4x3", "dmat4x4",
         "const", "uniform", "struct", "sampler2D", "samplerCube",
-        "flat", "smooth", "invariant", "lowp", "mediump", "highp",
+        "flat", "smooth", "invariant", "precise", "lowp", "mediump", "highp",
         "in", "out", "inout",
     };
     size_t i;
