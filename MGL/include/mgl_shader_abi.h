@@ -122,6 +122,7 @@ typedef struct MGLAIRStageInfo {
     uint32_t compute_local_size_x;
     uint32_t compute_local_size_y;
     uint32_t compute_local_size_z;
+    uint32_t shared_memory_bytes;
 } MGLAIRStageInfo;
 
 /* Fixed inter-stage record shared by VS capture, TCS, TES and the GS compute

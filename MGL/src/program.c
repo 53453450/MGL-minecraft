@@ -94,6 +94,7 @@ typedef struct MGLSavedLinkExecutable {
     GLboolean tess_eval_render_vertex;
     GLboolean tess_gen_mode_specified;
     struct { unsigned x, y, z; } local_workgroup_size;
+    GLuint shared_memory_bytes;
     GLint legacy_clip_plane_loc;
     GLint legacy_clip_plane_enabled_loc;
     uint8_t sampler_binding_shared[TEXTURE_UNITS];
@@ -144,6 +145,7 @@ static void mglCaptureLinkExecutable(Program *pptr, MGLSavedLinkExecutable *out)
     out->local_workgroup_size.x = pptr->local_workgroup_size.x;
     out->local_workgroup_size.y = pptr->local_workgroup_size.y;
     out->local_workgroup_size.z = pptr->local_workgroup_size.z;
+    out->shared_memory_bytes = pptr->shared_memory_bytes;
     out->legacy_clip_plane_loc = pptr->legacy_clip_plane_loc;
     out->legacy_clip_plane_enabled_loc = pptr->legacy_clip_plane_enabled_loc;
     memcpy(out->sampler_binding_shared, pptr->sampler_binding_shared,
@@ -215,6 +217,7 @@ static void mglRestoreSavedLinkExecutable(Program *pptr, MGLSavedLinkExecutable 
     pptr->local_workgroup_size.x = saved->local_workgroup_size.x;
     pptr->local_workgroup_size.y = saved->local_workgroup_size.y;
     pptr->local_workgroup_size.z = saved->local_workgroup_size.z;
+    pptr->shared_memory_bytes = saved->shared_memory_bytes;
     pptr->legacy_clip_plane_loc = saved->legacy_clip_plane_loc;
     pptr->legacy_clip_plane_enabled_loc = saved->legacy_clip_plane_enabled_loc;
     memcpy(pptr->sampler_binding_shared, saved->sampler_binding_shared,
@@ -1951,6 +1954,7 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->local_workgroup_size.z = stage_info.compute_local_size_z
                                            ? stage_info.compute_local_size_z
                                            : 1u;
+        pptr->shared_memory_bytes = stage_info.shared_memory_bytes;
     }
     pptr->modules[stage].metallib_bytes = bytes;
     pptr->modules[stage].metallib_size = size;

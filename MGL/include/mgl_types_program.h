@@ -333,6 +333,7 @@ typedef struct Program_t {
     struct {
         unsigned x, y, z;
     } local_workgroup_size;
+    GLuint shared_memory_bytes;
     GLuint tess_control_output_vertices;  /* from TCS layout(vertices=N) out; */
     /* Geometry shader execution route, decided at link time. */
     MGLGSRoute gs_route;

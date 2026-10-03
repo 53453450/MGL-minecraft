@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 196
+#define MAX_TESTS 197
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -7512,6 +7512,58 @@ cleanup:
     if (program) glDeleteProgram(program);
     if (ssbo) glDeleteBuffers(1, &ssbo);
     return result;
+}
+
+static int test_compute_shared_simple(unsigned char *pixels,
+                                      const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *cs =
+        "#version 430 core\n"
+        "layout(local_size_x = 8) in;\n"
+        "layout(std430, binding = 0) buffer Output { uint g_output[]; };\n"
+        "shared uint g_shared_data[8];\n"
+        "void main() {\n"
+        "    g_shared_data[gl_LocalInvocationID.x] = gl_LocalInvocationIndex;\n"
+        "    groupMemoryBarrier();\n"
+        "    barrier();\n"
+        "    g_output[gl_GlobalInvocationID.x] = 1u;\n"
+        "    if (gl_LocalInvocationIndex < 7u) {\n"
+        "        uint res = g_shared_data[gl_LocalInvocationID.x + 1u];\n"
+        "        if (res != (gl_LocalInvocationIndex + 1u))\n"
+        "            g_output[gl_GlobalInvocationID.x] = 0u;\n"
+        "    }\n"
+        "}\n";
+    GLuint program = link_compute_program(cs);
+    if (!program) {
+        fprintf(stderr, "compute_shared_simple: link failed\n");
+        return 1;
+    }
+    GLuint ssbo = 0;
+    GLuint data[8];
+    for (int i = 0; i < 8; i++)
+        data[i] = 0xffffu;
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(data), data, GL_DYNAMIC_COPY);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glUseProgram(program);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glFinish();
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(data), data);
+    int fail = 0;
+    for (int i = 0; i < 8; i++) {
+        if (data[i] != 1u) {
+            fprintf(stderr, "compute_shared_simple: data[%d]=%u want 1\n",
+                    i, data[i]);
+            fail = 1;
+        }
+    }
+    glDeleteProgram(program);
+    glDeleteBuffers(1, &ssbo);
+    return fail;
 }
 
 static int test_air_geometry_instancing(unsigned char *pixels,
@@ -27653,6 +27705,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_geometry_ssbo_visibility",
                     test_air_geometry_ssbo_visibility),
     SELF_CHECK_TEST("compute_dispatch_ssbo", test_compute_dispatch_ssbo),
+    SELF_CHECK_TEST("compute_shared_simple", test_compute_shared_simple),
     SELF_CHECK_TEST("air_pipeline_safe_fallback",
                     test_air_pipeline_safe_fallback),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),

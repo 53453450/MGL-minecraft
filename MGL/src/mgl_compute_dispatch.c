@@ -252,6 +252,7 @@ bool mglComputeRunDispatchOrchestrationLocked(
             .indirect_buffer = indirect_buffer,
             .indirect_offset = indirect_offset,
         };
+        executionPlan.threadgroup_memory_length = ptr->shared_memory_bytes;
         MGLRenderCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
         uint32_t copyBackEntryCount = mglRenderCollectCopyBackEntries(
             (const MGLRenderCopyBackEntry *)copyBacks.slots, kMGLMaxBufferSlots,

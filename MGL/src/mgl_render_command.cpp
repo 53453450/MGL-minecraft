@@ -1904,6 +1904,10 @@ int mglRenderEncodeComputeExecutionPlanForCommandBufferOwner(MGLCommandBufferOwn
 
     encoder->setComputePipelineState(
         static_cast<MTL::ComputePipelineState*>(plan->pipeline));
+    if (plan->threadgroup_memory_length) {
+        encoder->setThreadgroupMemoryLength(
+            static_cast<NS::UInteger>(plan->threadgroup_memory_length), 0);
+    }
     uint32_t nextDispatch = 0u;
     for (uint32_t i = 0; i <= plan->binding_op_count; i++) {
         while (nextDispatch < plan->dispatch_op_count &&

@@ -10989,6 +10989,39 @@ static bool translationUnitUsesRuntimeArrayLength(
     return false;
 }
 
+static uint32_t airSharedVarSize(const MGLIRType *ty)
+{
+    if (!ty)
+        return 0u;
+    uint32_t sz = 0u;
+    if (mglIRComputeLayout(const_cast<MGLIRType *>(ty),
+                           MGLIR_LAYOUT_STD430, &sz) != 0)
+        return 0u;
+    return sz;
+}
+
+static uint32_t airSharedMemoryBytes(const MGLIRModule *mod)
+{
+    if (!mod)
+        return 0u;
+    uint32_t bytes = 0u;
+    for (uint32_t si = 0; si < mod->symbol_count; si++) {
+        const MGLIRSymbol *ss = mod->symbols[si];
+        if (!ss || !ss->name || ss->is_function)
+            continue;
+        if (!(ss->qualifiers & MGL_AST_Q_SHARED))
+            continue;
+        uint32_t sz = airSharedVarSize(ss->type);
+        if (!sz)
+            continue;
+        bytes = (bytes + 15u) & ~15u;
+        bytes += sz;
+    }
+    if (bytes)
+        bytes = (bytes + 15u) & ~15u;
+    return bytes;
+}
+
 /* ---- legacy GLSL frontend wiring ----------------------
  *
  * The AIR frontend parses core-profile GLSL 4.50 only (mgl_glsl_lexer/parser/
@@ -11100,6 +11133,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          force_tes_compute ||
          has_gs);
     const bool isKernel = isCompute || isTCS || isGS || isTESCompute;
+    const uint32_t sharedMemoryBytes =
+        isCompute ? airSharedMemoryBytes(&mod) : 0u;
+    const bool hasSharedMem = sharedMemoryBytes > 0u;
     const bool usesCullDistance = isVS && !isCapture &&
                                   sourceUsesCullDistance;
     const bool usesPatchCullDistance =
@@ -11804,6 +11840,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         paramTys.push_back(llvm::Type::getInt32Ty(ctx));
     }
     else if (isKernel) {
+        if (hasSharedMem)
+            paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(3));
         paramTys.push_back(llvm::FixedVectorType::get(
             llvm::Type::getInt32Ty(ctx), 3));
         if (usesLocalInvocation && !isTCS) {
@@ -12025,6 +12063,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      * trail all buffers); fragment = [varyings..., buffer];
      * compute = [buffer, thread_position_in_grid]. */
     uint32_t argSlot = 0;
+    llvm::Value *sharedBlob = nullptr;
     if (isCapture)
         cg.captureBuf = fn->getArg(argSlot++);
     if (isVS && !isCapture) {
@@ -12348,6 +12387,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
     }
     else if (isKernel) {
+        if (hasSharedMem)
+            sharedBlob = fn->getArg(argSlot++);
         llvm::Value *pos = fn->getArg(argSlot++);
         if (isTCS) cg.invocationPos = pos;
         else cg.threadPos = pos;
@@ -12680,6 +12721,30 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             MType d;
             d.scalar = MGLIR_SCALAR_FLOAT;
             addOut("gl_FragDepth", d);
+        }
+    }
+
+    /* GLSL shared[] is a compute-kernel threadgroup buffer argument
+     * (AIR air.buffer + address_space 3). addrspace(3) alloca is still
+     * per-thread private on AGX. */
+    if (sharedBlob) {
+        uint32_t off = 0u;
+        for (uint32_t si = 0; si < mod.symbol_count; si++) {
+            const MGLIRSymbol *ss = mod.symbols[si];
+            if (!ss || !ss->name || ss->is_function) continue;
+            if (!(ss->qualifiers & MGL_AST_Q_SHARED)) continue;
+            MType st = typeFromIR(ss->type);
+            uint32_t sz = airSharedVarSize(ss->type);
+            if (!sz) continue;
+            off = (off + 15u) & ~15u;
+            llvm::Type *arrTy = llvmType(st, ctx);
+            llvm::Value *bytes = cg.b->CreateConstInBoundsGEP1_32(
+                llvm::Type::getInt8Ty(ctx), sharedBlob, off);
+            llvm::Value *ptr =
+                cg.b->CreateBitCast(bytes, arrTy->getPointerTo(3));
+            cg.arrayMem[ss->name] = ptr;
+            cg.arrayMemTypes[ss->name] = arrTy;
+            off += sz;
         }
     }
 
@@ -14672,6 +14737,31 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
     }
     if (isKernel) {
+        if (hasSharedMem) {
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.buffer"),
+                llvm::MDString::get(ctx, "air.location_index"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 0)),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 1)),
+                llvm::MDString::get(ctx, "air.read_write"),
+                llvm::MDString::get(ctx, "air.address_space"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 3)),
+                llvm::MDString::get(ctx, "air.arg_type_size"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), sharedMemoryBytes)),
+                llvm::MDString::get(ctx, "air.arg_type_align_size"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 16)),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uchar"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "mgl_shared")}));
+        }
         /* Kernel thread position: [[thread_position_in_grid]] as uint3. */
         uint32_t kSlot = mArgSlot;
         argNodes.push_back(llvm::MDNode::get(ctx, {
@@ -15388,6 +15478,7 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
         stage_info->compute_local_size_z =
             tu->layout_local_size_z > 0 ? (uint32_t)tu->layout_local_size_z
                                         : 1u;
+        stage_info->shared_memory_bytes = airSharedMemoryBytes(mod);
     }
 }
 

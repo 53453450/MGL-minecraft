@@ -1116,6 +1116,8 @@ typedef struct MGLRenderComputeExecutionPlan_t {
      * mglRenderEncodeComputeExecutionPlanForCommandBufferOwner then fences
      * every dispatch boundary instead of silently racing. */
     uint32_t dispatch_barrier_scope;
+    /* GLSL shared[] → Metal threadgroup(0). 0 means no threadgroup arg. */
+    uint64_t threadgroup_memory_length;
 } MGLRenderComputeExecutionPlan;
 
 /* Value-state barrier request. These values intentionally mirror Metal's
