@@ -460,9 +460,48 @@ static void mglSeedUniformInitializers(GLMContext ctx, Program *pptr)
                                  d->type->base == MGL_AST_TYPE_STRUCT))) {
                     continue;
                 }
-                uint32_t words[16];
+                GLint loc = mglGetUniformLocation(ctx, pptr->name, d->name);
+                if (loc < 0) {
+                    continue;
+                }
+                uint32_t words_local[16];
+                uint32_t *words = words_local;
+                uint32_t *words_heap = NULL;
                 uint32_t base = 0u;
-                uint32_t n = mglEvalConstUniformInit(d->init, words, &base);
+                uint32_t n = 0u;
+                if (d->init->kind == MGL_EXPR_INIT_LIST) {
+                    n = d->init->u.init_list.arg_count;
+                    if (n == 0u) {
+                        continue;
+                    }
+                    if (n > 16u) {
+                        words_heap = (uint32_t *)calloc(n, sizeof(uint32_t));
+                        if (!words_heap) {
+                            continue;
+                        }
+                        words = words_heap;
+                    }
+                    int ok = 1;
+                    for (uint32_t ei = 0u; ei < n; ei++) {
+                        uint32_t tmp[16];
+                        uint32_t ab = 0u;
+                        if (mglEvalConstUniformInit(
+                                d->init->u.init_list.args[ei], tmp, &ab) != 1u) {
+                            ok = 0;
+                            break;
+                        }
+                        if (ei == 0u) {
+                            base = ab;
+                        }
+                        words[ei] = tmp[0];
+                    }
+                    if (!ok) {
+                        free(words_heap);
+                        continue;
+                    }
+                } else {
+                    n = mglEvalConstUniformInit(d->init, words, &base);
+                }
                 if (n == 0u) {
                     static int s_seedFailLogged;
                     if (!s_seedFailLogged) {
@@ -473,13 +512,11 @@ static void mglSeedUniformInitializers(GLMContext ctx, Program *pptr)
                                 d->name, (unsigned)pptr->name);
                         s_seedFailLogged = 1;
                     }
-                    continue;
-                }
-                GLint loc = mglGetUniformLocation(ctx, pptr->name, d->name);
-                if (loc < 0) {
+                    free(words_heap);
                     continue;
                 }
                 const int is_array = (d->array_count > 0u) ||
+                    (d->init && d->init->kind == MGL_EXPR_INIT_LIST) ||
                     (d->init && d->init->kind == MGL_EXPR_CALL &&
                      d->init->u.call.is_array_ctor);
                 switch (base) {
@@ -534,6 +571,7 @@ static void mglSeedUniformInitializers(GLMContext ctx, Program *pptr)
                 default:
                     break;
                 }
+                free(words_heap);
             }
         }
     }

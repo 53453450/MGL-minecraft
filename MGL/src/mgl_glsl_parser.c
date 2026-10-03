@@ -1937,6 +1937,21 @@ static int eval_const_val(MGLParser *p, const MGLExpr *e, MGLConstVal *out)
         return const_val_from_int(out, e->u.literal.base, (int64_t)e->u.literal.value);
     case MGL_EXPR_VAR_REF: {
         int64_t v = 0;
+        if (e->u.var_ref.name &&
+            strcmp(e->u.var_ref.name, "gl_WorkGroupSize") == 0 && p->tu) {
+            /* GLSL 4.60 §7.1: gl_WorkGroupSize is a compile-time uvec3
+             * from layout(local_size_*); unspecified axes are 1. */
+            out->base = MGL_AST_TYPE_UINT;
+            out->size = 3;
+            out->v[0] = p->tu->layout_local_size_x > 0
+                ? (double)p->tu->layout_local_size_x : 1.0;
+            out->v[1] = p->tu->layout_local_size_y > 0
+                ? (double)p->tu->layout_local_size_y : 1.0;
+            out->v[2] = p->tu->layout_local_size_z > 0
+                ? (double)p->tu->layout_local_size_z : 1.0;
+            out->v[3] = 0.0;
+            return 1;
+        }
         if (!lookup_const_int(p, e->u.var_ref.name, &v)) {
             return 0;
         }

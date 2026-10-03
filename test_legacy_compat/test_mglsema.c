@@ -822,6 +822,17 @@ static void test_compute_compile_errors(void)
                MGL_STAGE_COMPUTE, &module, &errors, &error_count);
     CHECK(error_count == 0, "legal compute still accepted");
     teardown();
+
+    analyze_ex("#version 430 core\n"
+               "layout(local_size_x = 2, local_size_y = 3, local_size_z = 4) in;\n"
+               "layout(std430, binding = 0) buffer Output {\n"
+               "  uint g_buffer[22 + gl_WorkGroupSize.x];\n"
+               "};\n"
+               "shared uint g_shared[gl_WorkGroupSize.x * gl_WorkGroupSize.y * gl_WorkGroupSize.z];\n"
+               "void main() { g_buffer[0] = g_shared[0]; }\n",
+               MGL_STAGE_COMPUTE, &module, &errors, &error_count);
+    CHECK(error_count == 0, "gl_WorkGroupSize is a constant expression");
+    teardown();
 }
 
 int main(void)
