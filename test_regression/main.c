@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 213
+#define MAX_TESTS 214
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -23462,6 +23462,54 @@ static int test_image_size_version_gate(unsigned char *pixels, const char *out_p
     return 0;
 }
 
+/* GLSL 4.60 §8.12 imageAtomicCompSwap: returns the original texel. */
+static int test_image_atomic_compswap(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *cs =
+        "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(r32ui, binding = 0) uniform uimage2D img;\n"
+        "layout(std430, binding = 0) buffer Out { uint v[2]; };\n"
+        "void main() {\n"
+        "  v[0] = imageAtomicCompSwap(img, ivec2(0, 0), 0u, 7u);\n"
+        "  v[1] = imageAtomicCompSwap(img, ivec2(0, 0), 7u, 9u);\n"
+        "}\n";
+    GLuint prog = link_compute_program(cs);
+    if (!prog) {
+        fprintf(stderr, "image_atomic_compswap: link failed\n");
+        return 1;
+    }
+    GLuint tex = 0, ssbo = 0;
+    GLuint zero = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, 1, 1, 0, GL_RED_INTEGER,
+                 GL_UNSIGNED_INT, &zero);
+    glBindImageTexture(0, tex, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32UI);
+    GLuint outv[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(outv), outv, GL_DYNAMIC_COPY);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glUseProgram(prog);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glFinish();
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(outv), outv);
+    glDeleteProgram(prog);
+    glDeleteBuffers(1, &ssbo);
+    glDeleteTextures(1, &tex);
+    if (outv[0] != 0u || outv[1] != 7u) {
+        fprintf(stderr, "image_atomic_compswap: got %u %u\n", outv[0], outv[1]);
+        return 1;
+    }
+    return 0;
+}
+
 /* CTS shader_image_size TES/TCS uses GL_RASTERIZER_DISCARD + point_mode.
  * TES-vertex raster must still evaluate TES (imageStore). */
 static int test_image_size_tess_discard(unsigned char *pixels, const char *out_path)
@@ -29068,6 +29116,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("snorm_fbo_color_renderable", test_snorm_fbo_color_renderable),
     SELF_CHECK_TEST("image_size", test_image_size),
     SELF_CHECK_TEST("image_size_version_gate", test_image_size_version_gate),
+    SELF_CHECK_TEST("image_atomic_compswap", test_image_atomic_compswap),
     SELF_CHECK_TEST("image_size_tess_discard", test_image_size_tess_discard),
     SELF_CHECK_TEST("large_uniform_array", test_large_uniform_array),
     SELF_CHECK_TEST("high_uniform_location", test_high_uniform_location),

@@ -7241,23 +7241,29 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (!data) return nullptr;
             data = coerceScalar(cg, data,
                                 isUint ? MGLIR_SCALAR_UINT : MGLIR_SCALAR_INT);
+            llvm::Value *compare = nullptr;
+            if (isCompSwap) {
+                compare = data;
+                data = emitExpr(cg, e->u.call.args[dataArg + 1], mod, locals);
+                if (!data) return nullptr;
+                data = coerceScalar(cg, data,
+                                    isUint ? MGLIR_SCALAR_UINT
+                                           : MGLIR_SCALAR_INT);
+            }
 
-            /* Native Metal texture atomics exist for 1D/2D/3D/array/buffer.
-             * CompSwap, multisample, and cube kinds have no correct atomic
-             * lowering here — refuse rather than emit racy RMW (A05). */
+            /* Native Metal texture atomics exist for 1D/2D/3D/array/buffer,
+             * including compare-exchange (AIR
+             * air.atomic_compare_exchange_weak_explicit_texture_*).
+             * Multisample and cube kinds have no matching AIR backing. */
             const bool useNative =
-                !isCompSwap && !isMsImage &&
+                !isMsImage &&
                 (tk == MGLIR_TEX_1D || tk == MGLIR_TEX_BUFFER ||
                  tk == MGLIR_TEX_2D || tk == MGLIR_TEX_2D_RECT ||
                  tk == MGLIR_TEX_1D_ARRAY || tk == MGLIR_TEX_2D_ARRAY ||
                  tk == MGLIR_TEX_3D);
             if (!useNative) {
                 cg.err = 1;
-                if (isCompSwap) {
-                    cg.errmsg =
-                        "codegen: imageAtomicCompSwap is not supported "
-                        "(no native texture compare-exchange)";
-                } else if (isMsImage) {
+                if (isMsImage) {
                     cg.errmsg =
                         "codegen: imageAtomic* on multisample images is "
                         "not supported";
@@ -7269,7 +7275,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return nullptr;
             }
             const char *opStem = nullptr;
-            if (strcmp(name, "imageAtomicAdd") == 0)
+            if (isCompSwap)
+                opStem = "atomic_compare_exchange_weak";
+            else if (strcmp(name, "imageAtomicAdd") == 0)
                 opStem = "atomic_fetch_add";
             else if (strcmp(name, "imageAtomicMin") == 0)
                 opStem = "atomic_fetch_min";
@@ -7288,15 +7296,17 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 cg.errmsg = "codegen: unsupported imageAtomic op";
                 return nullptr;
             }
-            llvm::Value *dataV4 = llvm::UndefValue::get(v4i32);
-            dataV4 = cg.b->CreateInsertElement(dataV4, data,
-                                               cg.b->getInt32(0));
-            dataV4 = cg.b->CreateInsertElement(dataV4, cg.b->getInt32(0),
-                                               cg.b->getInt32(1));
-            dataV4 = cg.b->CreateInsertElement(dataV4, cg.b->getInt32(0),
-                                               cg.b->getInt32(2));
-            dataV4 = cg.b->CreateInsertElement(dataV4, cg.b->getInt32(0),
-                                               cg.b->getInt32(3));
+            auto packV4 = [&](llvm::Value *x) -> llvm::Value * {
+                llvm::Value *v = llvm::UndefValue::get(v4i32);
+                v = cg.b->CreateInsertElement(v, x, cg.b->getInt32(0));
+                v = cg.b->CreateInsertElement(v, cg.b->getInt32(0),
+                                              cg.b->getInt32(1));
+                v = cg.b->CreateInsertElement(v, cg.b->getInt32(0),
+                                              cg.b->getInt32(2));
+                return cg.b->CreateInsertElement(v, cg.b->getInt32(0),
+                                                 cg.b->getInt32(3));
+            };
+            llvm::Value *dataV4 = packV4(data);
             llvm::Value *zero2 = llvm::ConstantVector::get(
                 {cg.b->getInt32(0), cg.b->getInt32(0)});
             llvm::Value *zero3 = llvm::ConstantVector::get(
@@ -7308,6 +7318,32 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return std::string("air.") + opStem + "_explicit_" + dim +
                        (isUint ? ".u.v4i32" : ".s.v4i32");
             };
+            if (isCompSwap) {
+                llvm::Function *fn = cg.b->GetInsertBlock()->getParent();
+                llvm::BasicBlock &entry = fn->getEntryBlock();
+                llvm::IRBuilder<> eb(&entry, entry.begin());
+                llvm::AllocaInst *exp =
+                    eb.CreateAlloca(v4i32, nullptr, "cmpxchg.expected");
+                cg.b->CreateStore(packV4(compare), exp);
+                llvm::Type *i1 = cg.b->getInt1Ty();
+                if (tk == MGLIR_TEX_3D) {
+                    (void)callAirFn(cg, airName("texture_3d").c_str(), i1,
+                                    {tex, coord3, zero3, exp, dataV4, order,
+                                     order, access});
+                } else if (tk == MGLIR_TEX_2D_ARRAY ||
+                           tk == MGLIR_TEX_1D_ARRAY) {
+                    (void)callAirFn(
+                        cg, airName("texture_2d_array").c_str(), i1,
+                        {tex, coord2, layerOrFace, zero2, exp, dataV4, order,
+                         order, access});
+                } else {
+                    (void)callAirFn(cg, airName("texture_2d").c_str(), i1,
+                                    {tex, coord2, zero2, exp, dataV4, order,
+                                     order, access});
+                }
+                llvm::Value *oldV4 = cg.b->CreateLoad(v4i32, exp);
+                return cg.b->CreateExtractElement(oldV4, cg.b->getInt32(0));
+            }
             llvm::Value *oldV4 = nullptr;
             if (tk == MGLIR_TEX_3D) {
                 oldV4 = callAirFn(cg, airName("texture_3d").c_str(), v4i32,
