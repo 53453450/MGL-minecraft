@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 193
+#define MAX_TESTS 194
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -21593,6 +21593,38 @@ static int test_cross_stage_binding_mismatch(unsigned char *pixels, const char *
     return 0;
 }
 
+/* GLSL grammar: `int;` and `int ,a;` are legal declarations. */
+static int test_glsl_empty_declarator(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() { gl_Position = vec4(0.0); }\n";
+    static const char *fs_empty =
+        "#version 330 core\n"
+        "layout(location=0) out vec4 c;\n"
+        "void main() { int; c = vec4(1.0); }\n";
+    static const char *fs_comma =
+        "#version 330 core\n"
+        "layout(location=0) out vec4 c;\n"
+        "void main() { int ,a; a = 1; c = vec4(float(a)); }\n";
+    GLuint p0 = link_program(vs, fs_empty);
+    GLuint p1 = link_program(vs, fs_comma);
+    int fail = 0;
+    if (!p0) {
+        fprintf(stderr, "glsl_empty_declarator: int; failed\n");
+        fail = 1;
+    }
+    if (!p1) {
+        fprintf(stderr, "glsl_empty_declarator: int ,a; failed\n");
+        fail = 1;
+    }
+    if (p0) glDeleteProgram(p0);
+    if (p1) glDeleteProgram(p1);
+    return fail;
+}
+
 /* ARB_shading_language_420pack: scalar.xxxx is vec4. */
 static int test_scalar_swizzle(unsigned char *pixels, const char *out_path)
 {
@@ -27232,6 +27264,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("sampler_array_size1", test_sampler_array_size1),
     SELF_CHECK_TEST("atomic_uint_default_offset", test_atomic_uint_default_offset),
     SELF_CHECK_TEST("cross_stage_binding_mismatch", test_cross_stage_binding_mismatch),
+    SELF_CHECK_TEST("glsl_empty_declarator", test_glsl_empty_declarator),
     SELF_CHECK_TEST("scalar_swizzle", test_scalar_swizzle),
     SELF_CHECK_TEST("snorm_fbo_color_renderable", test_snorm_fbo_color_renderable),
     SELF_CHECK_TEST("image_size", test_image_size),

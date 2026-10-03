@@ -4647,6 +4647,11 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             mglIRTypeDestroy(t);
             return;
         }
+        if (!d->name &&
+            !(d->struct_members && d->struct_member_count > 0)) {
+            mglIRTypeDestroy(t);
+            return;
+        }
     }
     /* Anonymous blocks (uniform DrawColor { ... }; with no instance name)
      * take their interface name from the block type name; their members

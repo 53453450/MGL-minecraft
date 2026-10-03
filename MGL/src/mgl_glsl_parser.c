@@ -2860,28 +2860,25 @@ more_qualifiers:
     parse_array_specifier_list(p, d);
     uint32_t type_prefix_dims = d->array_count;
 
-    /* GLSL 4.60 §4.4.6: `layout(binding=N, offset=M) uniform atomic_uint;`
-     * has no variable; it only sets the default offset for that binding. */
-    if (!at_any_ident(p) && ops_at(p, ";") && d->type &&
-        d->type->base == MGL_AST_TYPE_ATOMIC_UINT) {
+    /* GLSL 4.60 grammar: single_declaration may be only a fully specified
+     * type (`int;`) or a type followed by a leading comma (`int ,a;`).
+     * Nameless `uniform atomic_uint;` is the same production. */
+    if (at_any_ident(p)) {
+        d->name = dup_current(p);
+        advance(p);
+        parse_array_specifier_list(p, d);
+        order_type_prefix_dims(d, type_prefix_dims);
+    } else if (ops_at(p, ";")) {
         expect_punct(p, ";");
         return d;
-    }
-
-    if (!at_any_ident(p)) {
+    } else if (!ops_at(p, ",")) {
         parse_error(p, "expected identifier at line %u", tk_line(p));
         free_decl(d);
         return NULL;
     }
-    d->name = dup_current(p);
-    advance(p);
-
-    /* declarator postfix array dims: `float x[3]` / `float[2] x[3]` */
-    parse_array_specifier_list(p, d);
-    order_type_prefix_dims(d, type_prefix_dims);
 
     /* function? */
-    if (ops_at(p, "(")) {
+    if (d->name && ops_at(p, "(")) {
         advance(p);
         while (!ops_at(p, ")") && tk(p, 0)->kind != MGLGLSL_TOK_END) {
             MGLDecl *param = (MGLDecl *)calloc(1, sizeof(*param));
