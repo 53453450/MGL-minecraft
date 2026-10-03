@@ -153,24 +153,22 @@ static void mglBuildPlanEntry(MGLBufferPlanEntry *entry,
                     dst->member_offset_in_elem = member_offset;
 
                     dst->member_size = (GLuint)src->size;
-                    /* Nested struct-member arrays use std140 ArrayStride in
-                     * AIR; top-level plain arrays stay tightly packed. */
+                    /* Packed default-block members live in the AIR std140
+                     * blob; use the reflected ArrayStride so vec3/mat
+                     * arrays land on 16-byte columns. */
                     dst->member_src_stride =
                         mglGLTypeElementByteSize(src->gl_type);
-                    if (dst->member_src_stride == 0 && src->array_stride > 0)
-                        dst->member_src_stride = (GLuint)src->array_stride;
                     if (dst->member_src_stride == 0)
                         dst->member_src_stride = 4u;
                     dst->member_array_stride = dst->member_src_stride;
-                    if (src->name && strchr(src->name, '.') &&
-                        src->array_stride > (GLint)dst->member_src_stride) {
+                    if (src->array_stride > (GLint)dst->member_array_stride)
                         dst->member_array_stride = (GLuint)src->array_stride;
-                    }
                     GLuint matBytes =
                         mglPlainUniformMatrixElementBytes(src->gl_type);
                     if (matBytes) {
                         dst->member_src_stride = matBytes;
-                        dst->member_array_stride = matBytes;
+                        if (dst->member_array_stride < matBytes)
+                            dst->member_array_stride = matBytes;
                     }
                     dst->member_loc = base_loc + (GLint)src->location_offset;
                     dst->is_array_member = (src->size > 1) ? GL_TRUE : GL_FALSE;

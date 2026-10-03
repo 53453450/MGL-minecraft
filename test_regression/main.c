@@ -21389,6 +21389,41 @@ static int test_glsl_nondecimal_literals(unsigned char *pixels, const char *out_
             return 1;
         }
     }
+    {
+        static const char *bad =
+            "#version 430 core\n"
+            "layout(location = x) uniform float u0;\n"
+            "layout(location = 0) out vec4 frag;\n"
+            "void main() { frag = vec4(u0); }\n";
+        GLuint sh = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(sh, 1, &bad, NULL);
+        glCompileShader(sh);
+        GLint ok = 1;
+        glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+        glDeleteShader(sh);
+        if (ok) {
+            fprintf(stderr, "glsl_nondecimal_literals: location=x compiled\n");
+            return 1;
+        }
+    }
+    {
+        static const char *bad =
+            "#version 430 core\n"
+            "const int i = 1;\n"
+            "layout(location = i) uniform float u0;\n"
+            "layout(location = 0) out vec4 frag;\n"
+            "void main() { frag = vec4(u0); }\n";
+        GLuint sh = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(sh, 1, &bad, NULL);
+        glCompileShader(sh);
+        GLint ok = 1;
+        glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+        glDeleteShader(sh);
+        if (ok) {
+            fprintf(stderr, "glsl_nondecimal_literals: location=i compiled\n");
+            return 1;
+        }
+    }
     GLuint program = link_program(vs, fs);
     if (!program) return 1;
     int fail = 0;
@@ -22531,6 +22566,56 @@ static int test_high_uniform_location(unsigned char *pixels, const char *out_pat
                 }
             }
             glDeleteProgram(p2);
+        }
+    }
+    {
+        /* GL 4.6 §7.6.1: array element i of layout(location=N) is N+i. */
+        static const char *fs_arr =
+            "#version 430 core\n"
+            "layout(location=2) uniform float u0[3];\n"
+            "layout(location=5) uniform vec3 u1[2];\n"
+            "layout(location=7) uniform int u2[3];\n"
+            "layout(location=10) uniform ivec4 u3;\n"
+            "layout(location=0) out vec4 frag;\n"
+            "void main() {\n"
+            "  bool ok = u0[0] == 1.0 && u0[1] == 2.0 && u0[2] == 3.0 &&\n"
+            "            u1[0] == vec3(4.0) && u1[1] == vec3(5.0) &&\n"
+            "            u2[0] == 6 && u2[1] == 7 && u2[2] == 8 &&\n"
+            "            u3 == ivec4(9);\n"
+            "  frag = ok ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);\n"
+            "}\n";
+        GLuint p3 = link_program(vs, fs_arr);
+        if (!p3) {
+            fprintf(stderr, "high_uniform_location: array loc link failed\n");
+            fail = 1;
+        } else {
+            static const GLfloat v4[3] = {4.0f, 4.0f, 4.0f};
+            static const GLfloat v5[3] = {5.0f, 5.0f, 5.0f};
+            static const GLint i9[4] = {9, 9, 9, 9};
+            glUseProgram(p3);
+            glUniform1f(2, 1.0f);
+            glUniform1f(3, 2.0f);
+            glUniform1f(4, 3.0f);
+            glUniform3fv(5, 1, v4);
+            glUniform3fv(6, 1, v5);
+            glUniform1i(7, 6);
+            glUniform1i(8, 7);
+            glUniform1i(9, 8);
+            glUniform4iv(10, 1, i9);
+            GLenum aerr = glGetError();
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glFinish();
+            glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            const unsigned char *px =
+                &pixels[(REG_H / 2 * REG_W + REG_W / 2) * 4];
+            if (aerr != GL_NO_ERROR || px[1] < 200u) {
+                fprintf(stderr,
+                        "high_uniform_location: array err=0x%x pixel (%u,%u,%u)\n",
+                        aerr, px[0], px[1], px[2]);
+                fail = 1;
+            }
+            glDeleteProgram(p3);
         }
     }
     glUseProgram(0);

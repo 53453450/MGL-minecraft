@@ -2632,13 +2632,18 @@ more_qualifiers:
                         advance(p);
                     }
                 } else if (at_any_ident(p)) {
-                    /* 420pack: binding/location/offset require integer
-                     * constants — `binding = goku` / `binding = std140`
-                     * must fail compile. */
+                    /* GLSL 4.60 §4.4: integer layout values are integer
+                     * literals, not identifiers or const variables. */
                     if (n == 7 && memcmp(s, "binding", 7) == 0) {
                         parse_error(p,
                             "layout(binding) requires an integer constant at line %u",
                             tk_line(p));
+                    } else if ((n == 8 && memcmp(s, "location", 8) == 0) ||
+                               (n == 9 && memcmp(s, "component", 9) == 0) ||
+                               (n == 6 && memcmp(s, "offset", 6) == 0)) {
+                        parse_error(p,
+                            "layout(%.*s) requires an integer constant at line %u",
+                            n, s, tk_line(p));
                     }
                     advance(p);
                 } else {

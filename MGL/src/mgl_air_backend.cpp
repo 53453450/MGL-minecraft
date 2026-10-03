@@ -2098,6 +2098,10 @@ static llvm::Value *emitUBOLeafLoad(Codegen &cg, llvm::Value *base,
                                     const MType &vt) {
     if (ct && ct->kind == MGLIR_TYPE_MATRIX)
         return emitUBOMatrixLoad(cg, base, off, ct, vt);
+    if (ct && (ct->kind == MGLIR_TYPE_ARRAY || ct->kind == MGLIR_TYPE_STRUCT)) {
+        llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
+        return emitSSBOAggregateLoad(cg, p, ct);
+    }
     llvm::Type *t = llvmType(vt, *cg.ctx);
     llvm::Value *p =
         cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
