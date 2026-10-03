@@ -122,7 +122,7 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
             fPred = llvm::CmpInst::FCMP_OEQ;
             iPred = llvm::CmpInst::ICMP_EQ;
         } else if (strcmp(name, "notEqual") == 0) {
-            fPred = llvm::CmpInst::FCMP_ONE;
+            fPred = llvm::CmpInst::FCMP_UNE;
             iPred = llvm::CmpInst::ICMP_NE;
         }
         if (a0->getType()->isFPOrFPVectorTy()) {

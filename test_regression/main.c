@@ -20964,6 +20964,66 @@ static int test_gpu_shader5_overloading(unsigned char *pixels,
                 fail = 1;
             }
         }
+        /* CTS case 17: intBitsToFloat(-1) is NaN, which must not equal -1.0. */
+        static const char *vs_ibtf =
+            "#version 150\n"
+            "#extension GL_ARB_gpu_shader5 : require\n"
+            "uniform float expected_value;\n"
+            "uniform int value;\n"
+            "out vec4 result;\n"
+            "void main() {\n"
+            "    result = vec4(1.0, 1.0, 1.0, 1.0);\n"
+            "    float ret_val = intBitsToFloat(value);\n"
+            "    if (expected_value != ret_val) {\n"
+            "        result = vec4(0.0, 0.0, 0.0, 0.0);\n"
+            "    }\n"
+            "    switch (gl_VertexID) {\n"
+            "      case 0: gl_Position = vec4(-1.0, 1.0, 0.0, 1.0); break;\n"
+            "      case 1: gl_Position = vec4( 1.0, 1.0, 0.0, 1.0); break;\n"
+            "      case 2: gl_Position = vec4(-1.0,-1.0, 0.0, 1.0); break;\n"
+            "      case 3: gl_Position = vec4( 1.0,-1.0, 0.0, 1.0); break;\n"
+            "    }\n"
+            "}\n";
+        GLuint ibtf = link_program(vs_ibtf, fs_bits);
+        if (!ibtf) {
+            fprintf(stderr, "gpu_shader5_overloading: intBitsToFloat link failed\n");
+            fail = 1;
+        } else {
+            glUseProgram(ibtf);
+            GLint le = glGetUniformLocation(ibtf, "expected_value");
+            GLint lv = glGetUniformLocation(ibtf, "value");
+            const GLfloat exp_f = -1.0f;
+            const GLint val_i = -1;
+            glUniform1fv(le, 1, &exp_f);
+            glUniform1iv(lv, 1, &val_i);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glFinish();
+            glReadPixels(4, 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            if (px[0] > 200u && px[1] > 200u && px[2] > 200u) {
+                fprintf(stderr,
+                        "gpu_shader5_overloading: intBitsToFloat(-1)==-1.0 "
+                        "px=%u,%u,%u\n",
+                        px[0], px[1], px[2]);
+                fail = 1;
+            }
+            GLint bits_as_int;
+            memcpy(&bits_as_int, &exp_f, sizeof(bits_as_int));
+            glUniform1fv(le, 1, &exp_f);
+            glUniform1iv(lv, 1, &bits_as_int);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glFinish();
+            glReadPixels(4, 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            if (px[0] < 200u || px[1] < 200u || px[2] < 200u) {
+                fprintf(stderr,
+                        "gpu_shader5_overloading: intBitsToFloat bits mismatch "
+                        "px=%u,%u,%u\n",
+                        px[0], px[1], px[2]);
+                fail = 1;
+            }
+            glDeleteProgram(ibtf);
+        }
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDeleteProgram(prog);

@@ -739,7 +739,7 @@ llvm::Value *tryFoldConst(Codegen &cg, uint32_t op, llvm::Value *l,
                                            lc, rc));
     case MGL_OP_NE:
         return scalarizeBoolCompare(cg, op,
-            llvm::ConstantExpr::getCompare(fp ? llvm::CmpInst::FCMP_ONE
+            llvm::ConstantExpr::getCompare(fp ? llvm::CmpInst::FCMP_UNE
                                               : llvm::CmpInst::ICMP_NE,
                                            lc, rc));
     case MGL_OP_LT:
@@ -811,7 +811,8 @@ llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
     case MGL_OP_LAND: return cg.b->CreateLogicalAnd(l, r);
     case MGL_OP_LOR:  return cg.b->CreateLogicalOr(l, r);
     case MGL_OP_EQ: pred = fp ? llvm::CmpInst::FCMP_OEQ : llvm::CmpInst::ICMP_EQ; break;
-    case MGL_OP_NE: pred = fp ? llvm::CmpInst::FCMP_ONE : llvm::CmpInst::ICMP_NE; break;
+    /* GLSL 4.60 §5.9: float != is true if either operand is NaN. */
+    case MGL_OP_NE: pred = fp ? llvm::CmpInst::FCMP_UNE : llvm::CmpInst::ICMP_NE; break;
     case MGL_OP_LT: pred = fp ? llvm::CmpInst::FCMP_OLT
                      : uns ? llvm::CmpInst::ICMP_ULT : llvm::CmpInst::ICMP_SLT; break;
     case MGL_OP_LE: pred = fp ? llvm::CmpInst::FCMP_OLE
