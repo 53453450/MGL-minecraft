@@ -4621,6 +4621,20 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
         while (at && at->kind == MGLIR_TYPE_ARRAY)
             at = at->elem_type;
         if (!d->name && at && at->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
+            if (d->layout_offset >= 0 && d->layout_binding < 0) {
+                sema_error(s, d->line,
+                           "layout(offset) on atomic_uint requires layout(binding)");
+                mglIRTypeDestroy(t);
+                return;
+            }
+            if (d->layout_offset >= 0 &&
+                ((uint32_t)d->layout_offset % 4u) != 0u) {
+                sema_error(s, d->line,
+                           "atomic counter offset %d must be a multiple of 4",
+                           d->layout_offset);
+                mglIRTypeDestroy(t);
+                return;
+            }
             uint32_t bind = d->layout_binding >= 0
                                 ? (uint32_t)d->layout_binding : 0u;
             uint32_t off = 0u;
@@ -4757,6 +4771,16 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
                 sema_error(s, d->line,
                            "atomic counter array '%s' must be declared with a size",
                            var_name);
+            }
+            if (d->layout_offset >= 0 && d->layout_binding < 0) {
+                sema_error(s, d->line,
+                           "layout(offset) on atomic_uint '%s' requires layout(binding)",
+                           var_name);
+            } else if (d->layout_offset >= 0 &&
+                       ((uint32_t)d->layout_offset % 4u) != 0u) {
+                sema_error(s, d->line,
+                           "atomic counter '%s' offset %d must be a multiple of 4",
+                           var_name, d->layout_offset);
             }
             if (d->layout_offset >= 0) {
                 uint32_t elems = 1u;

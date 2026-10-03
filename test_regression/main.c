@@ -21511,6 +21511,41 @@ static int test_atomic_uint_default_offset(unsigned char *pixels, const char *ou
         fail = 1;
     }
     glDeleteProgram(program);
+    {
+        static const char *bad_bind =
+            "#version 440 core\n"
+            "layout(location=0) out vec4 frag;\n"
+            "layout(binding=2, offset=4) uniform atomic_uint;\n"
+            "layout(offset=8) uniform atomic_uint atomic0;\n"
+            "void main() { frag = vec4(float(atomicCounter(atomic0))); }\n";
+        GLuint sh = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(sh, 1, &bad_bind, NULL);
+        glCompileShader(sh);
+        GLint ok = 1;
+        glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+        glDeleteShader(sh);
+        if (ok) {
+            fprintf(stderr, "atomic_uint_default_offset: offset without binding compiled\n");
+            fail = 1;
+        }
+    }
+    {
+        static const char *bad_align =
+            "#version 440 core\n"
+            "layout(location=0) out vec4 frag;\n"
+            "layout(binding=1, offset=2) uniform atomic_uint atomic0;\n"
+            "void main() { frag = vec4(float(atomicCounter(atomic0))); }\n";
+        GLuint sh = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(sh, 1, &bad_align, NULL);
+        glCompileShader(sh);
+        GLint ok = 1;
+        glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+        glDeleteShader(sh);
+        if (ok) {
+            fprintf(stderr, "atomic_uint_default_offset: offset=2 compiled\n");
+            fail = 1;
+        }
+    }
     while (glGetError() != GL_NO_ERROR) { }
     return fail;
 }

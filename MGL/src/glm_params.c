@@ -444,9 +444,10 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_MAX_COMBINED_ATOMIC_COUNTERS,&glm_ctx->active_state->var.max_combined_atomic_counters);
     glGetIntegerv(GL_MAX_ELEMENT_INDEX,&glm_ctx->active_state->var.max_element_index);
     glGetIntegerv(GL_MAX_COMPUTE_UNIFORM_BLOCKS,&glm_ctx->active_state->var.max_compute_uniform_blocks);
+    /* GL 4.6 minimum is 14. CGL may report 84; Metal compute cannot. */
     if (glm_ctx->active_state->var.max_compute_uniform_blocks == 0 ||
-        glm_ctx->active_state->var.max_compute_uniform_blocks > MAX_BINDABLE_BUFFERS) {
-        glm_ctx->active_state->var.max_compute_uniform_blocks = MAX_BINDABLE_BUFFERS;
+        glm_ctx->active_state->var.max_compute_uniform_blocks > 14u) {
+        glm_ctx->active_state->var.max_compute_uniform_blocks = 14u;
     }
     glGetIntegerv(GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS,&glm_ctx->active_state->var.max_compute_texture_image_units);
     if (glm_ctx->active_state->var.max_compute_texture_image_units == 0 ||
