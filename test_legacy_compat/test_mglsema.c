@@ -284,7 +284,7 @@ static void test_integer_vector_types(void)
     analyze("#version 450 core\n"
             "layout(location = 0) in ivec3 iv;\n"
             "layout(location = 1) in uvec4 uv;\n"
-            "layout(location = 2) in bvec2 bv;\n"
+            "uniform bvec2 bv;\n"
             "layout(location = 3) in dvec3 dv;\n"
             "uniform dmat2 dm;\n"
             "uniform dmat4x3 dm2;\n"
@@ -693,6 +693,31 @@ static void test_constructors(void)
     teardown();
 }
 
+static void test_invalid_vs_inputs(void)
+{
+    static const char *bad[] = {
+        "in bool data;\nvoid main() {}\n",
+        "in bvec2 data;\nvoid main() {}\n",
+        "in bvec3 data;\nvoid main() {}\n",
+        "in bvec4 data;\nvoid main() {}\n",
+        "in sampler2D data;\nvoid main() {}\n",
+        "in struct { vec4 test; } data;\nvoid main() {}\n",
+        "centroid in vec4 data;\nvoid main() {}\n",
+        "patch in vec4 data;\nvoid main() {}\n",
+        "sample in vec4 data;\nvoid main() {}\n",
+    };
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char src[256];
+        snprintf(src, sizeof(src), "#version 140\n%s", bad[i]);
+        analyze(src);
+        CHECK(error_count > 0, bad[i]);
+        teardown();
+    }
+    analyze("#version 140\nin vec4 data;\nvoid main() {}\n");
+    CHECK(error_count == 0, "legal VS in vec4");
+    teardown();
+}
+
 int main(void)
 {
     printf("MGLGLSL sema skeleton tests\n");
@@ -711,6 +736,7 @@ int main(void)
     test_builtins();
     test_image2d_array_store();
     test_constructors();
+    test_invalid_vs_inputs();
     test_interface_ok();
     test_interface_mismatch();
     test_interface_abi_qualifiers();

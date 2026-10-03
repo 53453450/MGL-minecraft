@@ -4759,6 +4759,48 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             }
         }
     }
+    /* GLSL 4.60 §4.3.4: VS inputs cannot be bool, opaque, or structs, and
+     * cannot use centroid/sample/patch. */
+    if (global && s->stage == MGL_STAGE_VERTEX &&
+        (d->qualifiers & MGL_AST_Q_IN) &&
+        !(d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER |
+                           MGL_AST_Q_OUT))) {
+        if (d->qualifiers & MGL_AST_Q_CENTROID) {
+            sema_error(s, d->line,
+                       "centroid is not allowed on vertex shader inputs");
+        }
+        if (d->qualifiers & MGL_AST_Q_SAMPLE) {
+            sema_error(s, d->line,
+                       "sample is not allowed on vertex shader inputs");
+        }
+        if (d->qualifiers & MGL_AST_Q_PATCH) {
+            sema_error(s, d->line,
+                       "patch is not allowed on vertex shader inputs");
+        }
+        const MGLIRType *bt = t;
+        while (bt && bt->kind == MGLIR_TYPE_ARRAY)
+            bt = bt->elem_type;
+        if (bt) {
+            if ((bt->kind == MGLIR_TYPE_SCALAR ||
+                 bt->kind == MGLIR_TYPE_VECTOR ||
+                 bt->kind == MGLIR_TYPE_MATRIX) &&
+                bt->scalar == MGLIR_SCALAR_BOOL) {
+                sema_error(s, d->line,
+                           "boolean vertex shader input '%s' is not allowed",
+                           var_name);
+            } else if (bt->kind == MGLIR_TYPE_SAMPLER ||
+                       bt->kind == MGLIR_TYPE_IMAGE ||
+                       bt->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
+                sema_error(s, d->line,
+                           "opaque vertex shader input '%s' is not allowed",
+                           var_name);
+            } else if (bt->kind == MGLIR_TYPE_STRUCT) {
+                sema_error(s, d->line,
+                           "structure vertex shader input '%s' is not allowed",
+                           var_name);
+            }
+        }
+    }
     /* GL 4.6 §7.7.2 / GLSL 4.60 §4.4.6: atomic counters live at global
      * scope only, cannot carry layout(location), and an explicit offset
      * must keep the whole counter inside MAX_ATOMIC_COUNTER_BUFFER_SIZE. */
