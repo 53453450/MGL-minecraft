@@ -43,6 +43,7 @@
 #include <initializer_list>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -8680,6 +8681,13 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     std::map<std::string, MType> ilocals = locals;
                     std::map<std::string, llvm::Value *> saved;
                     std::map<std::string, const MGLIRType *> savedIR;
+                    /* Inner decls (CTS `bool result` vs caller `vec4 result`)
+                     * must not clobber the caller's SSA map. */
+                    std::map<std::string, llvm::Value *> callerLvalues =
+                        cg.lvalues;
+                    std::map<std::string, const MGLIRType *> callerIR =
+                        cg.localIRTypes;
+                    std::set<std::string> wroteBack;
                     for (uint32_t a = 0; a < fd->param_count &&
                                         a < e->u.call.arg_count; a++) {
                         MGLDecl *pd = fd->params[a];
@@ -8741,6 +8749,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         if (arg->kind == MGL_EXPR_VAR_REF &&
                             arg->u.var_ref.name) {
                             cg.lvalues[arg->u.var_ref.name] = pit->second;
+                            wroteBack.insert(arg->u.var_ref.name);
                             continue;
                         }
                         const MGLExpr *rootE = arg;
@@ -8772,6 +8781,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             break;
                         }
                         cg.lvalues[rootE->u.var_ref.name] = nv;
+                        wroteBack.insert(rootE->u.var_ref.name);
                     }
                     for (uint32_t a = 0; a < fd->param_count; a++) {
                         MGLDecl *pd = fd->params[a];
@@ -8787,6 +8797,30 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         else if (pd->type &&
                                  pd->type->base == MGL_AST_TYPE_STRUCT)
                             cg.localIRTypes.erase(pd->name);
+                    }
+                    for (const auto &kv : callerLvalues) {
+                        if (!wroteBack.count(kv.first))
+                            cg.lvalues[kv.first] = kv.second;
+                    }
+                    for (auto it = cg.lvalues.begin();
+                         it != cg.lvalues.end();) {
+                        if (!callerLvalues.count(it->first) &&
+                            !wroteBack.count(it->first))
+                            it = cg.lvalues.erase(it);
+                        else
+                            ++it;
+                    }
+                    for (const auto &kv : callerIR) {
+                        if (!wroteBack.count(kv.first))
+                            cg.localIRTypes[kv.first] = kv.second;
+                    }
+                    for (auto it = cg.localIRTypes.begin();
+                         it != cg.localIRTypes.end();) {
+                        if (!callerIR.count(it->first) &&
+                            !wroteBack.count(it->first))
+                            it = cg.localIRTypes.erase(it);
+                        else
+                            ++it;
                     }
                     if (cg.err == 1) return nullptr;
                     /* Helper return ends the inlined body, not the caller. */

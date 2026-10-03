@@ -21827,6 +21827,103 @@ static int test_scalar_swizzle(unsigned char *pixels, const char *out_path)
     if (vao) glDeleteVertexArrays(1, &vao);
     if (fbo) glDeleteFramebuffers(1, &fbo);
     if (color) glDeleteTextures(1, &color);
+
+    static const char *cs =
+        "#version 430\n"
+        "layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;\n"
+        "writeonly uniform image2D uni_image;\n"
+        "uniform float variable;\n"
+        "uniform vec3  expected_values;\n"
+        "struct Structure {\n"
+        "  vec2 m_xx; vec3 m_xxx; vec4 m_xxxx;\n"
+        "  vec2 m_nested_xx; vec3 m_nested_xxx; vec4 m_nested_xxxx;\n"
+        "};\n"
+        "bool check_values(in Structure structure, in float value)\n"
+        "{\n"
+        "  const vec2 xx   = vec2(value, value);\n"
+        "  const vec3 xxx  = vec3(value, value, value);\n"
+        "  const vec4 xxxx = vec4(value, value, value, value);\n"
+        "  bool result = true;\n"
+        "  if ((xx   != structure.m_xx)         ||\n"
+        "      (xxx  != structure.m_xxx)        ||\n"
+        "      (xxxx != structure.m_xxxx)       ||\n"
+        "      (xx   != structure.m_nested_xx)  ||\n"
+        "      (xxx  != structure.m_nested_xxx) ||\n"
+        "      (xxxx != structure.m_nested_xxxx) )\n"
+        "    result = false;\n"
+        "  return result;\n"
+        "}\n"
+        "#define LITERAL 0.375\n"
+        "void main() {\n"
+        "  vec4 result = vec4(0, 1, 0, 1);\n"
+        "  Structure literal_result;\n"
+        "  Structure constant_result;\n"
+        "  Structure variable_result;\n"
+        "  literal_result.m_xx          = LITERAL.xx  ;\n"
+        "  literal_result.m_xxx         = LITERAL.xxx ;\n"
+        "  literal_result.m_xxxx        = LITERAL.xxxx;\n"
+        "  literal_result.m_nested_xx   = LITERAL.x.rr.sss.rr  ;\n"
+        "  literal_result.m_nested_xxx  = LITERAL.s.xx.rrr.xxx ;\n"
+        "  literal_result.m_nested_xxxx = LITERAL.r.ss.xxx.ssss;\n"
+        "  const float constant = 0.125;\n"
+        "  constant_result.m_xx          = constant.xx  ;\n"
+        "  constant_result.m_xxx         = constant.xxx ;\n"
+        "  constant_result.m_xxxx        = constant.xxxx;\n"
+        "  constant_result.m_nested_xx   = constant.x.rr.sss.rr  ;\n"
+        "  constant_result.m_nested_xxx  = constant.s.xx.rrr.xxx ;\n"
+        "  constant_result.m_nested_xxxx = constant.r.ss.xxx.ssss;\n"
+        "  variable_result.m_xx          = variable.xx  ;\n"
+        "  variable_result.m_xxx         = variable.xxx ;\n"
+        "  variable_result.m_xxxx        = variable.xxxx;\n"
+        "  variable_result.m_nested_xx   = variable.x.rr.sss.rr  ;\n"
+        "  variable_result.m_nested_xxx  = variable.s.xx.rrr.xxx ;\n"
+        "  variable_result.m_nested_xxxx = variable.r.ss.xxx.ssss;\n"
+        "  if ((false == check_values(literal_result,  expected_values.x)) ||\n"
+        "      (false == check_values(constant_result, expected_values.y)) ||\n"
+        "      (false == check_values(variable_result, expected_values.z)) )\n"
+        "    result = vec4(1, 0, 0, 1);\n"
+        "  imageStore(uni_image, ivec2(gl_GlobalInvocationID.xy), result);\n"
+        "}\n";
+    GLuint csprog = link_compute_program(cs);
+    if (!csprog) {
+        fprintf(stderr, "scalar_swizzle: compute link failed\n");
+        return 1;
+    }
+    GLuint img = 0;
+    glGenTextures(1, &img);
+    glBindTexture(GL_TEXTURE_2D, img);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 1, 1);
+    glBindImageTexture(0, img, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+    glUseProgram(csprog);
+    {
+        GLint loc_img = glGetUniformLocation(csprog, "uni_image");
+        GLint loc_v = glGetUniformLocation(csprog, "variable");
+        GLint loc_e = glGetUniformLocation(csprog, "expected_values");
+        if (loc_v < 0 || loc_e < 0) {
+            fprintf(stderr, "scalar_swizzle: cs loc v=%d e=%d img=%d\n",
+                    loc_v, loc_e, loc_img);
+            fail = 1;
+        } else {
+            if (loc_img >= 0)
+                glUniform1i(loc_img, 0);
+            glUniform1f(loc_v, 0.75f);
+            static const GLfloat expected_values_data[3] = {0.375f, 0.125f, 0.75f};
+            glUniform3fv(loc_e, 1, expected_values_data);
+        }
+    }
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
+                    GL_TEXTURE_FETCH_BARRIER_BIT);
+    glFinish();
+    unsigned char px[4] = {0};
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
+        fprintf(stderr, "scalar_swizzle: compute (%u,%u,%u,%u) want green\n",
+                px[0], px[1], px[2], px[3]);
+        fail = 1;
+    }
+    glDeleteProgram(csprog);
+    if (img) glDeleteTextures(1, &img);
     return fail;
 }
 
