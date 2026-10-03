@@ -1268,6 +1268,19 @@ void *mglRendererStorageImageTexture(void *base_texture, ImageUnit *iu)
         mglSsImageBindPixelFormat(iu, info.pixel_format);
     const GLenum glTarget = iu->tex ? iu->tex->target : (GLenum)0;
     const int isMsTarget = mglRenderImageTargetIsMultisample((uint32_t)glTarget);
+    /* AIR storage cubes are texture2d_array (face or 6*layer as array index). */
+    if (srcType == (uint32_t)MGLTextureTypeCube ||
+        srcType == (uint32_t)MGLTextureTypeCubeArray) {
+        const uint64_t slice_count = mglRenderImageViewSliceCount(
+            srcType, mglSsTextureArrayLength(texture));
+        void *view = NULL;
+        if (mglRenderCreateTextureViewRange(
+                base_texture, bindFormat, (uint32_t)MGLTextureType2DArray,
+                level, 1u, 0u, slice_count, 0, 0, 0, 0, 0, &view) == 0 &&
+            view) {
+            return mglSsCacheImageUnitView(iu, texture, view);
+        }
+    }
     uint32_t dstType = 0u;
     if (mglRenderImageNeedsNonLayeredSlice(iu->layered ? 1 : 0, isMsTarget,
                                            srcType, &dstType)) {

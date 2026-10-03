@@ -23507,6 +23507,51 @@ static int test_image_atomic_compswap(unsigned char *pixels, const char *out_pat
         fprintf(stderr, "image_atomic_compswap: got %u %u\n", outv[0], outv[1]);
         return 1;
     }
+    static const char *cs_cube =
+        "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(r32ui, binding = 0) uniform uimageCube img;\n"
+        "layout(std430, binding = 0) buffer Out { uint v[2]; };\n"
+        "void main() {\n"
+        "  v[0] = imageAtomicCompSwap(img, ivec3(0, 0, 0), 0u, 7u);\n"
+        "  v[1] = imageAtomicCompSwap(img, ivec3(0, 0, 0), 7u, 9u);\n"
+        "}\n";
+    prog = link_compute_program(cs_cube);
+    if (!prog) {
+        fprintf(stderr, "image_atomic_compswap: cube link failed\n");
+        return 1;
+    }
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    {
+        unsigned face;
+        for (face = 0; face < 6u; face++) {
+            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_R32UI,
+                         1, 1, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, &zero);
+        }
+    }
+    glBindImageTexture(0, tex, 0, GL_TRUE, 0, GL_READ_WRITE, GL_R32UI);
+    outv[0] = 0xFFFFFFFFu;
+    outv[1] = 0xFFFFFFFFu;
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(outv), outv, GL_DYNAMIC_COPY);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glUseProgram(prog);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glFinish();
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(outv), outv);
+    glDeleteProgram(prog);
+    glDeleteBuffers(1, &ssbo);
+    glDeleteTextures(1, &tex);
+    if (outv[0] != 0u || outv[1] != 7u) {
+        fprintf(stderr, "image_atomic_compswap: cube got %u %u\n", outv[0],
+                outv[1]);
+        return 1;
+    }
     return 0;
 }
 

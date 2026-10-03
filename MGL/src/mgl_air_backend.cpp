@@ -7251,27 +7251,28 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                            : MGLIR_SCALAR_INT);
             }
 
-            /* Native Metal texture atomics exist for 1D/2D/3D/array/buffer,
-             * including compare-exchange (AIR
-             * air.atomic_compare_exchange_weak_explicit_texture_*).
-             * Multisample and cube kinds have no matching AIR backing. */
+            /* Native AIR texture atomics: 1D/2D/3D/array/buffer, plus cube
+             * and MS which this backend packs as texture2d_array. */
+            llvm::Value *arrLayer = layerOrFace;
+            if (tk == MGLIR_TEX_2D_MS)
+                arrLayer = msSample;
+            else if (tk == MGLIR_TEX_2D_MS_ARRAY && layerOrFace && msSample)
+                arrLayer = cg.b->CreateAdd(
+                    cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
+                    msSample);
+            const bool as2dArray =
+                tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY ||
+                tk == MGLIR_TEX_CUBE || tk == MGLIR_TEX_CUBE_ARRAY ||
+                tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY;
             const bool useNative =
-                !isMsImage &&
-                (tk == MGLIR_TEX_1D || tk == MGLIR_TEX_BUFFER ||
-                 tk == MGLIR_TEX_2D || tk == MGLIR_TEX_2D_RECT ||
-                 tk == MGLIR_TEX_1D_ARRAY || tk == MGLIR_TEX_2D_ARRAY ||
-                 tk == MGLIR_TEX_3D);
+                tk == MGLIR_TEX_1D || tk == MGLIR_TEX_BUFFER ||
+                tk == MGLIR_TEX_2D || tk == MGLIR_TEX_2D_RECT ||
+                tk == MGLIR_TEX_3D || as2dArray;
             if (!useNative) {
                 cg.err = 1;
-                if (isMsImage) {
-                    cg.errmsg =
-                        "codegen: imageAtomic* on multisample images is "
-                        "not supported";
-                } else {
-                    cg.errmsg =
-                        "codegen: imageAtomic* on this image kind is not "
-                        "supported (no native texture atomic)";
-                }
+                cg.errmsg =
+                    "codegen: imageAtomic* on this image kind is not "
+                    "supported (no native texture atomic)";
                 return nullptr;
             }
             const char *opStem = nullptr;
@@ -7330,11 +7331,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     (void)callAirFn(cg, airName("texture_3d").c_str(), i1,
                                     {tex, coord3, zero3, exp, dataV4, order,
                                      order, access});
-                } else if (tk == MGLIR_TEX_2D_ARRAY ||
-                           tk == MGLIR_TEX_1D_ARRAY) {
+                } else if (as2dArray) {
                     (void)callAirFn(
                         cg, airName("texture_2d_array").c_str(), i1,
-                        {tex, coord2, layerOrFace, zero2, exp, dataV4, order,
+                        {tex, coord2, arrLayer, zero2, exp, dataV4, order,
                          order, access});
                 } else {
                     (void)callAirFn(cg, airName("texture_2d").c_str(), i1,
@@ -7349,10 +7349,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 oldV4 = callAirFn(cg, airName("texture_3d").c_str(), v4i32,
                                   {tex, coord3, zero3, dataV4, order,
                                    access});
-            } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+            } else if (as2dArray) {
                 oldV4 = callAirFn(
                     cg, airName("texture_2d_array").c_str(), v4i32,
-                    {tex, coord2, layerOrFace, zero2, dataV4, order,
+                    {tex, coord2, arrLayer, zero2, dataV4, order,
                      access});
             } else {
                 /* 1D / buffer / 2D / rect — Metal 2D backing. */
@@ -7427,18 +7427,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     }
                     if (tk == MGLIR_TEX_CUBE) {
                         llvm::Value *w = callAirFn(
-                            cg, "air.get_width_texture_cube", i32, {t, lod});
+                            cg, "air.get_width_texture_2d_array", i32,
+                            {t, lod});
                         llvm::Value *h = callAirFn(
-                            cg, "air.get_height_texture_cube", i32, {t, lod});
+                            cg, "air.get_height_texture_2d_array", i32,
+                            {t, lod});
                         return pack2(w, h);
                     }
                     if (tk == MGLIR_TEX_CUBE_ARRAY) {
                         llvm::Value *w = callAirFn(
-                            cg, "air.get_width_texture_cube_array", i32,
+                            cg, "air.get_width_texture_2d_array", i32,
                             {t, lod});
                         llvm::Value *n = callAirFn(
-                            cg, "air.get_array_size_texture_cube_array", i32,
+                            cg, "air.get_array_size_texture_2d_array", i32,
                             {t});
+                        n = cg.b->CreateUDiv(n, cg.b->getInt32(6));
                         return pack3(w, w, n);
                     }
                     if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY ||
@@ -7631,20 +7634,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     r = callAirFn(cg, readName("air.read_texture_3d").c_str(),
                                   retTy, {t, coord3, cg.b->getInt32(0),
                                           cg.b->getInt32(3)});
-                } else if (tk == MGLIR_TEX_CUBE) {
-                    r = callAirFn(cg, readName("air.read_texture_cube").c_str(),
+                } else if (tk == MGLIR_TEX_CUBE ||
+                           tk == MGLIR_TEX_CUBE_ARRAY) {
+                    r = callAirFn(cg,
+                                  readName("air.read_texture_2d_array").c_str(),
                                   retTy, {t, coord2, layerOrFace,
                                           cg.b->getInt32(0), cg.b->getInt32(3)});
-                } else if (tk == MGLIR_TEX_CUBE_ARRAY) {
-                    llvm::Value *face =
-                        cg.b->CreateURem(layerOrFace, cg.b->getInt32(6));
-                    llvm::Value *arrayIdx =
-                        cg.b->CreateUDiv(layerOrFace, cg.b->getInt32(6));
-                    r = callAirFn(cg,
-                                  readName("air.read_texture_cube_array").c_str(),
-                                  retTy,
-                                  {t, coord2, face, arrayIdx,
-                                   cg.b->getInt32(0), cg.b->getInt32(3)});
                 } else if (tk == MGLIR_TEX_2D_MS) {
                     r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
                                   retTy, {t, coord2, msSample,
@@ -7721,11 +7716,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     fn = "air.fence_texture_3d";
                     break;
                 case MGLIR_TEX_CUBE:
-                    fn = "air.fence_texture_cube";
-                    break;
                 case MGLIR_TEX_CUBE_ARRAY:
-                    fn = "air.fence_texture_cube_array";
-                    break;
                 case MGLIR_TEX_2D_ARRAY:
                 case MGLIR_TEX_1D_ARRAY:
                 case MGLIR_TEX_2D_MS:
@@ -7744,23 +7735,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 fenceAfterImageWrite(tex, tk);
                 return w;
             }
-            if (tk == MGLIR_TEX_CUBE) {
+            if (tk == MGLIR_TEX_CUBE || tk == MGLIR_TEX_CUBE_ARRAY) {
                 llvm::Value *w = callAirFn(
-                    cg, writeName("air.write_texture_cube").c_str(), voidTy,
+                    cg, writeName("air.write_texture_2d_array").c_str(), voidTy,
                     {tex, coord2, layerOrFace, value, cg.b->getInt32(0),
-                     cg.b->getInt32(3)});
-                fenceAfterImageWrite(tex, tk);
-                return w;
-            }
-            if (tk == MGLIR_TEX_CUBE_ARRAY) {
-                /* MSL: write(color, uint2 coord, uint face, uint array). */
-                llvm::Value *face =
-                    cg.b->CreateURem(layerOrFace, cg.b->getInt32(6));
-                llvm::Value *arrayIdx =
-                    cg.b->CreateUDiv(layerOrFace, cg.b->getInt32(6));
-                llvm::Value *w = callAirFn(
-                    cg, writeName("air.write_texture_cube_array").c_str(), voidTy,
-                    {tex, coord2, face, arrayIdx, value, cg.b->getInt32(0),
                      cg.b->getInt32(3)});
                 fenceAfterImageWrite(tex, tk);
                 return w;
@@ -12205,10 +12183,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         llvm::StructType *tt = texTy2d;
         if (tk == MGLIR_TEX_3D) tt = texTy3d;
         else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY ||
-                 tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY)
+                 tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY ||
+                 tk == MGLIR_TEX_CUBE || tk == MGLIR_TEX_CUBE_ARRAY)
             tt = texTy2dArray;
-        else if (tk == MGLIR_TEX_CUBE) tt = texTyCube;
-        else if (tk == MGLIR_TEX_CUBE_ARRAY) tt = texTyCubeArray;
         else if (tk == MGLIR_TEX_BUFFER) tt = texTy2d;
         uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         for (uint32_t k = 0; k < elements; k++)
@@ -14682,10 +14659,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             case MGLIR_TEX_1D_ARRAY:
             case MGLIR_TEX_2D_MS:
             case MGLIR_TEX_2D_MS_ARRAY:
+            case MGLIR_TEX_CUBE:
+            case MGLIR_TEX_CUBE_ARRAY:
                 dimTy = "texture2d_array";
                 break;
-            case MGLIR_TEX_CUBE: dimTy = "texturecube"; break;
-            case MGLIR_TEX_CUBE_ARRAY: dimTy = "texturecube_array"; break;
             case MGLIR_TEX_BUFFER:
                 /* Matches TEXBUFFER CREATE fallback (packed as texture2d). */
                 dimTy = "texture2d";
