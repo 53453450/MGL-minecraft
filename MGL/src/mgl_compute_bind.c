@@ -578,10 +578,14 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                     if (glUnit >= TEXTURE_UNITS) {
                         continue;
                     }
-                    ptr = mglTextureForSampledResourceForStage(
-                        ctx, resource, metalBinding, stage,
-                        mglRendererGetProgramDeclaredTextureType(ctx, stage,
-                                                                 spvc_type, i));
+                    {
+                        uint32_t declaredType = resource
+                            ? mglDeclaredTextureTypeFromResource(resource)
+                            : mglRendererGetProgramDeclaredTextureType(
+                                  ctx, stage, spvc_type, i);
+                        ptr = mglTextureForSampledResourceForStage(
+                            ctx, resource, metalBinding, stage, declaredType);
+                    }
                 }
 
                 if (ptr)
@@ -642,6 +646,8 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                         mglComputeBindEmitSampler(&bind, samplerBinding, sampler);
                     }
 
+                    textures_to_be_mapped--;
+                } else {
                     textures_to_be_mapped--;
                 }
             }

@@ -7965,6 +7965,115 @@ static int test_compute_ssbo_block_array_dyn(unsigned char *pixels,
         fprintf(stderr, "compute_ssbo_block_array_dyn: ubo-add got %u\n", vu);
         return 1;
     }
+
+    static const char *cs_max =
+        "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(std140, binding = 0) buffer ShaderStorageBlock {\n"
+        "  uint data;\n"
+        "} g_shader_storage[8];\n"
+        "layout(std140, binding = 0) uniform UniformBlock {\n"
+        "  uint data;\n"
+        "} g_uniform[12];\n"
+        "layout(binding = 0) uniform usamplerBuffer g_sampler[16];\n"
+        "layout(binding = 0, r32ui) uniform uimageBuffer g_image[8];\n"
+        "layout(binding = 0, offset = 0) uniform atomic_uint g_atomic_counter0;\n"
+        "layout(binding = 1, offset = 0) uniform atomic_uint g_atomic_counter1;\n"
+        "layout(binding = 2, offset = 0) uniform atomic_uint g_atomic_counter2;\n"
+        "layout(binding = 3, offset = 0) uniform atomic_uint g_atomic_counter3;\n"
+        "layout(binding = 4, offset = 0) uniform atomic_uint g_atomic_counter4;\n"
+        "layout(binding = 5, offset = 0) uniform atomic_uint g_atomic_counter5;\n"
+        "layout(binding = 6, offset = 0) uniform atomic_uint g_atomic_counter6;\n"
+        "layout(binding = 7, offset = 0) uniform atomic_uint g_atomic_counter7;\n"
+        "uniform uint g_uniform_def[480];\n"
+        "uniform uint g_index = 0u;\n"
+        "uint Add() {\n"
+        "  switch (g_index) {\n"
+        "    case 0: return atomicCounter(g_atomic_counter0);\n"
+        "    case 1: return atomicCounter(g_atomic_counter1);\n"
+        "    case 2: return atomicCounter(g_atomic_counter2);\n"
+        "    case 3: return atomicCounter(g_atomic_counter3);\n"
+        "    case 4: return atomicCounter(g_atomic_counter4);\n"
+        "    case 5: return atomicCounter(g_atomic_counter5);\n"
+        "    case 6: return atomicCounter(g_atomic_counter6);\n"
+        "    case 7: return atomicCounter(g_atomic_counter7);\n"
+        "  }\n"
+        "}\n"
+        "void main() {\n"
+        "  g_shader_storage[g_index].data += g_uniform[g_index].data;\n"
+        "  g_shader_storage[g_index].data += texelFetch(g_sampler[g_index], 0).x;\n"
+        "  g_shader_storage[g_index].data += imageLoad(g_image[g_index], 0).x;\n"
+        "  g_shader_storage[g_index].data += Add();\n"
+        "  g_shader_storage[g_index].data += g_uniform_def[g_index];\n"
+        "}\n";
+    GLuint pmax = link_compute_program(cs_max);
+    if (!pmax) {
+        fprintf(stderr, "compute_ssbo_block_array_dyn: max link failed\n");
+        return 1;
+    }
+    GLuint ssbo3[8], ubo3[12], acb[8], tbo[16], ibo[8];
+    GLuint texs[16], imgs[8];
+    glGenBuffers(8, ssbo3);
+    glGenBuffers(12, ubo3);
+    glGenBuffers(8, acb);
+    glGenBuffers(16, tbo);
+    glGenTextures(16, texs);
+    glGenBuffers(8, ibo);
+    glGenTextures(8, imgs);
+    for (int i = 0; i < 8; i++) {
+        GLuint v = (GLuint)(i + 1);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, ssbo3[i]);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(v), &v, GL_STATIC_DRAW);
+        glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, i, acb[i]);
+        glBufferData(GL_ATOMIC_COUNTER_BUFFER, sizeof(v), &v, GL_STATIC_DRAW);
+        glBindBuffer(GL_TEXTURE_BUFFER, ibo[i]);
+        glBufferData(GL_TEXTURE_BUFFER, sizeof(v), &v, GL_DYNAMIC_COPY);
+        glBindTexture(GL_TEXTURE_BUFFER, imgs[i]);
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, ibo[i]);
+        glBindTexture(GL_TEXTURE_BUFFER, 0);
+        glBindImageTexture(i, imgs[i], 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32UI);
+    }
+    for (int i = 0; i < 12; i++) {
+        GLuint v = (GLuint)(i + 1);
+        glBindBufferBase(GL_UNIFORM_BUFFER, i, ubo3[i]);
+        glBufferData(GL_UNIFORM_BUFFER, sizeof(v), &v, GL_STATIC_DRAW);
+    }
+    for (int i = 0; i < 16; i++) {
+        GLuint v = (GLuint)(i + 1);
+        glBindBuffer(GL_TEXTURE_BUFFER, tbo[i]);
+        glBufferData(GL_TEXTURE_BUFFER, sizeof(v), &v, GL_DYNAMIC_READ);
+        glActiveTexture(GL_TEXTURE0 + i);
+        glBindTexture(GL_TEXTURE_BUFFER, texs[i]);
+        glTexBuffer(GL_TEXTURE_BUFFER, GL_R32UI, tbo[i]);
+    }
+    glActiveTexture(GL_TEXTURE0);
+    glUseProgram(pmax);
+    glUniform1ui(glGetUniformLocation(pmax, "g_index"), 0u);
+    {
+        GLuint def[480];
+        for (int i = 0; i < 480; i++)
+            def[i] = (GLuint)(i + 1);
+        glUniform1uiv(glGetUniformLocation(pmax, "g_uniform_def"), 480, def);
+    }
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glFinish();
+    GLuint vmax = 0;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo3[0]);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(vmax), &vmax);
+    glDeleteProgram(pmax);
+    glDeleteBuffers(8, ssbo3);
+    glDeleteBuffers(12, ubo3);
+    glDeleteBuffers(8, acb);
+    glDeleteBuffers(16, tbo);
+    glDeleteTextures(16, texs);
+    glDeleteBuffers(8, ibo);
+    glDeleteTextures(8, imgs);
+    if (vmax != 6u) {
+        fprintf(stderr, "compute_ssbo_block_array_dyn: max got %u want 6\n",
+                vmax);
+        return 1;
+    }
     return 0;
 }
 
