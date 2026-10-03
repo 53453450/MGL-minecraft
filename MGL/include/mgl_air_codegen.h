@@ -65,6 +65,8 @@ struct VarSym {
     std::string blockName;       /* owning interface block, or empty */
     bool isPatch = false;
     bool isSample = false;       /* `sample in` / `sample out` qualifier */
+    bool isFlat = false;
+    bool isNoPerspective = false;
     bool written = false;
     const MGLIRType *opaqueType = nullptr; /* nested sampler/image leaf */
 };

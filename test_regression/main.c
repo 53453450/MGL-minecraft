@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 202
+#define MAX_TESTS 203
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -7825,6 +7825,107 @@ static int test_gs_pervertex_clip(unsigned char *pixels, const char *out_path)
     }
     glDeleteShader(s);
     return 0;
+}
+
+static int test_glsl_noperspective(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    static const char *vs_smooth =
+        "#version 330 core\n"
+        "layout(location=0) in vec4 in_position;\n"
+        "layout(location=1) in vec4 in_color;\n"
+        "out vec4 vs_fs_color;\n"
+        "void main() {\n"
+        "  gl_Position = in_position;\n"
+        "  vs_fs_color = in_color;\n"
+        "}\n";
+    static const char *fs_smooth =
+        "#version 330 core\n"
+        "in vec4 vs_fs_color;\n"
+        "layout(location=0) out vec4 out_color;\n"
+        "void main() { out_color = vs_fs_color; }\n";
+    static const char *vs_np =
+        "#version 330 core\n"
+        "layout(location=0) in vec4 in_position;\n"
+        "layout(location=1) in vec4 in_color;\n"
+        "noperspective out vec4 vs_fs_color;\n"
+        "void main() {\n"
+        "  gl_Position = in_position;\n"
+        "  vs_fs_color = in_color;\n"
+        "}\n";
+    static const char *fs_np =
+        "#version 330 core\n"
+        "noperspective in vec4 vs_fs_color;\n"
+        "layout(location=0) out vec4 out_color;\n"
+        "void main() { out_color = vs_fs_color; }\n";
+    static const float positions[] = {
+        -1.f, 1.f, -1.f, 1.f, 3.f, 3.f, 3.f, 3.f,
+        -1.f, -1.f, -1.f, 1.f, 3.f, -3.f, 3.f, 3.f};
+    static const unsigned char colors[] = {
+        0xff, 0x00, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff,
+        0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(64, 64, &color);
+    GLuint p_smooth = link_program(vs_smooth, fs_smooth);
+    GLuint p_np = link_program(vs_np, fs_np);
+    GLuint vao = 0u, vbo = 0u;
+    unsigned char np_pixels[64 * 64 * 4];
+    int result = 1;
+    if (!fbo || !p_smooth || !p_np) {
+        fprintf(stderr, "glsl_noperspective: link failed\n");
+        goto cleanup;
+    }
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions) + sizeof(colors),
+                 NULL, GL_STATIC_DRAW);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(positions), positions);
+    glBufferSubData(GL_ARRAY_BUFFER, sizeof(positions), sizeof(colors),
+                    colors);
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, 0);
+    glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, 0,
+                          (const void *)sizeof(positions));
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, 64, 64);
+    glUseProgram(p_smooth);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glFinish();
+    glReadPixels(0, 0, 64, 64, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glUseProgram(p_np);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glFinish();
+    glReadPixels(0, 0, 64, 64, GL_RGBA, GL_UNSIGNED_BYTE, np_pixels);
+    {
+        int differ = 0;
+        for (int i = 0; i < 64 * 64; i++) {
+            if (pixels[i * 4 + 0] != np_pixels[i * 4 + 0] ||
+                pixels[i * 4 + 1] != np_pixels[i * 4 + 1] ||
+                pixels[i * 4 + 2] != np_pixels[i * 4 + 2]) {
+                differ = 1;
+                break;
+            }
+        }
+        if (!differ) {
+            fprintf(stderr,
+                    "glsl_noperspective: smooth and noperspective images match\n");
+            goto cleanup;
+        }
+    }
+    result = 0;
+cleanup:
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (p_smooth) glDeleteProgram(p_smooth);
+    if (p_np) glDeleteProgram(p_np);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
 }
 
 static int test_air_geometry_instancing(unsigned char *pixels,
@@ -27973,6 +28074,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("compute_multi_tu", test_compute_multi_tu),
     SELF_CHECK_TEST("compute_link_local_size", test_compute_link_local_size),
     SELF_CHECK_TEST("gs_pervertex_clip", test_gs_pervertex_clip),
+    SELF_CHECK_TEST("glsl_noperspective", test_glsl_noperspective),
     SELF_CHECK_TEST("air_pipeline_safe_fallback",
                     test_air_pipeline_safe_fallback),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),

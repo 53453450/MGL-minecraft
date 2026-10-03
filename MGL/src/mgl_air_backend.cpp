@@ -14645,9 +14645,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     } else if (!isKernel && !isTESVertex) {
         auto emitFSVarying = [&](const std::string &tagName,
                                  const MType &mt, uint32_t argIdx,
-                                 bool forceFlat = false) {
-            const bool flat = forceFlat || varyingUsesFloatCarrier(mt, has_gs) ||
-                                !scalarIsFloat(mt.scalar);
+                                 bool forceFlat = false,
+                                 bool noPerspective = false) {
+            /* GLSL 4.60 §4.3.4 / §4.5: integers are flat; `flat` is
+             * constant-across-primitive; `noperspective` is linear in
+             * window space; default/smooth is perspective-correct.
+             * Apple AIR: center+perspective, center+no_perspective,
+             * or flat+no_perspective. */
+            const bool interpFlat =
+                forceFlat || varyingUsesFloatCarrier(mt, has_gs) ||
+                !scalarIsFloat(mt.scalar);
+            const bool noPersp = interpFlat || noPerspective;
             MType iface = mt;
             if (varyingUsesFloatCarrier(mt, has_gs) || forceFlat) {
                 MType src = mt;
@@ -14660,10 +14668,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::Type::getInt32Ty(ctx), argIdx)),
                 llvm::MDString::get(ctx, "air.fragment_input"),
                 llvm::MDString::get(ctx, airGenerated(tagName, iface)),
-                llvm::MDString::get(ctx, flat ? "air.flat" : "air.center"),
                 llvm::MDString::get(ctx,
-                                    flat ? "air.no_perspective"
-                                         : "air.perspective"),
+                                    interpFlat ? "air.flat" : "air.center"),
+                llvm::MDString::get(ctx,
+                                    noPersp ? "air.no_perspective"
+                                            : "air.perspective"),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
                 llvm::MDString::get(ctx, mslTypeName(iface)),
                 llvm::MDString::get(ctx, "air.arg_name"),
@@ -14672,6 +14681,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         };
         for (VarSym &v : syms) {
             if (v.kind != VarSym::VARYING) continue;
+            const bool forceFlat = v.isFlat;
+            const bool noPersp = v.isNoPerspective;
             if (v.type.isArray()) {
                 /* Flattened: one fragment_input per element, each with the
                  * element-specific interface name (matches the VS side). */
@@ -14680,13 +14691,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 uint32_t n = (uint32_t)v.type.arr;
                 for (uint32_t k = 0; k < n; k++) {
                     std::string elName = varyingIfaceTag(v, k, has_gs);
-                    emitFSVarying(elName, el, mArgSlot++);
+                    emitFSVarying(elName, el, mArgSlot++, forceFlat, noPersp);
                 }
             } else if (v.type.isMatrix()) {
                 MType col = matrixColumnType(v.type);
                 for (uint32_t c = 0; c < v.type.cols; c++) {
                     std::string colName = varyingIfaceTag(v, c, has_gs);
-                    emitFSVarying(colName, col, mArgSlot++);
+                    emitFSVarying(colName, col, mArgSlot++, forceFlat, noPersp);
                 }
             } else {
                 std::string tag = varyingIfaceTag(v, 0, has_gs);
@@ -14694,7 +14705,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     emitFSVarying(tag + "_lo", v.type, mArgSlot++, true);
                     emitFSVarying(tag + "_hi", v.type, mArgSlot++, true);
                 } else {
-                    emitFSVarying(tag, v.type, mArgSlot++);
+                    emitFSVarying(tag, v.type, mArgSlot++, forceFlat, noPersp);
                 }
             }
         }

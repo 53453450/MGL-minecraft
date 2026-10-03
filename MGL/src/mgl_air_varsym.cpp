@@ -114,6 +114,8 @@ void collectStageVarSyms(const MGLIRModule *mod, const MGLTranslationUnit *tu,
         uint32_t q = s->qualifiers;
         v.isPatch = (q & MGL_AST_Q_PATCH) != 0;
         v.isSample = (q & MGL_AST_Q_SAMPLE) != 0;
+        v.isFlat = (q & MGL_AST_Q_FLAT) != 0;
+        v.isNoPerspective = (q & MGL_AST_Q_NOPERSPECTIVE) != 0;
         if (q & MGL_AST_Q_UNIFORM) {
             const MGLIRType *ut = s->type;
             if (ut->kind == MGLIR_TYPE_ARRAY && ut->elem_type)
