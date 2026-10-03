@@ -766,6 +766,64 @@ static void test_reserved_idents(void)
     teardown();
 }
 
+static void test_compute_compile_errors(void)
+{
+    printf("test_compute_compile_errors\n");
+
+    analyze_ex("#version 420 core\n"
+               "layout(local_size_x = 1) in;\n"
+               "layout(std430) buffer Output { uint g_output[]; };\n"
+               "void main() { g_output[gl_GlobalInvocationID.x] = 0; }\n",
+               MGL_STAGE_COMPUTE, &module, &errors, &error_count);
+    CHECK(error_count > 0, "compute builtin before version 430");
+    teardown();
+
+    {
+        const char *src =
+            "#version 430 core\n"
+            "layout(local_size_x = 1) in;\n"
+            "layout(local_size_x = 2) in;\n"
+            "void main() {}\n";
+        MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
+        CHECK(tu && tu->error, "conflicting local_size_x");
+        if (tu)
+            mglGLSLTranslationUnitDestroy(tu);
+    }
+
+    analyze_ex("#version 430 core\n"
+               "layout(local_size_x = 1) in;\n"
+               "in uint x;\n"
+               "layout(std430) buffer Output { uint g_output[]; };\n"
+               "void main() { g_output[gl_GlobalInvocationID.x] = x; }\n",
+               MGL_STAGE_COMPUTE, &module, &errors, &error_count);
+    CHECK(error_count > 0, "user in on compute shader");
+    teardown();
+
+    analyze_ex("#version 430 core\n"
+               "layout(local_size_x = 1) in;\n"
+               "out uint x;\n"
+               "layout(std430) buffer Output { uint g_output[]; };\n"
+               "void main() { g_output[gl_GlobalInvocationID.x] = 0; x = 0; }\n",
+               MGL_STAGE_COMPUTE, &module, &errors, &error_count);
+    CHECK(error_count > 0, "user out on compute shader");
+    teardown();
+
+    analyze_ex("#version 430 core\n"
+               "layout(local_size_x = 1025) in;\n"
+               "void main() {}\n",
+               MGL_STAGE_COMPUTE, &module, &errors, &error_count);
+    CHECK(error_count > 0, "local_size_x exceeds max");
+    teardown();
+
+    analyze_ex("#version 430 core\n"
+               "layout(local_size_x = 1) in;\n"
+               "layout(std430) buffer Output { uint g_output[]; };\n"
+               "void main() { g_output[gl_GlobalInvocationID.x] = 0; }\n",
+               MGL_STAGE_COMPUTE, &module, &errors, &error_count);
+    CHECK(error_count == 0, "legal compute still accepted");
+    teardown();
+}
+
 int main(void)
 {
     printf("MGLGLSL sema skeleton tests\n");
@@ -786,6 +844,7 @@ int main(void)
     test_constructors();
     test_invalid_vs_inputs();
     test_reserved_idents();
+    test_compute_compile_errors();
     test_interface_ok();
     test_interface_mismatch();
     test_interface_abi_qualifiers();

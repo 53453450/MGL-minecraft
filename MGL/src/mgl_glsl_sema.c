@@ -49,6 +49,10 @@
 /* Must match glm_params.c advertised GL_MAX_* for layout(binding) range. */
 #define MGL_SEMA_MAX_COMBINED_TEXTURE_IMAGE_UNITS 80u
 #define MGL_SEMA_MAX_IMAGE_UNITS 8u
+/* Must match glm_context.c GL_MAX_COMPUTE_WORK_GROUP_SIZE. */
+#define MGL_SEMA_MAX_COMPUTE_WORK_GROUP_SIZE_X 1024
+#define MGL_SEMA_MAX_COMPUTE_WORK_GROUP_SIZE_Y 1024
+#define MGL_SEMA_MAX_COMPUTE_WORK_GROUP_SIZE_Z 256
 
 /* Comma-separated declarators (`int a, b;`) share one AST node chain via
  * next_declarator.  Struct / interface-block member lists store only the
@@ -3019,37 +3023,22 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 return scratch_type(s,
                                     mglIRTypeVector(MGLIR_SCALAR_FLOAT, 4));
             }
-            if (strcmp(e->u.var_ref.name, "gl_GlobalInvocationID") == 0) {
-                /* Compute built-in; the AIR backend maps it to the
-                 * thread_position_in_grid kernel argument. */
-                return scratch_type(s,
-                                    mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
-            }
-            if (strcmp(e->u.var_ref.name, "gl_LocalInvocationID") == 0) {
-                /* Compute built-in; AIR maps to
-                 * thread_position_in_threadgroup. */
-                return scratch_type(s,
-                                    mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
-            }
-            if (strcmp(e->u.var_ref.name, "gl_LocalInvocationIndex") == 0) {
-                /* Flattened local id; derived from LocalInvocationID and
-                 * threads_per_threadgroup. */
-                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_UINT));
-            }
-            if (strcmp(e->u.var_ref.name, "gl_WorkGroupSize") == 0) {
-                /* Compute built-in constant uvec3 from layout(local_size_*). */
-                return scratch_type(s,
-                                    mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
-            }
-            if (strcmp(e->u.var_ref.name, "gl_WorkGroupID") == 0) {
-                /* Compute built-in; the AIR backend maps it to the
-                 * threadgroup_position_in_grid kernel argument. */
-                return scratch_type(s,
-                                    mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
-            }
-            if (strcmp(e->u.var_ref.name, "gl_NumWorkGroups") == 0) {
-                /* Compute built-in; the AIR backend maps it to the
-                 * threadgroups_per_grid kernel argument. */
+            if (strcmp(e->u.var_ref.name, "gl_GlobalInvocationID") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_LocalInvocationID") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_LocalInvocationIndex") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_WorkGroupSize") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_WorkGroupID") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_NumWorkGroups") == 0) {
+                if (s->stage != MGL_STAGE_COMPUTE ||
+                    (s->tu && s->tu->version > 0 && s->tu->version < 430)) {
+                    sema_error(s, e->line,
+                               "'%s' requires a compute shader with "
+                               "#version 430 or later",
+                               e->u.var_ref.name);
+                    return NULL;
+                }
+                if (strcmp(e->u.var_ref.name, "gl_LocalInvocationIndex") == 0)
+                    return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_UINT));
                 return scratch_type(s,
                                     mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
             }
@@ -4849,6 +4838,16 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             }
         }
     }
+    /* GLSL 4.60 §4.3: compute shaders have no user in/out variables. */
+    if (global && s->stage == MGL_STAGE_COMPUTE && d->name &&
+        (d->qualifiers & (MGL_AST_Q_IN | MGL_AST_Q_OUT)) &&
+        !(d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER |
+                           MGL_AST_Q_SHARED))) {
+        sema_error(s, d->line,
+                   "compute shaders cannot declare user %s '%s'",
+                   (d->qualifiers & MGL_AST_Q_OUT) ? "output" : "input",
+                   d->name);
+    }
     /* GLSL 4.60 §4.3.4: VS inputs cannot be bool, opaque, or structs, and
      * cannot use centroid/sample/patch. */
     if (global && s->stage == MGL_STAGE_VERTEX &&
@@ -5426,6 +5425,22 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
 
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         analyze_decl(&s, &tab, tu->decls[i], 1);
+    }
+
+    /* GLSL 4.60 §4.4.1.4: local_size_* must fit MAX_COMPUTE_WORK_GROUP_SIZE. */
+    if (stage == MGL_STAGE_COMPUTE && tu) {
+        int32_t lx = tu->layout_local_size_x > 0 ? tu->layout_local_size_x : 1;
+        int32_t ly = tu->layout_local_size_y > 0 ? tu->layout_local_size_y : 1;
+        int32_t lz = tu->layout_local_size_z > 0 ? tu->layout_local_size_z : 1;
+        if (lx > MGL_SEMA_MAX_COMPUTE_WORK_GROUP_SIZE_X)
+            sema_error(&s, 0, "layout(local_size_x = %d) exceeds the maximum %d",
+                       lx, MGL_SEMA_MAX_COMPUTE_WORK_GROUP_SIZE_X);
+        if (ly > MGL_SEMA_MAX_COMPUTE_WORK_GROUP_SIZE_Y)
+            sema_error(&s, 0, "layout(local_size_y = %d) exceeds the maximum %d",
+                       ly, MGL_SEMA_MAX_COMPUTE_WORK_GROUP_SIZE_Y);
+        if (lz > MGL_SEMA_MAX_COMPUTE_WORK_GROUP_SIZE_Z)
+            sema_error(&s, 0, "layout(local_size_z = %d) exceeds the maximum %d",
+                       lz, MGL_SEMA_MAX_COMPUTE_WORK_GROUP_SIZE_Z);
     }
 
     /* GLSL 4.60 §4.4.1.3: TCS must declare layout(vertices = N) with

@@ -2718,12 +2718,30 @@ more_qualifiers:
             tu->layout_winding = d->layout_winding;
         if (d->layout_point_mode)             tu->layout_point_mode = 1;
         if (d->layout_early_fragment_tests)   tu->layout_early_fragment_tests = 1;
-        if (d->layout_local_size_x >= 0)
-            tu->layout_local_size_x = d->layout_local_size_x;
-        if (d->layout_local_size_y >= 0)
-            tu->layout_local_size_y = d->layout_local_size_y;
-        if (d->layout_local_size_z >= 0)
-            tu->layout_local_size_z = d->layout_local_size_z;
+        if (d->layout_local_size_x >= 0) {
+            if (tu->layout_local_size_x >= 0 &&
+                tu->layout_local_size_x != d->layout_local_size_x) {
+                parse_error(p, "conflicting layout(local_size_x) declarations");
+            } else {
+                tu->layout_local_size_x = d->layout_local_size_x;
+            }
+        }
+        if (d->layout_local_size_y >= 0) {
+            if (tu->layout_local_size_y >= 0 &&
+                tu->layout_local_size_y != d->layout_local_size_y) {
+                parse_error(p, "conflicting layout(local_size_y) declarations");
+            } else {
+                tu->layout_local_size_y = d->layout_local_size_y;
+            }
+        }
+        if (d->layout_local_size_z >= 0) {
+            if (tu->layout_local_size_z >= 0 &&
+                tu->layout_local_size_z != d->layout_local_size_z) {
+                parse_error(p, "conflicting layout(local_size_z) declarations");
+            } else {
+                tu->layout_local_size_z = d->layout_local_size_z;
+            }
+        }
         /* `layout(std430) buffer;` / `layout(std140) uniform;` set the
          * default packing for subsequent blocks that omit an explicit
          * packing qualifier.  Matrix major (row_major/column_major) is
