@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 188
+#define MAX_TESTS 189
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -21235,6 +21235,90 @@ static int test_frag_out_float_rgba8(unsigned char *pixels, const char *out_path
     return fail;
 }
 
+/* imageSize on a dynamically indexed image array with initialized uniform
+ * indices, after the bound textures are respecified. */
+static int test_image_size_array_index(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 430 core\n"
+        "const vec2 kPos[3] = vec2[](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));\n"
+        "void main() { gl_Position = vec4(kPos[gl_VertexID], 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 430 core\n"
+        "layout(location = 0) out vec4 c;\n"
+        "layout(binding = 0, rgba8) uniform image2D g_image[2];\n"
+        "uniform ivec2 g_expected_size[2];\n"
+        "void main() {\n"
+        "  c = vec4(float(imageSize(g_image[0]).x) / 255.0,\n"
+        "           float(imageSize(g_image[1]).y) / 255.0, 0.5, 1.0);\n"
+        "  if (imageSize(g_image[0]).xy != g_expected_size[0]) c.a = 0.0;\n"
+        "  if (imageSize(g_image[1]).yx != g_expected_size[1]) c.a = 0.0;\n"
+        "}\n";
+    GLuint pvs = glCreateShaderProgramv(GL_VERTEX_SHADER, 1, &vs);
+    GLuint pfs = glCreateShaderProgramv(GL_FRAGMENT_SHADER, 1, &fs);
+    if (!pvs || !pfs) {
+        fprintf(stderr, "image_size_array_index: SSO compile/link failed\n");
+        return 1;
+    }
+    GLint ok = 0;
+    glGetProgramiv(pvs, GL_LINK_STATUS, &ok);
+    if (!ok) { fprintf(stderr, "image_size_array_index: vs link fail\n"); return 1; }
+    glGetProgramiv(pfs, GL_LINK_STATUS, &ok);
+    if (!ok) { fprintf(stderr, "image_size_array_index: fs link fail\n"); return 1; }
+    GLuint pipe = 0, tex[2] = {0, 0}, color = 0, fbo = 0, vao = 0;
+    int fail = 0;
+    int size[2] = {32, 128};
+    glGenProgramPipelines(1, &pipe);
+    glUseProgramStages(pipe, GL_VERTEX_SHADER_BIT, pvs);
+    glUseProgramStages(pipe, GL_FRAGMENT_SHADER_BIT, pfs);
+    glGenTextures(2, tex);
+    fbo = make_fbo(REG_W, REG_H, &color);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glBindProgramPipeline(pipe);
+    glUseProgram(0);
+    for (int it = 0; it < 2; it++) {
+        for (int i = 0; i < 2; i++) {
+            glBindTexture(GL_TEXTURE_2D, tex[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size[i], size[i], 0,
+                         GL_RGBA, GL_FLOAT, NULL);
+            glBindImageTexture(i, tex[i], 0, GL_FALSE, 0, GL_READ_ONLY,
+                               GL_RGBA8);
+        }
+        glProgramUniform2i(pfs, glGetUniformLocation(pfs, "g_expected_size[0]"),
+                           size[0], size[0]);
+        glProgramUniform2i(pfs, glGetUniformLocation(pfs, "g_expected_size[1]"),
+                           size[1], size[1]);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, REG_W, REG_H);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        unsigned char *c = pixels + ((REG_H / 2) * REG_W + (REG_W / 2)) * 4;
+        if (c[0] != size[0] || c[1] != size[1] || c[2] < 126 || c[2] > 129 ||
+            c[3] != 255) {
+            fprintf(stderr, "image_size_array_index: iter %d got (%u,%u,%u,%u) want (%d,%d,128,255)\n",
+                    it, c[0], c[1], c[2], c[3], size[0], size[1]);
+            fail = 1;
+        }
+        size[0] /= 2;
+        size[1] /= 2;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindProgramPipeline(0);
+    glDeleteProgramPipelines(1, &pipe);
+    glDeleteProgram(pvs);
+    glDeleteProgram(pfs);
+    glDeleteTextures(2, tex);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
 /* ARB_shading_language_420pack: scalar.xxxx is vec4. */
 static int test_scalar_swizzle(unsigned char *pixels, const char *out_path)
 {
@@ -26869,6 +26953,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("texture_cube_array_sample_cs",
                     test_texture_cube_array_sample_cs),
     SELF_CHECK_TEST("frag_out_float_rgba8", test_frag_out_float_rgba8),
+    SELF_CHECK_TEST("image_size_array_index", test_image_size_array_index),
     SELF_CHECK_TEST("scalar_swizzle", test_scalar_swizzle),
     SELF_CHECK_TEST("snorm_fbo_color_renderable", test_snorm_fbo_color_renderable),
     SELF_CHECK_TEST("image_size", test_image_size),

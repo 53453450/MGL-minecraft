@@ -7030,6 +7030,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             return pack2(w, n);
                         if (tk == MGLIR_TEX_2D_MS)
                             return pack2(w, h);
+                        if (tk == MGLIR_TEX_2D_MS_ARRAY)
+                            n = cg.b->CreateUDiv(n, cg.b->getInt32(8));
                         return pack3(w, h, n);
                     }
                     llvm::Value *w = callAirFn(
@@ -7829,6 +7831,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     llvm::Value *n = callAirFn(
                         cg, "air.get_array_size_texture_2d_array", i32,
                         {tex});
+                    if (sampleKind == MGLIR_TEX_2D_MS_ARRAY)
+                        n = cg.b->CreateUDiv(n, cg.b->getInt32(8));
                     return pack3(w, h, n);
                 }
                 if (sampleKind == MGLIR_TEX_CUBE_ARRAY) {
