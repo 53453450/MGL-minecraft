@@ -2824,26 +2824,9 @@ int mglTextureUploadDirty(void *renderer, Texture *tex, void *texture,
         {
             TextureLevel *uploadLevel = &tex->faces[face].levels[level];
             if (!mglTextureLevelHasUploadableCPUData(uploadLevel)) {
-                /* GenerateMipmap / Metal fill owns this mip; not a failed CPU
-                 * upload. Keep DIRTY_TEXTURE_DATA clear so bind does not
-                 * retry and tear down the render encoder. */
-                if (uploadLevel &&
-                    uploadLevel->last_init_source == kTexMetalFill) {
-                    continue;
-                }
-                static uint64_t s_skipStaleUploadLogs = 0;
-                uint64_t hit = ++s_skipStaleUploadLogs;
-                if (hit <= 8ull || (hit % 2048ull) == 0ull) {
-                    fprintf(stderr, "MGL TEXTURE SKIP stale CPU upload tex=%u face=%d level=%d source=%u ever=%u init=%u hit=%llu\n",
-                          (unsigned)tex->name,
-                          face,
-                          level,
-                          uploadLevel ? (unsigned)uploadLevel->last_init_source : 0u,
-                          uploadLevel ? (unsigned)uploadLevel->ever_written : 0u,
-                          uploadLevel ? (unsigned)uploadLevel->has_initialized_data : 0u,
-                          (unsigned long long)hit);
-                }
-                anyLevelSkipped = 1;
+                /* TexImage NULL, GenerateMipmap, or never written: nothing to
+                 * blit from CPU. That is not an upload failure; retrying on
+                 * every bind closes the render encoder (cube gather CTS). */
                 continue;
             }
 

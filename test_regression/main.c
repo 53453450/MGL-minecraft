@@ -20357,6 +20357,91 @@ static int test_texture_gather_cube(unsigned char *pixels, const char *out_path)
         }
     }
 
+    /* CTS CreateTextureCubeInt: full mip TexImage NULL, SubImage level 0,
+     * usamplerCube gather. */
+    {
+        static const char *fs_u =
+            "#version 450 core\n"
+            "uniform usamplerCube tex;\n"
+            "layout(location=0) out vec4 frag;\n"
+            "void main() {\n"
+            "  uvec4 g = textureGather(tex, vec3(7.0/16.0, -10.0/16.0, 1.0), 0);\n"
+            "  bool ok = g == uvec4(0u, 4u, 8u, 12u);\n"
+            "  frag = ok ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);\n"
+            "}\n";
+        GLuint prog_u = link_program(vs, fs_u);
+        if (!prog_u) {
+            fprintf(stderr, "texture_gather_cube: uint link failed\n");
+            fail = 1;
+        } else {
+            const int csize = 32;
+            int *fill = (int *)malloc((size_t)csize * (size_t)csize * 4u *
+                                      sizeof(int));
+            if (!fill) {
+                fail = 1;
+            } else {
+                for (int i = 0; i < csize * csize * 4; i++) fill[i] = 999;
+                int patch[16] = {
+                    12, 13, 14, 15, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5, 6, 7,
+                };
+                GLuint cube = 0;
+                glGenTextures(1, &cube);
+                glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+                int size = csize;
+                for (int level = 0; size > 0; ++level, size /= 2) {
+                    for (int face = 0; face < 6; face++) {
+                        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face,
+                                     level, GL_RGBA32UI, size, size, 0,
+                                     GL_RGBA_INTEGER, GL_INT, NULL);
+                    }
+                }
+                for (int face = 0; face < 6; face++) {
+                    glTexSubImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, 0,
+                                    0, csize, csize, GL_RGBA_INTEGER, GL_INT,
+                                    fill);
+                    glTexSubImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, 22,
+                                    25, 2, 2, GL_RGBA_INTEGER, GL_INT, patch);
+                }
+                glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER,
+                                GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER,
+                                GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S,
+                                GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T,
+                                GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R,
+                                GL_CLAMP_TO_EDGE);
+                GLuint vao_u = 0;
+                glGenVertexArrays(1, &vao_u);
+                glBindVertexArray(vao_u);
+                glViewport(0, 0, REG_W, REG_H);
+                clear_color(0.0f, 0.0f, 0.0f);
+                glUseProgram(prog_u);
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+                glUniform1i(glGetUniformLocation(prog_u, "tex"), 0);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+                glFinish();
+                glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE,
+                             pixels);
+                const unsigned char *p =
+                    &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+                if (p[0] > 20u || p[1] < 220u || p[2] > 20u) {
+                    fprintf(stderr,
+                            "texture_gather_cube: uint 32² (%u,%u,%u,%u) "
+                            "want green\n",
+                            p[0], p[1], p[2], p[3]);
+                    fail = 1;
+                }
+                glDeleteTextures(1, &cube);
+                if (vao_u) glDeleteVertexArrays(1, &vao_u);
+                free(fill);
+            }
+            glDeleteProgram(prog_u);
+        }
+    }
+
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDeleteProgram(prog);
     if (vao) glDeleteVertexArrays(1, &vao);
