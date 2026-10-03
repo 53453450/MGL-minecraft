@@ -1483,6 +1483,43 @@ static llvm::Value *sampleArrayElementBySwitch(
     return out;
 }
 
+/* Dynamic imageStore(g_image[i], ...) cannot phi texture handles. */
+static void storeArrayElementBySwitch(
+    Codegen &cg, llvm::Value *index,
+    const std::vector<llvm::Value *> &texValues,
+    const std::function<void(llvm::Value *)> &emitStore)
+{
+    if (texValues.empty())
+        return;
+    if (texValues.size() == 1) {
+        emitStore(texValues[0]);
+        return;
+    }
+    llvm::Function *fn = cg.b->GetInsertBlock()->getParent();
+    llvm::BasicBlock *mergeBB =
+        llvm::BasicBlock::Create(*cg.ctx, "imgst.merge", fn);
+    llvm::BasicBlock *defBB =
+        llvm::BasicBlock::Create(*cg.ctx, "imgst.def", fn);
+    const size_t n = texValues.size();
+    std::vector<llvm::BasicBlock *> caseBBs(n);
+    for (size_t i = 0; i < n; ++i)
+        caseBBs[i] = llvm::BasicBlock::Create(*cg.ctx, "imgst.case", fn);
+    llvm::SwitchInst *sw = cg.b->CreateSwitch(index, defBB, (unsigned)n);
+    for (size_t i = 0; i < n; ++i)
+        sw->addCase(cg.b->getInt32((uint32_t)i), caseBBs[i]);
+    for (size_t i = 0; i < n; ++i) {
+        cg.b->SetInsertPoint(caseBBs[i]);
+        cg.err = 0;
+        emitStore(texValues[i]);
+        cg.b->CreateBr(mergeBB);
+    }
+    cg.b->SetInsertPoint(defBB);
+    cg.err = 0;
+    emitStore(texValues.back());
+    cg.b->CreateBr(mergeBB);
+    cg.b->SetInsertPoint(mergeBB);
+}
+
 /* Dynamic read of obj[idx]: matrix -> column (select chain over the
  * columns, since extractvalue needs a constant index), vector ->
  * component.  `idx` must be an integer value. */
@@ -7728,56 +7765,80 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 }
                 callAirFn(cg, fn, voidTy, {texH});
             };
-            if (tk == MGLIR_TEX_3D) {
-                llvm::Value *w = callAirFn(
-                    cg, writeName("air.write_texture_3d").c_str(), voidTy,
-                    {tex, coord3, value, cg.b->getInt32(0), cg.b->getInt32(3)});
-                fenceAfterImageWrite(tex, tk);
-                return w;
+            auto emitWrite = [&](llvm::Value *t) {
+                if (tk == MGLIR_TEX_3D) {
+                    callAirFn(cg, writeName("air.write_texture_3d").c_str(),
+                              voidTy,
+                              {t, coord3, value, cg.b->getInt32(0),
+                               cg.b->getInt32(3)});
+                    fenceAfterImageWrite(t, tk);
+                    return;
+                }
+                if (tk == MGLIR_TEX_CUBE || tk == MGLIR_TEX_CUBE_ARRAY) {
+                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
+                              voidTy,
+                              {t, coord2, layerOrFace, value, cg.b->getInt32(0),
+                               cg.b->getInt32(3)});
+                    fenceAfterImageWrite(t, tk);
+                    return;
+                }
+                if (tk == MGLIR_TEX_2D_MS) {
+                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
+                              voidTy,
+                              {t, coord2, msSample, value, cg.b->getInt32(0),
+                               cg.b->getInt32(3)});
+                    fenceAfterImageWrite(t, tk);
+                    return;
+                }
+                if (tk == MGLIR_TEX_2D_MS_ARRAY) {
+                    llvm::Value *flat = cg.b->CreateAdd(
+                        cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
+                        msSample);
+                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
+                              voidTy,
+                              {t, coord2, flat, value, cg.b->getInt32(0),
+                               cg.b->getInt32(3)});
+                    fenceAfterImageWrite(t, tk);
+                    return;
+                }
+                if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
+                              voidTy,
+                              {t, coord2, layerOrFace, value, cg.b->getInt32(0),
+                               cg.b->getInt32(3)});
+                    fenceAfterImageWrite(t, tk);
+                    return;
+                }
+                callAirFn(cg, writeName("air.write_texture_2d").c_str(), voidTy,
+                          {t, coord2, value, cg.b->getInt32(0),
+                           cg.b->getInt32(3)});
+                fenceAfterImageWrite(t, tk);
+            };
+            const MGLExpr *storeIdxE = nullptr;
+            if (ia && ia->kind == MGL_EXPR_INDEX)
+                storeIdxE = ia->u.index.index;
+            if (storeIdxE) {
+                llvm::Value *index = emitExpr(cg, storeIdxE, mod, locals);
+                if (!index)
+                    return nullptr;
+                index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
+                if (!llvm::isa<llvm::ConstantInt>(index)) {
+                    const char *imageName =
+                        ia->u.index.object &&
+                                ia->u.index.object->kind == MGL_EXPR_VAR_REF
+                            ? ia->u.index.object->u.var_ref.name
+                            : nullptr;
+                    auto ti = imageName ? cg.texArrayValues.find(imageName)
+                                        : cg.texArrayValues.end();
+                    if (ti != cg.texArrayValues.end() && !ti->second.empty()) {
+                        storeArrayElementBySwitch(cg, index, ti->second,
+                                                  emitWrite);
+                        return cg.b->getInt32(0);
+                    }
+                }
             }
-            if (tk == MGLIR_TEX_CUBE || tk == MGLIR_TEX_CUBE_ARRAY) {
-                llvm::Value *w = callAirFn(
-                    cg, writeName("air.write_texture_2d_array").c_str(), voidTy,
-                    {tex, coord2, layerOrFace, value, cg.b->getInt32(0),
-                     cg.b->getInt32(3)});
-                fenceAfterImageWrite(tex, tk);
-                return w;
-            }
-            if (tk == MGLIR_TEX_2D_MS) {
-                llvm::Value *w = callAirFn(
-                    cg, writeName("air.write_texture_2d_array").c_str(), voidTy,
-                    {tex, coord2, msSample, value, cg.b->getInt32(0),
-                     cg.b->getInt32(3)});
-                fenceAfterImageWrite(tex, tk);
-                return w;
-            }
-            if (tk == MGLIR_TEX_2D_MS_ARRAY) {
-                llvm::Value *flat = cg.b->CreateAdd(
-                    cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
-                    msSample);
-                llvm::Value *w = callAirFn(
-                    cg, writeName("air.write_texture_2d_array").c_str(), voidTy,
-                    {tex, coord2, flat, value, cg.b->getInt32(0),
-                     cg.b->getInt32(3)});
-                fenceAfterImageWrite(tex, tk);
-                return w;
-            }
-            if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
-                llvm::Value *w = callAirFn(
-                    cg, writeName("air.write_texture_2d_array").c_str(), voidTy,
-                    {tex, coord2, layerOrFace, value, cg.b->getInt32(0),
-                     cg.b->getInt32(3)});
-                fenceAfterImageWrite(tex, tk);
-                return w;
-            }
-            /* 1D / buffer (as 2D), 2D, 2DRect */
-            {
-                llvm::Value *w = callAirFn(
-                    cg, writeName("air.write_texture_2d").c_str(), voidTy,
-                    {tex, coord2, value, cg.b->getInt32(0), cg.b->getInt32(3)});
-                fenceAfterImageWrite(tex, tk);
-                return w;
-            }
+            emitWrite(tex);
+            return cg.b->getInt32(0);
         }
         /* texelFetch(sampler, ivecP, lod): unfiltered read. */
         if (strcmp(name, "texelFetch") == 0 ||

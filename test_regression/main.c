@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 214
+#define MAX_TESTS 215
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -23555,6 +23555,58 @@ static int test_image_atomic_compswap(unsigned char *pixels, const char *out_pat
     return 0;
 }
 
+/* SSO-style `imageStore(g_image[i], ...)` must write every array element,
+ * not just index 0 (Metal cannot phi texture handles). */
+static int test_image_store_array_index(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *cs =
+        "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(r32ui, binding = 0) uniform uimage2D g_image[2];\n"
+        "void main() {\n"
+        "  for (int i = 0; i < g_image.length(); ++i)\n"
+        "    imageStore(g_image[i], ivec2(0, 0), uvec4(uint(i) + 1u));\n"
+        "}\n";
+    GLuint prog = link_compute_program(cs);
+    if (!prog) {
+        fprintf(stderr, "image_store_array_index: link failed\n");
+        return 1;
+    }
+    GLuint tex[2] = {0, 0};
+    GLuint zero = 0, got = 0;
+    int i;
+    glGenTextures(2, tex);
+    for (i = 0; i < 2; i++) {
+        glBindTexture(GL_TEXTURE_2D, tex[i]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, 1, 1, 0, GL_RED_INTEGER,
+                     GL_UNSIGNED_INT, &zero);
+        glBindImageTexture((GLuint)i, tex[i], 0, GL_FALSE, 0, GL_WRITE_ONLY,
+                           GL_R32UI);
+    }
+    glUseProgram(prog);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
+    glFinish();
+    int fail = 0;
+    for (i = 0; i < 2; i++) {
+        got = 0;
+        glBindTexture(GL_TEXTURE_2D, tex[i]);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, &got);
+        if (got != (GLuint)i + 1u) {
+            fprintf(stderr, "image_store_array_index: tex[%d]=%u want %u\n",
+                    i, got, (unsigned)i + 1u);
+            fail = 1;
+        }
+    }
+    glDeleteProgram(prog);
+    glDeleteTextures(2, tex);
+    return fail;
+}
+
 /* CTS shader_image_size TES/TCS uses GL_RASTERIZER_DISCARD + point_mode.
  * TES-vertex raster must still evaluate TES (imageStore). */
 static int test_image_size_tess_discard(unsigned char *pixels, const char *out_path)
@@ -29162,6 +29214,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("image_size", test_image_size),
     SELF_CHECK_TEST("image_size_version_gate", test_image_size_version_gate),
     SELF_CHECK_TEST("image_atomic_compswap", test_image_atomic_compswap),
+    SELF_CHECK_TEST("image_store_array_index", test_image_store_array_index),
     SELF_CHECK_TEST("image_size_tess_discard", test_image_size_tess_discard),
     SELF_CHECK_TEST("large_uniform_array", test_large_uniform_array),
     SELF_CHECK_TEST("high_uniform_location", test_high_uniform_location),
