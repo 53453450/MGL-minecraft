@@ -107,7 +107,7 @@ static void mglApplyES32Limits(GLMContext glm_ctx)
     v->max_compute_work_group_count[2] = 65535;
     v->max_compute_work_group_size[0] = 1024;
     v->max_compute_work_group_size[1] = 1024;
-    v->max_compute_work_group_size[2] = 64;
+    v->max_compute_work_group_size[2] = 256;
     v->max_compute_uniform_blocks = 14;
     v->max_compute_texture_image_units = 16;
     v->max_compute_uniform_components = 1024;

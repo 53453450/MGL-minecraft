@@ -2642,7 +2642,7 @@ void mglGetActiveUniformBlockiv(GLMContext ctx, GLuint program, GLuint uniformBl
             *params = GL_FALSE;
             break;
         case GL_UNIFORM_BLOCK_REFERENCED_BY_COMPUTE_SHADER:
-            *params = GL_FALSE;
+            *params = mglUniformBlockReferencedByStage(ptr, block, _COMPUTE_SHADER);
             break;
         case GL_UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES:
             /* Compute global active-uniform indices for each UBO member.

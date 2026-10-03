@@ -3172,6 +3172,11 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 strcmp(e->u.var_ref.name, "gl_MaxFragmentImageUniforms") == 0 ||
                 strcmp(e->u.var_ref.name, "gl_MaxCombinedImageUniforms") == 0 ||
                 strcmp(e->u.var_ref.name, "gl_MaxComputeImageUniforms") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxComputeUniformComponents") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxComputeTextureImageUnits") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxComputeAtomicCounters") == 0 ||
+                strcmp(e->u.var_ref.name,
+                       "gl_MaxComputeAtomicCounterBuffers") == 0 ||
                 strcmp(e->u.var_ref.name,
                        "gl_MaxCombinedShaderOutputResources") == 0 ||
                 strcmp(e->u.var_ref.name,
@@ -3226,6 +3231,10 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                     if (strcmp(e->u.var_ref.name, names[i]) == 0)
                         return scratch_type(s,
                             mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_MaxComputeWorkGroupCount") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxComputeWorkGroupSize") == 0) {
+                return scratch_type(s, mglIRTypeVector(MGLIR_SCALAR_INT, 3));
             }
             if (strcmp(e->u.var_ref.name, "gl_in") == 0) {
                 /* gl_PerVertex interface array (TCS/TES/GS). */

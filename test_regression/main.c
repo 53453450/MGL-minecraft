@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 205
+#define MAX_TESTS 207
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -7630,6 +7630,85 @@ static int test_compute_shared_atomic(unsigned char *pixels,
     glDeleteProgram(program);
     glDeleteBuffers(1, &ssbo);
     return fail;
+}
+
+static int test_compute_max_limits(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *cs =
+        "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(std430, binding = 0) buffer Output { int g_output; };\n"
+        "void main() {\n"
+        "  g_output = 1;\n"
+        "  if (gl_MaxComputeWorkGroupCount != ivec3(65535, 65535, 65535))\n"
+        "    g_output = 0;\n"
+        "  if (gl_MaxComputeWorkGroupSize != ivec3(1024, 1024, 256))\n"
+        "    g_output = 0;\n"
+        "  if (gl_MaxComputeUniformComponents != 1024) g_output = 0;\n"
+        "  if (gl_MaxComputeTextureImageUnits != 16) g_output = 0;\n"
+        "  if (gl_MaxComputeImageUniforms != 8) g_output = 0;\n"
+        "  if (gl_MaxComputeAtomicCounters != 8) g_output = 0;\n"
+        "  if (gl_MaxComputeAtomicCounterBuffers != 8) g_output = 0;\n"
+        "}\n";
+    GLuint program = link_compute_program(cs);
+    if (!program) {
+        fprintf(stderr, "compute_max_limits: link failed\n");
+        return 1;
+    }
+    GLuint ssbo = 0;
+    int data = 0;
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(data), &data, GL_DYNAMIC_COPY);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glUseProgram(program);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glFinish();
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(data), &data);
+    glDeleteProgram(program);
+    glDeleteBuffers(1, &ssbo);
+    if (data != 1) {
+        fprintf(stderr, "compute_max_limits: g_output=%d\n", data);
+        return 1;
+    }
+    return 0;
+}
+
+static int test_compute_ubo_referenced(unsigned char *pixels,
+                                       const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *cs =
+        "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(std140, binding = 0) uniform Block { vec4 v; };\n"
+        "layout(std430, binding = 0) buffer Output { int g_output; };\n"
+        "void main() { g_output = int(v.x); }\n";
+    GLuint program = link_compute_program(cs);
+    if (!program) {
+        fprintf(stderr, "compute_ubo_referenced: link failed\n");
+        return 1;
+    }
+    GLint idx = (GLint)glGetUniformBlockIndex(program, "Block");
+    GLint ref = 0;
+    if (idx < 0) {
+        fprintf(stderr, "compute_ubo_referenced: no Block\n");
+        glDeleteProgram(program);
+        return 1;
+    }
+    glGetActiveUniformBlockiv(program, (GLuint)idx,
+                              GL_UNIFORM_BLOCK_REFERENCED_BY_COMPUTE_SHADER,
+                              &ref);
+    glDeleteProgram(program);
+    if (ref != GL_TRUE) {
+        fprintf(stderr, "compute_ubo_referenced: referenced=%d\n", ref);
+        return 1;
+    }
+    return 0;
 }
 
 static int test_compute_shared_struct(unsigned char *pixels,
@@ -28217,6 +28296,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("compute_dispatch_ssbo", test_compute_dispatch_ssbo),
     SELF_CHECK_TEST("compute_shared_simple", test_compute_shared_simple),
     SELF_CHECK_TEST("compute_shared_atomic", test_compute_shared_atomic),
+    SELF_CHECK_TEST("compute_max_limits", test_compute_max_limits),
+    SELF_CHECK_TEST("compute_ubo_referenced", test_compute_ubo_referenced),
     SELF_CHECK_TEST("compute_shared_struct", test_compute_shared_struct),
     SELF_CHECK_TEST("compute_uniform_array_init",
                     test_compute_uniform_array_init),

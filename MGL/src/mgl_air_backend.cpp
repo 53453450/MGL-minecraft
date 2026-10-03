@@ -5325,6 +5325,28 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             strcmp(e->u.var_ref.name, "gl_MaxFragmentImageUniforms") == 0 ||
             strcmp(e->u.var_ref.name, "gl_MaxComputeImageUniforms") == 0)
             return cg.b->getInt32(8);
+        if (strcmp(e->u.var_ref.name, "gl_MaxComputeUniformComponents") == 0)
+            return cg.b->getInt32(1024);
+        if (strcmp(e->u.var_ref.name, "gl_MaxComputeTextureImageUnits") == 0)
+            return cg.b->getInt32(16);
+        if (strcmp(e->u.var_ref.name, "gl_MaxComputeAtomicCounters") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxComputeAtomicCounterBuffers") == 0)
+            return cg.b->getInt32(8);
+        if (strcmp(e->u.var_ref.name, "gl_MaxComputeWorkGroupCount") == 0) {
+            llvm::Type *i32 = cg.b->getInt32Ty();
+            return llvm::ConstantVector::get(
+                {llvm::ConstantInt::get(i32, 65535),
+                 llvm::ConstantInt::get(i32, 65535),
+                 llvm::ConstantInt::get(i32, 65535)});
+        }
+        if (strcmp(e->u.var_ref.name, "gl_MaxComputeWorkGroupSize") == 0) {
+            llvm::Type *i32 = cg.b->getInt32Ty();
+            return llvm::ConstantVector::get(
+                {llvm::ConstantInt::get(i32, 1024),
+                 llvm::ConstantInt::get(i32, 1024),
+                 llvm::ConstantInt::get(i32, 256)});
+        }
         if (strcmp(e->u.var_ref.name, "gl_MaxCombinedImageUniforms") == 0)
             return cg.b->getInt32(40);
         if (strcmp(e->u.var_ref.name,
