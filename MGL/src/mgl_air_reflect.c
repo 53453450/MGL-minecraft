@@ -1648,7 +1648,9 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                     return -1;
                 }
             } else if (ty->kind == MGLIR_TYPE_ARRAY && ty->aoa_dim_count > 1) {
-                if (air_push_aoa_rows(ty, off, nm ? nm : "?", 1, &leaves,
+                /* Default-block AOA uses the same std140 array_stride as
+                 * collectUniforms / emitSSBOAggregateLoad. */
+                if (air_push_aoa_rows(ty, off, nm ? nm : "?", 0, &leaves,
                                       &leaf_count, &leaf_cap) != 0) {
                     for (uint32_t i = 0; i < leaf_count; i++) {
                         free((void *)leaves[i].name);

@@ -22618,6 +22618,58 @@ static int test_high_uniform_location(unsigned char *pixels, const char *out_pat
             glDeleteProgram(p3);
         }
     }
+    {
+        static const char *fs_aoa =
+            "#version 430 core\n"
+            "layout(location=2) uniform float u0[2][3];\n"
+            "layout(location=8) uniform vec3 u1[2][2];\n"
+            "layout(location=12) uniform float u2;\n"
+            "layout(location=0) out vec4 frag;\n"
+            "void main() {\n"
+            "  bool ok = u0[0][0] == 1.0 && u0[0][1] == 2.0 && u0[0][2] == 3.0 &&\n"
+            "            u0[1][0] == 4.0 && u0[1][1] == 5.0 && u0[1][2] == 6.0 &&\n"
+            "            u1[0][0] == vec3(7.0) && u1[0][1] == vec3(8.0) &&\n"
+            "            u1[1][0] == vec3(9.0) && u1[1][1] == vec3(10.0) &&\n"
+            "            u2 == 11.0;\n"
+            "  frag = ok ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);\n"
+            "}\n";
+        GLuint p4 = link_program(vs, fs_aoa);
+        if (!p4) {
+            fprintf(stderr, "high_uniform_location: aoa loc link failed\n");
+            fail = 1;
+        } else {
+            static const GLfloat v7[3] = {7.0f, 7.0f, 7.0f};
+            static const GLfloat v8[3] = {8.0f, 8.0f, 8.0f};
+            static const GLfloat v9[3] = {9.0f, 9.0f, 9.0f};
+            static const GLfloat v10[3] = {10.0f, 10.0f, 10.0f};
+            glUseProgram(p4);
+            glUniform1f(2, 1.0f);
+            glUniform1f(3, 2.0f);
+            glUniform1f(4, 3.0f);
+            glUniform1f(5, 4.0f);
+            glUniform1f(6, 5.0f);
+            glUniform1f(7, 6.0f);
+            glUniform3fv(8, 1, v7);
+            glUniform3fv(9, 1, v8);
+            glUniform3fv(10, 1, v9);
+            glUniform3fv(11, 1, v10);
+            glUniform1f(12, 11.0f);
+            GLenum aerr = glGetError();
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glFinish();
+            glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            const unsigned char *px =
+                &pixels[(REG_H / 2 * REG_W + REG_W / 2) * 4];
+            if (aerr != GL_NO_ERROR || px[1] < 200u) {
+                fprintf(stderr,
+                        "high_uniform_location: aoa err=0x%x pixel (%u,%u,%u)\n",
+                        aerr, px[0], px[1], px[2]);
+                fail = 1;
+            }
+            glDeleteProgram(p4);
+        }
+    }
     glUseProgram(0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDeleteVertexArrays(1, &vao);
