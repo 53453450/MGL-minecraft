@@ -5380,7 +5380,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (strcmp(e->u.var_ref.name, "gl_MaxImageUnits") == 0)
             return cg.b->getInt32(8);
         if (strcmp(e->u.var_ref.name, "gl_MaxImageSamples") == 0)
-            return cg.b->getInt32(8);
+            return cg.b->getInt32(4);
         if (strcmp(e->u.var_ref.name, "gl_MaxVertexImageUniforms") == 0 ||
             strcmp(e->u.var_ref.name, "gl_MaxTessControlImageUniforms") == 0 ||
             strcmp(e->u.var_ref.name,

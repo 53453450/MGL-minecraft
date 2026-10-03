@@ -852,7 +852,7 @@ static int lookup_builtin_const_int(const char *name, int64_t *value)
         int64_t value;
     } builtins[] = {
         { "gl_MaxImageUnits", 8 },
-        { "gl_MaxImageSamples", 8 },
+        { "gl_MaxImageSamples", 4 },
         { "gl_MaxVertexImageUniforms", 8 },
         { "gl_MaxTessControlImageUniforms", 8 },
         { "gl_MaxTessEvaluationImageUniforms", 8 },

@@ -7651,6 +7651,9 @@ static int test_compute_max_limits(unsigned char *pixels, const char *out_path)
         "  if (gl_MaxComputeImageUniforms != 8) g_output = 0;\n"
         "  if (gl_MaxComputeAtomicCounters != 8) g_output = 0;\n"
         "  if (gl_MaxComputeAtomicCounterBuffers != 8) g_output = 0;\n"
+        "  if (gl_MaxImageUnits != 8) g_output = 0;\n"
+        "  if (gl_MaxImageSamples != 4) g_output = 0;\n"
+        "  if (gl_MaxCombinedImageUniforms != 40) g_output = 0;\n"
         "}\n";
     GLuint program = link_compute_program(cs);
     if (!program) {
@@ -7673,6 +7676,18 @@ static int test_compute_max_limits(unsigned char *pixels, const char *out_path)
     if (data != 1) {
         fprintf(stderr, "compute_max_limits: g_output=%d\n", data);
         return 1;
+    }
+    {
+        GLint units = 0, samples = 0, comb = 0;
+        glGetIntegerv(GL_MAX_IMAGE_UNITS, &units);
+        glGetIntegerv(GL_MAX_IMAGE_SAMPLES, &samples);
+        glGetIntegerv(GL_MAX_COMBINED_IMAGE_UNIFORMS, &comb);
+        if (units != 8 || samples != 4 || comb != 40) {
+            fprintf(stderr,
+                    "compute_max_limits: glGet units=%d samples=%d comb=%d\n",
+                    units, samples, comb);
+            return 1;
+        }
     }
     return 0;
 }
