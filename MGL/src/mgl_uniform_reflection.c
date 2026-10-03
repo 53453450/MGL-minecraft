@@ -535,58 +535,102 @@ typedef struct MGLUniformMemberLocation {
     GLint location;
 } MGLUniformMemberLocation;
 
-void mglAssignAggregateMemberLocations(Program *program)
+int mglAssignAggregateMemberLocations(Program *program)
 {
     MGLUniformMemberLocation *assigned = NULL;
     size_t assigned_count = 0u;
-    GLint next_location = 0;
+    bool used[MAX_PLAIN_UNIFORM_LOCATIONS] = {false};
+    const char *used_by[MAX_PLAIN_UNIFORM_LOCATIONS] = {NULL};
+    int fail = 0;
     if (!program) {
-        return;
+        return 0;
     }
 
-    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        MGLShaderResourceList *resources =
-            &program->shader_resources_list[stage][_UNIFORM_CONSTANT_RES];
-        for (GLuint index = 0;
-             resources->list && index < resources->count;
-             index++) {
-            MGLShaderResource *resource = &resources->list[index];
-            if (!resource->ubo_members || resource->ubo_member_count == 0u) {
-                continue;
-            }
-            resource->uniform_location = 0;
-            for (GLuint member_index = 0;
-                 member_index < resource->ubo_member_count;
-                 member_index++) {
-                SpirvUBOMember *member = &resource->ubo_members[member_index];
-                const char *name = member->name ? member->name : "";
-                GLint location = -1;
-                for (size_t found = 0; found < assigned_count; found++) {
-                    if (strcmp(assigned[found].name, name) == 0) {
-                        location = assigned[found].location;
+    /* GL 4.6 §4.4.3: explicit layout(location) first, then unused slots
+     * for implicit uniforms. Same name across stages shares one location. */
+    for (int pass = 0; pass < 2 && !fail; pass++) {
+        for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+            MGLShaderResourceList *resources =
+                &program->shader_resources_list[stage][_UNIFORM_CONSTANT_RES];
+            for (GLuint index = 0;
+                 resources->list && index < resources->count;
+                 index++) {
+                MGLShaderResource *resource = &resources->list[index];
+                if (!resource->ubo_members || resource->ubo_member_count == 0u) {
+                    continue;
+                }
+                resource->uniform_location = 0;
+                for (GLuint member_index = 0;
+                     member_index < resource->ubo_member_count;
+                     member_index++) {
+                    SpirvUBOMember *member = &resource->ubo_members[member_index];
+                    const char *name = member->name ? member->name : "";
+                    int has_explicit = member->explicit_location >= 0;
+                    if (pass == 0 && !has_explicit) {
+                        continue;
+                    }
+                    if (pass == 1 && has_explicit) {
+                        continue;
+                    }
+                    GLint location = -1;
+                    for (size_t found = 0; found < assigned_count; found++) {
+                        if (strcmp(assigned[found].name, name) == 0) {
+                            location = assigned[found].location;
+                            break;
+                        }
+                    }
+                    GLint location_span = mglUniformTypeLocationSpan(
+                        member->gl_type, member->size);
+                    if (location >= 0) {
+                        if (has_explicit &&
+                            location != member->explicit_location) {
+                            fail = 1;
+                            break;
+                        }
+                        member->location_offset = location;
+                        continue;
+                    }
+                    if (has_explicit) {
+                        location = member->explicit_location;
+                        if (!mglPlainUniformSpanAvailable(
+                                used, used_by, location, location_span,
+                                name)) {
+                            fail = 1;
+                            break;
+                        }
+                    } else {
+                        location = mglFirstFreePlainUniformSpan(
+                            used, location_span);
+                    }
+                    if (location < 0) {
+                        fail = 1;
                         break;
                     }
-                }
-                if (location < 0) {
                     MGLUniformMemberLocation *grown = realloc(
                         assigned,
                         (assigned_count + 1u) * sizeof(*assigned));
                     if (!grown) {
+                        fail = 1;
                         goto cleanup;
                     }
                     assigned = grown;
                     assigned[assigned_count].name = strdup(name);
                     if (!assigned[assigned_count].name) {
+                        fail = 1;
                         goto cleanup;
                     }
-                    GLint location_span = member->size > 1
-                        ? member->size : 1;
-                    location = next_location;
-                    next_location += location_span;
                     assigned[assigned_count].location = location;
                     assigned_count++;
+                    mglPlainUniformMarkSpan(used, used_by, location,
+                                            location_span, name);
+                    member->location_offset = location;
                 }
-                member->location_offset = location;
+                if (fail) {
+                    break;
+                }
+            }
+            if (fail) {
+                break;
             }
         }
     }
@@ -596,6 +640,7 @@ cleanup:
         free(assigned[index].name);
     }
     free(assigned);
+    return fail ? -1 : 0;
 }
 
 void mglFreeMGLShaderResourceOwnedFields(MGLShaderResource *resource)

@@ -2557,7 +2557,13 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     alignFragmentInputLocationsToVertexOutputs(pptr);
     mglBridgeSkippedGeometryShaderVaryings(pptr);
     mglAssignPlainUniformLocations(pptr);
-    mglAssignAggregateMemberLocations(pptr);
+    if (mglAssignAggregateMemberLocations(pptr) != 0) {
+        fprintf(stderr,
+                "MGL WARNING: mglLinkProgram failed program %u: "
+                "overlapping or out-of-range explicit uniform locations\n",
+                pptr->name);
+        goto link_fail;
+    }
     mglUnifySamplerUniformLocations(pptr);
 
     /* The AIR compute expansion consumes fixed 32-byte input records

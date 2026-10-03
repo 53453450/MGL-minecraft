@@ -134,7 +134,7 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         a1 = coerceScalar(cg, a1, MGLIR_SCALAR_INT);
         return cg.b->CreateICmp(iPred, a0, a1);
     }
-    if (strcmp(name, "all") == 0) {
+    if (strcmp(name, "all") == 0 || strcmp(name, "any") == 0) {
         if (!need(1)) {
             return nullptr;
         }
@@ -148,11 +148,31 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         auto *vt = llvm::cast<llvm::FixedVectorType>(a0->getType());
         uint32_t n = (uint32_t)vt->getElementCount().getFixedValue();
         llvm::Value *acc = cg.b->CreateExtractElement(a0, (uint64_t)0);
+        bool is_all = strcmp(name, "all") == 0;
         for (uint32_t i = 1; i < n; i++) {
-            acc = cg.b->CreateAnd(
-                acc, cg.b->CreateExtractElement(a0, (uint64_t)i));
+            llvm::Value *lane = cg.b->CreateExtractElement(a0, (uint64_t)i);
+            acc = is_all ? cg.b->CreateAnd(acc, lane)
+                         : cg.b->CreateOr(acc, lane);
         }
         return acc;
+    }
+    if (strcmp(name, "not") == 0) {
+        if (!need(1)) {
+            return nullptr;
+        }
+        a0 = arg(0);
+        if (!a0) {
+            return nullptr;
+        }
+        llvm::Type *ty = a0->getType();
+        llvm::Type *elt = ty->isVectorTy()
+            ? llvm::cast<llvm::FixedVectorType>(ty)->getElementType()
+            : ty;
+        if (elt->isIntegerTy(1)) {
+            return cg.b->CreateNot(a0);
+        }
+        llvm::Value *zero = llvm::Constant::getNullValue(ty);
+        return cg.b->CreateICmpEQ(a0, zero);
     }
 
     if (strcmp(name, "floatBitsToInt") == 0 ||

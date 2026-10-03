@@ -39,7 +39,14 @@ GLint mglSyntheticSamplerUniformLocation(int stage, int resource_type,
 void mglUnifySamplerUniformLocations(Program *program);
 
 void mglAssignPlainUniformLocations(Program *program);
-void mglAssignAggregateMemberLocations(Program *program);
+int mglAssignAggregateMemberLocations(Program *program);
+
+/* Arrays occupy one location per element; a matrix occupies one location. */
+static inline GLint mglUniformTypeLocationSpan(GLuint gl_type, GLint array_size)
+{
+    (void)gl_type;
+    return array_size > 1 ? array_size : 1;
+}
 void mglFreeMGLShaderResourceOwnedFields(MGLShaderResource *res);
 
 #ifdef __cplusplus

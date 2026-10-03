@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 194
+#define MAX_TESTS 195
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -21625,6 +21625,60 @@ static int test_glsl_empty_declarator(unsigned char *pixels, const char *out_pat
     return fail;
 }
 
+/* GLSL 4.60 §8.7: any()/all()/not() on bvec. */
+static int test_glsl_any_all(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "const vec2 kPos[3] = vec2[](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));\n"
+        "void main() { gl_Position = vec4(kPos[gl_VertexID], 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 330 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() {\n"
+        "  bvec3 t = bvec3(true, false, false);\n"
+        "  bvec3 f = bvec3(false, false, false);\n"
+        "  bvec3 a = bvec3(true, true, true);\n"
+        "  bool ok = any(t) && !any(f) && all(a) && !all(t) &&\n"
+        "            any(not(f)) && !any(not(a));\n"
+        "  frag = ok ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) {
+        fprintf(stderr, "glsl_any_all: link failed\n");
+        return 1;
+    }
+    GLuint color = 0, fbo = 0, vao = 0;
+    glGenTextures(1, &color);
+    glBindTexture(GL_TEXTURE_2D, color);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, REG_W, REG_H, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, NULL);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           color, 0);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(prog);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    unsigned cx = (unsigned)pixels[(REG_H / 2 * REG_W + REG_W / 2) * 4 + 0];
+    unsigned cy = (unsigned)pixels[(REG_H / 2 * REG_W + REG_W / 2) * 4 + 1];
+    int fail = !(cx == 0 && cy == 255);
+    if (fail)
+        fprintf(stderr, "glsl_any_all: center (%u,%u) want green\n", cx, cy);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &color);
+    glDeleteProgram(prog);
+    return fail;
+}
+
 /* ARB_shading_language_420pack: scalar.xxxx is vec4. */
 static int test_scalar_swizzle(unsigned char *pixels, const char *out_path)
 {
@@ -22441,6 +22495,42 @@ static int test_high_uniform_location(unsigned char *pixels, const char *out_pat
         if ((err = glGetError()) != GL_INVALID_OPERATION) {
             fprintf(stderr, "high_uniform_location: loc 1024 error 0x%x\n", err);
             fail = 1;
+        }
+    }
+    {
+        static const char *fs_loc =
+            "#version 430 core\n"
+            "layout(location=2) uniform vec4 u0;\n"
+            "layout(location=0) out vec4 frag;\n"
+            "void main() { frag = u0; }\n";
+        GLuint p2 = link_program(vs, fs_loc);
+        if (!p2) {
+            fprintf(stderr, "high_uniform_location: explicit loc link failed\n");
+            fail = 1;
+        } else {
+            GLint loc2 = glGetUniformLocation(p2, "u0");
+            if (loc2 != 2) {
+                fprintf(stderr, "high_uniform_location: explicit loc=%d want 2\n",
+                        loc2);
+                fail = 1;
+            } else {
+                glUseProgram(p2);
+                glUniform4f(2, 0.0f, 1.0f, 0.0f, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                glFinish();
+                glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE,
+                             pixels);
+                const unsigned char *px =
+                    &pixels[(REG_H / 2 * REG_W + REG_W / 2) * 4];
+                if (px[1] < 200u) {
+                    fprintf(stderr,
+                            "high_uniform_location: explicit pixel (%u,%u,%u)\n",
+                            px[0], px[1], px[2]);
+                    fail = 1;
+                }
+            }
+            glDeleteProgram(p2);
         }
     }
     glUseProgram(0);
@@ -27265,6 +27355,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("atomic_uint_default_offset", test_atomic_uint_default_offset),
     SELF_CHECK_TEST("cross_stage_binding_mismatch", test_cross_stage_binding_mismatch),
     SELF_CHECK_TEST("glsl_empty_declarator", test_glsl_empty_declarator),
+    SELF_CHECK_TEST("glsl_any_all", test_glsl_any_all),
     SELF_CHECK_TEST("scalar_swizzle", test_scalar_swizzle),
     SELF_CHECK_TEST("snorm_fbo_color_renderable", test_snorm_fbo_color_renderable),
     SELF_CHECK_TEST("image_size", test_image_size),

@@ -139,7 +139,35 @@ static SpirvUBOMember *air_leaf_alloc(SpirvUBOMember **out, uint32_t *count,
     }
     SpirvUBOMember *u = &(*out)[(*count)++];
     memset(u, 0, sizeof(*u));
+    u->explicit_location = -1;
+    u->location_offset = -1;
     return u;
+}
+
+static void air_set_leaf_explicit_locations(SpirvUBOMember *leaves,
+                                            uint32_t start, uint32_t end,
+                                            uint32_t loc)
+{
+    GLint next = (loc == UINT32_MAX) ? -1 : (GLint)loc;
+    for (uint32_t i = start; i < end; i++) {
+        leaves[i].explicit_location = next;
+        if (next >= 0)
+            next += mglUniformTypeLocationSpan(leaves[i].gl_type,
+                                               leaves[i].size);
+    }
+}
+
+static uint32_t air_named_symbol_location(const MGLIRModule *mod,
+                                          const char *nm)
+{
+    if (!mod || !nm)
+        return UINT32_MAX;
+    for (uint32_t i = 0; i < mod->symbol_count; i++) {
+        const MGLIRSymbol *s = mod->symbols[i];
+        if (s && s->name && strcmp(s->name, nm) == 0)
+            return s->location;
+    }
+    return UINT32_MAX;
 }
 
 /* GL 4.6 §7.3.1.1: an array of arrays of basic types enumerates one entry
@@ -186,6 +214,7 @@ static int air_push_aoa_rows(const MGLIRType *t, uint32_t off,
         u->is_row_major = (lt && lt->kind == MGLIR_TYPE_MATRIX &&
                            lt->row_major) ? GL_TRUE : GL_FALSE;
         u->location_offset = -1;
+        u->explicit_location = -1;
         u->top_level_array_size = u->size;
         u->top_level_array_stride = u->array_stride;
     }
@@ -518,6 +547,8 @@ static int air_block_flatten(const MGLIRType *st, uint32_t base_off,
                                                              : mt;
         SpirvUBOMember *u = &(*out)[(*count)++];
         memset(u, 0, sizeof(*u));
+        u->explicit_location = -1;
+        u->location_offset = -1;
         if (mt->kind == MGLIR_TYPE_ARRAY) {
             u->name = air_format("%s[0]", path);
             u->query_name = u->name ? strdup(u->name) : NULL;
@@ -546,6 +577,7 @@ static int air_block_flatten(const MGLIRType *st, uint32_t base_off,
                               ? GL_TRUE
                               : GL_FALSE;
         u->location_offset = -1;
+        u->explicit_location = -1;
         u->top_level_array_size = u->size;
         u->top_level_array_stride = u->array_stride;
     }
@@ -1511,6 +1543,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         for (uint32_t m = 0; m < agg_count; m++) {
             MGLIRType *ty = agg_types[m];
             const char *nm = agg_names[m];
+            uint32_t leaf0 = leaf_count;
             uint32_t size = 0;
             if (mglIRComputeLayout(ty, MGLIR_LAYOUT_STD140, &size) != 0 ||
                 ty->layout.alignment == 0) {
@@ -1713,6 +1746,9 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 u->top_level_array_size = u->size;
                 u->top_level_array_stride = u->array_stride;
             }
+            air_set_leaf_explicit_locations(
+                leaves, leaf0, leaf_count,
+                air_named_symbol_location(mod, nm));
             if (air_u32_add(off, size, &off) != 0) {
                 for (uint32_t i = 0; i < leaf_count; i++) {
                     free((void *)leaves[i].name);

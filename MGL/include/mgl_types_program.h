@@ -191,6 +191,7 @@ typedef struct SpirvUBOMember_t {
     GLboolean   is_row_major;  /* GL_UNIFORM_IS_ROW_MAJOR                       */
     GLint       size;        /* GL_UNIFORM_SIZE (array element count, 1 for scalar, 0 for runtime array) */
     GLint       location_offset; /* Plain struct leaf location relative to parent */
+    GLint       explicit_location; /* layout(location), -1 if implicit */
     GLint       top_level_array_size;  /* GL_TOP_LEVEL_ARRAY_SIZE for buffer variables */
     GLint       top_level_array_stride; /* GL_TOP_LEVEL_ARRAY_STRIDE for buffer variables */
 } SpirvUBOMember;
