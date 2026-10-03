@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 177
+#define MAX_TESTS 179
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -20067,6 +20067,306 @@ static int test_texture_gather(unsigned char *pixels, const char *out_path)
     return fail;
 }
 
+/* GL 4.6 §8.17: TexImage2D of a non-power-of-two-smaller mip makes the
+ * texture incomplete; §11.1.3.5 samples (0,0,0,1), so gather.r is 0 and
+ * gather of component 3 is 1. Must not raise INVALID_OPERATION. */
+static int test_texture_gather_incomplete(unsigned char *pixels,
+                                          const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "const vec2 kPos[3] = vec2[](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));\n"
+        "void main() { gl_Position = vec4(kPos[gl_VertexID], 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "uniform sampler2D tex;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() {\n"
+        "  vec4 g0 = textureGather(tex, vec2(0.5), 0);\n"
+        "  vec4 g3 = textureGather(tex, vec2(0.5), 3);\n"
+        "  bool ok = distance(g0, vec4(0.0)) < 0.02 &&\n"
+        "            distance(g3, vec4(1.0)) < 0.02;\n"
+        "  frag = ok ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) {
+        fprintf(stderr, "texture_gather_incomplete: link failed\n");
+        return 1;
+    }
+
+    float texels[16];
+    for (int i = 0; i < 16; i++) texels[i] = 0.25f * (float)(i + 1);
+    GLuint tex = 0, color = 0, fbo = 0, vao = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                    GL_NEAREST_MIPMAP_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 4, 4, 0, GL_RGBA, GL_FLOAT,
+                 texels);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    while (glGetError() != GL_NO_ERROR) { }
+    glTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, 1, 1, 0, GL_RGBA, GL_FLOAT,
+                 NULL);
+    GLenum tex_err = glGetError();
+    if (tex_err != GL_NO_ERROR) {
+        fprintf(stderr,
+                "texture_gather_incomplete: TexImage2D level1 0x%x\n",
+                tex_err);
+        glDeleteProgram(prog);
+        glDeleteTextures(1, &tex);
+        return 1;
+    }
+
+    fbo = make_fbo(REG_W, REG_H, &color);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, REG_W, REG_H);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glUseProgram(prog);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glUniform1i(glGetUniformLocation(prog, "tex"), 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    int fail = 0;
+    const unsigned char *c =
+        &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+    if (c[0] > 20u || c[1] < 220u || c[2] > 20u) {
+        fprintf(stderr,
+                "texture_gather_incomplete: center (%u,%u,%u,%u) want green\n",
+                c[0], c[1], c[2], c[3]);
+        fail = 1;
+    }
+    GLenum draw_err = glGetError();
+    if (draw_err != GL_NO_ERROR) {
+        fprintf(stderr, "texture_gather_incomplete: draw 0x%x\n", draw_err);
+        fail = 1;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteProgram(prog);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    if (tex) glDeleteTextures(1, &tex);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
+/* GLSL 4.60 §8.9.2 textureGather(samplerCube, vec3). +Z, 2x2 face. */
+static int test_texture_gather_cube(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "const vec2 kPos[3] = vec2[](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));\n"
+        "void main() { gl_Position = vec4(kPos[gl_VertexID], 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "uniform samplerCube tex;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() {\n"
+        "  vec4 g = textureGather(tex, vec3(0.0, 0.0, 1.0));\n"
+        "  bool ok = distance(g, vec4(3.0, 4.0, 2.0, 1.0)) < 0.02;\n"
+        "  frag = ok ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(g.rgb / 4.0, 1.0);\n"
+        "}\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) {
+        fprintf(stderr, "texture_gather_cube: link failed\n");
+        return 1;
+    }
+
+    float texels[16] = {
+        1.0f, 0.0f, 0.0f, 1.0f, 2.0f, 0.0f, 0.0f, 1.0f,
+        3.0f, 0.0f, 0.0f, 1.0f, 4.0f, 0.0f, 0.0f, 1.0f,
+    };
+    GLuint tex = 0, color = 0, fbo = 0, vao = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    for (int face = 0; face < 6; face++) {
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL_RGBA32F,
+                     2, 2, 0, GL_RGBA, GL_FLOAT, texels);
+    }
+
+    fbo = make_fbo(REG_W, REG_H, &color);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, REG_W, REG_H);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glUseProgram(prog);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+    glUniform1i(glGetUniformLocation(prog, "tex"), 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    int fail = 0;
+    const unsigned char *c =
+        &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+    if (c[0] > 20u || c[1] < 220u || c[2] > 20u) {
+        fprintf(stderr,
+                "texture_gather_cube: center (%u,%u,%u,%u) want green "
+                "(got gather encoded in rgb if fail)\n",
+                c[0], c[1], c[2], c[3]);
+        fail = 1;
+    }
+
+    /* CTS GatherBase::Run first iteration: VS textureGather + POINTS. */
+    static const char *vs_g =
+        "#version 450 core\n"
+        "layout(location=0) in vec4 v_in;\n"
+        "flat out vec4 v_out;\n"
+        "uniform samplerCube tex;\n"
+        "void main() {\n"
+        "  gl_PointSize = 1.0;\n"
+        "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+        "  v_out = textureGather(tex, v_in.xyz);\n"
+        "}\n";
+    static const char *fs_g =
+        "#version 450 core\n"
+        "flat in vec4 v_out;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() {\n"
+        "  bool ok = distance(v_out, vec4(3.0, 4.0, 2.0, 1.0)) < 0.02;\n"
+        "  frag = ok ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(v_out.rgb / 4.0, 1.0);\n"
+        "}\n";
+    GLuint prog_vs = link_program(vs_g, fs_g);
+    if (!prog_vs) {
+        fprintf(stderr, "texture_gather_cube: VS gather link failed\n");
+        fail = 1;
+    } else {
+        GLuint vbo = 0;
+        float dir[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+        glGenBuffers(1, &vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(dir), dir, GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, 0);
+        glEnableVertexAttribArray(0);
+        glViewport(0, 0, 1, 1);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glUseProgram(prog_vs);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+        glUniform1i(glGetUniformLocation(prog_vs, "tex"), 0);
+        glDrawArrays(GL_POINTS, 0, 1);
+        glFinish();
+        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        c = pixels;
+        if (c[0] > 20u || c[1] < 220u || c[2] > 20u) {
+            fprintf(stderr,
+                    "texture_gather_cube: VS+POINTS (%u,%u,%u,%u) want green\n",
+                    c[0], c[1], c[2], c[3]);
+            fail = 1;
+        }
+        glViewport(0, 0, REG_W, REG_H);
+        glDisableVertexAttribArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glDeleteBuffers(1, &vbo);
+        glDeleteProgram(prog_vs);
+    }
+
+    /* CTS PlainGatherFloatCubeRgba: 32² + GenerateMipmap, dir (7/16,-10/16,1). */
+    {
+        static const char *fs_cts =
+            "#version 450 core\n"
+            "uniform samplerCube tex;\n"
+            "layout(location=0) out vec4 frag;\n"
+            "void main() {\n"
+            "  vec4 g = textureGather(tex, vec3(7.0/16.0, -10.0/16.0, 1.0));\n"
+            "  bool ok = distance(g, vec4(0.0, 4.0, 8.0, 12.0)/16.0) < 0.02;\n"
+            "  frag = ok ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(g.rgb, 1.0);\n"
+            "}\n";
+        GLuint prog_cts = link_program(vs, fs_cts);
+        if (!prog_cts) {
+            fprintf(stderr, "texture_gather_cube: CTS shader link failed\n");
+            fail = 1;
+        } else {
+            const int csize = 32;
+            float *fill = (float *)malloc((size_t)csize * (size_t)csize * 4u *
+                                          sizeof(float));
+            if (!fill) {
+                fail = 1;
+            } else {
+                for (int i = 0; i < csize * csize * 4; i += 4) {
+                    fill[i] = fill[i + 1] = fill[i + 2] = fill[i + 3] = 1.0f;
+                }
+                GLuint cube = 0;
+                glGenTextures(1, &cube);
+                glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+                for (int face = 0; face < 6; face++) {
+                    glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0,
+                                 GL_RGBA32F, csize, csize, 0, GL_RGBA, GL_FLOAT,
+                                 fill);
+                }
+                glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+                float patch[16] = {
+                    12.f / 16, 13.f / 16, 14.f / 16, 15.f / 16,
+                    8.f / 16,  9.f / 16,  10.f / 16, 11.f / 16,
+                    0.f / 16,  1.f / 16,  2.f / 16,  3.f / 16,
+                    4.f / 16,  5.f / 16,  6.f / 16,  7.f / 16,
+                };
+                for (int face = 0; face < 6; face++) {
+                    glTexSubImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, 22,
+                                    25, 2, 2, GL_RGBA, GL_FLOAT, patch);
+                }
+                glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S,
+                                GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T,
+                                GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R,
+                                GL_CLAMP_TO_EDGE);
+                GLuint vao_cts = 0;
+                glGenVertexArrays(1, &vao_cts);
+                glBindVertexArray(vao_cts);
+                glViewport(0, 0, REG_W, REG_H);
+                clear_color(0.0f, 0.0f, 0.0f);
+                glUseProgram(prog_cts);
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+                glUniform1i(glGetUniformLocation(prog_cts, "tex"), 0);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+                glFinish();
+                glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE,
+                             pixels);
+                const unsigned char *p =
+                    &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+                if (p[0] > 20u || p[1] < 220u || p[2] > 20u) {
+                    fprintf(stderr,
+                            "texture_gather_cube: CTS 32² (%u,%u,%u,%u) "
+                            "want green\n",
+                            p[0], p[1], p[2], p[3]);
+                    fail = 1;
+                }
+                glDeleteTextures(1, &cube);
+                if (vao_cts) glDeleteVertexArrays(1, &vao_cts);
+                free(fill);
+            }
+            glDeleteProgram(prog_cts);
+        }
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteProgram(prog);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    if (tex) glDeleteTextures(1, &tex);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
 /* Table 8.12: SNORM formats are color-renderable (CR), so an R8_SNORM
  * color attachment is FRAMEBUFFER_COMPLETE and Clear is not IFO. */
 static int test_snorm_fbo_color_renderable(unsigned char *pixels,
@@ -25572,6 +25872,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("patch_primitive_restart_disabled", test_patch_primitive_restart_disabled),
     SELF_CHECK_TEST("tess_swizzle_named_members", test_tess_swizzle_named_members),
     SELF_CHECK_TEST("texture_gather", test_texture_gather),
+    SELF_CHECK_TEST("texture_gather_incomplete", test_texture_gather_incomplete),
+    SELF_CHECK_TEST("texture_gather_cube", test_texture_gather_cube),
     SELF_CHECK_TEST("snorm_fbo_color_renderable", test_snorm_fbo_color_renderable),
     SELF_CHECK_TEST("image_size", test_image_size),
     SELF_CHECK_TEST("image_size_tess_discard", test_image_size_tess_discard),

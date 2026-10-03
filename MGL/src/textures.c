@@ -2097,8 +2097,6 @@ static bool mglTextureStorageMultisampleMetadata(GLMContext ctx,
 
 bool checkTexLevelParams(GLMContext ctx, Texture *tex, GLint level, GLuint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type)
 {
-    GLuint base_width, base_height;
-
     if (!tex || tex->mipmap_levels == 0)
     {
         fprintf(stderr,
@@ -2111,36 +2109,8 @@ bool checkTexLevelParams(GLMContext ctx, Texture *tex, GLint level, GLuint inter
         return false;
     }
 
-    if (tex->target == GL_TEXTURE_2D)
-    {
-        if (level != 0)
-        {
-            GLint check_level = level;
-            base_width = tex->width;
-            base_height = tex->height;
-
-            while(check_level--)
-            {
-                base_width = MAX(base_width >> 1, 1u);
-                base_height = MAX(base_height >> 1, 1u);
-            }
-
-            if (width != base_width || height != base_height)
-            {
-                fprintf(stderr,
-                        "MGL ERROR: checkTexLevelParams size mismatch tex=%u level=%d got=%dx%d expected=%ux%u base=%ux%u\n",
-                        tex->name,
-                        level,
-                        width,
-                        height,
-                        base_width,
-                        base_height,
-                        tex->width,
-                        tex->height);
-                return false;
-            }
-        }
-    }
+    /* GL 4.6 §8.5: TexImage* may redefine a non-base level at any size.
+     * A mismatched mip chain is incomplete (§8.17), not INVALID_OPERATION. */
 
     if (internalformat)
     {

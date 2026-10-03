@@ -2824,6 +2824,13 @@ int mglTextureUploadDirty(void *renderer, Texture *tex, void *texture,
         {
             TextureLevel *uploadLevel = &tex->faces[face].levels[level];
             if (!mglTextureLevelHasUploadableCPUData(uploadLevel)) {
+                /* GenerateMipmap / Metal fill owns this mip; not a failed CPU
+                 * upload. Keep DIRTY_TEXTURE_DATA clear so bind does not
+                 * retry and tear down the render encoder. */
+                if (uploadLevel &&
+                    uploadLevel->last_init_source == kTexMetalFill) {
+                    continue;
+                }
                 static uint64_t s_skipStaleUploadLogs = 0;
                 uint64_t hit = ++s_skipStaleUploadLogs;
                 if (hit <= 8ull || (hit % 2048ull) == 0ull) {
