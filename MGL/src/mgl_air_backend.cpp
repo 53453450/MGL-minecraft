@@ -15662,6 +15662,8 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     }
     MGLFrontendSession sess;
     mglFrontendSessionInit(&sess);
+    sess.allow_matching_redecl =
+        (flags & MGL_AIR_COMPILE_STAGE_LINK_MERGE) != 0;
     if (mglFrontendSessionBuild(&sess, src, stage, err_buf, err_cap) != 0)
         return -1;
 

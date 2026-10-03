@@ -23,6 +23,7 @@ typedef struct MGLFrontendSession {
     MGLIRModule mod;
     int stage;
     int ready;
+    int allow_matching_redecl;
 } MGLFrontendSession;
 
 void mglFrontendSessionInit(MGLFrontendSession *s);

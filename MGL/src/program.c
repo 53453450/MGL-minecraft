@@ -1712,6 +1712,114 @@ static int mglCompileCaptureVariant(const char *src,
     return -1;
 }
 
+static const char *mglSkipGLSLVersionDirective(const char *s)
+{
+    if (!s) {
+        return s;
+    }
+    const char *p = s;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+        p++;
+    }
+    if (strncmp(p, "#version", 8) != 0) {
+        return s;
+    }
+    p += 8;
+    while (*p && *p != '\n') {
+        p++;
+    }
+    if (*p == '\n') {
+        p++;
+    }
+    return p;
+}
+
+static char *mglConcatSameStageSources(Program *pptr, int stage)
+{
+    GLuint n = mglProgramAttachedShaderCount(pptr, (GLuint)stage);
+    size_t total = 1u;
+    GLuint i;
+    for (i = 0u; i < n; i++) {
+        Shader *sh = (pptr->attached_shader_counts[stage] > 0u)
+            ? pptr->attached_shader_slots[stage][i]
+            : pptr->shader_slots[stage];
+        if (!sh || !sh->src) {
+            continue;
+        }
+        const char *body = (i == 0u) ? sh->src
+                                     : mglSkipGLSLVersionDirective(sh->src);
+        total += strlen(body) + 1u;
+    }
+    char *out = (char *)malloc(total);
+    if (!out) {
+        return NULL;
+    }
+    size_t used = 0u;
+    out[0] = '\0';
+    for (i = 0u; i < n; i++) {
+        Shader *sh = (pptr->attached_shader_counts[stage] > 0u)
+            ? pptr->attached_shader_slots[stage][i]
+            : pptr->shader_slots[stage];
+        if (!sh || !sh->src) {
+            continue;
+        }
+        const char *body = (i == 0u) ? sh->src
+                                     : mglSkipGLSLVersionDirective(sh->src);
+        size_t bl = strlen(body);
+        if (used && used + 1u < total && out[used - 1u] != '\n') {
+            out[used++] = '\n';
+        }
+        if (used + bl >= total) {
+            break;
+        }
+        memcpy(out + used, body, bl);
+        used += bl;
+        out[used] = '\0';
+    }
+    return out;
+}
+
+static int mglComputeLocalSizeLinkOk(Program *pptr)
+{
+    int32_t lx = -1, ly = -1, lz = -1;
+    int declared = 0;
+    GLuint n = mglProgramAttachedShaderCount(pptr, _COMPUTE_SHADER);
+    GLuint i;
+    for (i = 0u; i < n; i++) {
+        Shader *sh = (pptr->attached_shader_counts[_COMPUTE_SHADER] > 0u)
+            ? pptr->attached_shader_slots[_COMPUTE_SHADER][i]
+            : pptr->shader_slots[_COMPUTE_SHADER];
+        const MGLTranslationUnit *tu = sh ? sh->frontend_tu : NULL;
+        if (!tu) {
+            continue;
+        }
+        if (tu->layout_local_size_x < 0 && tu->layout_local_size_y < 0 &&
+            tu->layout_local_size_z < 0) {
+            continue;
+        }
+        declared = 1;
+        if (tu->layout_local_size_x >= 0) {
+            if (lx >= 0 && lx != tu->layout_local_size_x) {
+                return 0;
+            }
+            lx = tu->layout_local_size_x;
+        }
+        if (tu->layout_local_size_y >= 0) {
+            if (ly >= 0 && ly != tu->layout_local_size_y) {
+                return 0;
+            }
+            ly = tu->layout_local_size_y;
+        }
+        if (tu->layout_local_size_z >= 0) {
+            if (lz >= 0 && lz != tu->layout_local_size_z) {
+                return 0;
+            }
+            lz = tu->layout_local_size_z;
+        }
+    }
+    return declared;
+}
+
 /* AIR path stage compiler: self-hosted frontend + LLVM -> metallib, plus
  * resource reflection.  Returns 1 on success; a failed stage is
  * non-fatal at link time (the stage is simply not renderable), matching
@@ -1736,6 +1844,16 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         return 1;   /* unsupported stage: skip (link continues) */
     }
     clearStageCompileState(pptr, stage);
+    GLuint attached_count = mglProgramAttachedShaderCount(pptr, (GLuint)stage);
+    char *merged_src = NULL;
+    const char *compile_src = shader->src;
+    if (attached_count > 1u) {
+        merged_src = mglConcatSameStageSources(pptr, stage);
+        if (!merged_src) {
+            return 0;
+        }
+        compile_src = merged_src;
+    }
     unsigned char *bytes = NULL;
     size_t size = 0;
     char err[512] = {0};
@@ -1778,6 +1896,9 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     }
     uint32_t air_flags =
         pptr->shader_slots[_GEOMETRY_SHADER] ? MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER : 0u;
+    if (attached_count > 1u) {
+        air_flags |= MGL_AIR_COMPILE_STAGE_LINK_MERGE;
+    }
     /* Native post-tessellation feeds FS directly: it cannot insert a GS
      * between TES and FS, and cannot feed transform feedback.  Force the
      * compute expansion path for triangles/quads (same as isolines /
@@ -1862,7 +1983,7 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
          * CompileArtifact.complete so link never binds a half-built executable. */
         MGLCompileArtifact art;
         mglCompileArtifactInit(&art);
-        air_rc = mglCompileArtifactFromGLSLEx(shader->src, air_stage,
+        air_rc = mglCompileArtifactFromGLSLEx(compile_src, air_stage,
                                               attrib_snapshot, air_flags,
                                               iface_peers,
                                               stage_info.tess_patch_vertices,
@@ -1897,6 +2018,7 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         fprintf(stderr,
                 "MGL WARNING: AIR compile failed program %u stage %d: %s\n",
                 pptr->name, stage, err);
+        free(merged_src);
         return 0;
     }
     /* Publish this stage's exact builtin usage (the reflected resource lists
@@ -1989,7 +2111,7 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         mglCompileArtifactInit(&compute_art);
         char compute_err[512] = {0};
         int compute_rc = mglCompileArtifactFromGLSLEx(
-            shader->src, air_stage, attrib_snapshot, compute_flags,
+            compile_src, air_stage, attrib_snapshot, compute_flags,
             iface_peers, stage_info.tess_patch_vertices, &compute_art,
             compute_err, sizeof compute_err);
         if (compute_rc == 0 && compute_art.complete) {
@@ -2120,6 +2242,7 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
                 stage_info.gs_stream_xfb_stride[si];
         }
     }
+    free(merged_src);
     return 1;
 }
 
@@ -2495,6 +2618,15 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                 goto link_fail;
             }
         }
+    }
+
+    if ((pptr->attached_shader_mask & (1u << _COMPUTE_SHADER)) != 0u &&
+        !mglComputeLocalSizeLinkOk(pptr)) {
+        fprintf(stderr,
+                "MGL WARNING: mglLinkProgram failed program %u: "
+                "compute local_size missing or conflicting\n",
+                pptr->name);
+        goto link_fail;
     }
 
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {

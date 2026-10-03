@@ -40,6 +40,7 @@
 #include "mgl_metal_ref.h"
 #include "mgl_shader_abi.h"
 #include "mgl_glsl_ast.h"
+#include "mgl_frontend_session.h"
 
  const char *getShaderTypeStr(GLuint type)
 {
@@ -388,14 +389,32 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
     if (mglCompileArtifactFromGLSL(ptr->src, air_stage, NULL, art,
                                    error_text, sizeof(error_text)) != 0 ||
         !art->complete) {
+        mglCompileArtifactFree(art);
+        art = NULL;
+        /* GLSL 4.60 §1.2.1: a compilation unit may call a function whose
+         * definition lives in another shader object of the same stage.
+         * Parse/sema success is enough for COMPILE_STATUS; AIR is emitted
+         * at link after the units are merged. */
+        MGLFrontendSession sess;
+        mglFrontendSessionInit(&sess);
+        char parse_err[1024] = {0};
+        if (mglFrontendSessionBuild(&sess, ptr->src, air_stage, parse_err,
+                                    sizeof(parse_err)) == 0) {
+            ptr->compile_success = GL_TRUE;
+            ptr->frontend_stage = air_stage;
+            ptr->frontend_parse_generation = mglFrontendParseCount();
+            ptr->frontend_valid = GL_TRUE;
+            mglShaderReplaceFrontendTU(ptr, mglFrontendSessionStealTU(&sess));
+            mglFrontendSessionDestroy(&sess);
+            ptr->dirty_bits |= DIRTY_SHADER;
+            return;
+        }
+        mglFrontendSessionDestroy(&sess);
         ptr->log = strdup(error_text[0]
-            ? error_text : "AIR shader compilation failed");
+            ? error_text
+            : (parse_err[0] ? parse_err : "AIR shader compilation failed"));
         ptr->frontend_diagnostics = ptr->log ? strdup(ptr->log) : NULL;
         ptr->frontend_stage = air_stage;
-        if (art->frontend.diagnostics && !ptr->frontend_diagnostics) {
-            ptr->frontend_diagnostics = strdup(art->frontend.diagnostics);
-        }
-        mglCompileArtifactFree(art);
         return;
     }
 

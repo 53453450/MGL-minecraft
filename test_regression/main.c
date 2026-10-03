@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 199
+#define MAX_TESTS 201
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -7666,6 +7666,138 @@ static int test_compute_uniform_array_init(unsigned char *pixels,
     glDeleteProgram(program);
     glDeleteBuffers(1, &ssbo);
     return fail;
+}
+
+static int test_compute_multi_tu(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *cs_main =
+        "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "void Run();\n"
+        "void main() { Run(); }\n";
+    static const char *cs_run =
+        "#version 430 core\n"
+        "layout(binding = 0, std430) buffer Output { vec4 g_output; };\n"
+        "vec4 CalculateOutput();\n"
+        "void Run() { g_output = CalculateOutput(); }\n";
+    static const char *cs_calc =
+        "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(binding = 0, std430) buffer Output { vec4 g_output; };\n"
+        "vec4 CalculateOutput() {\n"
+        "    g_output = vec4(0);\n"
+        "    return vec4(1, 2, 3, 4);\n"
+        "}\n";
+    GLuint s1 = compile_shader(GL_COMPUTE_SHADER, cs_main);
+    GLuint s2 = compile_shader(GL_COMPUTE_SHADER, cs_run);
+    GLuint s3 = compile_shader(GL_COMPUTE_SHADER, cs_calc);
+    if (!s1 || !s2 || !s3) {
+        fprintf(stderr, "compute_multi_tu: compile failed\n");
+        return 1;
+    }
+    GLuint program = glCreateProgram();
+    glAttachShader(program, s1);
+    glAttachShader(program, s2);
+    glAttachShader(program, s3);
+    glLinkProgram(program);
+    glDeleteShader(s1);
+    glDeleteShader(s2);
+    glDeleteShader(s3);
+    GLint ok = 0;
+    glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[2048];
+        glGetProgramInfoLog(program, sizeof(log), NULL, log);
+        fprintf(stderr, "compute_multi_tu: link failed %s\n", log);
+        glDeleteProgram(program);
+        return 1;
+    }
+    GLuint ssbo = 0;
+    float data[4] = {0, 0, 0, 0};
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(data), data, GL_DYNAMIC_COPY);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glUseProgram(program);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glFinish();
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(data), data);
+    int fail = 0;
+    if (data[0] != 1.f || data[1] != 2.f || data[2] != 3.f || data[3] != 4.f) {
+        fprintf(stderr, "compute_multi_tu: got %f %f %f %f\n",
+                data[0], data[1], data[2], data[3]);
+        fail = 1;
+    }
+    glDeleteProgram(program);
+    glDeleteBuffers(1, &ssbo);
+    return fail;
+}
+
+static int test_compute_link_local_size(unsigned char *pixels,
+                                        const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *cs0 =
+        "#version 430 core\n"
+        "void Run();\n"
+        "void main() { Run(); }\n";
+    static const char *cs1 =
+        "#version 430 core\n"
+        "layout(std430) buffer Output { uint g_output[]; };\n"
+        "void Run() { g_output[gl_GlobalInvocationID.x] = 0u; }\n";
+    static const char *cs_sz2 =
+        "#version 430 core\n"
+        "layout(local_size_x = 2) in;\n"
+        "void Run();\n"
+        "void main() { Run(); }\n";
+    static const char *cs_sz1 =
+        "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(std430) buffer Output { uint g_output[]; };\n"
+        "void Run() { g_output[gl_GlobalInvocationID.x] = 0u; }\n";
+    GLuint a = compile_shader(GL_COMPUTE_SHADER, cs0);
+    GLuint b = compile_shader(GL_COMPUTE_SHADER, cs1);
+    if (!a || !b) {
+        fprintf(stderr, "compute_link_local_size: missing local_size compile\n");
+        return 1;
+    }
+    GLuint p = glCreateProgram();
+    glAttachShader(p, a);
+    glAttachShader(p, b);
+    glLinkProgram(p);
+    GLint ok = 1;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    glDeleteShader(a);
+    glDeleteShader(b);
+    glDeleteProgram(p);
+    if (ok) {
+        fprintf(stderr, "compute_link_local_size: missing local_size linked\n");
+        return 1;
+    }
+    a = compile_shader(GL_COMPUTE_SHADER, cs_sz2);
+    b = compile_shader(GL_COMPUTE_SHADER, cs_sz1);
+    if (!a || !b) {
+        fprintf(stderr, "compute_link_local_size: conflict compile\n");
+        return 1;
+    }
+    p = glCreateProgram();
+    glAttachShader(p, a);
+    glAttachShader(p, b);
+    glLinkProgram(p);
+    ok = 1;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    glDeleteShader(a);
+    glDeleteShader(b);
+    glDeleteProgram(p);
+    if (ok) {
+        fprintf(stderr, "compute_link_local_size: conflicting local_size linked\n");
+        return 1;
+    }
+    return 0;
 }
 
 static int test_air_geometry_instancing(unsigned char *pixels,
@@ -27811,6 +27943,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("compute_shared_struct", test_compute_shared_struct),
     SELF_CHECK_TEST("compute_uniform_array_init",
                     test_compute_uniform_array_init),
+    SELF_CHECK_TEST("compute_multi_tu", test_compute_multi_tu),
+    SELF_CHECK_TEST("compute_link_local_size", test_compute_link_local_size),
     SELF_CHECK_TEST("air_pipeline_safe_fallback",
                     test_air_pipeline_safe_fallback),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),

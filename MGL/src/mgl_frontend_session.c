@@ -726,9 +726,11 @@ int mglFrontendSessionBuild(MGLFrontendSession *s, const char *src, int stage,
             snprintf(err, err_cap, "FrontendSession: bad args");
         return -1;
     }
+    int allow_matching_redecl = s->allow_matching_redecl;
     mglFrontendSessionDestroy(s);
     mglFrontendSessionInit(s);
     s->stage = stage;
+    s->allow_matching_redecl = allow_matching_redecl;
 
     char *translated = NULL;
     if (mglFrontendRewriteLegacy(src, stage, &translated, err, err_cap) < 0)
@@ -750,6 +752,7 @@ int mglFrontendSessionBuild(MGLFrontendSession *s, const char *src, int stage,
         mglFrontendSessionDestroy(s);
         return -1;
     }
+    s->tu->allow_matching_redecl = s->allow_matching_redecl;
 
     MGLSemaError *errors = NULL;
     uint32_t error_count = 0;

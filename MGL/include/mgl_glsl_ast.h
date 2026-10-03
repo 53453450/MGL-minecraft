@@ -386,6 +386,10 @@ typedef struct MGLTranslationUnit {
     uint32_t default_uniform_layout; /* MGL_AST_LAYOUT_* */
     uint32_t default_buffer_matrix_major;  /* MGL_AST_MATRIX_* */
     uint32_t default_uniform_matrix_major; /* MGL_AST_MATRIX_* */
+    /* Set when this TU is the concatenation of several same-stage shader
+     * objects at link (GLSL 4.60 §4.3: matching block redecls are legal
+     * across compilation units). */
+    int allow_matching_redecl;
 } MGLTranslationUnit;
 
 #ifdef __cplusplus

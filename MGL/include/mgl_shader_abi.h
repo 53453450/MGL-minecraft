@@ -387,6 +387,8 @@ enum {
      * must NOT be OR-ed in for XFB / GS-after-TES / uses_tess_level programs
      * (those keep the compute expansion). */
     MGL_AIR_COMPILE_TES_VERTEX = 1u << 5,
+    /* Concatenated same-stage shader objects at link. */
+    MGL_AIR_COMPILE_STAGE_LINK_MERGE = 1u << 6,
 };
 
 /* Same as above plus stage-composition flags (bit0: a geometry shader is

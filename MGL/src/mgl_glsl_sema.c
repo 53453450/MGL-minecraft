@@ -4936,6 +4936,15 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
     check_component_layout(s, d, t, var_name);
     Sym *existing = symtab_lookup_local(tab, var_name);
     if (existing != NULL && existing->kind != SYM_STRUCT) {
+        uint32_t q = d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER);
+        uint32_t eq = existing->qualifiers &
+                      (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER);
+        if (s->tu && s->tu->allow_matching_redecl && global && q && q == eq &&
+            existing->kind == SYM_VARIABLE &&
+            ir_type_equal(existing->type, t)) {
+            mglIRTypeDestroy(t);
+            return;
+        }
         sema_error(s, d->line, "redeclaration of '%s'", var_name);
         mglIRTypeDestroy(t);
         return;
