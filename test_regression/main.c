@@ -20686,6 +20686,7 @@ static int test_gpu_shader5_overloading(unsigned char *pixels,
 {
     (void)pixels;
     (void)out_path;
+    int fail = 0;
     static const char *vs_ovl =
         "#version 150\n"
         "#extension GL_ARB_gpu_shader5 : require\n"
@@ -20782,6 +20783,92 @@ static int test_gpu_shader5_overloading(unsigned char *pixels,
         fprintf(stderr, "gpu_shader5_overloading: precise compile failed\n");
         return 1;
     }
+    {
+        GLuint fs = compile_shader(GL_FRAGMENT_SHADER,
+            "#version 150\n"
+            "out vec4 color;\n"
+            "void main() { color = vec4(1.0); }\n");
+        GLuint tfprog = 0;
+        if (fs) {
+            tfprog = glCreateProgram();
+            glAttachShader(tfprog, s);
+            glAttachShader(tfprog, fs);
+            const char *tfv = "weightedSum";
+            glTransformFeedbackVaryings(tfprog, 1, &tfv,
+                                        GL_INTERLEAVED_ATTRIBS);
+            glLinkProgram(tfprog);
+            GLint ok = 0;
+            glGetProgramiv(tfprog, GL_LINK_STATUS, &ok);
+            if (!ok) {
+                fprintf(stderr,
+                        "gpu_shader5_overloading: precise TF link failed\n");
+                fail = 1;
+                glDeleteProgram(tfprog);
+                tfprog = 0;
+            }
+        } else {
+            fprintf(stderr, "gpu_shader5_overloading: precise FS failed\n");
+            fail = 1;
+        }
+        if (fs)
+            glDeleteShader(fs);
+        if (tfprog) {
+            GLuint vao = 0, vbo[2] = {0, 0}, tbo = 0;
+            const float positions[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+            const float weights[4] = {0.1f, 0.2f, 0.3f, 0.4f};
+            glGenVertexArrays(1, &vao);
+            glBindVertexArray(vao);
+            glGenBuffers(2, vbo);
+            glBindBuffer(GL_ARRAY_BUFFER, vbo[0]);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                         GL_STATIC_DRAW);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, 0);
+            glBindBuffer(GL_ARRAY_BUFFER, vbo[1]);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(weights), weights,
+                         GL_STATIC_DRAW);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 0, 0);
+            glGenBuffers(1, &tbo);
+            glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo);
+            glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 16, NULL,
+                         GL_STATIC_READ);
+            glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, tbo);
+            glUseProgram(tfprog);
+            glEnable(GL_RASTERIZER_DISCARD);
+            glBeginTransformFeedback(GL_POINTS);
+            glDrawArrays(GL_POINTS, 0, 1);
+            glEndTransformFeedback();
+            glDisable(GL_RASTERIZER_DISCARD);
+            glFinish();
+            float captured[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0,
+                               sizeof(captured), captured);
+            GLuint bits[4];
+            memcpy(bits, captured, sizeof(bits));
+            if (captured[0] < 2.9f || captured[0] > 3.1f) {
+                fprintf(stderr,
+                        "gpu_shader5_overloading: precise TF sum %a "
+                        "want ~3.0\n",
+                        captured[0]);
+                fail = 1;
+            }
+            if (bits[0] != bits[1] || bits[0] != bits[2]) {
+                fprintf(stderr,
+                        "gpu_shader5_overloading: precise TF x/y/z "
+                        "mismatch %a %a %a (%08x %08x %08x)\n",
+                        captured[0], captured[1], captured[2],
+                        bits[0], bits[1], bits[2]);
+                fail = 1;
+            }
+            glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, 0);
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &tbo);
+            glDeleteBuffers(2, vbo);
+            glDeleteVertexArrays(1, &vao);
+            glDeleteProgram(tfprog);
+        }
+    }
     glDeleteShader(s);
 
     /* CTS gpu_shader5_gl.float_encoding: floatBitsToInt(-1.0) must not
@@ -20804,7 +20891,6 @@ static int test_gpu_shader5_overloading(unsigned char *pixels,
     glUseProgram(prog);
     GLint loc_e = glGetUniformLocation(prog, "expected_value");
     GLint loc_v = glGetUniformLocation(prog, "value");
-    int fail = 0;
     if (loc_e < 0 || loc_v < 0) {
         fprintf(stderr, "gpu_shader5_overloading: bits loc e=%d v=%d\n",
                 loc_e, loc_v);
@@ -20814,8 +20900,8 @@ static int test_gpu_shader5_overloading(unsigned char *pixels,
         const GLfloat value_f = -1.0f;
         GLint expected_bits;
         memcpy(&expected_bits, &value_f, sizeof(expected_bits));
-        glUniform1i(loc_e, expected_numeric);
-        glUniform1f(loc_v, value_f);
+        glUniform1iv(loc_e, 1, &expected_numeric);
+        glUniform1fv(loc_v, 1, &value_f);
         glClearColor(0.5f, 0.5f, 0.5f, 0.5f);
         glClear(GL_COLOR_BUFFER_BIT);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);

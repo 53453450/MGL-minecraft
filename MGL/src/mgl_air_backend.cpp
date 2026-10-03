@@ -8750,6 +8750,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             arg->u.var_ref.name) {
                             cg.lvalues[arg->u.var_ref.name] = pit->second;
                             wroteBack.insert(arg->u.var_ref.name);
+                            storeStageOut(cg, arg->u.var_ref.name,
+                                          pit->second);
                             continue;
                         }
                         const MGLExpr *rootE = arg;
@@ -8782,6 +8784,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         }
                         cg.lvalues[rootE->u.var_ref.name] = nv;
                         wroteBack.insert(rootE->u.var_ref.name);
+                        storeStageOut(cg, rootE->u.var_ref.name, nv);
                     }
                     for (uint32_t a = 0; a < fd->param_count; a++) {
                         MGLDecl *pd = fd->params[a];
@@ -12699,36 +12702,36 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * callees — including non-void helpers).  Helpers with out/inout
          * params are also registered for inlining on every stage: LLVM
          * by-value calls cannot write results back to the caller. */
-        {
-            int force_inline = 0;
-            for (uint32_t p = 0; p < d->param_count; p++) {
-                if (d->params[p] &&
-                    (d->params[p]->qualifiers & MGL_AST_Q_OUT)) {
-                    force_inline = 1;
-                    break;
-                }
-            }
-            /* Metal helper ABI mishandles aggregate returns; also keep
-             * struct params on the SSA-inline path for member access. */
-            if (d->type && d->type->base == MGL_AST_TYPE_STRUCT)
+        int force_inline = 0;
+        for (uint32_t p = 0; p < d->param_count; p++) {
+            if (d->params[p] &&
+                (d->params[p]->qualifiers & MGL_AST_Q_OUT)) {
                 force_inline = 1;
-            for (uint32_t p = 0; !force_inline && p < d->param_count; p++) {
-                if (d->params[p] && d->params[p]->type &&
-                    d->params[p]->type->base == MGL_AST_TYPE_STRUCT)
-                    force_inline = 1;
+                break;
             }
-            if (isGS || isCompute || isTCS || force_inline) {
-                const MGLIRSymbol *ks = fnSymForDecl(&mod, d);
-                std::string key = ks
-                    ? userFnKey(d->name, ks->param_count, ks->param_types)
-                    : userFnKey(d->name, d->param_count, nullptr);
-                userFnDecls[key] = d;
-            }
+        }
+        /* Metal helper ABI mishandles aggregate returns; also keep
+         * struct params on the SSA-inline path for member access. */
+        if (d->type && d->type->base == MGL_AST_TYPE_STRUCT)
+            force_inline = 1;
+        for (uint32_t p = 0; !force_inline && p < d->param_count; p++) {
+            if (d->params[p] && d->params[p]->type &&
+                d->params[p]->type->base == MGL_AST_TYPE_STRUCT)
+                force_inline = 1;
+        }
+        if (isGS || isCompute || isTCS || force_inline) {
+            const MGLIRSymbol *ks = fnSymForDecl(&mod, d);
+            std::string key = ks
+                ? userFnKey(d->name, ks->param_count, ks->param_types)
+                : userFnKey(d->name, d->param_count, nullptr);
+            userFnDecls[key] = d;
         }
         const MGLIRSymbol *fs = fnSymForDecl(&mod, d);
         if (!fs) continue;
-        /* GS/TCS/compute, or helpers with aggregate return: inline only. */
-        if (isGS || isCompute || isTCS)
+        /* GS/TCS/compute, out/inout helpers, or aggregate return: inline
+         * only. By-value LLVM callees cannot write out params, and a later
+         * outPtrs reload would clobber SSA writeback from inlined calls. */
+        if (isGS || isCompute || isTCS || force_inline)
             continue;
         if (d->type && d->type->base == MGL_AST_TYPE_STRUCT)
             continue;
