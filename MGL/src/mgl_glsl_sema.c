@@ -1737,6 +1737,8 @@ static const BiFn kBuiltins[] = {
     { "textureSize", 2, { BI_ARG_S2D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "textureSize", 2, { BI_ARG_S2D_SHADOW, BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "textureSize", 2, { BI_ARG_S2DA_SHADOW, BI_ARG_FLOAT }, BI_RET_IVEC3 },
+    { "textureSize", 2, { BI_ARG_SCUBEA, BI_ARG_FLOAT }, BI_RET_IVEC3 },
+    { "textureSize", 2, { BI_ARG_SCUBEA_SHADOW, BI_ARG_FLOAT }, BI_RET_IVEC3 },
     { "texelFetch", 3, { BI_ARG_S2D, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_S1D, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_S1DA, BI_ARG_IVEC2, BI_ARG_INT }, BI_RET_SAMP },
@@ -3193,7 +3195,8 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             const char *set = NULL;
             for (const char *p = f; *p; p++) {
                 const char *which = strchr("xyzw", *p)
-                    ? "xyzw" : strchr("rgba", *p) ? "rgba" : NULL;
+                    ? "xyzw" : strchr("rgba", *p) ? "rgba"
+                    : strchr("stpq", *p) ? "stpq" : NULL;
                 if (!which) {
                     sema_error(s, e->line, "no member named '%s' in struct",
                                e->u.member.field);
@@ -3224,6 +3227,49 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             }
             if (n == 1) {
                 /* GLSL 4.60 5.4.3: single-component swizzle is a scalar. */
+                return scratch_type(s, mglIRTypeScalar(obj->scalar));
+            }
+            return scratch_type(s, mglIRTypeVector(obj->scalar, (uint32_t)n));
+        }
+        if (obj->kind == MGLIR_TYPE_SCALAR) {
+            /* GLSL 4.20 / ARB_shading_language_420pack: scalar swizzle
+             * may only use the first component (x/r), possibly replicated. */
+            const char *f = e->u.member.field;
+            size_t n = 0;
+            const char *set = NULL;
+            for (const char *p = f; *p; p++) {
+                const char *which = strchr("xyzw", *p)
+                    ? "xyzw" : strchr("rgba", *p) ? "rgba"
+                    : strchr("stpq", *p) ? "stpq" : NULL;
+                if (!which) {
+                    sema_error(s, e->line, "invalid swizzle '%s'",
+                               e->u.member.field);
+                    return NULL;
+                }
+                if (!set) set = which;
+                else if (set != which) {
+                    sema_error(s, e->line, "invalid swizzle '%s'",
+                               e->u.member.field);
+                    return NULL;
+                }
+                if ((size_t)(strchr(set, *p) - set) != 0) {
+                    sema_error(s, e->line, "invalid swizzle '%s'",
+                               e->u.member.field);
+                    return NULL;
+                }
+                n++;
+                if (n > 4) {
+                    sema_error(s, e->line, "invalid swizzle '%s'",
+                               e->u.member.field);
+                    return NULL;
+                }
+            }
+            if (n == 0) {
+                sema_error(s, e->line, "invalid swizzle '%s'",
+                           e->u.member.field);
+                return NULL;
+            }
+            if (n == 1) {
                 return scratch_type(s, mglIRTypeScalar(obj->scalar));
             }
             return scratch_type(s, mglIRTypeVector(obj->scalar, (uint32_t)n));

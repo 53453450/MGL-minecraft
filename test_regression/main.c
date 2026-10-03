@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 183
+#define MAX_TESTS 185
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -20760,6 +20760,148 @@ static int test_gpu_shader5_overloading(unsigned char *pixels,
     return 0;
 }
 
+/* GLSL 4.60: textureSize(samplerCubeArray) / samplerCubeArrayShadow → ivec3. */
+static int test_texture_size_cube_array(unsigned char *pixels,
+                                        const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "uniform samplerCubeArray tex;\n"
+        "uniform samplerCubeArrayShadow shw;\n"
+        "flat out uvec3 sz;\n"
+        "flat out uvec3 szs;\n"
+        "void main() {\n"
+        "    sz = uvec3(textureSize(tex, 0));\n"
+        "    szs = uvec3(textureSize(shw, 0));\n"
+        "    gl_Position = vec4(0.0);\n"
+        "}\n";
+    GLuint s = compile_shader(GL_VERTEX_SHADER, vs);
+    if (!s) {
+        fprintf(stderr, "texture_size_cube_array: compile failed\n");
+        return 1;
+    }
+    glDeleteShader(s);
+    return 0;
+}
+
+/* ARB_shading_language_420pack: scalar.xxxx is vec4. */
+static int test_scalar_swizzle(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "const vec2 kPos[3] = vec2[](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));\n"
+        "void main() { gl_Position = vec4(kPos[gl_VertexID], 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 420 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "#define LITERAL 0.375\n"
+        "uniform float variable;\n"
+        "uniform vec3  expected_values;\n"
+        "struct Structure {\n"
+        "  vec2 m_xx; vec3 m_xxx; vec4 m_xxxx;\n"
+        "  vec2 m_nested_xx; vec3 m_nested_xxx; vec4 m_nested_xxxx;\n"
+        "};\n"
+        "bool check_values(in Structure structure, in float value)\n"
+        "{\n"
+        "  const vec2 xx   = vec2(value, value);\n"
+        "  const vec3 xxx  = vec3(value, value, value);\n"
+        "  const vec4 xxxx = vec4(value, value, value, value);\n"
+        "  bool result = true;\n"
+        "  if ((xx   != structure.m_xx)         ||\n"
+        "      (xxx  != structure.m_xxx)        ||\n"
+        "      (xxxx != structure.m_xxxx)       ||\n"
+        "      (xx   != structure.m_nested_xx)  ||\n"
+        "      (xxx  != structure.m_nested_xxx) ||\n"
+        "      (xxxx != structure.m_nested_xxxx) )\n"
+        "    result = false;\n"
+        "  return result;\n"
+        "}\n"
+        "void main() {\n"
+        "  Structure literal_result;\n"
+        "  Structure constant_result;\n"
+        "  float s = 0.25;\n"
+        "  vec4 v = s.xxxx;\n"
+        "  bool ok = abs(v.x-0.25)<1e-5 && abs(v.y-0.25)<1e-5 &&\n"
+        "            abs(v.z-0.25)<1e-5 && abs(v.w-0.25)<1e-5 &&\n"
+        "            abs(s.x-0.25)<1e-5;\n"
+        "  literal_result.m_xx          = LITERAL.xx  ;\n"
+        "  literal_result.m_xxx         = LITERAL.xxx ;\n"
+        "  literal_result.m_xxxx        = LITERAL.xxxx;\n"
+        "  literal_result.m_nested_xx   = LITERAL.x.rr.sss.rr  ;\n"
+        "  literal_result.m_nested_xxx  = LITERAL.s.xx.rrr.xxx ;\n"
+        "  literal_result.m_nested_xxxx = LITERAL.r.ss.xxx.ssss;\n"
+        "  const float constant = 0.125;\n"
+        "  constant_result.m_xx          = constant.xx  ;\n"
+        "  constant_result.m_xxx         = constant.xxx ;\n"
+        "  constant_result.m_xxxx        = constant.xxxx;\n"
+        "  constant_result.m_nested_xx   = constant.x.rr.sss.rr  ;\n"
+        "  constant_result.m_nested_xxx  = constant.s.xx.rrr.xxx ;\n"
+        "  constant_result.m_nested_xxxx = constant.r.ss.xxx.ssss;\n"
+        "  Structure variable_result;\n"
+        "  variable_result.m_xx          = variable.xx  ;\n"
+        "  variable_result.m_xxx         = variable.xxx ;\n"
+        "  variable_result.m_xxxx        = variable.xxxx;\n"
+        "  variable_result.m_nested_xx   = variable.x.rr.sss.rr  ;\n"
+        "  variable_result.m_nested_xxx  = variable.s.xx.rrr.xxx ;\n"
+        "  variable_result.m_nested_xxxx = variable.r.ss.xxx.ssss;\n"
+        "  ok = ok && check_values(literal_result,  expected_values.x) &&\n"
+        "       check_values(constant_result, expected_values.y) &&\n"
+        "       check_values(variable_result, expected_values.z);\n"
+        "  frag = ok ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) {
+        fprintf(stderr, "scalar_swizzle: link failed\n");
+        return 1;
+    }
+    GLuint color = 0, fbo = 0, vao = 0;
+    glGenTextures(1, &color);
+    glBindTexture(GL_TEXTURE_2D, color);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, REG_W, REG_H, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, NULL);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           color, 0);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(prog);
+    int fail = 0;
+    {
+        static const GLfloat variable_data = 0.75f;
+        static const GLfloat expected_values_data[3] = {0.375f, 0.125f, 0.75f};
+        GLint loc_v = glGetUniformLocation(prog, "variable");
+        GLint loc_e = glGetUniformLocation(prog, "expected_values");
+        if (loc_v < 0 || loc_e < 0) {
+            fprintf(stderr, "scalar_swizzle: uniform loc v=%d e=%d\n", loc_v, loc_e);
+            fail = 1;
+        } else {
+            glUniform1f(loc_v, variable_data);
+            glUniform3fv(loc_e, 1, expected_values_data);
+        }
+    }
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    const unsigned char *c =
+        &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+    if (c[0] > 20u || c[1] < 220u || c[2] > 20u) {
+        fprintf(stderr, "scalar_swizzle: center (%u,%u,%u,%u) want green\n",
+                c[0], c[1], c[2], c[3]);
+        fail = 1;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteProgram(prog);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return fail;
+}
+
 /* Table 8.12: SNORM formats are color-renderable (CR), so an R8_SNORM
  * color attachment is FRAMEBUFFER_COMPLETE and Clear is not IFO. */
 static int test_snorm_fbo_color_renderable(unsigned char *pixels,
@@ -26272,6 +26414,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("gpu_shader5_gather_offset_vs",
                     test_gpu_shader5_gather_offset_vs),
     SELF_CHECK_TEST("gpu_shader5_overloading", test_gpu_shader5_overloading),
+    SELF_CHECK_TEST("texture_size_cube_array", test_texture_size_cube_array),
+    SELF_CHECK_TEST("scalar_swizzle", test_scalar_swizzle),
     SELF_CHECK_TEST("snorm_fbo_color_renderable", test_snorm_fbo_color_renderable),
     SELF_CHECK_TEST("image_size", test_image_size),
     SELF_CHECK_TEST("image_size_tess_discard", test_image_size_tess_discard),

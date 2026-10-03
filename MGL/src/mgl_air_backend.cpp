@@ -359,7 +359,7 @@ static const MGLIRSymbol *fnSymForDecl(const MGLIRModule *mod, const MGLDecl *d)
 }
 
 bool swizzleIndices(const char *field, std::vector<uint32_t> *out) {
-    static const char *valid = "xyzwrgba";
+    static const char *valid = "xyzwrgbastpq";
     out->clear();
     for (const char *p = field; *p; p++) {
         const char *f = strchr(valid, *p);
@@ -375,6 +375,32 @@ MType swizzleType(const MType &base, size_t lanes) {
     /* GLSL 4.60 5.5: single-component swizzle yields a scalar. */
     t.vec = lanes == 1 ? 0 : (uint32_t)lanes;
     return t;
+}
+
+static llvm::Value *emitSwizzleValue(Codegen &cg, llvm::Value *obj,
+                                     const std::vector<uint32_t> &idx)
+{
+    if (!obj || idx.empty()) return nullptr;
+    if (!obj->getType()->isVectorTy()) {
+        if (idx.size() == 1) return obj;
+        llvm::Type *vt = llvm::FixedVectorType::get(
+            obj->getType(), (unsigned)idx.size());
+        llvm::Value *v = llvm::UndefValue::get(vt);
+        for (unsigned i = 0; i < idx.size(); i++)
+            v = cg.b->CreateInsertElement(v, obj, cg.b->getInt32(i));
+        return v;
+    }
+    if (idx.size() == 1)
+        return cg.b->CreateExtractElement(
+            obj, llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx),
+                                        idx[0]));
+    llvm::SmallVector<llvm::Constant *, 4> mask;
+    for (uint32_t i : idx)
+        mask.push_back(llvm::ConstantInt::get(
+            llvm::Type::getInt32Ty(*cg.ctx), i));
+    return cg.b->CreateShuffleVector(
+        obj, llvm::UndefValue::get(obj->getType()),
+        llvm::ConstantVector::get(mask));
 }
 
 static MGLIRScalar astBaseToIRScalar(uint32_t base) {
@@ -1334,22 +1360,15 @@ static llvm::Value *readIndexChain(Codegen &cg, const MGLExpr *e,
             cg.errmsg = "codegen: invalid swizzle";
             return nullptr;
         }
-        if (!obj->getType()->isVectorTy()) {
+        if (!obj->getType()->isVectorTy() &&
+            !obj->getType()->isFloatingPointTy() &&
+            !obj->getType()->isIntegerTy()) {
             cg.err = 1;
             cg.errmsg = std::string("codegen: member '") + e->u.member.field +
                         "' of a non-vector value is not supported";
             return nullptr;
         }
-        if (idx.size() == 1)
-            return cg.b->CreateExtractElement(obj,
-                llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx),
-                                       idx[0]));
-        llvm::SmallVector<llvm::Constant *, 4> mask;
-        for (uint32_t i : idx)
-            mask.push_back(llvm::ConstantInt::get(
-                llvm::Type::getInt32Ty(*cg.ctx), i));
-        return cg.b->CreateShuffleVector(obj, llvm::UndefValue::get(
-            obj->getType()), llvm::ConstantVector::get(mask));
+        return emitSwizzleValue(cg, obj, idx);
     }
     if (e->kind != MGL_EXPR_INDEX) { cg.err = 1; return nullptr; }
     llvm::Value *obj = readIndexChain(cg, e->u.index.object, rootVal, mod,
@@ -5619,7 +5638,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (!swizzleIndices(e->u.member.field, &idx)) { cg.err = 1; return nullptr; }
         llvm::Value *obj = emitExpr(cg, e->u.member.object, mod, locals);
         if (!obj) return nullptr;
-        if (!obj->getType()->isVectorTy()) {
+        if (!obj->getType()->isVectorTy() &&
+            !obj->getType()->isFloatingPointTy() &&
+            !obj->getType()->isIntegerTy()) {
             /* Member access on a non-vector (e.g. a struct-typed member
              * of a uniform block, whose aggregate reads are not wired
              * yet): fail with a diagnostic instead of an invalid
@@ -5630,15 +5651,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         "' of a non-vector value is not supported";
             return nullptr;
         }
-        if (idx.size() == 1)
-            return cg.b->CreateExtractElement(obj,
-                llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), idx[0]));
-        llvm::SmallVector<llvm::Constant *, 4> mask;
-        for (uint32_t i : idx)
-            mask.push_back(llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), i));
-        llvm::Value *undef = llvm::UndefValue::get(obj->getType());
-        return cg.b->CreateShuffleVector(obj, undef,
-            llvm::ConstantVector::get(mask));
+        return emitSwizzleValue(cg, obj, idx);
     }
     case MGL_EXPR_INDEX: {
         /* Matrix[i] yields a column vector (GLSL 4.60 5.5), vector[i] a
@@ -7752,6 +7765,22 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         cg, "air.get_array_size_texture_2d_array", i32,
                         {tex});
                     return pack3(w, h, n);
+                }
+                if (sampleKind == MGLIR_TEX_CUBE_ARRAY) {
+                    llvm::Value *w = callAirFn(
+                        cg, "air.get_width_texture_cube_array", i32,
+                        {tex, lod});
+                    llvm::Value *n = callAirFn(
+                        cg, "air.get_array_size_texture_cube_array", i32,
+                        {tex});
+                    return pack3(w, w, n);
+                }
+                if (sampleKind == MGLIR_TEX_CUBE) {
+                    llvm::Value *w = callAirFn(
+                        cg, "air.get_width_texture_cube", i32, {tex, lod});
+                    llvm::Value *h = callAirFn(
+                        cg, "air.get_height_texture_cube", i32, {tex, lod});
+                    return pack2(w, h);
                 }
                 llvm::Value *w = callAirFn(
                     cg, "air.get_width_texture_2d", i32, {tex, lod});
