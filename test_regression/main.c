@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 215
+#define MAX_TESTS 216
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -23607,6 +23607,152 @@ static int test_image_store_array_index(unsigned char *pixels, const char *out_p
     return fail;
 }
 
+/* GLSL 4.60 §8.12: same-invocation imageStore then imageLoad on
+ * imageBuffer must observe the last write (CTS advanced-memory-order VS). */
+static int test_image_buffer_vs_memory_order(unsigned char *pixels,
+                                             const char *out_path)
+{
+    (void)out_path;
+    (void)pixels;
+    const int W = 256, H = 256;
+    GLuint fbo, tex;
+    fbo = make_fbo(W, H, &tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+
+    static const char *vs =
+        "#version 420 core\n"
+        "layout(location = 0) in vec4 i_position;\n"
+        "out vec4 vs_color;\n"
+        "layout(rgba32f) coherent uniform imageBuffer g_buffer;\n"
+        "void main() {\n"
+        "  gl_Position = i_position;\n"
+        "  vs_color = vec4(0.0, 1.0, 0.0, 1.0);\n"
+        "  imageStore(g_buffer, gl_VertexID, vec4(1.0));\n"
+        "  imageStore(g_buffer, gl_VertexID, vec4(2.0));\n"
+        "  imageStore(g_buffer, gl_VertexID, vec4(3.0));\n"
+        "  if (imageLoad(g_buffer, gl_VertexID) != vec4(3.0))\n"
+        "    vs_color = vec4(1.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 420 core\n"
+        "in vec4 vs_color;\n"
+        "layout(location = 0) out vec4 o_color;\n"
+        "layout(rgba32f) uniform image2D g_image;\n"
+        "void main() {\n"
+        "  o_color = vs_color;\n"
+        "  ivec2 coord = ivec2(gl_FragCoord);\n"
+        "  for (int i = 0; i < 3; ++i) {\n"
+        "    imageStore(g_image, coord, vec4(i));\n"
+        "    vec4 v = imageLoad(g_image, coord);\n"
+        "    if (v != vec4(i)) {\n"
+        "      o_color = vec4(v.xyz, 0.0);\n"
+        "      break;\n"
+        "    }\n"
+        "  }\n"
+        "}\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) {
+        fprintf(stderr, "image_buffer_vs_memory_order: link failed\n");
+        return 1;
+    }
+    glUseProgram(prog);
+    glUniform1i(glGetUniformLocation(prog, "g_buffer"), 0);
+    glUniform1i(glGetUniformLocation(prog, "g_image"), 1);
+
+    GLuint buf = 0, tbo = 0, img2d = 0, vao = 0, vbo = 0;
+    glGenBuffers(1, &buf);
+    glBindBuffer(GL_TEXTURE_BUFFER, buf);
+    glBufferData(GL_TEXTURE_BUFFER, (GLsizeiptr)(sizeof(float) * 4 * 4), NULL,
+                 GL_STATIC_DRAW);
+    glGenTextures(1, &tbo);
+    glBindTexture(GL_TEXTURE_BUFFER, tbo);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, buf);
+    glGenTextures(1, &img2d);
+    glBindTexture(GL_TEXTURE_2D, img2d);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    {
+        float *z = (float *)calloc((size_t)W * (size_t)H * 4u, sizeof(float));
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, W, H, 0, GL_RGBA,
+                     GL_FLOAT, z);
+        free(z);
+    }
+    glBindImageTexture(0, tbo, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+    glBindImageTexture(1, img2d, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+
+    /* CTS CreateFullViewportQuad: 11-float / 44-byte interleaved vertex. */
+    float verts[] = {
+        -1.f, -1.f, 0,0,1, 0,0,1, 0,0,1,
+         1.f, -1.f, 0,0,1, 0,0,1, 0,0,1,
+        -1.f,  1.f, 0,0,1, 0,0,1, 0,0,1,
+         1.f,  1.f, 0,0,1, 0,0,1, 0,0,1,
+    };
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 44, 0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 44, (void *)8);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 44, (void *)20);
+    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 44, (void *)32);
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glEnableVertexAttribArray(2);
+    glEnableVertexAttribArray(3);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+
+    glClear(GL_COLOR_BUFFER_BIT);
+    glViewport(0, 0, W, H);
+    glBindVertexArray(vao);
+    glDrawArraysInstancedBaseInstance(GL_TRIANGLE_STRIP, 0, 4, 1, 0);
+    glFinish();
+    {
+        float *fp = (float *)malloc((size_t)W * (size_t)H * 4u * sizeof(float));
+        unsigned bad = 0;
+        unsigned i;
+        float sr = 0, sg = 0, sb = 0, sa = 0;
+        if (!fp) {
+            fprintf(stderr, "image_buffer_vs_memory_order: oom\n");
+            return 1;
+        }
+        glReadPixels(0, 0, W, H, GL_RGBA, GL_FLOAT, fp);
+        for (i = 0; i < (unsigned)W * (unsigned)H; i++) {
+            float r = fp[i * 4u + 0u];
+            float g = fp[i * 4u + 1u];
+            float b = fp[i * 4u + 2u];
+            float a = fp[i * 4u + 3u];
+            if (r > 0.02f || g < 0.98f || b > 0.02f || a < 0.98f) {
+                if (!bad) {
+                    sr = r;
+                    sg = g;
+                    sb = b;
+                    sa = a;
+                }
+                bad++;
+            }
+        }
+        free(fp);
+        glDeleteVertexArrays(1, &vao);
+        glDeleteBuffers(1, &vbo);
+        glDeleteBuffers(1, &buf);
+        glDeleteTextures(1, &tbo);
+        glDeleteTextures(1, &img2d);
+        glDeleteProgram(prog);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+        if (bad) {
+            fprintf(stderr,
+                    "image_buffer_vs_memory_order: first_bad=%g %g %g %g count=%u\n",
+                    sr, sg, sb, sa, bad);
+            return 1;
+        }
+        return 0;
+    }
+}
+
 /* CTS shader_image_size TES/TCS uses GL_RASTERIZER_DISCARD + point_mode.
  * TES-vertex raster must still evaluate TES (imageStore). */
 static int test_image_size_tess_discard(unsigned char *pixels, const char *out_path)
@@ -29215,6 +29361,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("image_size_version_gate", test_image_size_version_gate),
     SELF_CHECK_TEST("image_atomic_compswap", test_image_atomic_compswap),
     SELF_CHECK_TEST("image_store_array_index", test_image_store_array_index),
+    SELF_CHECK_TEST("image_buffer_vs_memory_order",
+                    test_image_buffer_vs_memory_order),
     SELF_CHECK_TEST("image_size_tess_discard", test_image_size_tess_discard),
     SELF_CHECK_TEST("large_uniform_array", test_large_uniform_array),
     SELF_CHECK_TEST("high_uniform_location", test_high_uniform_location),

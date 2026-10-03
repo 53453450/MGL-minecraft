@@ -7660,42 +7660,56 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 llvm::Type *vecTy = isInt ? v4i32 : v4f32;
                 llvm::Type *retTy = llvm::StructType::get(
                     *cg.ctx, {vecTy, cg.b->getInt8Ty()});
+                /* Apple texture.read() is (tex, get_read_sampler, coord,
+                 * offset, lod, access).  The 4-arg form compiled but VS
+                 * store→load on the same image missed the write (CTS
+                 * advanced-memory-order). */
+                llvm::StructType *smpT = llvm::StructType::getTypeByName(
+                    *cg.ctx, "struct._sampler_t");
+                if (!smpT)
+                    smpT = llvm::StructType::create(*cg.ctx,
+                                                   "struct._sampler_t");
+                llvm::Value *rdSmp = callAirFn(
+                    cg, "air.get_read_sampler", smpT->getPointerTo(2), {});
+                llvm::Value *lod0 = cg.b->getInt32(0);
+                llvm::Value *acc3 = cg.b->getInt32(3);
+                llvm::Value *off2 = llvm::ConstantVector::get(
+                    {cg.b->getInt32(0), cg.b->getInt32(0)});
+                llvm::Value *off3 = llvm::ConstantVector::get(
+                    {cg.b->getInt32(0), cg.b->getInt32(0), cg.b->getInt32(0)});
                 auto emitLoad = [&](llvm::Value *t,
                                     llvm::Value *) -> llvm::Value * {
                 llvm::Value *r = nullptr;
                 if (tk == MGLIR_TEX_BUFFER) {
                     r = callAirFn(cg, readName("air.read_texture_2d").c_str(),
-                                  retTy, {t, coord2, cg.b->getInt32(0),
-                                          cg.b->getInt32(3)});
+                                  retTy, {t, rdSmp, coord2, off2, lod0, acc3});
                 } else if (tk == MGLIR_TEX_3D) {
                     r = callAirFn(cg, readName("air.read_texture_3d").c_str(),
-                                  retTy, {t, coord3, cg.b->getInt32(0),
-                                          cg.b->getInt32(3)});
+                                  retTy, {t, rdSmp, coord3, off3, lod0, acc3});
                 } else if (tk == MGLIR_TEX_CUBE ||
                            tk == MGLIR_TEX_CUBE_ARRAY) {
                     r = callAirFn(cg,
                                   readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {t, coord2, layerOrFace,
-                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                                  retTy, {t, rdSmp, coord2, layerOrFace, off2,
+                                          lod0, acc3});
                 } else if (tk == MGLIR_TEX_2D_MS) {
                     r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {t, coord2, msSample,
-                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                                  retTy, {t, rdSmp, coord2, msSample, off2,
+                                          lod0, acc3});
                 } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
                     llvm::Value *flat = cg.b->CreateAdd(
                         cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
                         msSample);
                     r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {t, coord2, flat,
-                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                                  retTy, {t, rdSmp, coord2, flat, off2, lod0,
+                                          acc3});
                 } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
                     r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {t, coord2, layerOrFace,
-                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                                  retTy, {t, rdSmp, coord2, layerOrFace, off2,
+                                          lod0, acc3});
                 } else {
                     r = callAirFn(cg, readName("air.read_texture_2d").c_str(),
-                                  retTy, {t, coord2, cg.b->getInt32(0),
-                                          cg.b->getInt32(3)});
+                                  retTy, {t, rdSmp, coord2, off2, lod0, acc3});
                 }
                 return cg.b->CreateExtractValue(r, 0);
                 };
