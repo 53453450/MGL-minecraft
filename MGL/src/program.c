@@ -469,9 +469,17 @@ static void mglSeedUniformInitializers(GLMContext ctx, Program *pptr)
                 uint32_t *words_heap = NULL;
                 uint32_t base = 0u;
                 uint32_t n = 0u;
-                if (d->init->kind == MGL_EXPR_INIT_LIST) {
-                    n = d->init->u.init_list.arg_count;
-                    if (n == 0u) {
+                const int is_init_list = (d->init->kind == MGL_EXPR_INIT_LIST);
+                const int is_arr_ctor =
+                    (d->init->kind == MGL_EXPR_CALL &&
+                     d->init->u.call.is_array_ctor);
+                if (is_init_list || is_arr_ctor) {
+                    n = is_init_list ? d->init->u.init_list.arg_count
+                                     : d->init->u.call.arg_count;
+                    MGLExpr **args = is_init_list
+                        ? d->init->u.init_list.args
+                        : d->init->u.call.args;
+                    if (n == 0u || !args) {
                         continue;
                     }
                     if (n > 16u) {
@@ -482,22 +490,43 @@ static void mglSeedUniformInitializers(GLMContext ctx, Program *pptr)
                         words = words_heap;
                     }
                     int ok = 1;
+                    uint32_t want = (d->type && d->type->base)
+                        ? d->type->base : 0u;
                     for (uint32_t ei = 0u; ei < n; ei++) {
                         uint32_t tmp[16];
                         uint32_t ab = 0u;
-                        if (mglEvalConstUniformInit(
-                                d->init->u.init_list.args[ei], tmp, &ab) != 1u) {
+                        if (mglEvalConstUniformInit(args[ei], tmp, &ab) !=
+                            1u) {
                             ok = 0;
                             break;
                         }
                         if (ei == 0u) {
-                            base = ab;
+                            base = want ? want : ab;
                         }
-                        words[ei] = tmp[0];
+                        if (want == MGL_AST_TYPE_FLOAT &&
+                            ab != MGL_AST_TYPE_FLOAT) {
+                            GLfloat fv = 0.0f;
+                            if (ab == MGL_AST_TYPE_INT ||
+                                ab == MGL_AST_TYPE_BOOL) {
+                                GLint iv;
+                                memcpy(&iv, tmp, sizeof(iv));
+                                fv = (GLfloat)iv;
+                            } else if (ab == MGL_AST_TYPE_UINT) {
+                                GLuint uv;
+                                memcpy(&uv, tmp, sizeof(uv));
+                                fv = (GLfloat)uv;
+                            }
+                            memcpy(&words[ei], &fv, sizeof(fv));
+                        } else {
+                            words[ei] = tmp[0];
+                        }
                     }
                     if (!ok) {
                         free(words_heap);
                         continue;
+                    }
+                    if (want) {
+                        base = want;
                     }
                 } else {
                     n = mglEvalConstUniformInit(d->init, words, &base);

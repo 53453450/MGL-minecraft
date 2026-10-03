@@ -1844,6 +1844,104 @@ llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
     return cg.b->CreateGEP(cg.b->getInt8Ty(), base, cg.b->getInt64(off));
 }
 
+/* Pointer to a nested lvalue in arrayMem (shared[] / local arrays).
+ * Walks index/member using the LLVM array/struct type stored in
+ * arrayMemTypes so struct fields stay addressable. */
+static llvm::Value *arrayMemLValuePtr(
+    Codegen &cg, const MGLExpr *lhs, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals, llvm::Type **outTy)
+{
+    std::vector<const MGLExpr *> path;
+    const MGLExpr *cur = lhs;
+    while (cur && (cur->kind == MGL_EXPR_MEMBER ||
+                   cur->kind == MGL_EXPR_INDEX)) {
+        path.push_back(cur);
+        cur = cur->kind == MGL_EXPR_INDEX ? cur->u.index.object
+                                          : cur->u.member.object;
+    }
+    if (!cur || cur->kind != MGL_EXPR_VAR_REF || !cur->u.var_ref.name) {
+        cg.err = 1;
+        cg.errmsg = "codegen: unsupported arrayMem assignment target";
+        return nullptr;
+    }
+    const char *name = cur->u.var_ref.name;
+    auto mit = cg.arrayMem.find(name);
+    auto tit = cg.arrayMemTypes.find(name);
+    if (mit == cg.arrayMem.end() || tit == cg.arrayMemTypes.end()) {
+        cg.err = 1;
+        cg.errmsg = std::string("codegen: no arrayMem for '") + name + "'";
+        return nullptr;
+    }
+    std::reverse(path.begin(), path.end());
+    llvm::Value *ptr = mit->second;
+    llvm::Type *ty = tit->second;
+    const MGLIRType *ity = nullptr;
+    const MGLIRSymbol *sym = findSymbol(mod, name);
+    if (sym)
+        ity = sym->type;
+    for (const MGLExpr *pe : path) {
+        if (!ty) {
+            cg.err = 1;
+            cg.errmsg = "codegen: arrayMem path walked off the type";
+            return nullptr;
+        }
+        if (pe->kind == MGL_EXPR_INDEX) {
+            llvm::Value *idx = emitExpr(cg, pe->u.index.index, mod, locals);
+            if (!idx)
+                return nullptr;
+            idx = cg.b->CreateZExtOrTrunc(idx, cg.b->getInt64Ty());
+            if (auto *aty = llvm::dyn_cast<llvm::ArrayType>(ty)) {
+                ptr = cg.b->CreateInBoundsGEP(
+                    ty, ptr, {cg.b->getInt64(0), idx});
+                ty = aty->getElementType();
+            } else if (auto *vty =
+                           llvm::dyn_cast<llvm::FixedVectorType>(ty)) {
+                /* `vec4 a[N]; a[i][j] = v` / `mat4 m; m[c][r] = v`. */
+                llvm::Type *et = vty->getElementType();
+                unsigned as = ptr->getType()->getPointerAddressSpace();
+                ptr = cg.b->CreateBitCast(ptr, et->getPointerTo(as));
+                ptr = cg.b->CreateInBoundsGEP(et, ptr, idx);
+                ty = et;
+            } else {
+                cg.err = 1;
+                cg.errmsg = "codegen: indexed arrayMem is not an array";
+                return nullptr;
+            }
+            if (ity && ity->kind == MGLIR_TYPE_ARRAY)
+                ity = ity->elem_type;
+            else if (ity && (ity->kind == MGLIR_TYPE_VECTOR ||
+                             ity->kind == MGLIR_TYPE_MATRIX))
+                ity = nullptr;
+        } else {
+            uint32_t fi = UINT32_MAX;
+            if (ity && ity->kind == MGLIR_TYPE_STRUCT) {
+                for (uint32_t i = 0; i < ity->member_count; i++) {
+                    if (ity->member_names[i] &&
+                        strcmp(ity->member_names[i], pe->u.member.field) == 0) {
+                        fi = i;
+                        ity = ity->members[i];
+                        break;
+                    }
+                }
+            }
+            auto *sty = llvm::dyn_cast<llvm::StructType>(ty);
+            if (!sty || fi == UINT32_MAX || fi >= sty->getNumElements()) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: arrayMem has no member '") +
+                            (pe->u.member.field ? pe->u.member.field : "?") +
+                            "'";
+                return nullptr;
+            }
+            ptr = cg.b->CreateInBoundsGEP(
+                ty, ptr, {cg.b->getInt64(0), cg.b->getInt32(fi)});
+            ty = sty->getElementType(fi);
+        }
+    }
+    if (outTy)
+        *outTy = ty;
+    return ptr;
+}
+
 llvm::Value *emitAtomicCounterAddress(
     Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     const std::map<std::string, MType> &locals)
@@ -5706,6 +5804,34 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         if (!obj) return nullptr;
                         return cg.b->CreateExtractValue(obj, i);
                     }
+                }
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: unknown member '") +
+                            e->u.member.field + "'";
+                return nullptr;
+            }
+        }
+        /* Struct member of a loaded aggregate (shared Data a[N]; a[i].f). */
+        if (const MGLIRType *ot =
+                exprIRType(cg, e->u.member.object, mod, locals)) {
+            while (ot->kind == MGLIR_TYPE_ARRAY && ot->elem_type)
+                ot = ot->elem_type;
+            if (ot->kind == MGLIR_TYPE_STRUCT) {
+                llvm::Value *obj =
+                    emitExpr(cg, e->u.member.object, mod, locals);
+                if (!obj)
+                    return nullptr;
+                if (!obj->getType()->isStructTy()) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: member '") +
+                                e->u.member.field +
+                                "' expected a struct value";
+                    return nullptr;
+                }
+                for (uint32_t i = 0; i < ot->member_count; i++) {
+                    if (ot->member_names[i] &&
+                        strcmp(ot->member_names[i], e->u.member.field) == 0)
+                        return cg.b->CreateExtractValue(obj, i);
                 }
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: unknown member '") +
@@ -9612,15 +9738,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     return v;
                 }
             }
-            /* Memory-backed scalar array: store through GEP. */
+            /* Memory-backed arrays: store through GEP, including nested
+             * struct members (`shared Data a[N]; a[i].f = v`). */
             if (name && cg.arrayMem.count(name)) {
-                if (lhs->kind != MGL_EXPR_INDEX ||
-                    lhs->u.index.object->kind != MGL_EXPR_VAR_REF) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: nested store into arrayMem not "
-                                "supported";
+                llvm::Type *elemTy = nullptr;
+                llvm::Value *ep =
+                    arrayMemLValuePtr(cg, lhs, mod, locals, &elemTy);
+                if (!ep || !elemTy)
                     return nullptr;
-                }
                 if (e->u.assign.op != MGL_OP_ASSIGN) {
                     llvm::Value *old = emitExpr(cg, lhs, mod, locals);
                     if (!old) return nullptr;
@@ -9643,11 +9768,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         exprType(cg, e->u.assign.rhs, mod, locals));
                     if (!v) return nullptr;
                 }
-                llvm::Value *idx =
-                    emitExpr(cg, lhs->u.index.index, mod, locals);
-                if (!idx) return nullptr;
-                llvm::Value *ep =
-                    arrayMemGEP(cg, name, cg.arrayMem[name], idx);
+                if (v->getType() != elemTy)
+                    v = coerceScalar(cg, v,
+                        exprType(cg, lhs, mod, locals).scalar);
                 cg.b->CreateAlignedStore(v, ep, llvm::Align(4));
                 return v;
             }
@@ -12733,11 +12856,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             const MGLIRSymbol *ss = mod.symbols[si];
             if (!ss || !ss->name || ss->is_function) continue;
             if (!(ss->qualifiers & MGL_AST_Q_SHARED)) continue;
-            MType st = typeFromIR(ss->type);
             uint32_t sz = airSharedVarSize(ss->type);
             if (!sz) continue;
             off = (off + 15u) & ~15u;
-            llvm::Type *arrTy = llvmType(st, ctx);
+            llvm::Type *arrTy = llvmTypeFromIR(ss->type, ctx);
             llvm::Value *bytes = cg.b->CreateConstInBoundsGEP1_32(
                 llvm::Type::getInt8Ty(ctx), sharedBlob, off);
             llvm::Value *ptr =
