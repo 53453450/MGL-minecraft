@@ -339,6 +339,71 @@ static Sym *symtab_lookup_local(SymTab *t, const char *name)
     return NULL;
 }
 
+/* GLSL 4.60 §3.7: keywords and reserved words are not identifiers. */
+static int reserved_ident_cmp(const void *a, const void *b)
+{
+    const char *const *sa = (const char *const *)a;
+    const char *const *sb = (const char *const *)b;
+    return strcmp(*sa, *sb);
+}
+
+static int ident_is_keyword_or_reserved(const char *n)
+{
+    static const char *const words[] = {
+        "active", "asm", "atomic_uint", "attribute", "bool",
+        "break", "buffer", "bvec2", "bvec3", "bvec4",
+        "case", "cast", "centroid", "class", "coherent",
+        "common", "const", "continue", "default", "discard",
+        "dmat2", "dmat2x2", "dmat2x3", "dmat2x4", "dmat3",
+        "dmat3x2", "dmat3x3", "dmat3x4", "dmat4", "dmat4x2",
+        "dmat4x3", "dmat4x4", "do", "double", "dvec2",
+        "dvec3", "dvec4", "else", "enum", "extern",
+        "external", "false", "filter", "fixed", "flat",
+        "float", "for", "fvec2", "fvec3", "fvec4",
+        "goto", "half", "highp", "hvec2", "hvec3",
+        "hvec4", "if", "iimage1D", "iimage1DArray", "iimage2D",
+        "iimage2DArray", "iimage2DMS", "iimage2DMSArray", "iimage2DRect", "iimage3D",
+        "iimageBuffer", "iimageCube", "iimageCubeArray", "image1D", "image1DArray",
+        "image2D", "image2DArray", "image2DMS", "image2DMSArray", "image2DRect",
+        "image3D", "imageBuffer", "imageCube", "imageCubeArray", "in",
+        "inline", "inout", "input", "int", "interface",
+        "invariant", "isampler1D", "isampler1DArray", "isampler2D", "isampler2DArray",
+        "isampler2DMS", "isampler2DMSArray", "isampler2DRect", "isampler3D", "isamplerBuffer",
+        "isamplerCube", "isamplerCubeArray", "ivec2", "ivec3", "ivec4",
+        "layout", "long", "lowp", "mat2", "mat2x2",
+        "mat2x3", "mat2x4", "mat3", "mat3x2", "mat3x3",
+        "mat3x4", "mat4", "mat4x2", "mat4x3", "mat4x4",
+        "mediump", "namespace", "noinline", "noperspective", "out",
+        "output", "partition", "patch", "precise", "precision",
+        "public", "readonly", "resource", "restrict", "return",
+        "sample", "sampler1D", "sampler1DArray", "sampler1DArrayShadow", "sampler1DShadow",
+        "sampler2D", "sampler2DArray", "sampler2DArrayShadow", "sampler2DMS", "sampler2DMSArray",
+        "sampler2DRect", "sampler2DRectShadow", "sampler2DShadow", "sampler3D", "sampler3DRect",
+        "samplerBuffer", "samplerCube", "samplerCubeArray", "samplerCubeArrayShadow", "samplerCubeShadow",
+        "shared", "short", "sizeof", "smooth", "static",
+        "struct", "subroutine", "superp", "switch", "template",
+        "this", "true", "typedef", "uimage1D", "uimage1DArray",
+        "uimage2D", "uimage2DArray", "uimage2DMS", "uimage2DMSArray", "uimage2DRect",
+        "uimage3D", "uimageBuffer", "uimageCube", "uimageCubeArray", "uint",
+        "uniform", "union", "unsigned", "usampler1D", "usampler1DArray",
+        "usampler2D", "usampler2DArray", "usampler2DMS", "usampler2DMSArray", "usampler2DRect",
+        "usampler3D", "usamplerBuffer", "usamplerCube", "usamplerCubeArray", "using",
+        "uvec2", "uvec3", "uvec4", "varying", "vec2",
+        "vec3", "vec4", "void", "volatile", "while",
+        "writeonly",
+    };
+    if (!n || !n[0]) return 0;
+    return bsearch(&n, words, sizeof(words) / sizeof(words[0]),
+                   sizeof(words[0]), reserved_ident_cmp) != NULL;
+}
+
+static void check_user_ident(Sema *s, uint32_t line, const char *n)
+{
+    if (ident_is_keyword_or_reserved(n)) {
+        sema_error(s, line, "illegal use of reserved identifier '%s'", n);
+    }
+}
+
 static int symtab_insert(SymTab *t, Sym *s)
 {
     if (!t->top) {
@@ -4245,6 +4310,11 @@ static void check_image_decl(Sema *s, const MGLDecl *d, const MGLIRType *t)
 
 static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
 {
+    check_user_ident(s, d->line, d->name);
+    for (uint32_t i = 0; i < d->param_count; i++) {
+        if (d->params[i])
+            check_user_ident(s, d->params[i]->line, d->params[i]->name);
+    }
     Sym *sym = sym_new(d->name);
     if (!sym) {
         return;
@@ -4446,6 +4516,26 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             inherited_major = s->tu->default_buffer_matrix_major;
         else if (d->qualifiers & MGL_AST_Q_UNIFORM)
             inherited_major = s->tu->default_uniform_matrix_major;
+    }
+    if (d->name)
+        check_user_ident(s, d->line, d->name);
+    if (d->type && d->type->base == MGL_AST_TYPE_STRUCT && d->type->name)
+        check_user_ident(s, d->line, d->type->name);
+    if (d->is_block && d->type && d->type->base != MGL_AST_TYPE_STRUCT) {
+        sema_error(s, d->line,
+                   "illegal use of reserved identifier as interface block name");
+    }
+    if ((d->qualifiers & (MGL_AST_Q_BUFFER | MGL_AST_Q_UNIFORM)) &&
+        d->type && d->type->base == MGL_AST_TYPE_STRUCT &&
+        !d->type->name && !d->name && d->struct_member_count > 0) {
+        /* `buffer struct { ... };` — parser ate `struct` as the keyword. */
+        sema_error(s, d->line,
+                   "illegal use of reserved identifier as interface block name");
+    }
+    for (uint32_t mi = 0; mi < d->struct_member_count; mi++) {
+        const MGLDecl *m = d->struct_members[mi];
+        if (m)
+            check_user_ident(s, m->line, m->name);
     }
     /* GLSL §4.3.7 / §4.3.9: buffer variables must be interface-block
      * members (or the block itself), never freestanding globals. */

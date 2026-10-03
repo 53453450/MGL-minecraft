@@ -718,6 +718,54 @@ static void test_invalid_vs_inputs(void)
     teardown();
 }
 
+static void test_reserved_idents(void)
+{
+    analyze("#version 460 core\n"
+            "const vec4 common = vec4(1.0);\n"
+            "void main() {}\n");
+    CHECK(error_count > 0, "reserved ident common");
+    teardown();
+
+    analyze("#version 460 core\n"
+            "void float(in vec4 t) {}\n"
+            "void main() {}\n");
+    CHECK(error_count > 0, "keyword as function name");
+    teardown();
+
+    analyze("#version 460 core\n"
+            "in vec4 ok;\n"
+            "void main() { gl_Position = ok; }\n");
+    CHECK(error_count == 0, "legal ident still accepted");
+    teardown();
+
+    analyze_ex("#version 430 core\n"
+               "layout(local_size_x = 1) in;\n"
+               "buffer float {\n"
+               "    vec4 test;\n"
+               "};\n"
+               "void main() {}\n",
+               MGL_STAGE_COMPUTE, &module, &errors, &error_count);
+    CHECK(error_count > 0, "keyword as SSBO block name");
+    teardown();
+
+    analyze("#version 460 core\n"
+            "void main() {\n"
+            "    struct attribute { vec4 test; };\n"
+            "}\n");
+    CHECK(error_count > 0, "keyword as struct name");
+    teardown();
+
+    analyze_ex("#version 430 core\n"
+               "layout(local_size_x = 1) in;\n"
+               "buffer atomic_uint {\n"
+               "    vec4 test;\n"
+               "};\n"
+               "void main() {}\n",
+               MGL_STAGE_COMPUTE, &module, &errors, &error_count);
+    CHECK(error_count > 0, "atomic_uint as SSBO block name");
+    teardown();
+}
+
 int main(void)
 {
     printf("MGLGLSL sema skeleton tests\n");
@@ -737,6 +785,7 @@ int main(void)
     test_image2d_array_store();
     test_constructors();
     test_invalid_vs_inputs();
+    test_reserved_idents();
     test_interface_ok();
     test_interface_mismatch();
     test_interface_abi_qualifiers();
