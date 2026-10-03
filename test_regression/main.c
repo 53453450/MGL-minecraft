@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 203
+#define MAX_TESTS 204
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -7923,6 +7923,88 @@ cleanup:
     if (vao) glDeleteVertexArrays(1, &vao);
     if (p_smooth) glDeleteProgram(p_smooth);
     if (p_np) glDeleteProgram(p_np);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+static int test_texture_gather_clamp_border(unsigned char *pixels,
+                                            const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2((gl_VertexID == 1 || gl_VertexID == 2) ? 1.0 : -1.0,\n"
+        "                (gl_VertexID >= 2) ? 1.0 : -1.0);\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 400 core\n"
+        "uniform isampler2D s;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() {\n"
+        "  ivec4 g = textureGather(s, vec2(0.0), 0);\n"
+        "  frag = vec4(g.x < 0 ? 1.0 : 0.0, g.y < 0 ? 1.0 : 0.0,\n"
+        "              g.z < 0 ? 1.0 : 0.0, g.w < 0 ? 1.0 : 0.0);\n"
+        "}\n";
+    GLint texels[2 * 2 * 4];
+    int x, y;
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(16, 16, &color);
+    GLuint prog = link_program(vs, fs);
+    GLuint tex = 0u, vao = 0u;
+    int result = 1;
+    if (!fbo || !prog) {
+        fprintf(stderr, "texture_gather_clamp_border: link/fbo failed\n");
+        goto cleanup;
+    }
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+    {
+        float border[4] = {-1.f, -1.f, -1.f, -1.f};
+        glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
+    }
+    for (y = 0; y < 2; y++) {
+        for (x = 0; x < 2; x++) {
+            int i = (y * 2 + x) * 4;
+            texels[i + 0] = x;
+            texels[i + 1] = y;
+            texels[i + 2] = x;
+            texels[i + 3] = y;
+        }
+    }
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32I, 2, 2, 0, GL_RGBA_INTEGER,
+                 GL_INT, texels);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, 16, 16);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glUseProgram(prog);
+    glUniform1i(glGetUniformLocation(prog, "s"), 0);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glFinish();
+    glReadPixels(0, 0, 16, 16, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *p = &pixels[(8 * 16 + 8) * 4];
+        if (p[0] < 200u || p[1] > 20u || p[2] < 200u || p[3] < 200u) {
+            fprintf(stderr,
+                    "texture_gather_clamp_border: expected OOB,-,OOB,OOB "
+                    "got (%u,%u,%u,%u)\n",
+                    p[0], p[1], p[2], p[3]);
+            goto cleanup;
+        }
+    }
+    result = 0;
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (tex) glDeleteTextures(1, &tex);
+    if (prog) glDeleteProgram(prog);
     if (fbo) glDeleteFramebuffers(1, &fbo);
     if (color) glDeleteTextures(1, &color);
     return result;
@@ -28075,6 +28157,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("compute_link_local_size", test_compute_link_local_size),
     SELF_CHECK_TEST("gs_pervertex_clip", test_gs_pervertex_clip),
     SELF_CHECK_TEST("glsl_noperspective", test_glsl_noperspective),
+    SELF_CHECK_TEST("texture_gather_clamp_border",
+                    test_texture_gather_clamp_border),
     SELF_CHECK_TEST("air_pipeline_safe_fallback",
                     test_air_pipeline_safe_fallback),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),

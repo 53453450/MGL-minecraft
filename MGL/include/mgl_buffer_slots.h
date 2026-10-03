@@ -44,6 +44,7 @@
 #define MGL_BUFFER_SLOTS_H
 
 #include "glcorearb.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -107,6 +108,11 @@ typedef enum {
      * kMGLBufferSlot_TESGlIn, FS-only. */
     kMGLFragCoordParamsBufferIndex = 30,
 
+    /* Integer textureGather wrap/border table (VS and FS).  Indexed by
+     * Metal texture slot; see MGLSamplerWrapSlot.  Slot 23 is the compute
+     * ABI runtime-array table, but that kernel does not share this encoder. */
+    kMGLSamplerWrapBufferIndex = 23,
+
     /* LOD_BIAS_MAX uniform buffer (FS path only).  Holds a single float
      * (MAX_TEXTURE_LOD_BIAS) for GL 4.6 §8.14.1 eq 8.8:
      *   clamp(biastexobj + biasshader, -biasmax, biasmax)
@@ -147,6 +153,15 @@ typedef enum {
  * in bytes (was a static const in the ObjC MGLRenderer+Draw_Private.h). */
 #define kMGLMaxBufferSlots 31
 enum { kMGLMinimumStageBindingSize = 256 };
+
+#define MGL_SAMPLER_WRAP_SLOT_COUNT 16
+typedef struct MGLSamplerWrapSlot {
+    int32_t wrap_s;
+    int32_t wrap_t;
+    int32_t wrap_r;
+    int32_t _pad;
+    int32_t border[4];
+} MGLSamplerWrapSlot;
 
 /* Returns GL_TRUE if `slot` is reserved by MGL for the given shader `stage`
  * and therefore MUST NOT be assigned to a GL user buffer (UBO/SSBO/atomic).

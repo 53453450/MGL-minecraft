@@ -132,6 +132,9 @@ int mglRenderProcessGLStateAfterDirty(const MGLProcessGLStateAfterInputs *in,
     if (in->frag_needs_lod_bias) {
         out->bind_lod_bias_slot = 1u;
     }
+    if (in->draw_command) {
+        out->bind_sampler_wrap_slot = 1u;
+    }
     if (in->draw_command && in->fragment_trace_uses_rt_sampled_copy) {
         out->maybe_mark_rt_sampled_copy = 1u;
     }

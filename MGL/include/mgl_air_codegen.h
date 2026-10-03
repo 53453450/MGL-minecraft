@@ -188,6 +188,8 @@ struct Codegen {
     std::map<std::string, llvm::Value *> uboPtrs;   /* uniform block -> buffer */
     std::map<std::string, llvm::Value *> texValues;  /* sampler name -> texture */
     std::map<std::string, llvm::Value *> smpValues;  /* sampler name -> sampler */
+    std::map<std::string, uint32_t> texMetalIndex; /* sampler -> Metal tex slot */
+    llvm::Value *samplerWrapPtr = nullptr; /* integer gather wrap/border table */
     std::map<std::string, std::vector<llvm::Value *>> texArrayValues;
     std::map<std::string, std::vector<llvm::Value *>> smpArrayValues;
     std::map<std::string, const MGLIRType *> samplerIRTypes;

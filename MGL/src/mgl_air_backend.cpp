@@ -148,6 +148,157 @@ static llvm::Value *samplerTexValue(Codegen &cg, const char *name) {
     return nullptr;
 }
 
+/* GLSL 4.60 §8.9.2 integer textureGather with wrap from the bound sampler.
+ * Metal only has three named border colors, so RGBA32I CLAMP_TO_BORDER −1
+ * must be applied here. */
+static llvm::Value *emitIntegerGather2D(
+    Codegen &cg, llvm::Value *tex, llvm::Value *uv, llvm::Value *off,
+    llvm::Value *comp, llvm::Value *layer, MGLIRScalar texel,
+    MGLIRTexKind kind, uint32_t metalSlot, llvm::Value *metalSlotDyn)
+{
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
+    llvm::Type *v4i32 = llvm::FixedVectorType::get(i32, 4);
+    llvm::Type *retTy =
+        llvm::StructType::get(*cg.ctx, {v4i32, cg.b->getInt8Ty()});
+    const char *widthFn = kind == MGLIR_TEX_2D_ARRAY
+        ? "air.get_width_texture_2d_array"
+        : "air.get_width_texture_2d";
+    const char *heightFn = kind == MGLIR_TEX_2D_ARRAY
+        ? "air.get_height_texture_2d_array"
+        : "air.get_height_texture_2d";
+    const char *readFn = texel == MGLIR_SCALAR_UINT
+        ? (kind == MGLIR_TEX_2D_ARRAY
+               ? "air.read_texture_2d_array.u.v4i32"
+               : "air.read_texture_2d.u.v4i32")
+        : (kind == MGLIR_TEX_2D_ARRAY
+               ? "air.read_texture_2d_array.s.v4i32"
+               : "air.read_texture_2d.s.v4i32");
+    llvm::Value *lod = cg.b->getInt32(0);
+    llvm::Value *w = callAirFn(cg, widthFn, i32, {tex, lod});
+    llvm::Value *h = callAirFn(cg, heightFn, i32, {tex, lod});
+    llvm::Value *wf = cg.b->CreateSIToFP(w, f32);
+    llvm::Value *hf = cg.b->CreateSIToFP(h, f32);
+    llvm::Value *ux = cg.b->CreateExtractElement(uv, cg.b->getInt32(0));
+    llvm::Value *uy = cg.b->CreateExtractElement(uv, cg.b->getInt32(1));
+    if (!ux->getType()->isFloatingPointTy())
+        ux = cg.b->CreateSIToFP(ux, f32);
+    if (!uy->getType()->isFloatingPointTy())
+        uy = cg.b->CreateSIToFP(uy, f32);
+    llvm::Value *half = llvm::ConstantFP::get(f32, 0.5);
+    llvm::Value *i0f = cg.b->CreateUnaryIntrinsic(
+        llvm::Intrinsic::floor, cg.b->CreateFSub(cg.b->CreateFMul(ux, wf), half));
+    llvm::Value *j0f = cg.b->CreateUnaryIntrinsic(
+        llvm::Intrinsic::floor, cg.b->CreateFSub(cg.b->CreateFMul(uy, hf), half));
+    llvm::Value *ox = cg.b->CreateExtractElement(off, cg.b->getInt32(0));
+    llvm::Value *oy = cg.b->CreateExtractElement(off, cg.b->getInt32(1));
+    llvm::Value *i0 = cg.b->CreateAdd(cg.b->CreateFPToSI(i0f, i32), ox);
+    llvm::Value *j0 = cg.b->CreateAdd(cg.b->CreateFPToSI(j0f, i32), oy);
+
+    llvm::Value *wrapS = cg.b->getInt32(GL_REPEAT);
+    llvm::Value *wrapT = cg.b->getInt32(GL_REPEAT);
+    llvm::Value *border = llvm::Constant::getNullValue(v4i32);
+    if (cg.samplerWrapPtr) {
+        llvm::Value *idx = metalSlotDyn
+            ? metalSlotDyn
+            : (llvm::Value *)cg.b->getInt32(metalSlot);
+        llvm::Value *base = cg.b->CreateBitCast(
+            cg.samplerWrapPtr, i32->getPointerTo(1));
+        llvm::Value *off8 = cg.b->CreateMul(idx, cg.b->getInt32(8));
+        wrapS = cg.b->CreateAlignedLoad(
+            i32, cg.b->CreateGEP(i32, base, off8), llvm::Align(4));
+        wrapT = cg.b->CreateAlignedLoad(
+            i32,
+            cg.b->CreateGEP(i32, base,
+                            cg.b->CreateAdd(off8, cg.b->getInt32(1))),
+            llvm::Align(4));
+        llvm::Value *b0 = cg.b->CreateAlignedLoad(
+            i32,
+            cg.b->CreateGEP(i32, base,
+                            cg.b->CreateAdd(off8, cg.b->getInt32(4))),
+            llvm::Align(4));
+        llvm::Value *b1 = cg.b->CreateAlignedLoad(
+            i32,
+            cg.b->CreateGEP(i32, base,
+                            cg.b->CreateAdd(off8, cg.b->getInt32(5))),
+            llvm::Align(4));
+        llvm::Value *b2 = cg.b->CreateAlignedLoad(
+            i32,
+            cg.b->CreateGEP(i32, base,
+                            cg.b->CreateAdd(off8, cg.b->getInt32(6))),
+            llvm::Align(4));
+        llvm::Value *b3 = cg.b->CreateAlignedLoad(
+            i32,
+            cg.b->CreateGEP(i32, base,
+                            cg.b->CreateAdd(off8, cg.b->getInt32(7))),
+            llvm::Align(4));
+        border = llvm::UndefValue::get(v4i32);
+        border = cg.b->CreateInsertElement(border, b0, cg.b->getInt32(0));
+        border = cg.b->CreateInsertElement(border, b1, cg.b->getInt32(1));
+        border = cg.b->CreateInsertElement(border, b2, cg.b->getInt32(2));
+        border = cg.b->CreateInsertElement(border, b3, cg.b->getInt32(3));
+    }
+
+    auto wrapCoord = [&](llvm::Value *t, llvm::Value *n, llvm::Value *mode,
+                         llvm::Value *&oob) {
+        llvm::Value *isRepeat =
+            cg.b->CreateICmpEQ(mode, cg.b->getInt32(GL_REPEAT));
+        llvm::Value *isBorder =
+            cg.b->CreateICmpEQ(mode, cg.b->getInt32(GL_CLAMP_TO_BORDER));
+        llvm::Value *n1 = cg.b->CreateSub(n, cg.b->getInt32(1));
+        llvm::Value *nPos = cg.b->CreateICmpSGT(n, cg.b->getInt32(0));
+        llvm::Value *nSafe = cg.b->CreateSelect(nPos, n, cg.b->getInt32(1));
+        llvm::Value *rem = cg.b->CreateSRem(t, nSafe);
+        llvm::Value *neg = cg.b->CreateICmpSLT(rem, cg.b->getInt32(0));
+        llvm::Value *rep = cg.b->CreateSelect(
+            neg, cg.b->CreateAdd(rem, nSafe), rem);
+        llvm::Value *edge = cg.b->CreateSelect(
+            cg.b->CreateICmpSLT(t, cg.b->getInt32(0)), cg.b->getInt32(0), t);
+        edge = cg.b->CreateSelect(cg.b->CreateICmpSGT(edge, n1), n1, edge);
+        llvm::Value *axisOob = cg.b->CreateOr(
+            cg.b->CreateICmpSLT(t, cg.b->getInt32(0)),
+            cg.b->CreateICmpSGE(t, n));
+        oob = cg.b->CreateOr(oob, cg.b->CreateAnd(isBorder, axisOob));
+        llvm::Value *r = cg.b->CreateSelect(isRepeat, rep, edge);
+        return cg.b->CreateSelect(isBorder, t, r);
+    };
+
+    const int oxk[4] = {0, 1, 1, 0};
+    const int oyk[4] = {1, 1, 0, 0};
+    llvm::Value *result = llvm::UndefValue::get(v4i32);
+    llvm::Value *c = comp ? comp : cg.b->getInt32(0);
+    llvm::Value *c0 = cg.b->CreateICmpSLT(c, cg.b->getInt32(0));
+    llvm::Value *c3 = cg.b->CreateICmpSGT(c, cg.b->getInt32(3));
+    c = cg.b->CreateSelect(c0, cg.b->getInt32(0), c);
+    c = cg.b->CreateSelect(c3, cg.b->getInt32(3), c);
+    for (int k = 0; k < 4; k++) {
+        llvm::Value *oob = cg.b->getInt1(false);
+        llvm::Value *ii = cg.b->CreateAdd(i0, cg.b->getInt32(oxk[k]));
+        llvm::Value *jj = cg.b->CreateAdd(j0, cg.b->getInt32(oyk[k]));
+        ii = wrapCoord(ii, w, wrapS, oob);
+        jj = wrapCoord(jj, h, wrapT, oob);
+        llvm::Value *xy = llvm::UndefValue::get(v2i32);
+        xy = cg.b->CreateInsertElement(xy, ii, cg.b->getInt32(0));
+        xy = cg.b->CreateInsertElement(xy, jj, cg.b->getInt32(1));
+        llvm::Value *rd;
+        if (kind == MGLIR_TEX_2D_ARRAY) {
+            llvm::Value *lay = layer ? layer : cg.b->getInt32(0);
+            rd = callAirFn(cg, readFn, retTy,
+                           {tex, xy, lay, lod, cg.b->getInt32(3)});
+        } else {
+            rd = callAirFn(cg, readFn, retTy,
+                           {tex, xy, lod, cg.b->getInt32(3)});
+        }
+        llvm::Value *texel4 = cg.b->CreateExtractValue(rd, 0);
+        llvm::Value *lane = cg.b->CreateExtractElement(texel4, c);
+        llvm::Value *bcomp = cg.b->CreateExtractElement(border, c);
+        lane = cg.b->CreateSelect(oob, bcomp, lane);
+        result = cg.b->CreateInsertElement(result, lane, cg.b->getInt32(k));
+    }
+    return result;
+}
+
 /* Scalar base for an LLVM type, used to coerce call arguments. */
 static MGLIRScalar scalarFromType(llvm::Type *t) {
     if (auto *fv = llvm::dyn_cast<llvm::FixedVectorType>(t))
@@ -8128,6 +8279,26 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         arrayLayer->getType()->isFloatingPointTy()) {
                         arrayLayer = cg.b->CreateFPToSI(arrayLayer, i32);
                     }
+                    const bool int2dGather =
+                        !isShadow &&
+                        (texel == MGLIR_SCALAR_INT ||
+                         texel == MGLIR_SCALAR_UINT) &&
+                        (sampleKind == MGLIR_TEX_2D ||
+                         sampleKind == MGLIR_TEX_2D_ARRAY) &&
+                        cg.samplerWrapPtr;
+                    if (int2dGather) {
+                        uint32_t slot = 0;
+                        llvm::Value *slotDyn = nullptr;
+                        auto mi = cg.texMetalIndex.find(samplerName);
+                        if (mi != cg.texMetalIndex.end())
+                            slot = mi->second;
+                        if (dynamicSamplerArray && arrayIndex)
+                            slotDyn = cg.b->CreateAdd(
+                                cg.b->getInt32(slot), arrayIndex);
+                        return emitIntegerGather2D(
+                            cg, t, sampleCoord, off, comp, arrayLayer, texel,
+                            sampleKind, slot, slotDyn);
+                    }
                     std::vector<llvm::Value *> args;
                     const char *iname = nullptr;
                     if (isShadow) {
@@ -11389,6 +11560,28 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             imageCount += v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         }
     }
+    bool needsSamplerWrapBuf = false;
+    {
+        uint32_t texLocAssign = 0;
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::TEXTURE) continue;
+            const MGLIRType *st = v.opaqueType;
+            if (!st) {
+                const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
+                st = ts ? ts->type : nullptr;
+            }
+            while (st && st->kind == MGLIR_TYPE_ARRAY)
+                st = st->elem_type;
+            if (st && st->kind == MGLIR_TYPE_SAMPLER && !st->tex_depth &&
+                (st->tex_storage == MGLIR_SCALAR_INT ||
+                 st->tex_storage == MGLIR_SCALAR_UINT) &&
+                (st->tex_kind == MGLIR_TEX_2D ||
+                 st->tex_kind == MGLIR_TEX_2D_ARRAY))
+                needsSamplerWrapBuf = true;
+            texLocAssign += v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
+        }
+        (void)texLocAssign;
+    }
     const uint32_t stageInputStride = (isTCS || isGS)
         ? stageRecordStride(syms, VarSym::VARYING, false,
                             MGL_AIR_PER_VERTEX_STRIDE)
@@ -12016,6 +12209,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     if (isTESCompute)
         paramTys.push_back(llvm::FixedVectorType::get(
             llvm::Type::getInt32Ty(ctx), 3));
+    if (needsSamplerWrapBuf)
+        paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     if (!retTy && mgl_env_flag_enabled("MGL_GS_TRACE")) {
         fprintf(stderr, "MGLGSTRACE site1 NULL retTy isGS=%d isTCS=%d isCompute=%d isTES=%d\n",
                 (int)isGS, (int)isTCS, (int)isCompute, (int)isTES);
@@ -12269,6 +12464,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     if (needsBufferSizeBuffer)
         cg.bufferSizePtr = fn->getArg(argSlot++);
+    uint32_t texLocRun = 0;
     for (VarSym &v : syms) {
         if (v.kind != VarSym::TEXTURE) continue;
         uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
@@ -12279,13 +12475,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             if (ts) cg.samplerIRTypes[v.name] = ts->type;
         }
         if (v.type.arr == 0) {
+            cg.texMetalIndex[v.name] = texLocRun;
             cg.texValues[v.name] = fn->getArg(argSlot++);
             cg.smpValues[v.name] = fn->getArg(argSlot++);
+            texLocRun++;
         } else {
+            cg.texMetalIndex[v.name] = texLocRun;
             std::vector<llvm::Value *> texes, samplers;
             for (uint32_t k = 0; k < elements; k++) {
                 texes.push_back(fn->getArg(argSlot++));
                 samplers.push_back(fn->getArg(argSlot++));
+                texLocRun++;
             }
             cg.texArrayValues[v.name] = std::move(texes);
             cg.smpArrayValues[v.name] = std::move(samplers);
@@ -12760,6 +12960,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     if (isTESCompute)
         cg.patchPos = fn->getArg(argSlot++);
+    if (needsSamplerWrapBuf)
+        cg.samplerWrapPtr = fn->getArg(argSlot++);
     if (isGS) {
         cg.geometryWorkItemId = cg.threadPos
             ? cg.b->CreateExtractElement(cg.threadPos, cg.b->getInt32(0))
@@ -15202,7 +15404,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                       "MGLCullDistanceParams", "mgl_cull_params");
     } else if (isCullCapture || isTessCapture) {
         llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
-        uint32_t cullParamsArg = (uint32_t)paramTys.size() - 4u;
+        uint32_t cullParamsArg = (uint32_t)paramTys.size() - 4u -
+            (needsSamplerWrapBuf ? 1u : 0u);
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(
                 llvm::ConstantInt::get(i32, cullParamsArg)),
@@ -15228,10 +15431,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
 
     if (isVS || isTESVertex) {
+        const unsigned wrapTail = needsSamplerWrapBuf ? 1u : 0u;
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                 llvm::Type::getInt32Ty(ctx),
-                (unsigned)paramTys.size() - 3u)),
+                (unsigned)paramTys.size() - 3u - wrapTail)),
             llvm::MDString::get(ctx, "air.instance_id"),
             llvm::MDString::get(ctx, "air.arg_type_name"),
             llvm::MDString::get(ctx, "uint"),
@@ -15240,7 +15444,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                 llvm::Type::getInt32Ty(ctx),
-                (unsigned)paramTys.size() - 2u)),
+                (unsigned)paramTys.size() - 2u - wrapTail)),
             llvm::MDString::get(ctx, "air.base_instance"),
             llvm::MDString::get(ctx, "air.arg_type_name"),
             llvm::MDString::get(ctx, "uint"),
@@ -15250,12 +15454,30 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                 llvm::Type::getInt32Ty(ctx),
-                (unsigned)paramTys.size() - 1u)),
+                (unsigned)paramTys.size() - 1u - wrapTail)),
             llvm::MDString::get(ctx, "air.vertex_id"),
             llvm::MDString::get(ctx, "air.arg_type_name"),
             llvm::MDString::get(ctx, "uint"),
             llvm::MDString::get(ctx, "air.arg_name"),
             llvm::MDString::get(ctx, "vid")}));
+    }
+    if (needsSamplerWrapBuf) {
+        llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
+        argNodes.push_back(llvm::MDNode::get(ctx, {
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                i32, (unsigned)paramTys.size() - 1u)),
+            llvm::MDString::get(ctx, "air.buffer"),
+            llvm::MDString::get(ctx, "air.location_index"),
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                i32, kMGLSamplerWrapBufferIndex)),
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 1)),
+            llvm::MDString::get(ctx, "air.read"),
+            llvm::MDString::get(ctx, "air.address_space"),
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 1)),
+            llvm::MDString::get(ctx, "air.arg_type_name"),
+            llvm::MDString::get(ctx, "device uchar*"),
+            llvm::MDString::get(ctx, "air.arg_name"),
+            llvm::MDString::get(ctx, "mgl_sampler_wrap")}));
     }
     /* Metal expects the argument list ordered by parameter index; the
      * emission order above mixes buffers and value args (e.g. a fragment

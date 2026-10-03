@@ -56,6 +56,7 @@
 #include <stdarg.h>   /* va_list for the GLSL source builder */
 #include <stdlib.h>   /* malloc / realloc / free */
 #include <string.h>   /* memcpy / strlen */
+#include <math.h>     /* lrintf */
 
 /* Defined in MGLRenderer.m; declared in the Objective-C
  * MGLRenderer+RenderPass_Private.h. */
@@ -72,6 +73,45 @@ extern void mglLogRenderPassLifecycle(const char *tag, uint64_t call,
 extern void *mglPlatformShellDrawable(void *renderer);
 extern int mglPlatformShellGuardedCall(void *renderer, const char *what,
                                        int (*body)(void *));
+
+static void mglFillSamplerWrapTable(GLMContext ctx, Program *prog, int stage,
+                                    MGLSamplerWrapSlot *slots)
+{
+    int i;
+    memset(slots, 0, sizeof(MGLSamplerWrapSlot) * MGL_SAMPLER_WRAP_SLOT_COUNT);
+    for (i = 0; i < MGL_SAMPLER_WRAP_SLOT_COUNT; i++) {
+        GLint unit;
+        Sampler *smp;
+        Texture *tex;
+        TextureParameter *p;
+        int c;
+        slots[i].wrap_s = (int32_t)GL_REPEAT;
+        slots[i].wrap_t = (int32_t)GL_REPEAT;
+        slots[i].wrap_r = (int32_t)GL_REPEAT;
+        if (!ctx || !prog || stage < 0 || stage >= _MAX_SHADER_TYPES)
+            continue;
+        unit = prog->sampler_units_by_stage[stage][i];
+        if (unit < 0)
+            unit = 0;
+        if (unit >= TEXTURE_UNITS)
+            continue;
+        smp = ctx->active_state->texture_samplers[unit];
+        tex = ctx->active_state->texture_units[unit].textures[_TEXTURE_2D];
+        if (!tex)
+            tex = ctx->active_state->texture_units[unit]
+                      .textures[_TEXTURE_2D_ARRAY];
+        if (!tex)
+            tex = ctx->active_state->active_textures[unit];
+        p = smp ? &smp->params : (tex ? &tex->params : NULL);
+        if (!p)
+            continue;
+        slots[i].wrap_s = (int32_t)p->wrap_s;
+        slots[i].wrap_t = (int32_t)p->wrap_t;
+        slots[i].wrap_r = (int32_t)p->wrap_r;
+        for (c = 0; c < 4; c++)
+            slots[i].border[c] = (int32_t)lrintf(p->border_color[c]);
+    }
+}
 
 /* Local twin of the manager's file-static helper of the same name. */
 static void mglRenderPassManagerSyncRuntimeOwners(MGLCommandState *state)
@@ -4502,6 +4542,26 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
             MGL_RENDER_BINDING_STAGE_FRAGMENT, kMGLLodBiasMaxBufferIndex);
         mglRendererBindingInvalidateLastBoundFragmentBufferAtIndex(
             renderer, kMGLLodBiasMaxBufferIndex);
+    }
+
+    if (after.bind_sampler_wrap_slot) {
+        MGLSamplerWrapSlot vs_slots[MGL_SAMPLER_WRAP_SLOT_COUNT];
+        MGLSamplerWrapSlot fs_slots[MGL_SAMPLER_WRAP_SLOT_COUNT];
+        Program *vertexProgram =
+            mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+        mglFillSamplerWrapTable(ctx, vertexProgram, _VERTEX_SHADER, vs_slots);
+        mglFillSamplerWrapTable(ctx, fragmentProgram, _FRAGMENT_SHADER,
+                                fs_slots);
+        mglRenderSetRenderBytesForOwner(
+            commandState->currentRenderEncoderOwner, vs_slots, sizeof(vs_slots),
+            MGL_RENDER_BINDING_STAGE_VERTEX, kMGLSamplerWrapBufferIndex);
+        mglRendererBindingInvalidateLastBoundVertexBufferAtIndex(
+            renderer, kMGLSamplerWrapBufferIndex);
+        mglRenderSetRenderBytesForOwner(
+            commandState->currentRenderEncoderOwner, fs_slots, sizeof(fs_slots),
+            MGL_RENDER_BINDING_STAGE_FRAGMENT, kMGLSamplerWrapBufferIndex);
+        mglRendererBindingInvalidateLastBoundFragmentBufferAtIndex(
+            renderer, kMGLSamplerWrapBufferIndex);
     }
 
     if (after.maybe_mark_rt_sampled_copy) {

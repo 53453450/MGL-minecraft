@@ -88,6 +88,7 @@ typedef struct MGLProcessGLStateAfterPlan {
     uint8_t sync_resources;
     uint8_t bind_frag_coord_slot;
     uint8_t bind_lod_bias_slot;
+    uint8_t bind_sampler_wrap_slot;
     uint8_t maybe_mark_rt_sampled_copy;
 } MGLProcessGLStateAfterPlan;
 
