@@ -175,6 +175,17 @@ static void mglBufferMarkAllocatedUninitialized(Buffer *ptr, MGLBufferInitSource
     ptr->mapped_ptr = NULL;
 }
 
+static GLenum mglBufferAccessEnumFromMapFlags(GLbitfield flags)
+{
+    GLboolean r = (flags & GL_MAP_READ_BIT) != 0;
+    GLboolean w = (flags & GL_MAP_WRITE_BIT) != 0;
+    if (r && w)
+        return GL_READ_WRITE;
+    if (r)
+        return GL_READ_ONLY;
+    return GL_WRITE_ONLY;
+}
+
 static inline bool mglBufferMapAllowsWrite(const Buffer *ptr)
 {
     if (!ptr) {
@@ -855,7 +866,7 @@ void bufferStorage(GLMContext ctx, Buffer *ptr, GLenum target, GLuint index, GLs
     }
 
     ptr->mapped = GL_FALSE;
-    ptr->access = 0;
+    ptr->access = GL_READ_WRITE;
     ptr->access_flags = 0;
     ptr->mapped_offset = 0;
     ptr->mapped_length = 0;
@@ -2691,7 +2702,12 @@ void *mglMapBuffer(GLMContext ctx, GLenum target, GLenum access)
 
     ptr->mapped = GL_TRUE;
     ptr->access = access;
-    ptr->access_flags = 0;
+    if (access == GL_READ_ONLY)
+        ptr->access_flags = GL_MAP_READ_BIT;
+    else if (access == GL_WRITE_ONLY)
+        ptr->access_flags = GL_MAP_WRITE_BIT;
+    else
+        ptr->access_flags = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT;
     ptr->mapped_offset = 0;
     ptr->mapped_length = ptr->size;
     mapped_ptr = mglRendererMapUnmapBuffer(ctx, ptr, 0, ptr->size, access, true);
@@ -2792,7 +2808,7 @@ GLboolean mglUnmapBuffer(GLMContext ctx, GLenum target)
         ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
 
         ptr->mapped = GL_FALSE;
-        ptr->access = 0;
+        ptr->access = GL_READ_WRITE;
         ptr->access_flags = 0;
         ptr->mapped_offset = 0;
         ptr->mapped_length = 0;
@@ -2822,7 +2838,7 @@ GLboolean mglUnmapBuffer(GLMContext ctx, GLenum target)
     }
 
     ptr->mapped = GL_FALSE;
-    ptr->access = 0;
+    ptr->access = GL_READ_WRITE;
     ptr->access_flags = 0;
     ptr->mapped_offset = 0;
     ptr->mapped_length = 0;
@@ -2883,7 +2899,7 @@ GLboolean mglUnmapNamedBuffer(GLMContext ctx, GLuint buffer)
     }
 
     ptr->mapped = GL_FALSE;
-    ptr->access = 0;
+    ptr->access = GL_READ_WRITE;
     ptr->access_flags = 0;
     ptr->mapped_offset = 0;
     ptr->mapped_length = 0;
@@ -3017,7 +3033,7 @@ void *mglMapBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeip
         mglRendererFlush(ctx, true);
     }
 
-    ptr->access = 0;
+    ptr->access = mglBufferAccessEnumFromMapFlags(access_flags);
     ptr->mapped_offset = offset;
     ptr->mapped_length = length;
 
@@ -3162,7 +3178,7 @@ void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLs
         mglRendererFlush(ctx, true);
     }
 
-    ptr->access = 0;
+    ptr->access = mglBufferAccessEnumFromMapFlags(access);
     ptr->mapped_offset = offset;
     ptr->mapped_length = length;
 
