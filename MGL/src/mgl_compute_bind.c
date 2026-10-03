@@ -583,8 +583,19 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                             ? mglDeclaredTextureTypeFromResource(resource)
                             : mglRendererGetProgramDeclaredTextureType(
                                   ctx, stage, spvc_type, i);
-                        ptr = mglTextureForSampledResourceForStage(
-                            ctx, resource, metalBinding, stage, declaredType);
+                        if (resource && resource->gl_array_size > 1) {
+                            uint32_t base = resource->sampler_unit >= 0
+                                ? (uint32_t)resource->sampler_unit
+                                : resource->gl_binding;
+                            glUnit = base + resourceElement;
+                            ptr = mglTextureForSampledResource(
+                                ctx, resource, metalBinding, stage,
+                                declaredType, glUnit);
+                        } else {
+                            ptr = mglTextureForSampledResourceForStage(
+                                ctx, resource, metalBinding, stage,
+                                declaredType);
+                        }
                     }
                 }
 
@@ -676,8 +687,7 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                 continue;
             }
 
-            uint32_t expectedType = mglRendererGetProgramDeclaredTextureType(
-                ctx, stage, _SAMPLED_IMAGE_RES, (int)resourceIndex);
+            uint32_t expectedType = mglDeclaredTextureTypeFromResource(resource);
             for (GLint element = 1; element < resource->gl_array_size; element++) {
                 GLuint metalSlot = resource->binding + (GLuint)element;
                 GLuint samplerSlot = mglMetalCombinedSamplerSlotForElement(
@@ -686,11 +696,12 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                     break;
                 }
 
-                GLuint glUnit = mglTextureUnitForSampledResource(
-                    NULL, mglResolveProgramForStageFromState(ctx, stage),
-                    metalSlot, stage);
-                Texture *ptr = mglTextureForSampledResourceForStage(
-                    ctx, NULL, metalSlot, stage, expectedType);
+                uint32_t base = resource->sampler_unit >= 0
+                    ? (uint32_t)resource->sampler_unit
+                    : resource->gl_binding;
+                GLuint glUnit = base + (GLuint)element;
+                Texture *ptr = mglTextureForSampledResource(
+                    ctx, resource, metalSlot, stage, expectedType, glUnit);
                 if (!ptr || !mglRendererBindMTLTexture(renderer, ptr) ||
                     !ptr->mtl_data) {
                     continue;

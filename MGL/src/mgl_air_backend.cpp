@@ -7584,22 +7584,22 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 llvm::Type *vecTy = isInt ? v4i32 : v4f32;
                 llvm::Type *retTy = llvm::StructType::get(
                     *cg.ctx, {vecTy, cg.b->getInt8Ty()});
+                auto emitLoad = [&](llvm::Value *t,
+                                    llvm::Value *) -> llvm::Value * {
                 llvm::Value *r = nullptr;
                 if (tk == MGLIR_TEX_BUFFER) {
                     r = callAirFn(cg, readName("air.read_texture_2d").c_str(),
-                                  retTy, {tex, coord2, cg.b->getInt32(0),
+                                  retTy, {t, coord2, cg.b->getInt32(0),
                                           cg.b->getInt32(3)});
                 } else if (tk == MGLIR_TEX_3D) {
                     r = callAirFn(cg, readName("air.read_texture_3d").c_str(),
-                                  retTy, {tex, coord3, cg.b->getInt32(0),
+                                  retTy, {t, coord3, cg.b->getInt32(0),
                                           cg.b->getInt32(3)});
                 } else if (tk == MGLIR_TEX_CUBE) {
                     r = callAirFn(cg, readName("air.read_texture_cube").c_str(),
-                                  retTy, {tex, coord2, layerOrFace,
+                                  retTy, {t, coord2, layerOrFace,
                                           cg.b->getInt32(0), cg.b->getInt32(3)});
                 } else if (tk == MGLIR_TEX_CUBE_ARRAY) {
-                    /* MSL texturecube_array.read(coord, face, array). GLSL
-                     * imageCubeArray uses a flat layer-face index. */
                     llvm::Value *face =
                         cg.b->CreateURem(layerOrFace, cg.b->getInt32(6));
                     llvm::Value *arrayIdx =
@@ -7607,30 +7607,53 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     r = callAirFn(cg,
                                   readName("air.read_texture_cube_array").c_str(),
                                   retTy,
-                                  {tex, coord2, face, arrayIdx,
+                                  {t, coord2, face, arrayIdx,
                                    cg.b->getInt32(0), cg.b->getInt32(3)});
                 } else if (tk == MGLIR_TEX_2D_MS) {
                     r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {tex, coord2, msSample,
+                                  retTy, {t, coord2, msSample,
                                           cg.b->getInt32(0), cg.b->getInt32(3)});
                 } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
-                    /* texture2d_array planes: flat = layer * 8 + sample. */
                     llvm::Value *flat = cg.b->CreateAdd(
                         cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
                         msSample);
                     r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {tex, coord2, flat,
+                                  retTy, {t, coord2, flat,
                                           cg.b->getInt32(0), cg.b->getInt32(3)});
                 } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
                     r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {tex, coord2, layerOrFace,
+                                  retTy, {t, coord2, layerOrFace,
                                           cg.b->getInt32(0), cg.b->getInt32(3)});
                 } else {
                     r = callAirFn(cg, readName("air.read_texture_2d").c_str(),
-                                  retTy, {tex, coord2, cg.b->getInt32(0),
+                                  retTy, {t, coord2, cg.b->getInt32(0),
                                           cg.b->getInt32(3)});
                 }
                 return cg.b->CreateExtractValue(r, 0);
+                };
+                const MGLExpr *idxE = nullptr;
+                if (ia && ia->kind == MGL_EXPR_INDEX)
+                    idxE = ia->u.index.index;
+                if (idxE) {
+                    llvm::Value *index = emitExpr(cg, idxE, mod, locals);
+                    if (!index) return nullptr;
+                    index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
+                    if (!llvm::isa<llvm::ConstantInt>(index)) {
+                        const char *imageName =
+                            ia->u.index.object &&
+                                    ia->u.index.object->kind == MGL_EXPR_VAR_REF
+                                ? ia->u.index.object->u.var_ref.name
+                                : nullptr;
+                        auto ti = imageName ? cg.texArrayValues.find(imageName)
+                                            : cg.texArrayValues.end();
+                        if (ti != cg.texArrayValues.end() &&
+                            !ti->second.empty()) {
+                            return sampleArrayElementBySwitch(
+                                cg, index, ti->second, {}, vecTy, emitLoad);
+                        }
+                    }
+                }
+                return emitLoad(tex, nullptr);
             }
             const MGLExpr *valueArg = isMsImage ? e->u.call.args[3]
                                                 : e->u.call.args[2];
@@ -9120,13 +9143,33 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     int savedErr = cg.err;
                     bool savedInline = cg.inliningHelper;
                     llvm::Value *savedRet = cg.inlineRetVal;
+                    llvm::BasicBlock *savedExit = cg.inlineExitBB;
+                    llvm::PHINode *savedPhi = cg.inlineRetPhi;
                     cg.inliningHelper = true;
                     cg.inlineRetVal = nullptr;
+                    cg.inlineExitBB = nullptr;
+                    cg.inlineRetPhi = nullptr;
                     cg.err = 0;
                     emitStmt(cg, fd->body, mod, &ilocals);
-                    llvm::Value *ret = cg.inlineRetVal;
+                    if (cg.inlineExitBB) {
+                        llvm::BasicBlock *cur = cg.b->GetInsertBlock();
+                        if (cur && !cur->getTerminator()) {
+                            if (cg.inlineRetPhi)
+                                cg.inlineRetPhi->addIncoming(
+                                    llvm::UndefValue::get(
+                                        cg.inlineRetPhi->getType()),
+                                    cur);
+                            cg.b->CreateBr(cg.inlineExitBB);
+                        }
+                        cg.b->SetInsertPoint(cg.inlineExitBB);
+                    }
+                    llvm::Value *ret = cg.inlineRetPhi
+                        ? (llvm::Value *)cg.inlineRetPhi
+                        : cg.inlineRetVal;
                     cg.inliningHelper = savedInline;
                     cg.inlineRetVal = savedRet;
+                    cg.inlineExitBB = savedExit;
+                    cg.inlineRetPhi = savedPhi;
                     /* GLSL out/inout: write the final param value back to
                      * the caller's lvalue argument before unshadowing. */
                     for (uint32_t a = 0; a < fd->param_count &&

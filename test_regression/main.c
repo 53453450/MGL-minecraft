@@ -8061,6 +8061,31 @@ static int test_compute_ssbo_block_array_dyn(unsigned char *pixels,
     GLuint vmax = 0;
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo3[0]);
     glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(vmax), &vmax);
+    if (vmax != 6u) {
+        fprintf(stderr, "compute_ssbo_block_array_dyn: max[0] got %u want 6\n",
+                vmax);
+        glDeleteProgram(pmax);
+        glDeleteBuffers(8, ssbo3);
+        glDeleteBuffers(12, ubo3);
+        glDeleteBuffers(8, acb);
+        glDeleteBuffers(16, tbo);
+        glDeleteTextures(16, texs);
+        glDeleteBuffers(8, ibo);
+        glDeleteTextures(8, imgs);
+        return 1;
+    }
+    {
+        GLuint v = 2u;
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssbo3[1]);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(v), &v, GL_STATIC_DRAW);
+        glUniform1ui(glGetUniformLocation(pmax, "g_index"), 1u);
+        glDispatchCompute(1, 1, 1);
+        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+        glFinish();
+        vmax = 0;
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo3[1]);
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(vmax), &vmax);
+    }
     glDeleteProgram(pmax);
     glDeleteBuffers(8, ssbo3);
     glDeleteBuffers(12, ubo3);
@@ -8069,8 +8094,8 @@ static int test_compute_ssbo_block_array_dyn(unsigned char *pixels,
     glDeleteTextures(16, texs);
     glDeleteBuffers(8, ibo);
     glDeleteTextures(8, imgs);
-    if (vmax != 6u) {
-        fprintf(stderr, "compute_ssbo_block_array_dyn: max got %u want 6\n",
+    if (vmax != 12u) {
+        fprintf(stderr, "compute_ssbo_block_array_dyn: max[1] got %u want 12\n",
                 vmax);
         return 1;
     }

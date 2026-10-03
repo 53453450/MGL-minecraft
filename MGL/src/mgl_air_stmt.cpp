@@ -72,6 +72,16 @@ static bool stmtContainsBreakOrContinue(const MGLStmt *st) {
     }
 }
 
+static bool terminatorLeavesHelper(Codegen &cg, llvm::Instruction *term)
+{
+    if (!term) return false;
+    if (llvm::isa<llvm::ReturnInst>(term)) return true;
+    if (cg.inlineExitBB && term->getNumSuccessors() == 1 &&
+        term->getSuccessor(0) == cg.inlineExitBB)
+        return true;
+    return false;
+}
+
 void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
               std::map<std::string, MType> *locals, const AirStmtDeps &deps) {
     if (cg.err) return;
@@ -169,13 +179,27 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
     }
     case MGL_STMT_RETURN: {
         if (cg.inliningHelper) {
-            /* Capture return for inlined GS/TCS/compute helpers; do not
-             * terminate the enclosing stage function. */
+            /* Join every inlined return at one exit block so a switch/if
+             * of `return expr;` yields a dominating phi, not a sibling-BB
+             * SSA use (poison / 0 on Metal). */
+            llvm::Value *v = nullptr;
             if (st->u.ret.value) {
-                llvm::Value *v = deps.emitExpr(cg, st->u.ret.value, mod, *locals);
+                v = deps.emitExpr(cg, st->u.ret.value, mod, *locals);
                 if (!v) return;
-                cg.inlineRetVal = v;
             }
+            llvm::BasicBlock *here = cg.b->GetInsertBlock();
+            if (!cg.inlineExitBB)
+                cg.inlineExitBB =
+                    llvm::BasicBlock::Create(*cg.ctx, "inline.ret", cg.fn);
+            if (v) {
+                if (!cg.inlineRetPhi) {
+                    cg.inlineRetPhi = llvm::PHINode::Create(
+                        v->getType(), 4u, "inline.rval", cg.inlineExitBB);
+                }
+                cg.inlineRetPhi->addIncoming(v, here);
+                cg.inlineRetVal = cg.inlineRetPhi;
+            }
+            cg.b->CreateBr(cg.inlineExitBB);
             cg.err = 2;
             break;
         }
@@ -284,9 +308,8 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         emitStmt(cg, st->u.ifs.then, mod, locals, deps);
         if (cg.err == 1) return;
         llvm::BasicBlock *thenTail = cg.b->GetInsertBlock();
-        bool thenRet = thenTail->getTerminator() &&
-                       llvm::isa<llvm::ReturnInst>(thenTail->getTerminator());
-        if (!thenRet) cg.b->CreateBr(bbMerge);
+        bool thenRet = terminatorLeavesHelper(cg, thenTail->getTerminator());
+        if (!thenTail->getTerminator()) cg.b->CreateBr(bbMerge);
         std::map<std::string, llvm::Value *> thenL = cg.lvalues;
 
         std::map<std::string, llvm::Value *> elseL;
@@ -303,9 +326,8 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             emitStmt(cg, st->u.ifs.else_, mod, locals, deps);
             if (cg.err == 1) return;
             llvm::BasicBlock *elseTail = cg.b->GetInsertBlock();
-            bool elseRet = elseTail->getTerminator() &&
-                           llvm::isa<llvm::ReturnInst>(elseTail->getTerminator());
-            if (!elseRet) cg.b->CreateBr(bbMerge);
+            bool elseRet = terminatorLeavesHelper(cg, elseTail->getTerminator());
+            if (!elseTail->getTerminator()) cg.b->CreateBr(bbMerge);
             elseL = cg.lvalues;
             if (thenRet && elseRet) {
                 /* Both paths return; code after the if is unreachable. */
@@ -781,6 +803,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
 
         llvm::BasicBlock *lastTail = nullptr;
         for (size_t i = 0; i < segs.size(); i++) {
+            cg.err = 0;
             cg.b->SetInsertPoint(segs[i].entry);
             for (auto *s : segs[i].stmts) {
                 emitStmt(cg, s, mod, locals, deps);

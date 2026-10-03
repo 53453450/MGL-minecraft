@@ -224,6 +224,8 @@ struct Codegen {
      * emitting CreateRet (GS/TCS/compute helper inlining). */
     bool inliningHelper = false;
     llvm::Value *inlineRetVal = nullptr;
+    llvm::BasicBlock *inlineExitBB = nullptr;
+    llvm::PHINode *inlineRetPhi = nullptr;
     /* Named user struct types from the TU (`struct S { … };`), used for
      * S(...) / S[](...) constructors and local member ExtractValue. */
     std::map<std::string, MGLIRType *> structTypes;
