@@ -280,6 +280,10 @@ static std::string userFnKey(const char *name, uint32_t n,
             k += 'x';
             continue;
         }
+        if (t->kind == MGLIR_TYPE_ARRAY && t->elem_type) {
+            k += 'a';
+            t = t->elem_type;
+        }
         char s = 'f';
         if (t->scalar == MGLIR_SCALAR_INT) s = 'i';
         else if (t->scalar == MGLIR_SCALAR_UINT) s = 'u';
@@ -288,23 +292,47 @@ static std::string userFnKey(const char *name, uint32_t n,
         if (t->kind == MGLIR_TYPE_VECTOR) {
             k += 'v';
             k += (char)('0' + (t->cols % 10));
+        } else if (t->kind == MGLIR_TYPE_MATRIX) {
+            k += 'm';
+            k += (char)('0' + (t->cols % 10));
+            k += (char)('0' + (t->rows % 10));
+        } else if (t->kind == MGLIR_TYPE_STRUCT && t->name) {
+            k += 's';
+            k += t->name;
         }
     }
     return k;
 }
 
-static int astTypeMatchesIR(const MGLTypeSpec *t, const MGLIRType *ir)
+static int astTypeMatchesIR(const MGLDecl *p, const MGLIRType *ir)
 {
-    if (!t || !ir) return 0;
+    if (!p || !p->type || !ir) return 0;
+    const MGLTypeSpec *t = p->type;
+    if (p->array_count) {
+        if (ir->kind != MGLIR_TYPE_ARRAY || !ir->elem_type) return 0;
+        ir = ir->elem_type;
+    } else if (ir->kind == MGLIR_TYPE_ARRAY) {
+        return 0;
+    }
     MGLIRScalar sc = MGLIR_SCALAR_FLOAT;
     switch (t->base) {
     case MGL_AST_TYPE_INT: sc = MGLIR_SCALAR_INT; break;
     case MGL_AST_TYPE_UINT: sc = MGLIR_SCALAR_UINT; break;
     case MGL_AST_TYPE_BOOL: sc = MGLIR_SCALAR_BOOL; break;
     case MGL_AST_TYPE_DOUBLE: sc = MGLIR_SCALAR_DOUBLE; break;
+    case MGL_AST_TYPE_STRUCT:
+        return ir->kind == MGLIR_TYPE_STRUCT &&
+               (!t->name || !ir->name || strcmp(t->name, ir->name) == 0);
+    case MGL_AST_TYPE_SAMPLER: return ir->kind == MGLIR_TYPE_SAMPLER;
+    case MGL_AST_TYPE_IMAGE: return ir->kind == MGLIR_TYPE_IMAGE;
+    case MGL_AST_TYPE_ATOMIC_UINT: return ir->kind == MGLIR_TYPE_ATOMIC_COUNTER;
     default: break;
     }
     if (ir->scalar != sc) return 0;
+    if (t->mat_cols > 0)
+        return ir->kind == MGLIR_TYPE_MATRIX &&
+               ir->cols == (uint32_t)t->mat_cols &&
+               ir->rows == (uint32_t)t->mat_rows;
     if (t->vec_size > 1)
         return ir->kind == MGLIR_TYPE_VECTOR &&
                ir->cols == (uint32_t)t->vec_size;
@@ -314,6 +342,22 @@ static int astTypeMatchesIR(const MGLTypeSpec *t, const MGLIRType *ir)
 static int mtypeConvRank(const MType &from, const MGLIRType *to)
 {
     if (!to) return -1;
+    /* GLSL has no implicit conversion for arrays or matrices; opaque and
+     * struct parameters are already type-checked by sema. */
+    if (to->kind == MGLIR_TYPE_ARRAY) {
+        if (!from.arr || !to->elem_type) return -1;
+        MType e = from;
+        e.arr = 0;
+        return mtypeConvRank(e, to->elem_type) == 0 ? 0 : -1;
+    }
+    if (from.arr) return -1;
+    if (to->kind == MGLIR_TYPE_MATRIX)
+        return from.cols == to->cols && from.rows == to->rows &&
+               from.scalar == to->scalar ? 0 : -1;
+    if (from.cols) return -1;
+    if (to->kind == MGLIR_TYPE_STRUCT || to->kind == MGLIR_TYPE_SAMPLER ||
+        to->kind == MGLIR_TYPE_IMAGE || to->kind == MGLIR_TYPE_ATOMIC_COUNTER)
+        return 0;
     if (to->kind == MGLIR_TYPE_VECTOR) {
         if (from.vec != to->cols) return -1;
     } else if (to->kind == MGLIR_TYPE_SCALAR) {
@@ -346,7 +390,7 @@ static const MGLIRSymbol *fnSymForDecl(const MGLIRModule *mod, const MGLDecl *d)
         int ok = 1;
         for (uint32_t p = 0; p < d->param_count; p++) {
             if (!d->params[p] ||
-                !astTypeMatchesIR(d->params[p]->type,
+                !astTypeMatchesIR(d->params[p],
                                   fs->param_types ? fs->param_types[p]
                                                   : nullptr)) {
                 ok = 0;

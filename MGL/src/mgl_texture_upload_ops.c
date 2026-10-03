@@ -2826,7 +2826,12 @@ int mglTextureUploadDirty(void *renderer, Texture *tex, void *texture,
             if (!mglTextureLevelHasUploadableCPUData(uploadLevel)) {
                 /* TexImage NULL, GenerateMipmap, or never written: nothing to
                  * blit from CPU. That is not an upload failure; retrying on
-                 * every bind closes the render encoder (cube gather CTS). */
+                 * every bind closes the render encoder (cube gather CTS).
+                 * Rendered levels live only on the GPU and must be
+                 * reported so a recreated texture repairs them. */
+                if (uploadLevel &&
+                    uploadLevel->last_init_source == kTexRenderTargetWrite)
+                    anyLevelSkipped = 1;
                 continue;
             }
 
