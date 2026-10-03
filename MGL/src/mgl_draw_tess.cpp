@@ -2992,7 +2992,12 @@ extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
                                       (GLuint64)primsWritten);
     ctx->active_state->dirty_bits = DIRTY_ALL;
     CFRelease(capture);
-    return 1;
+    /* VS-only capture is not rasterizer_discard: GL 4.6 §13.2 still emits
+     * fragments unless discard is enabled. */
+    if (ctx->active_state->caps.rasterizer_discard) {
+        return 1;
+    }
+    return 0;
 }
 
 extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,

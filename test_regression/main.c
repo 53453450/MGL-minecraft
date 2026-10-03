@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 210
+#define MAX_TESTS 212
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -7836,6 +7836,230 @@ static int test_compute_mat4_uniform_init(unsigned char *pixels,
                 "diag=(%.1f,%.1f,%.1f)\n",
                 data[12], data[13], data[14], data[15], data[0], data[5],
                 data[10]);
+        return 1;
+    }
+    return 0;
+}
+
+static int test_compute_ssbo_block_array_dyn(unsigned char *pixels,
+                                             const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *cs_static =
+        "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(std140, binding = 0) buffer ShaderStorageBlock {\n"
+        "  uint data;\n"
+        "} g_shader_storage[8];\n"
+        "void main() { g_shader_storage[0].data += 1u; }\n";
+    static const char *cs_dyn =
+        "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(std140, binding = 0) buffer ShaderStorageBlock {\n"
+        "  uint data;\n"
+        "} g_shader_storage[8];\n"
+        "uniform uint g_index = 0u;\n"
+        "void main() { g_shader_storage[g_index].data += 1u; }\n";
+    GLuint ssbo[8];
+    glGenBuffers(8, ssbo);
+    for (int i = 0; i < 8; i++) {
+        GLuint one = 1u;
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, ssbo[i]);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(one), &one,
+                     GL_STATIC_DRAW);
+    }
+    GLuint p0 = link_compute_program(cs_static);
+    if (!p0) {
+        fprintf(stderr, "compute_ssbo_block_array_dyn: static link failed\n");
+        glDeleteBuffers(8, ssbo);
+        return 1;
+    }
+    glUseProgram(p0);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glFinish();
+    GLuint v0 = 0;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo[0]);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(v0), &v0);
+    glDeleteProgram(p0);
+    if (v0 != 2u) {
+        fprintf(stderr, "compute_ssbo_block_array_dyn: static got %u\n", v0);
+        glDeleteBuffers(8, ssbo);
+        return 1;
+    }
+    for (int i = 0; i < 8; i++) {
+        GLuint one = 1u;
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, ssbo[i]);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(one), &one,
+                     GL_STATIC_DRAW);
+    }
+    GLuint p1 = link_compute_program(cs_dyn);
+    if (!p1) {
+        fprintf(stderr, "compute_ssbo_block_array_dyn: dyn link failed\n");
+        glDeleteBuffers(8, ssbo);
+        return 1;
+    }
+    glUseProgram(p1);
+    glUniform1ui(glGetUniformLocation(p1, "g_index"), 0u);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glFinish();
+    GLuint vd = 0;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo[0]);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(vd), &vd);
+    glDeleteProgram(p1);
+    glDeleteBuffers(8, ssbo);
+    if (vd != 2u) {
+        fprintf(stderr, "compute_ssbo_block_array_dyn: dyn got %u\n", vd);
+        return 1;
+    }
+
+    static const char *cs_ubo =
+        "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(std140, binding = 0) buffer ShaderStorageBlock {\n"
+        "  uint data;\n"
+        "} g_shader_storage[8];\n"
+        "layout(std140, binding = 0) uniform UniformBlock {\n"
+        "  uint data;\n"
+        "} g_uniform[12];\n"
+        "uniform uint g_index = 0u;\n"
+        "void main() {\n"
+        "  g_shader_storage[g_index].data += g_uniform[g_index].data;\n"
+        "}\n";
+    GLuint ssbo2[8];
+    GLuint ubo[12];
+    glGenBuffers(8, ssbo2);
+    glGenBuffers(12, ubo);
+    for (int i = 0; i < 8; i++) {
+        GLuint one = 1u;
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, i, ssbo2[i]);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(one), &one,
+                     GL_STATIC_DRAW);
+    }
+    for (int i = 0; i < 12; i++) {
+        GLuint v = (GLuint)(i + 1);
+        glBindBufferBase(GL_UNIFORM_BUFFER, i, ubo[i]);
+        glBufferData(GL_UNIFORM_BUFFER, sizeof(v), &v, GL_STATIC_DRAW);
+    }
+    GLuint p2 = link_compute_program(cs_ubo);
+    if (!p2) {
+        fprintf(stderr, "compute_ssbo_block_array_dyn: ubo link failed\n");
+        glDeleteBuffers(8, ssbo2);
+        glDeleteBuffers(12, ubo);
+        return 1;
+    }
+    glUseProgram(p2);
+    glUniform1ui(glGetUniformLocation(p2, "g_index"), 0u);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+    glFinish();
+    GLuint vu = 0;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo2[0]);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(vu), &vu);
+    glDeleteProgram(p2);
+    glDeleteBuffers(8, ssbo2);
+    glDeleteBuffers(12, ubo);
+    if (vu != 2u) {
+        fprintf(stderr, "compute_ssbo_block_array_dyn: ubo-add got %u\n", vu);
+        return 1;
+    }
+    return 0;
+}
+
+static int test_vs_fs_stagedata_block(unsigned char *pixels,
+                                      const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 430 core\n"
+        "layout(location = 0) in vec4 g_position;\n"
+        "layout(location = 1) in vec4 g_color;\n"
+        "struct Vertex { vec4 position; vec4 color; };\n"
+        "out StageData { vec4 color; } g_vs_out;\n"
+        "layout(binding = 0, std430) buffer StageData {\n"
+        "  Vertex vertex[];\n"
+        "} g_vs_buffer;\n"
+        "void main() {\n"
+        "  gl_Position = g_position;\n"
+        "  g_vs_out.color = g_color;\n"
+        "  g_vs_buffer.vertex[gl_VertexID].position = g_position;\n"
+        "  g_vs_buffer.vertex[gl_VertexID].color = g_color;\n"
+        "}\n";
+    static const char *fs =
+        "#version 430 core\n"
+        "in StageData { vec4 color; } g_fs_in;\n"
+        "layout(location = 0) out vec4 g_color;\n"
+        "void main() { g_color = g_fs_in.color; }\n";
+    GLuint color_tex = 0u;
+    GLuint fbo = make_fbo(64, 64, &color_tex);
+    GLuint vs_s = compile_shader(GL_VERTEX_SHADER, vs);
+    GLuint fs_s = compile_shader(GL_FRAGMENT_SHADER, fs);
+    GLuint program = glCreateProgram();
+    GLint link_ok = 0;
+    if (vs_s && fs_s && program) {
+        glAttachShader(program, vs_s);
+        glAttachShader(program, fs_s);
+        const char *xfb_vars[2] = {"gl_Position", "StageData.color"};
+        glTransformFeedbackVaryings(program, 2, xfb_vars,
+                                    GL_INTERLEAVED_ATTRIBS);
+        glLinkProgram(program);
+        glGetProgramiv(program, GL_LINK_STATUS, &link_ok);
+    }
+    if (vs_s)
+        glDeleteShader(vs_s);
+    if (fs_s)
+        glDeleteShader(fs_s);
+    if (!fbo || !link_ok) {
+        fprintf(stderr, "vs_fs_stagedata_block: link failed\n");
+        if (program)
+            glDeleteProgram(program);
+        return 1;
+    }
+    GLuint ssbo = 0;
+    glGenBuffers(1, &ssbo);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 3 * 8 * sizeof(float), NULL,
+                 GL_STATIC_COPY);
+    GLuint xfb = 0;
+    glGenBuffers(1, &xfb);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, xfb);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 3 * 8 * sizeof(float), NULL,
+                 GL_STREAM_COPY);
+    const float in_data[24] = {
+        -1, -1, 0, 1, 0, 1, 0, 1, 3, -1, 0, 1, 0, 1, 0, 1, -1, 3, 0, 1, 0, 1,
+        0, 1};
+    GLuint vbo = 0, vao = 0;
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(in_data), in_data, GL_STATIC_DRAW);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), 0);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float),
+                          (const void *)(4 * sizeof(float)));
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, 64, 64);
+    glUseProgram(program);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBeginTransformFeedback(GL_TRIANGLES);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glEndTransformFeedback();
+    glFinish();
+    glReadPixels(0, 0, 64, 64, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glDeleteProgram(program);
+    glDeleteBuffers(1, &vbo);
+    glDeleteBuffers(1, &ssbo);
+    glDeleteBuffers(1, &xfb);
+    glDeleteVertexArrays(1, &vao);
+    unsigned r = pixels[0], g = pixels[1], b = pixels[2], a = pixels[3];
+    if (g < 200 || r > 20 || b > 20 || a < 200) {
+        fprintf(stderr, "vs_fs_stagedata_block: pixel=(%u,%u,%u,%u)\n", r, g,
+                b, a);
         return 1;
     }
     return 0;
@@ -28433,6 +28657,9 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("compute_vec4_array_uniform_init",
                     test_compute_vec4_array_uniform_init),
     SELF_CHECK_TEST("compute_mat4_uniform_init", test_compute_mat4_uniform_init),
+    SELF_CHECK_TEST("compute_ssbo_block_array_dyn",
+                    test_compute_ssbo_block_array_dyn),
+    SELF_CHECK_TEST("vs_fs_stagedata_block", test_vs_fs_stagedata_block),
     SELF_CHECK_TEST("compute_shared_struct", test_compute_shared_struct),
     SELF_CHECK_TEST("compute_uniform_array_init",
                     test_compute_uniform_array_init),
