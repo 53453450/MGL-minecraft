@@ -334,11 +334,17 @@ int mglRenderBindingSetViewportsForOwner(MGLBindingState *binding_state, MGLRend
 
 int mglRenderBindingSetScissor(MGLBindingState *binding_state, void *render_encoder, uint64_t x, uint64_t y, uint64_t width, uint64_t height);
 
+/* Array scissor binding: rects carries count interleaved {x, y, w, h}.
+ * Metal requires the scissor count to match the viewport count. */
+int mglRenderBindingSetScissors(MGLBindingState *binding_state, void *render_encoder, const uint64_t *rects, uint64_t count);
+
 int mglRenderBindingSetTriangleFill(MGLBindingState *binding_state, void *render_encoder, uint32_t mode);
 
 int mglRenderBindingSetViewportForOwner(MGLBindingState *binding_state, MGLRenderEncoderOwner *render_encoder_owner, double origin_x, double origin_y, double width, double height, double znear, double zfar);
 
 int mglRenderBindingSetScissorForOwner(MGLBindingState *binding_state, MGLRenderEncoderOwner *render_encoder_owner, uint64_t x, uint64_t y, uint64_t width, uint64_t height);
+
+int mglRenderBindingSetScissorsForOwner(MGLBindingState *binding_state, MGLRenderEncoderOwner *render_encoder_owner, const uint64_t *rects, uint64_t count);
 
 int mglRenderBindingSetTriangleFillForOwner(MGLBindingState *binding_state, MGLRenderEncoderOwner *render_encoder_owner, uint32_t mode);
 

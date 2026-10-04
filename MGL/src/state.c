@@ -709,6 +709,22 @@ void mglViewport(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height
         STATE(viewport_array)[i][2] = (GLfloat)width;
         STATE(viewport_array)[i][3] = (GLfloat)height;
     }
+    /* First window-sized Viewport() is the attach: seed scissor to match
+     * (§14.9.2) so a later surface size (CTS FBO 256) is not left at the
+     * dummy CGL 1024×768 from context alloc. glScissor sets the flag. */
+    if (!STATE(scissor_box_defined)) {
+        STATE(var).scissor_box[0] = x;
+        STATE(var).scissor_box[1] = y;
+        STATE(var).scissor_box[2] = width;
+        STATE(var).scissor_box[3] = height;
+        for (int i = 0; i < MGL_MAX_VIEWPORTS; i++) {
+            STATE(scissor_box_array)[i][0] = x;
+            STATE(scissor_box_array)[i][1] = y;
+            STATE(scissor_box_array)[i][2] = width;
+            STATE(scissor_box_array)[i][3] = height;
+        }
+        STATE(scissor_box_defined) = GL_TRUE;
+    }
 
     mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }

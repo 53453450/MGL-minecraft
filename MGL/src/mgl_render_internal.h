@@ -586,6 +586,8 @@ struct BindingState {
     MTL::Viewport viewports[MGL_MAX_VIEWPORTS];
     uint64_t viewportCount = 0;
     MTL::ScissorRect scissor = {0, 0, 0, 0};
+    MTL::ScissorRect scissors[MGL_MAX_VIEWPORTS];
+    uint64_t scissorCount = 0;
     MTL::TriangleFillMode triangleFillMode = MTL::TriangleFillModeFill;
     bool valid = false;
     MGLRenderBindingStats stats = {};

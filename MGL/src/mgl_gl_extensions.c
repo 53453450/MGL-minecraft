@@ -3109,9 +3109,6 @@ void mglDepthRangeArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLdo
 		return;
 	ERROR_CHECK_RETURN(count == 0 || v, GL_INVALID_VALUE);
 
-	// MGL tracks viewport/depth-range state for viewport 0. Indexed ranges that
-	// do not include 0 are retained for GL queries, but are not consumed by the
-	// current Metal draw path.
 	for (GLsizei i = 0; i < count; i++) {
 		GLuint index = first + (GLuint)i;
 		GLdouble n = v[i * 2 + 0];
@@ -7673,6 +7670,19 @@ void mglViewportIndexedf(GLMContext ctx, GLuint index, GLfloat x, GLfloat y, GLf
 		STATE(viewport)[1] = (GLint)y;
 		STATE(viewport)[2] = (GLsizei)w;
 		STATE(viewport)[3] = (GLsizei)h;
+		if (!STATE(scissor_box_defined)) {
+			STATE(var).scissor_box[0] = (GLint)x;
+			STATE(var).scissor_box[1] = (GLint)y;
+			STATE(var).scissor_box[2] = (GLsizei)w;
+			STATE(var).scissor_box[3] = (GLsizei)h;
+			for (int i = 0; i < MGL_MAX_VIEWPORTS; i++) {
+				STATE(scissor_box_array)[i][0] = (GLint)x;
+				STATE(scissor_box_array)[i][1] = (GLint)y;
+				STATE(scissor_box_array)[i][2] = (GLsizei)w;
+				STATE(scissor_box_array)[i][3] = (GLsizei)h;
+			}
+			STATE(scissor_box_defined) = GL_TRUE;
+		}
 	} else {
 		STATE(viewport_array_set) = GL_TRUE;
 	}

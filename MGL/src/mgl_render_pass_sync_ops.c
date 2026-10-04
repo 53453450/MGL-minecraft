@@ -1034,53 +1034,75 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
         }
 
         if (passWidth > 0 && passHeight > 0) {
+            uint64_t scissorPacked[MGL_MAX_VIEWPORTS * 4];
+            int emptyScissor[MGL_MAX_VIEWPORTS];
             GLint rawSx = 0;
             GLint rawSy = 0;
             GLint rawSw = (GLint)passWidth;
             GLint rawSh = (GLint)passHeight;
+            GLint sx0 = 0;
+            GLint sy0 = 0;
+            GLint sw0 = (GLint)passWidth;
+            GLint sh0 = (GLint)passHeight;
+            GLint metalSy0 = 0;
 
-            GLint sx = 0;
-            GLint sy = 0;
-            GLint sw = (GLint)passWidth;
-            GLint sh = (GLint)passHeight;
-
-            if (state->caps.scissor_test) {
-                rawSx = (GLint)state->var.scissor_box[0];
-                rawSy = (GLint)state->var.scissor_box[1];
-                rawSw = (GLint)state->var.scissor_box[2];
-                rawSh = (GLint)state->var.scissor_box[3];
-
-                sx = rawSx;
-                sy = rawSy;
-                sw = rawSw;
-                sh = rawSh;
-                mglRenderClampScissorRect(&sx, &sy, &sw, &sh,
-                                          (uint32_t)passWidth,
-                                          (uint32_t)passHeight);
+            for (int si = 0; si < MGL_MAX_VIEWPORTS; si++) {
+                GLint sx = 0;
+                GLint sy = 0;
+                GLint sw = (GLint)passWidth;
+                GLint sh = (GLint)passHeight;
+                emptyScissor[si] = 0;
+                if (state->caps.scissor_testi[si]) {
+                    sx = state->scissor_box_array[si][0];
+                    sy = state->scissor_box_array[si][1];
+                    sw = state->scissor_box_array[si][2];
+                    sh = state->scissor_box_array[si][3];
+                    if (si == 0) {
+                        rawSx = sx;
+                        rawSy = sy;
+                        rawSw = sw;
+                        rawSh = sh;
+                    }
+                    mglRenderClampScissorRect(&sx, &sy, &sw, &sh,
+                                              (uint32_t)passWidth,
+                                              (uint32_t)passHeight);
+                    if (sw <= 0 || sh <= 0) {
+                        emptyScissor[si] = 1;
+                        sx = 0;
+                        sy = 0;
+                        sw = (GLint)passWidth;
+                        sh = (GLint)passHeight;
+                    }
+                }
+                GLint metalSy = mglRenderMetalScissorY(
+                    sy, sh, (uint32_t)passHeight,
+                    (uint32_t)state->var.clip_origin);
+                scissorPacked[si * 4 + 0] = (uint64_t)sx;
+                scissorPacked[si * 4 + 1] = (uint64_t)metalSy;
+                scissorPacked[si * 4 + 2] = (uint64_t)sw;
+                scissorPacked[si * 4 + 3] = (uint64_t)sh;
+                if (si == 0) {
+                    sx0 = sx;
+                    sy0 = sy;
+                    sw0 = sw;
+                    sh0 = sh;
+                    metalSy0 = metalSy;
+                }
             }
 
-            GLint metalSy = mglRenderMetalScissorY(
-                sy, sh, (uint32_t)passHeight,
-                (uint32_t)state->var.clip_origin);
-
-	            if (traceEncoderState) {
+            if (traceEncoderState) {
                 fprintf(stderr, "MGL SCISSOR apply pass=%lux%lu scissorEnabled=%d origin=0x%x raw=(%d,%d,%d,%d) glResolved=(%d,%d,%d,%d) metal=(%d,%d,%d,%d)\n",
                       (unsigned long)passWidth, (unsigned long)passHeight,
                       state->caps.scissor_test ? 1 : 0,
                       state->var.clip_origin,
                       rawSx, rawSy, rawSw, rawSh,
-                      sx, sy, sw, sh,
-                      sx, metalSy, sw, sh);
+                      sx0, sy0, sw0, sh0,
+                      sx0, metalSy0, sw0, sh0);
             }
 
-            MGLScissorRectValue rect;
-            rect.x = (uint64_t)sx;
-            rect.y = (uint64_t)metalSy;
-            rect.width = (uint64_t)sw;
-            rect.height = (uint64_t)sh;
-            mglRenderBindingSetScissorForOwner(
+            mglRenderBindingSetScissorsForOwner(
                 bindingOwner, commandState->currentRenderEncoderOwner,
-                rect.x, rect.y, rect.width, rect.height);
+                scissorPacked, (uint64_t)MGL_MAX_VIEWPORTS);
 
             GLdouble rawVx = (GLdouble)state->viewport[0];
             GLdouble rawVy = (GLdouble)state->viewport[1];
@@ -1156,7 +1178,7 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
                           state->var.clip_origin,
                           state->caps.scissor_test ? 1 : 0,
                           rawSx, rawSy, rawSw, rawSh,
-                          sx, metalSy, sw, sh,
+                          sx0, metalSy0, sw0, sh0,
                           rawVx, rawVy, rawVw, rawVh,
                           vx, metalVy, vw, vh,
                           state->caps.depth_test ? 1 : 0,
@@ -1266,49 +1288,54 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
                 }
             }
 
-            /* gl_ViewportIndex: when glViewportIndexedf* set any slot
-             * beyond 0, bind the whole 16-entry viewport array (Metal
-             * selects per vertex via viewport_array_index).  Slot 0 uses
-             * the resolved/clamped rectangle computed above. */
+            /* gl_ViewportIndex: bind all 16 Metal viewports. Indexed slots
+             * keep their own depth range; a zero-area scissor is mapped to a
+             * zero-size viewport because Metal rejects 0×0 scissor rects. */
             if (state->viewport_array_set) {
                 double viewports[MGL_MAX_VIEWPORTS * 6];
                 viewports[0] = vx;
                 viewports[1] = metalVy;
-                viewports[2] = vw;
-                viewports[3] = vh;
-                viewports[4] = state->var.depth_range[0];
-                viewports[5] = state->var.depth_range[1];
+                viewports[2] = emptyScissor[0] ? 0.0 : vw;
+                viewports[3] = emptyScissor[0] ? 0.0 : vh;
+                viewports[4] = state->depth_range_array[0][0];
+                viewports[5] = state->depth_range_array[0][1];
                 for (int vi = 1; vi < MGL_MAX_VIEWPORTS; vi++) {
                     GLdouble avx = state->viewport_array[vi][0];
                     GLdouble avy = state->viewport_array[vi][1];
                     GLdouble avw = state->viewport_array[vi][2];
                     GLdouble avh = state->viewport_array[vi][3];
+                    mglRenderClampViewport(&avx, &avy, &avw, &avh,
+                                           (uint32_t)passWidth,
+                                           (uint32_t)passHeight);
                     GLdouble metalAvy = mglRenderMetalViewportY(
                         avy, avh, (uint32_t)passHeight);
                     mglRenderApplyClipOriginToViewport(
                         &metalAvy, &avh,
                         (uint32_t)state->var.clip_origin);
+                    if (emptyScissor[vi]) {
+                        avw = 0.0;
+                        avh = 0.0;
+                    }
                     viewports[vi * 6 + 0] = avx;
                     viewports[vi * 6 + 1] = metalAvy;
                     viewports[vi * 6 + 2] = avw;
                     viewports[vi * 6 + 3] = avh;
-                    viewports[vi * 6 + 4] = state->var.depth_range[0];
-                    viewports[vi * 6 + 5] = state->var.depth_range[1];
+                    viewports[vi * 6 + 4] = state->depth_range_array[vi][0];
+                    viewports[vi * 6 + 5] = state->depth_range_array[vi][1];
                 }
                 mglRenderBindingSetViewportsForOwner(
                     bindingOwner,
                     commandState->currentRenderEncoderOwner,
                     viewports, (uint64_t)MGL_MAX_VIEWPORTS);
             } else {
-
                 double viewports[MGL_MAX_VIEWPORTS * 6];
                 for (int vi = 0; vi < MGL_MAX_VIEWPORTS; vi++) {
                     viewports[vi * 6 + 0] = vx;
                     viewports[vi * 6 + 1] = metalVy;
-                    viewports[vi * 6 + 2] = vw;
-                    viewports[vi * 6 + 3] = vh;
-                    viewports[vi * 6 + 4] = state->var.depth_range[0];
-                    viewports[vi * 6 + 5] = state->var.depth_range[1];
+                    viewports[vi * 6 + 2] = emptyScissor[vi] ? 0.0 : vw;
+                    viewports[vi * 6 + 3] = emptyScissor[vi] ? 0.0 : vh;
+                    viewports[vi * 6 + 4] = state->depth_range_array[vi][0];
+                    viewports[vi * 6 + 5] = state->depth_range_array[vi][1];
                 }
                 mglRenderBindingSetViewportsForOwner(
                     bindingOwner,

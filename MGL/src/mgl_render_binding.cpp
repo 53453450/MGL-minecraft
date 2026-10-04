@@ -1760,14 +1760,48 @@ int mglRenderBindingSetScissor(MGLBindingState * binding_state, void* render_enc
     MTL::ScissorRect scissor = {
         static_cast<NS::UInteger>(x), static_cast<NS::UInteger>(y),
         static_cast<NS::UInteger>(width), static_cast<NS::UInteger>(height)};
-    const bool emitted = !state->valid ||
+    const bool emitted = !state->valid || state->scissorCount != 1u ||
                          !mgl::scissorEqual(state->scissor, scissor);
     if (emitted) {
         encoder->setScissorRect(scissor);
         state->scissor = scissor;
+        state->scissors[0] = scissor;
+        state->scissorCount = 1;
     }
     mgl::recordBindingResult(*state, MGL_RENDER_BINDING_SCISSOR, emitted);
     return emitted ? 1 : 0;
+}
+
+int mglRenderBindingSetScissors(MGLBindingState * binding_state, void* render_encoder, const uint64_t *rects, uint64_t count) {
+    mgl::BindingState* state = reinterpret_cast<mgl::BindingState*>(static_cast<void*>(binding_state));
+    MTL::RenderCommandEncoder* encoder =
+        static_cast<MTL::RenderCommandEncoder*>(render_encoder);
+    if (!state || !encoder || !rects || count == 0u ||
+        count > MGL_MAX_VIEWPORTS) {
+        return -1;
+    }
+    MTL::ScissorRect srs[MGL_MAX_VIEWPORTS];
+    for (uint64_t i = 0; i < count; i++) {
+        srs[i] = {
+            static_cast<NS::UInteger>(rects[4 * i + 0]),
+            static_cast<NS::UInteger>(rects[4 * i + 1]),
+            static_cast<NS::UInteger>(rects[4 * i + 2]),
+            static_cast<NS::UInteger>(rects[4 * i + 3])};
+    }
+    bool same = state->valid && state->scissorCount == count;
+    for (uint64_t i = 0; same && i < count; i++) {
+        same = mgl::scissorEqual(state->scissors[i], srs[i]);
+    }
+    if (!same) {
+        encoder->setScissorRects(srs, count);
+        for (uint64_t i = 0; i < count; i++) {
+            state->scissors[i] = srs[i];
+        }
+        state->scissorCount = count;
+        state->scissor = srs[0];
+    }
+    mgl::recordBindingResult(*state, MGL_RENDER_BINDING_SCISSOR, !same);
+    return same ? 0 : 1;
 }
 
 int mglRenderBindingSetTriangleFill(MGLBindingState * binding_state, void* render_encoder, uint32_t mode) {
@@ -2403,6 +2437,12 @@ int mglRenderBindingSetScissorForOwner(MGLBindingState * binding_state, MGLRende
     return mglRenderBindingSetScissor(
         binding_state, mglRenderActiveRenderEncoder(render_encoder_owner),
         x, y, width, height);
+}
+
+int mglRenderBindingSetScissorsForOwner(MGLBindingState * binding_state, MGLRenderEncoderOwner * render_encoder_owner, const uint64_t *rects, uint64_t count) {
+    return mglRenderBindingSetScissors(
+        binding_state, mglRenderActiveRenderEncoder(render_encoder_owner),
+        rects, count);
 }
 
 int mglRenderBindingSetTriangleFillForOwner(MGLBindingState * binding_state, MGLRenderEncoderOwner * render_encoder_owner, uint32_t mode) {
