@@ -28,6 +28,7 @@
 #include "draw_command.h"
 #include "mgl_pixel_format.h"
 #include "pixel_utils.h"
+#include "mgl_draw_tess.h" /* mglXfbPrimitiveModeAccepts */
 
 #include "mgl_trace_log.h"
 #include "mgl_buffer_plan.h"
@@ -1936,6 +1937,30 @@ void mglBeginTransformFeedback(GLMContext ctx, GLenum primitiveMode)
 		return;
 	}
 
+	/* GL 4.6 §13.2.1: need an active program with XFB varyings, and every
+	 * binding point used by those varyings must have a buffer. */
+	Program *prog = STATE(program);
+	if (!prog || prog->transform_feedback_varying_count <= 0)
+	{
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+		return;
+	}
+	{
+		GLsizei nbuf = (prog->transform_feedback_buffer_mode == GL_SEPARATE_ATTRIBS)
+			? prog->transform_feedback_varying_count
+			: 1;
+		if (nbuf < 1)
+			nbuf = 1;
+		for (GLsizei i = 0; i < nbuf; i++) {
+			BufferBaseTarget *slot =
+				&STATE(buffer_base)[_TRANSFORM_FEEDBACK_BUFFER].buffers[i];
+			if (!slot->buf && slot->buffer == 0u) {
+				mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+				return;
+			}
+		}
+	}
+
 	STATE(transform_feedback)->active = GL_TRUE;
 	STATE(transform_feedback)->paused = GL_FALSE;
 	STATE(transform_feedback)->primitive_mode = primitiveMode;
@@ -3131,6 +3156,40 @@ static void mglDrawTransformFeedbackCommon(GLMContext ctx, GLenum mode, GLuint i
 	ERROR_CHECK_RETURN(xfb && (id == 0 || xfb->created), GL_INVALID_VALUE);
 	ERROR_CHECK_RETURN(instancecount >= 0, GL_INVALID_VALUE);
 	ERROR_CHECK_RETURN(xfb->ended, GL_INVALID_OPERATION);
+
+	/* GL 4.6 §10.4: mode must be compatible with the active GS output
+	 * (or with the XFB capture primitive when only TES is active).
+	 * Validate even when captured count is zero so CTS negative mode
+	 * checks still see INVALID_OPERATION. */
+	{
+		Program *prog = STATE(program);
+		if (prog && prog->shader_slots[_GEOMETRY_SHADER]) {
+			GLenum out = prog->geometry_output_type;
+			if (out == GL_POINTS && mode != GL_POINTS) {
+				ERROR_RETURN(GL_INVALID_OPERATION);
+				return;
+			}
+			if ((out == GL_LINE_STRIP || out == GL_LINES) &&
+			    mode != GL_LINES && mode != GL_LINE_STRIP &&
+			    mode != GL_LINE_LOOP) {
+				ERROR_RETURN(GL_INVALID_OPERATION);
+				return;
+			}
+			if ((out == GL_TRIANGLE_STRIP || out == GL_TRIANGLES) &&
+			    mode != GL_TRIANGLES && mode != GL_TRIANGLE_STRIP &&
+			    mode != GL_TRIANGLE_FAN) {
+				ERROR_RETURN(GL_INVALID_OPERATION);
+				return;
+			}
+		} else if (prog && prog->shader_slots[_TESS_EVALUATION_SHADER]) {
+			/* Replay mode must match the primitive type captured into the
+			 * XFB object (BeginTransformFeedback's primitiveMode). */
+			if (!mglXfbPrimitiveModeAccepts(xfb->primitive_mode, mode)) {
+				ERROR_RETURN(GL_INVALID_OPERATION);
+				return;
+			}
+		}
+	}
 
 	GLuint64 count = xfb->draw_vertices[stream];
 	if (count > INT32_MAX)

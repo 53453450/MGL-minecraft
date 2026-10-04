@@ -2531,6 +2531,15 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
+    /* GL 4.6 §13.2.2 / ARB_transform_feedback2: cannot relink a program
+     * that is in use by an active (including paused) transform feedback
+     * object. */
+    if (STATE(program_name) == program &&
+        STATE(transform_feedback) && STATE(transform_feedback)->active) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
     mglFlushPendingDraws(ctx);
 
     /* Validate attachments before tearing down a prior executable (A16).
@@ -3356,6 +3365,14 @@ void mglUseProgram(GLMContext ctx, GLuint program)
     Program *pptr = NULL;
 
     if (!ctx) {
+        return;
+    }
+
+    /* GL 4.6 §7.3: UseProgram while transform feedback is active and not
+     * paused.  PauseTransformFeedback allows program switches. */
+    if (STATE(transform_feedback) && STATE(transform_feedback)->active &&
+        !STATE(transform_feedback)->paused) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
 

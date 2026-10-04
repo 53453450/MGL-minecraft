@@ -1484,6 +1484,14 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
             return;
     }
 
+    /* GL 4.6 §6.7.1 / ARB_transform_feedback2: cannot rebind XFB buffers
+     * while transform feedback is active (paused still counts). */
+    if (target == GL_TRANSFORM_FEEDBACK_BUFFER &&
+        STATE(transform_feedback) && STATE(transform_feedback)->active) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
     ERROR_CHECK_RETURN(index >= 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(index < mglMaxIndexedBindings(ctx, target), GL_INVALID_VALUE);
 
@@ -1626,6 +1634,14 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
         default:
             ERROR_RETURN(GL_INVALID_ENUM);
             return;
+    }
+
+    /* GL 4.6 §6.7.1: BindBufferRange on TRANSFORM_FEEDBACK_BUFFER while
+     * transform feedback is active → INVALID_OPERATION. */
+    if (target == GL_TRANSFORM_FEEDBACK_BUFFER &&
+        STATE(transform_feedback) && STATE(transform_feedback)->active) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
     ERROR_CHECK_RETURN(index >= 0, GL_INVALID_VALUE);

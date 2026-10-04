@@ -1597,6 +1597,25 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
         return;
     }
 
+    /* S7.25: XFB active without GS/tess — draw mode must match
+     * BeginTransformFeedback primitiveMode (GL 4.6 §13.2.2).  With
+     * tessellation the draw mode is GL_PATCHES and the XFB mode matches
+     * the TES/GS output primitive instead. */
+    if (STATE(transform_feedback) && STATE(transform_feedback)->active &&
+        !STATE(transform_feedback)->paused) {
+        Program *xfb_prog = STATE(program_pipeline)
+            ? STATE(program_pipeline)->stage_programs[_VERTEX_SHADER]
+            : STATE(program);
+        if (xfb_prog && !xfb_prog->shader_slots[_GEOMETRY_SHADER] &&
+            !xfb_prog->shader_slots[_TESS_CONTROL_SHADER] &&
+            !xfb_prog->shader_slots[_TESS_EVALUATION_SHADER] &&
+            !mglXfbPrimitiveModeAccepts(
+                STATE(transform_feedback)->primitive_mode, cmd->mode)) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+    }
+
     /* S7.5: refresh state-derived uniforms (legacy clip planes) from the
      * GL state — the only GL-state → uniform mechanism in MGL. */
     mglRefreshLegacyStateUniforms(ctx);
