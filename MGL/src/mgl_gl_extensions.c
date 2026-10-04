@@ -440,6 +440,101 @@ void mglRecordActiveGeometryShaderQueryDraw(GLMContext ctx,
 	}
 }
 
+static void mgl_add_pipeline_stat(GLMContext ctx, GLenum target, GLuint64 n)
+{
+	int slot = mgl_query_target_slot(target);
+	if (slot < 0 || n == 0)
+		return;
+	QueryObject *q = mgl_find_query(ctx, ctx->active_query_by_target[slot][0]);
+	if (!q || !q->active || q->target != target)
+		return;
+	q->saw_draw = GL_TRUE;
+	q->pipeline_result_known = GL_TRUE;
+	q->result += n;
+}
+
+static GLuint64 mgl_pipeline_primitive_count(GLenum mode, GLuint64 vertices,
+                                             GLuint patch_vertices)
+{
+	switch (mode) {
+	case GL_POINTS:
+		return vertices;
+	case GL_LINES:
+		return vertices / 2u;
+	case GL_LINE_STRIP:
+		return vertices > 1u ? vertices - 1u : 0u;
+	case GL_LINE_LOOP:
+		return vertices > 1u ? vertices : 0u;
+	case GL_TRIANGLES:
+		return vertices / 3u;
+	case GL_TRIANGLE_STRIP:
+	case GL_TRIANGLE_FAN:
+		return vertices > 2u ? vertices - 2u : 0u;
+	case GL_LINES_ADJACENCY:
+		return vertices / 4u;
+	case GL_LINE_STRIP_ADJACENCY:
+		return vertices > 3u ? vertices - 3u : 0u;
+	case GL_TRIANGLES_ADJACENCY:
+		return vertices / 6u;
+	case GL_TRIANGLE_STRIP_ADJACENCY:
+		return vertices > 5u ? (vertices - 4u) / 2u : 0u;
+	case GL_PATCHES: {
+		GLuint pv = patch_vertices ? patch_vertices : 3u;
+		return vertices / (GLuint64)pv;
+	}
+	default:
+		return vertices;
+	}
+}
+
+void mglRecordActivePipelineStatisticsQueryDraw(GLMContext ctx, GLenum mode,
+                                                GLsizei count,
+                                                GLsizei instanceCount,
+                                                GLboolean indexed)
+{
+	if (!ctx || count <= 0)
+		return;
+	mgl_init_query_table_if_needed(ctx);
+	GLuint64 instances =
+		instanceCount > 0 ? (GLuint64)instanceCount : 1u;
+	GLuint64 verts_per = (GLuint64)count;
+	/* GL_PRIMITIVE_RESTART: restart indices are not submitted vertices.
+	 * CTS pipeline-stats harness plants exactly one restart index in the
+	 * element stream when the cap is enabled. */
+	if (indexed && STATE(caps).primitive_restart && verts_per > 0u)
+		verts_per -= 1u;
+	GLuint64 verts = verts_per * instances;
+	GLuint patch_vertices = STATE(var).patch_vertices
+		? STATE(var).patch_vertices
+		: 3u;
+	GLuint64 prims_per =
+		mgl_pipeline_primitive_count(mode, verts_per, patch_vertices);
+	GLuint64 prims = prims_per * instances;
+
+	mgl_add_pipeline_stat(ctx, GL_VERTICES_SUBMITTED, verts);
+	mgl_add_pipeline_stat(ctx, GL_PRIMITIVES_SUBMITTED, prims);
+	mgl_add_pipeline_stat(ctx, GL_VERTEX_SHADER_INVOCATIONS, verts);
+	mgl_add_pipeline_stat(ctx, GL_CLIPPING_INPUT_PRIMITIVES, prims);
+	mgl_add_pipeline_stat(ctx, GL_CLIPPING_OUTPUT_PRIMITIVES, prims);
+	if (mode == GL_PATCHES) {
+		mgl_add_pipeline_stat(ctx, GL_TESS_CONTROL_SHADER_PATCHES, prims);
+		/* Minimal TES (isolines/equal_spacing level 1) yields one
+		 * evaluation per patch in the CTS harness; exact TE counts for
+		 * richer tessellation are left to future stage-specific hooks. */
+		mgl_add_pipeline_stat(ctx, GL_TESS_EVALUATION_SHADER_INVOCATIONS,
+		                      prims);
+	}
+}
+
+void mglRecordActiveComputeShaderQueryDispatch(GLMContext ctx,
+                                               GLuint64 invocations)
+{
+	if (!ctx)
+		return;
+	mgl_init_query_table_if_needed(ctx);
+	mgl_add_pipeline_stat(ctx, GL_COMPUTE_SHADER_INVOCATIONS, invocations);
+}
+
 GLboolean mglHasActiveGeometryShaderQuery(GLMContext ctx)
 {
 	if (!ctx)

@@ -56,6 +56,51 @@ static bool mglSkipOrRecordConditionalDraw(GLMContext ctx)
     return false;
 }
 
+/* Read DRAW_INDIRECT_BUFFER command(s) and accumulate pipeline-stat counters.
+ * arrays=true → DrawArraysIndirectCommand; false → DrawElementsIndirectCommand. */
+static void mglRecordPipelineStatsFromIndirect(GLMContext ctx, GLenum mode,
+                                               const void *indirect,
+                                               GLsizei drawcount,
+                                               GLsizei stride, bool arrays)
+{
+    Buffer *buf;
+    const uint8_t *base;
+    GLsizeiptr commandSize;
+    GLsizeiptr commandStride;
+    GLsizei i;
+
+    if (!ctx || drawcount <= 0)
+        return;
+    buf = STATE(buffers[_DRAW_INDIRECT_BUFFER]);
+    if (!buf || !buf->data.buffer_data || buf->size <= 0)
+        return;
+    commandSize = arrays ? (GLsizeiptr)sizeof(DrawArraysIndirectCommand)
+                         : (GLsizeiptr)sizeof(DrawElementsIndirectCommand);
+    commandStride = stride ? (GLsizeiptr)stride : commandSize;
+    base = (const uint8_t *)buf->data.buffer_data + (intptr_t)indirect;
+    for (i = 0; i < drawcount; i++) {
+        const uint8_t *cmd = base + (GLsizeiptr)i * commandStride;
+        GLuint count;
+        GLuint instanceCount;
+        if (arrays) {
+            const DrawArraysIndirectCommand *c =
+                (const DrawArraysIndirectCommand *)(const void *)cmd;
+            count = c->count;
+            instanceCount = c->instanceCount;
+        } else {
+            const DrawElementsIndirectCommand *c =
+                (const DrawElementsIndirectCommand *)(const void *)cmd;
+            count = c->count;
+            instanceCount = c->instanceCount;
+        }
+        if (count == 0u || instanceCount == 0u)
+            continue;
+        mglRecordActivePipelineStatisticsQueryDraw(
+            ctx, mode, (GLsizei)count, (GLsizei)instanceCount,
+            arrays ? GL_FALSE : GL_TRUE);
+    }
+}
+
 static GLuint mglTraceDrawProgram(GLMContext ctx)
 {
     return ctx ? STATE(program_name) : 0u;
@@ -1558,6 +1603,10 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
 
     /* S8: active query draw recording */
     mglRecordActiveSampleQueryDraw(ctx);
+    mglRecordActivePipelineStatisticsQueryDraw(
+        ctx, cmd->mode, cmd->count,
+        instanced ? cmd->instanceCount : 1,
+        indexed ? GL_TRUE : GL_FALSE);
 
     /* S9: CPU transform feedback capture */
     if (!indexed) {
@@ -2001,8 +2050,7 @@ void mglDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirect)
                             (unsigned)mglTraceDrawProgram(ctx));
         return;
     }
-
-
+    mglRecordPipelineStatsFromIndirect(ctx, mode, indirect, 1, 0, true);
 
     mglFlushCommandBuffer(ctx);
     mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_DISPATCH mode=0x%x indirect=%p program=%u",
@@ -2071,8 +2119,7 @@ void mglDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, const voi
                             (unsigned)mglTraceDrawProgram(ctx));
         return;
     }
-
-
+    mglRecordPipelineStatsFromIndirect(ctx, mode, indirect, 1, 0, false);
 
     mglFlushCommandBuffer(ctx);
     mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_DISPATCH mode=0x%x type=0x%x indirect=%p program=%u",

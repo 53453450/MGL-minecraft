@@ -43,6 +43,7 @@
 #include "mgl_types_texture.h"      /* ImageUnit */
 #include "mgl_types_state.h"        /* mglMarkRendererDirtyBits */
 #include "glm_limits.h"             /* TEXTURE_UNITS */
+#include "glm_context.h"            /* mglRecordActiveComputeShaderQueryDispatch */
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
 static GLMState *mglComputeDispatchState(const MGLRendererStateAreas *areas,
@@ -337,6 +338,21 @@ bool mglComputeRunDispatchOrchestrationLocked(
         DIRTY_RENDER_STATE | DIRTY_TEX_BINDING | DIRTY_TEX |
         DIRTY_TEX_PARAM | DIRTY_SAMPLER | DIRTY_ALPHA_STATE |
         DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE | DIRTY_IMAGE_UNIT_STATE);
+
+    /* ARB_pipeline_statistics_query: count compute invocations for an
+     * active GL_COMPUTE_SHADER_INVOCATIONS query.  Indirect dispatches
+     * leave groups_* as the encoded values when known; otherwise fall
+     * back to marking a single invocation via saw_draw in the query path. */
+    if (dispatch_kind == MGL_RENDER_COMPUTE_DISPATCH_DIRECT && ptr) {
+        GLuint64 inv =
+            (GLuint64)groups_x * (GLuint64)groups_y * (GLuint64)groups_z *
+            (GLuint64)ptr->local_workgroup_size.x *
+            (GLuint64)ptr->local_workgroup_size.y *
+            (GLuint64)ptr->local_workgroup_size.z;
+        mglRecordActiveComputeShaderQueryDispatch(glm_ctx, inv);
+    } else {
+        mglRecordActiveComputeShaderQueryDispatch(glm_ctx, 1u);
+    }
     return true;
 }
 

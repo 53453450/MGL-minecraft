@@ -243,6 +243,12 @@ void MGLsetDefaultFramebufferSRGBCapable(GLMContext ctx, GLboolean capable);
 void mgl_lazy_init(void);
 GLboolean mglShouldSkipConditionalRender(GLMContext ctx);
 void mglRecordActiveSampleQueryDraw(GLMContext ctx);
+void mglRecordActivePipelineStatisticsQueryDraw(GLMContext ctx, GLenum mode,
+                                                GLsizei count,
+                                                GLsizei instanceCount,
+                                                GLboolean indexed);
+void mglRecordActiveComputeShaderQueryDispatch(GLMContext ctx,
+                                               GLuint64 invocations);
 
 void MGLsetCurrentContext(GLMContext ctx);
 void destroyGLMContext(GLMContext ctx);

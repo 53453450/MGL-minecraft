@@ -84,6 +84,10 @@ static const char *kMglExtensions[] = {
     "GL_EXT_texture_sRGB_decode",          /* GL_TEXTURE_SRGB_DECODE_EXT state in tex_param.c; mglEffectiveMGLPixelFormatForTexture downgrades sRGB→linear on SKIP_DECODE */
     "GL_ARB_texture_stencil8",             /* core in 4.4: STENCIL_INDEX8 textures (Stencil8), sampled and read with STENCIL_INDEX */
     "GL_ARB_texture_cube_map_array",       /* core in 4.0; samplerCubeArray gather already implemented */
+    /* Core-profile CTS gates tess pipeline-stats queries on this ARB string
+     * (isQuerySupported checks compatibility(4,0) OR the extension). */
+    "GL_ARB_tessellation_shader",
+    "GL_ARB_pipeline_statistics_query",    /* BeginQuery targets + draw/compute counters */
 };
 static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
               "MGL_NUM_EXTENSIONS must match kMglExtensions");
