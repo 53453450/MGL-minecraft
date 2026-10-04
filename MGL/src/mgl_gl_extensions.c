@@ -2722,8 +2722,8 @@ void mglCopyImageSubData(GLMContext ctx, GLuint srcName, GLenum srcTarget, GLint
 	}
 
 	/* Validate multisample compatibility — mixing multisampled and
-	 * non-multisampled targets is not allowed.  Different sample counts
-	 * between two multisampled textures are permitted by the spec. */
+	 * non-multisampled targets is not allowed (GL 4.6 §18.3.2).  Two
+	 * multisampled images must also have the same sample count. */
 	{
 		bool src_ms = (srcTarget == GL_TEXTURE_2D_MULTISAMPLE ||
 		               srcTarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY);
@@ -2732,6 +2732,14 @@ void mglCopyImageSubData(GLMContext ctx, GLuint srcName, GLenum srcTarget, GLint
 		if (src_ms != dst_ms) {
 			ERROR_RETURN(GL_INVALID_OPERATION);
 			return;
+		}
+		if (src_ms && dst_ms) {
+			GLuint src_samples = srcTex->samples > 0u ? srcTex->samples : 1u;
+			GLuint dst_samples = dstTex->samples > 0u ? dstTex->samples : 1u;
+			if (src_samples != dst_samples) {
+				ERROR_RETURN(GL_INVALID_OPERATION);
+				return;
+			}
 		}
 	}
 
