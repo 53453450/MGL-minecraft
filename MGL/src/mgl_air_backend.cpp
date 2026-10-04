@@ -8122,6 +8122,20 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     return nullptr;
                 }
             }
+            /* Apple texture.read is (tex, get_read_sampler, coord[, layer],
+             * offset, lod, access).  Must match imageLoad / buffer
+             * texelFetch arity — getOrInsertFunction bitcast of 4-arg vs
+             * 6-arg on the same name crashes the AGX Metal compiler. */
+            llvm::StructType *fetchSmpT = llvm::StructType::getTypeByName(
+                *cg.ctx, "struct._sampler_t");
+            if (!fetchSmpT)
+                fetchSmpT = llvm::StructType::create(*cg.ctx,
+                                                    "struct._sampler_t");
+            llvm::Value *fetchRdSmp = callAirFn(
+                cg, "air.get_read_sampler", fetchSmpT->getPointerTo(2), {});
+            llvm::Value *fetchOff2 = llvm::Constant::getNullValue(v2i32);
+            llvm::Value *fetchOff3 = llvm::ConstantVector::get(
+                {cg.b->getInt32(0), cg.b->getInt32(0), cg.b->getInt32(0)});
             auto doFetchVec =
                 [&](llvm::Value *t, llvm::Value *) -> llvm::Value * {
                 llvm::Value *r = nullptr;
@@ -8132,8 +8146,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         readIntrinsic("air.read_texture_2d_array.v4f32")
                             .c_str(),
                         retTy,
-                        {t, coord, arrayLayer, lodOrSample,
-                         cg.b->getInt32(3)});
+                        {t, fetchRdSmp, coord, arrayLayer, fetchOff2,
+                         lodOrSample, cg.b->getInt32(3)});
                 } else if (texKind == MGLIR_TEX_2D_MS) {
                     /* Non-RT MS textures are texture2d_array sample planes. */
                     r = callAirFn(
@@ -8141,8 +8155,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         readIntrinsic("air.read_texture_2d_array.v4f32")
                             .c_str(),
                         retTy,
-                        {t, coord, lodOrSample, cg.b->getInt32(0),
-                         cg.b->getInt32(3)});
+                        {t, fetchRdSmp, coord, lodOrSample, fetchOff2,
+                         cg.b->getInt32(0), cg.b->getInt32(3)});
                 } else if (texKind == MGLIR_TEX_2D_MS_ARRAY) {
                     llvm::Value *flat = cg.b->CreateAdd(
                         cg.b->CreateMul(arrayLayer, cg.b->getInt32(8)),
@@ -8152,26 +8166,37 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         readIntrinsic("air.read_texture_2d_array.v4f32")
                             .c_str(),
                         retTy,
-                        {t, coord, flat, cg.b->getInt32(0),
-                         cg.b->getInt32(3)});
+                        {t, fetchRdSmp, coord, flat, fetchOff2,
+                         cg.b->getInt32(0), cg.b->getInt32(3)});
                 } else if (texKind == MGLIR_TEX_3D) {
                     r = callAirFn(
                         cg, readIntrinsic("air.read_texture_3d.v4f32").c_str(),
                         retTy,
-                        {t, coord, lodOrSample, cg.b->getInt32(3)});
+                        {t, fetchRdSmp, coord, fetchOff3, lodOrSample,
+                         cg.b->getInt32(3)});
                 } else if (texKind == MGLIR_TEX_CUBE) {
+                    /* Cube face packed as array layer (same as imageLoad). */
+                    llvm::Value *face = cg.b->CreateExtractElement(
+                        coord, cg.b->getInt32(2));
+                    llvm::Value *xy = cg.b->CreateShuffleVector(
+                        coord, llvm::UndefValue::get(coord->getType()),
+                        {0, 1});
                     r = callAirFn(
                         cg,
-                        readIntrinsic("air.read_texture_cube.v4f32").c_str(),
+                        readIntrinsic("air.read_texture_2d_array.v4f32")
+                            .c_str(),
                         retTy,
-                        {t, coord, lodOrSample, cg.b->getInt32(3)});
+                        {t, fetchRdSmp, xy, face, fetchOff2, lodOrSample,
+                         cg.b->getInt32(3)});
                 } else {
                     llvm::Value *level =
                         texKind == MGLIR_TEX_2D_RECT ? cg.b->getInt32(0)
                                                      : lodOrSample;
                     r = callAirFn(
                         cg, readIntrinsic("air.read_texture_2d.v4f32").c_str(),
-                        retTy, {t, coord, level, cg.b->getInt32(3)});
+                        retTy,
+                        {t, fetchRdSmp, coord, fetchOff2, level,
+                         cg.b->getInt32(3)});
                 }
                 return cg.b->CreateExtractValue(r, 0);
             };
@@ -8728,9 +8753,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             };
             /* Integer samplers return integer texels; the AIR intrinsic
              * suffix carries the format (reference:
-             * texture2d<int, sample>.sample). */
+             * texture2d<int, sample>.sample).  Float keeps .v4f32. */
             auto sampledIntrinsic =
                 [&](const char *floatName) -> std::string {
+                if (texel == MGLIR_SCALAR_FLOAT) {
+                    return floatName;
+                }
                 std::string n(floatName);
                 std::string from = ".v4f32";
                 size_t pos = n.find(from);

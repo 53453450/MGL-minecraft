@@ -2216,6 +2216,14 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             fprintf(stderr, "MGL DUMP: fs.air %zu bytes\n", size);
         }
     }
+    if (getenv("MGL_DUMP_AIR") && stage == _COMPUTE_SHADER) {
+        FILE *f = fopen("/tmp/poison_cs.air", "wb");
+        if (f) {
+            fwrite(bytes, 1, size, f);
+            fclose(f);
+            fprintf(stderr, "MGL DUMP: cs.air %zu bytes\n", size);
+        }
+    }
     pptr->modules[stage].needs_runtime_array_size_buffer =
         stage_info.needs_runtime_array_size_buffer ? GL_TRUE : GL_FALSE;
     if (pptr->modules[stage].entry_point) {
