@@ -3017,6 +3017,12 @@ void getFramebufferAttachmentParameteriv(GLMContext ctx, GLuint framebuffer, GLe
                 return;
 
             case GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE:
+                /* GL 4.6 §9.2.3: DEPTH_STENCIL_ATTACHMENT has two component
+                 * types, so this query is INVALID_OPERATION. */
+                if (attachment == GL_DEPTH_STENCIL_ATTACHMENT) {
+                    ERROR_RETURN(GL_INVALID_OPERATION);
+                    return;
+                }
                 *params = (object_type == GL_NONE) ? GL_NONE : mglFramebufferAttachmentComponentType(internalformat);
                 return;
 
