@@ -626,10 +626,21 @@ void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
 
 void mglMemoryBarrierByRegion(GLMContext ctx, GLbitfield barriers)
 {
+    const GLbitfield valid_barriers =
+        GL_ATOMIC_COUNTER_BARRIER_BIT |
+        GL_FRAMEBUFFER_BARRIER_BIT |
+        GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
+        GL_SHADER_STORAGE_BARRIER_BIT |
+        GL_TEXTURE_FETCH_BARRIER_BIT |
+        GL_UNIFORM_BARRIER_BIT;
 
-    if (barriers & ~(GL_ATOMIC_COUNTER_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT | GL_UNIFORM_BARRIER_BIT))
+    /* GL 4.5+ / ES 3.1: ALL_BARRIER_BITS is legal; any other bits outside
+     * the region set are INVALID_VALUE (CTS basic-api-barrier-byRegion). */
+    if (barriers != GL_ALL_BARRIER_BITS && (barriers & ~valid_barriers))
     {
-        // extra bits...
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
+
+    mglMemoryBarrier(ctx, barriers);
 }

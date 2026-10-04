@@ -1518,10 +1518,9 @@ void mglGetTexParameterfv(GLMContext ctx, GLenum target, GLenum pname, GLfloat *
         return;
     }
     if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {
-        /* Immutable (TexStorage*) → BY_CLASS; mutable (TexImage*) → BY_SIZE. */
-        *params = (GLfloat)(tex->immutable_storage
-            ? GL_IMAGE_FORMAT_COMPATIBILITY_BY_CLASS
-            : GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE);
+        /* GL 4.6 §8.26 / ES 3.1: GL-allocated textures are BY_SIZE.
+         * BY_CLASS is only for images allocated outside GL (e.g. EGL). */
+        *params = (GLfloat)GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
         return;
     }
 
@@ -1554,9 +1553,7 @@ void mglGetTexParameteriv(GLMContext ctx, GLenum target, GLenum pname, GLint *pa
         return;
     }
     if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {
-        *params = tex->immutable_storage
-            ? (GLint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_CLASS
-            : (GLint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
+        *params = (GLint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
         return;
     }
 

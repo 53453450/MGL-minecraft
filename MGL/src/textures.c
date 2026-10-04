@@ -7368,9 +7368,7 @@ void mglGetTexParameterIiv(GLMContext ctx, GLenum target, GLenum pname, GLint *p
         return;
 
     if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {
-        *params = tex->immutable_storage
-            ? (GLint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_CLASS
-            : (GLint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
+        *params = (GLint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
         return;
     }
 
@@ -7393,9 +7391,7 @@ void mglGetTexParameterIuiv(GLMContext ctx, GLenum target, GLenum pname, GLuint 
         return;
 
     if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {
-        *params = tex->immutable_storage
-            ? (GLuint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_CLASS
-            : (GLuint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
+        *params = (GLuint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
         return;
     }
 
