@@ -1679,15 +1679,32 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
     /* S7.25: XFB active without GS/tess — draw mode must match
      * BeginTransformFeedback primitiveMode (GL 4.6 §13.2.2).  With
      * tessellation the draw mode is GL_PATCHES and the XFB mode matches
-     * the TES/GS output primitive instead. */
+     * the TES/GS output primitive instead.  UseProgram takes precedence;
+     * with UseProgram(0) inspect pipeline stage slots, not the VS program
+     * (a VS-only separable object has no tess slots even when TCS/TES are
+     * bound on the pipeline). */
     if (STATE(transform_feedback) && STATE(transform_feedback)->active &&
         !STATE(transform_feedback)->paused) {
-        Program *xfb_prog = STATE(program_pipeline)
-            ? STATE(program_pipeline)->stage_programs[_VERTEX_SHADER]
-            : STATE(program);
-        if (xfb_prog && !xfb_prog->shader_slots[_GEOMETRY_SHADER] &&
-            !xfb_prog->shader_slots[_TESS_CONTROL_SHADER] &&
-            !xfb_prog->shader_slots[_TESS_EVALUATION_SHADER] &&
+        Program *mono = STATE(program);
+        ProgramPipeline *pp = (!mono && STATE(program_name) == 0u)
+            ? STATE(program_pipeline) : NULL;
+        int has_gs = 0, has_tcs = 0, has_tes = 0;
+        Program *vs = NULL;
+        if (mono) {
+            vs = mono;
+            has_gs = mono->shader_slots[_GEOMETRY_SHADER] != NULL;
+            has_tcs = mono->shader_slots[_TESS_CONTROL_SHADER] != NULL;
+            has_tes = mono->shader_slots[_TESS_EVALUATION_SHADER] != NULL;
+        } else if (pp) {
+            Program *gs = pp->stage_programs[_GEOMETRY_SHADER];
+            Program *tcs = pp->stage_programs[_TESS_CONTROL_SHADER];
+            Program *tes = pp->stage_programs[_TESS_EVALUATION_SHADER];
+            vs = pp->stage_programs[_VERTEX_SHADER];
+            has_gs = gs && gs->shader_slots[_GEOMETRY_SHADER];
+            has_tcs = tcs && tcs->shader_slots[_TESS_CONTROL_SHADER];
+            has_tes = tes && tes->shader_slots[_TESS_EVALUATION_SHADER];
+        }
+        if (!has_gs && !has_tcs && !has_tes && vs &&
             !mglXfbPrimitiveModeAccepts(
                 STATE(transform_feedback)->primitive_mode, cmd->mode)) {
             ERROR_RETURN(GL_INVALID_OPERATION);

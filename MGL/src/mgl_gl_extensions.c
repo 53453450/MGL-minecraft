@@ -1939,8 +1939,21 @@ void mglBeginTransformFeedback(GLMContext ctx, GLenum primitiveMode)
 	}
 
 	/* GL 4.6 §13.2.1: need an active program with XFB varyings, and every
-	 * binding point used by those varyings must have a buffer. */
+	 * binding point used by those varyings must have a buffer.  With a
+	 * bound program pipeline and UseProgram(0), the last vertex-processing
+	 * stage of the pipeline owns the capture varyings. */
 	Program *prog = STATE(program);
+	if (!prog && STATE(program_pipeline)) {
+		ProgramPipeline *pp = STATE(program_pipeline);
+		if (pp->stage_programs[_GEOMETRY_SHADER])
+			prog = pp->stage_programs[_GEOMETRY_SHADER];
+		else if (pp->stage_programs[_TESS_EVALUATION_SHADER])
+			prog = pp->stage_programs[_TESS_EVALUATION_SHADER];
+		else if (pp->stage_programs[_TESS_CONTROL_SHADER])
+			prog = pp->stage_programs[_TESS_CONTROL_SHADER];
+		else
+			prog = pp->stage_programs[_VERTEX_SHADER];
+	}
 	if (!prog || prog->transform_feedback_varying_count <= 0)
 	{
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
