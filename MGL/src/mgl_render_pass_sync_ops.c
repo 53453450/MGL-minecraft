@@ -56,6 +56,7 @@
 
 
 #include "mgl_render.h"
+#include "mgl_draw_support.h"
 
 #include <stdio.h>
 
@@ -73,6 +74,8 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
 extern int mglRendererObjectPointerLikelyValid(const void *pointer);
 extern int mglRendererPointerInHashTable(const void *table, const void *pointer);
 extern int mglPointerRangeIsReadable(const void *pointer, size_t length);
+extern int mglPlatformShellMSSampleInLoop(void *renderer);
+extern int mglPlatformShellMSSamplePlaneOffset(void *renderer);
 
 extern Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx,
                                                        const char *where);
@@ -1094,6 +1097,22 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
                                                        (uint32_t)passHeight);
             mglRenderApplyClipOriginToViewport(&metalVy, &vh,
                                                (uint32_t)state->var.clip_origin);
+            /* Per-sample draw of a SAMPLE_SHADING FS: shift the window mapping
+             * so pixel-center interpolants land on that sample's position.
+             * Skip when the FS already consumes SampleID / interpolateAtSample. */
+            if (mglPlatformShellMSSampleInLoop(renderer) &&
+                mglDrawShouldOffsetViewportForSampleShading(ctx)) {
+                Texture *msTex = mglDrawEmulatedMSColor0Texture(ctx);
+                uint32_t nSamples =
+                    (msTex && msTex->samples > 1u) ? (uint32_t)msTex->samples : 1u;
+                uint32_t sIdx =
+                    (uint32_t)mglPlatformShellMSSamplePlaneOffset(renderer);
+                float sx = 0.5f;
+                float sy = 0.5f;
+                mglRenderStandardSamplePosition(nSamples, sIdx, &sx, &sy);
+                vx += (GLdouble)sx - 0.5;
+                metalVy -= (GLdouble)sy - 0.5;
+            }
 
             Texture *guiRTColor = NULL;
             Texture *guiRTDepth = NULL;

@@ -614,6 +614,31 @@ double mglRenderMetalViewportY(double y, double h, uint32_t pass_h) {
     return metal_y < 0.0 ? 0.0 : metal_y;
 }
 
+void mglRenderStandardSamplePosition(uint32_t samples, uint32_t index,
+                                     float *x, float *y) {
+    static const float s2[2][2] = {{0.25f, 0.25f}, {0.75f, 0.75f}};
+    static const float s4[4][2] = {{0.375f, 0.125f}, {0.875f, 0.375f},
+                                   {0.125f, 0.875f}, {0.625f, 0.625f}};
+    static const float s8[8][2] = {
+        {0.5625f, 0.3125f}, {0.4375f, 0.6875f}, {0.8125f, 0.5625f}, {0.3125f, 0.1875f},
+        {0.1875f, 0.8125f}, {0.0625f, 0.4375f}, {0.6875f, 0.9375f}, {0.9375f, 0.0625f}};
+    if (!x || !y) {
+        return;
+    }
+    *x = 0.5f;
+    *y = 0.5f;
+    if (samples == 2u && index < 2u) {
+        *x = s2[index][0];
+        *y = s2[index][1];
+    } else if (samples == 4u && index < 4u) {
+        *x = s4[index][0];
+        *y = s4[index][1];
+    } else if (samples == 8u && index < 8u) {
+        *x = s8[index][0];
+        *y = s8[index][1];
+    }
+}
+
 /* ARB_clip_control UPPER_LEFT negates clip-space Y (GL 4.6 §13.5).  Metal
  * accepts a negative viewport height to invert that axis without a VS
  * rewrite; pair with the existing winding invert for UPPER_LEFT. */

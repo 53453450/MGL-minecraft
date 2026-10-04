@@ -33,6 +33,7 @@
 #include "mgl_state_compat.h"     /* mglLogRenderStateRepair */
 #include "error.h"                /* mglDispatchError */
 
+#include <math.h>
 #include <stdio.h>
 
 /* Declared in the Objective-C MGLRenderer+DrawSupportUtil.h. */
@@ -222,14 +223,63 @@ int mglDrawModeIsFullyCulled(void *renderer, uint32_t mode)
                mglRenderDrawModeProducesPolygons((uint64_t)mode) ? 1 : 0) != 0;
 }
 
+static int mglDrawSampleShadingRequiresPerSampleMS(GLMContext ctx)
+{
+    GLMState *st;
+    Texture *tex;
+    GLint samples;
+    GLint unique;
+    GLfloat minv;
+
+    if (!ctx || !ctx->active_state) {
+        return 0;
+    }
+    st = ctx->active_state;
+    if (!st->caps.sample_shading) {
+        return 0;
+    }
+    minv = st->var.min_sample_shading;
+    if (minv <= 0.0f) {
+        return 0;
+    }
+    tex = mglDrawEmulatedMSColor0Texture(ctx);
+    if (!tex) {
+        return 0;
+    }
+    samples = tex->samples > 1 ? (GLint)tex->samples : 1;
+    if (samples <= 1) {
+        return 0;
+    }
+    unique = (GLint)ceilf(minv * (GLfloat)samples);
+    if (unique < 1) {
+        unique = 1;
+    }
+    if (unique > samples) {
+        unique = samples;
+    }
+    return unique > 1;
+}
+
 /* Body of the former -[MGLRenderer fragmentNeedsPerSampleMSValuesForContext:]. */
 int mglDrawFragmentNeedsPerSampleMSValues(GLMContext ctx)
 {
     Program *fp = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
-    if (!fp) {
+    int shader_ps = (fp && mglRenderFragmentNeedsPerSampleMSValues(fp)) ? 1 : 0;
+    return shader_ps || mglDrawSampleShadingRequiresPerSampleMS(ctx);
+}
+
+int mglDrawShouldOffsetViewportForSampleShading(GLMContext ctx)
+{
+    Program *fp;
+
+    if (!mglDrawSampleShadingRequiresPerSampleMS(ctx)) {
         return 0;
     }
-    return mglRenderFragmentNeedsPerSampleMSValues(fp) != 0;
+    fp = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
+    if (fp && mglRenderFragmentNeedsPerSampleMSValues(fp)) {
+        return 0;
+    }
+    return 1;
 }
 
 /* Body of the former -[MGLRenderer emulatedMSColor0TextureForContext:].  The

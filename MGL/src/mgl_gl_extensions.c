@@ -29,6 +29,7 @@
 #include "mgl_pixel_format.h"
 #include "pixel_utils.h"
 #include "mgl_draw_tess.h" /* mglXfbPrimitiveModeAccepts */
+#include "mgl_pso_format_class.h"
 
 #include "mgl_trace_log.h"
 #include "mgl_buffer_plan.h"
@@ -3907,27 +3908,9 @@ void mglGetMultisamplefv(GLMContext ctx, GLenum pname, GLuint index, GLfloat *va
 			samples = sc;
 	}
 
-	static const GLfloat s_pos_2[2][2]  = { {0.25f, 0.25f}, {0.75f, 0.75f} };
-	static const GLfloat s_pos_4[4][2]  = { {0.375f, 0.125f}, {0.875f, 0.375f},
-	                                        {0.125f, 0.875f}, {0.625f, 0.625f} };
-	/* 8x and 16x Metal standard positions for completeness. */
-	static const GLfloat s_pos_8[8][2]  = {
-		{0.5625f, 0.3125f}, {0.4375f, 0.6875f}, {0.8125f, 0.5625f}, {0.3125f, 0.1875f},
-		{0.1875f, 0.8125f}, {0.0625f, 0.4375f}, {0.6875f, 0.9375f}, {0.9375f, 0.0625f} };
-
-	if (samples == 2 && index < 2) {
-		val[0] = s_pos_2[index][0];
-		val[1] = s_pos_2[index][1];
-	} else if (samples == 4 && index < 4) {
-		val[0] = s_pos_4[index][0];
-		val[1] = s_pos_4[index][1];
-	} else if (samples == 8 && index < 8) {
-		val[0] = s_pos_8[index][0];
-		val[1] = s_pos_8[index][1];
-	} else if (index == 0) {
-		/* 1x or out-of-range: center. */
-		val[0] = 0.5f;
-		val[1] = 0.5f;
+	if ((samples == 2 && index < 2) || (samples == 4 && index < 4) ||
+	    (samples == 8 && index < 8) || index == 0) {
+		mglRenderStandardSamplePosition((uint32_t)samples, index, &val[0], &val[1]);
 	} else {
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 	}
@@ -6256,14 +6239,14 @@ static bool mglReadIndirectCountParameter(GLMContext ctx,
 
 void mglMinSampleShading(GLMContext ctx, GLfloat value)
 {
-	/* GL 4.6 §14.3.1: clamps to [0,1]. Metal does not natively support
-	 * GL-style per-sample fragment shading, so the value is stored for
-	 * state query correctness but has no rendering effect. */
+	/* GL 4.6 §14.3.1: clamps to [0,1]. Combined with SAMPLE_SHADING this
+	 * drives the emulated per-sample draw loop. */
 	if (!ctx)
 		return;
 	if (value < 0.0f) value = 0.0f;
 	if (value > 1.0f) value = 1.0f;
 	STATE_VAR(min_sample_shading) = value;
+	mglMarkStateDirtyBits(ctx->active_state, DIRTY_RENDER_STATE);
 }
 
 void mglMultiDrawArraysIndirectCount(GLMContext ctx, GLenum mode, const void *indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride)
