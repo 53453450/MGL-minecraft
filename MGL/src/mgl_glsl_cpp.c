@@ -1291,11 +1291,13 @@ static int define_from_raw(PP *pp, const char *rest)
         if (i < n && rest[i] == ')') {
             i++;
         } else {
+            int closed = 0;
             while (i < n) {
                 size_t ps, pe;
                 i = (size_t)skip_ws_text(rest, n, i);
                 if (i < n && rest[i] == ')') {
                     i++;
+                    closed = 1;
                     break;
                 }
                 if (i >= n || !is_ident_s(rest[i])) {
@@ -1340,9 +1342,15 @@ static int define_from_raw(PP *pp, const char *rest)
                 }
                 if (i < n && rest[i] == ')') {
                     i++;
+                    closed = 1;
                     break;
                 }
                 pp_fail(pp, "preprocessor: invalid macro parameter list");
+                macro_clear(&tmp);
+                return -1;
+            }
+            if (!closed) {
+                pp_fail(pp, "preprocessor: unterminated macro parameter list");
                 macro_clear(&tmp);
                 return -1;
             }
