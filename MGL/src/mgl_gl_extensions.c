@@ -3116,26 +3116,33 @@ void mglDepthRangeArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLdo
 		GLuint index = first + (GLuint)i;
 		GLdouble n = v[i * 2 + 0];
 		GLdouble f = v[i * 2 + 1];
+		n = n < 0.0 ? 0.0 : (n > 1.0 ? 1.0 : n);
+		f = f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
+		if (index >= MGL_MAX_VIEWPORTS)
+			continue;
+		STATE(depth_range_array)[index][0] = n;
+		STATE(depth_range_array)[index][1] = f;
 		if (index == 0) {
-			mglDepthRange(ctx, n, f);
-		} else if (index < MGL_MAX_VIEWPORTS) {
-			STATE(depth_range_array)[index][0] = n < 0.0 ? 0.0 : (n > 1.0 ? 1.0 : n);
-			STATE(depth_range_array)[index][1] = f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
-			mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+			STATE(var).depth_range[0] = n;
+			STATE(var).depth_range[1] = f;
 		}
+		mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 	}
 }
 
 void mglDepthRangeIndexed(GLMContext ctx, GLuint index, GLdouble n, GLdouble f)
 {
 	ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
+	ERROR_CHECK_RETURN(index < MGL_MAX_VIEWPORTS, GL_INVALID_VALUE);
+	n = n < 0.0 ? 0.0 : (n > 1.0 ? 1.0 : n);
+	f = f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
+	STATE(depth_range_array)[index][0] = n;
+	STATE(depth_range_array)[index][1] = f;
 	if (index == 0) {
-		mglDepthRange(ctx, n, f);
-	} else if (index < MGL_MAX_VIEWPORTS) {
-		STATE(depth_range_array)[index][0] = n < 0.0 ? 0.0 : (n > 1.0 ? 1.0 : n);
-		STATE(depth_range_array)[index][1] = f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
-		mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+		STATE(var).depth_range[0] = n;
+		STATE(var).depth_range[1] = f;
 	}
+	mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglDepthRangef(GLMContext ctx, GLfloat n, GLfloat f)
@@ -6775,15 +6782,20 @@ void mglScissorArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLint *
 	for (GLsizei i = 0; i < count; i++) {
 		GLuint index = first + (GLuint)i;
 		const GLint *box = &v[i * 4];
+		if (index >= MGL_MAX_VIEWPORTS)
+			continue;
+		STATE(scissor_box_array)[index][0] = box[0];
+		STATE(scissor_box_array)[index][1] = box[1];
+		STATE(scissor_box_array)[index][2] = box[2];
+		STATE(scissor_box_array)[index][3] = box[3];
 		if (index == 0) {
-			mglScissor(ctx, box[0], box[1], (GLsizei)box[2], (GLsizei)box[3]);
-		} else if (index < MGL_MAX_VIEWPORTS) {
-			STATE(scissor_box_array)[index][0] = box[0];
-			STATE(scissor_box_array)[index][1] = box[1];
-			STATE(scissor_box_array)[index][2] = box[2];
-			STATE(scissor_box_array)[index][3] = box[3];
-			mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+			STATE(var).scissor_box[0] = box[0];
+			STATE(var).scissor_box[1] = box[1];
+			STATE(var).scissor_box[2] = box[2];
+			STATE(var).scissor_box[3] = box[3];
+			STATE(scissor_box_defined) = GL_TRUE;
 		}
+		mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 	}
 }
 
@@ -6792,15 +6804,19 @@ void mglScissorIndexed(GLMContext ctx, GLuint index, GLint left, GLint bottom, G
 	ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
 	ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
 	ERROR_CHECK_RETURN(height >= 0, GL_INVALID_VALUE);
+	ERROR_CHECK_RETURN(index < MGL_MAX_VIEWPORTS, GL_INVALID_VALUE);
+	STATE(scissor_box_array)[index][0] = left;
+	STATE(scissor_box_array)[index][1] = bottom;
+	STATE(scissor_box_array)[index][2] = width;
+	STATE(scissor_box_array)[index][3] = height;
 	if (index == 0) {
-		mglScissor(ctx, left, bottom, width, height);
-	} else if (index < MGL_MAX_VIEWPORTS) {
-		STATE(scissor_box_array)[index][0] = left;
-		STATE(scissor_box_array)[index][1] = bottom;
-		STATE(scissor_box_array)[index][2] = width;
-		STATE(scissor_box_array)[index][3] = height;
-		mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+		STATE(var).scissor_box[0] = left;
+		STATE(var).scissor_box[1] = bottom;
+		STATE(var).scissor_box[2] = width;
+		STATE(var).scissor_box[3] = height;
+		STATE(scissor_box_defined) = GL_TRUE;
 	}
+	mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglScissorIndexedv(GLMContext ctx, GLuint index, const GLint *v)
@@ -7640,16 +7656,27 @@ void mglViewportIndexedf(GLMContext ctx, GLuint index, GLfloat x, GLfloat y, GLf
 	ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
 	ERROR_CHECK_RETURN(w >= 0.0f, GL_INVALID_VALUE);
 	ERROR_CHECK_RETURN(h >= 0.0f, GL_INVALID_VALUE);
+	ERROR_CHECK_RETURN(index < MGL_MAX_VIEWPORTS, GL_INVALID_VALUE);
+	STATE(viewport_array)[index][0] = x;
+	STATE(viewport_array)[index][1] = y;
+	STATE(viewport_array)[index][2] = w;
+	STATE(viewport_array)[index][3] = h;
 	if (index == 0) {
-		mglViewport(ctx, (GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
-	} else if (index < MGL_MAX_VIEWPORTS) {
-		STATE(viewport_array)[index][0] = x;
-		STATE(viewport_array)[index][1] = y;
-		STATE(viewport_array)[index][2] = w;
-		STATE(viewport_array)[index][3] = h;
+		if (ctx &&
+		    (STATE(viewport)[0] != (GLint)x ||
+		     STATE(viewport)[1] != (GLint)y ||
+		     STATE(viewport)[2] != (GLsizei)w ||
+		     STATE(viewport)[3] != (GLsizei)h)) {
+			mglFlushPendingDraws(ctx);
+		}
+		STATE(viewport)[0] = (GLint)x;
+		STATE(viewport)[1] = (GLint)y;
+		STATE(viewport)[2] = (GLsizei)w;
+		STATE(viewport)[3] = (GLsizei)h;
+	} else {
 		STATE(viewport_array_set) = GL_TRUE;
-		mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 	}
+	mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglViewportIndexedfv(GLMContext ctx, GLuint index, const GLfloat *v)

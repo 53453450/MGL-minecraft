@@ -21,6 +21,7 @@
 #include "mgl.h"
 #include "glm_context.h"
 #include "mgl_safety.h"
+#include "glm_limits.h"
 
 #define ENABLE_CAP(_cap_)   STATE(caps)._cap_ = true; break
 #define DISABLE_CAP(_cap_)   STATE(caps)._cap_ = false; break
@@ -367,10 +368,12 @@ void mglScissor(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height)
     STATE(var).scissor_box[1] = y;
     STATE(var).scissor_box[2] = width;
     STATE(var).scissor_box[3] = height;
-    STATE(scissor_box_array)[0][0] = x;
-    STATE(scissor_box_array)[0][1] = y;
-    STATE(scissor_box_array)[0][2] = width;
-    STATE(scissor_box_array)[0][3] = height;
+    for (int i = 0; i < MGL_MAX_VIEWPORTS; i++) {
+        STATE(scissor_box_array)[i][0] = x;
+        STATE(scissor_box_array)[i][1] = y;
+        STATE(scissor_box_array)[i][2] = width;
+        STATE(scissor_box_array)[i][3] = height;
+    }
     STATE(scissor_box_defined) = GL_TRUE;
 
     mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
@@ -674,8 +677,10 @@ void mglDepthRange(GLMContext ctx, GLdouble n, GLdouble f)
 
     STATE(var).depth_range[0] = n;
     STATE(var).depth_range[1] = f;
-    STATE(depth_range_array)[0][0] = n;
-    STATE(depth_range_array)[0][1] = f;
+    for (int i = 0; i < MGL_MAX_VIEWPORTS; i++) {
+        STATE(depth_range_array)[i][0] = n;
+        STATE(depth_range_array)[i][1] = f;
+    }
 
     mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
@@ -697,10 +702,13 @@ void mglViewport(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height
     STATE(viewport)[1] = y;
     STATE(viewport)[2] = width;
     STATE(viewport)[3] = height;
-    STATE(viewport_array)[0][0] = (GLfloat)x;
-    STATE(viewport_array)[0][1] = (GLfloat)y;
-    STATE(viewport_array)[0][2] = (GLfloat)width;
-    STATE(viewport_array)[0][3] = (GLfloat)height;
+    /* GL 4.6 §13.6.1: Viewport() writes every viewport index. */
+    for (int i = 0; i < MGL_MAX_VIEWPORTS; i++) {
+        STATE(viewport_array)[i][0] = (GLfloat)x;
+        STATE(viewport_array)[i][1] = (GLfloat)y;
+        STATE(viewport_array)[i][2] = (GLfloat)width;
+        STATE(viewport_array)[i][3] = (GLfloat)height;
+    }
 
     mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
