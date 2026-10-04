@@ -1949,6 +1949,15 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     if (attached_count > 1u) {
         air_flags |= MGL_AIR_COMPILE_STAGE_LINK_MERGE;
     }
+    /* Bake current ClipControl depth mode into raster VS/TES epilogues so
+     * ZERO_TO_ONE skips the Metal [-1,1]→[0,1] remap (CTS sets ClipControl
+     * before linking the probe program). */
+    if (ctx && ctx->active_state &&
+        STATE(var).clip_depth_mode == GL_ZERO_TO_ONE &&
+        (stage == _VERTEX_SHADER || stage == _TESS_EVALUATION_SHADER ||
+         stage == _GEOMETRY_SHADER)) {
+        air_flags |= MGL_AIR_COMPILE_CLIP_DEPTH_ZERO_TO_ONE;
+    }
     /* Native post-tessellation feeds FS directly: it cannot insert a GS
      * between TES and FS, and cannot feed transform feedback.  Force the
      * compute expansion path for triangles/quads (same as isolines /

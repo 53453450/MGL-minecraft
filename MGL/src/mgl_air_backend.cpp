@@ -10801,6 +10801,8 @@ static llvm::Value *defaultClipPosition(Codegen &cg) {
 
 static llvm::Value *fixClipZ(Codegen &cg, llvm::Value *pos) {
     if (!pos->getType()->isVectorTy()) return pos;
+    /* GL_ZERO_TO_ONE: clip z is already in [0,w]; Metal matches. */
+    if (cg.clipDepthZeroToOne) return pos;
     llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
     auto cI = [&](uint32_t v) {
         return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), v);
@@ -11628,6 +11630,7 @@ static char *airPrepareLegacySource(const char *src, int air_stage) {
 static int compileGLSLImpl(const char *src, int stage, int capture,
                            bool has_gs, bool force_tes_compute,
                            bool tes_vertex_render,
+                           bool clip_depth_zero_to_one,
                            const char *const *attrib_names,
                            uint32_t tessPatchVertices,
                            const MGLShaderResourceList *iface_location_peers,
@@ -12604,6 +12607,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.isVS = isVS || isTES;
     cg.pointSize = usesPointSize;
     cg.has_gs = ifaceGs;
+    cg.clipDepthZeroToOne = clip_depth_zero_to_one;
     cg.isCompute = isCompute || isTCS || isGS;
     cg.isTessControl = isTCS;
     cg.isTessEval = isTES;
@@ -15921,7 +15925,8 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
                                     size_t err_cap) {
     return compileGLSLImpl(src, stage, 0, /*has_gs=*/false,
                            /*force_tes_compute=*/false,
-                           /*tes_vertex_render=*/false, nullptr, 0u,
+                           /*tes_vertex_render=*/false,
+                           /*clip_depth_zero_to_one=*/false, nullptr, 0u,
                            /*iface_location_peers=*/nullptr, metallib_out,
                            size_out, err_buf, err_cap);
 }
@@ -15937,7 +15942,8 @@ extern "C" int mglShaderCompileGLSLCapture(const char *src,
                                            size_t err_cap) {
     return compileGLSLImpl(src, MGL_STAGE_VERTEX, 1, /*has_gs=*/false,
                            /*force_tes_compute=*/false,
-                           /*tes_vertex_render=*/false, attrib_names,
+                           /*tes_vertex_render=*/false,
+                           /*clip_depth_zero_to_one=*/false, attrib_names,
                            0u, /*iface_location_peers=*/nullptr,
                            metallib_out, size_out, err_buf, err_cap);
 }
@@ -15948,7 +15954,8 @@ extern "C" int mglShaderCompileGLSLTessCapture(
     char *err_buf, size_t err_cap) {
     return compileGLSLImpl(src, MGL_STAGE_VERTEX, 2, /*has_gs=*/false,
                            /*force_tes_compute=*/false,
-                           /*tes_vertex_render=*/false, attrib_names,
+                           /*tes_vertex_render=*/false,
+                           /*clip_depth_zero_to_one=*/false, attrib_names,
                            0u, /*iface_location_peers=*/nullptr,
                            metallib_out, size_out, err_buf, err_cap);
 }
@@ -15959,7 +15966,8 @@ extern "C" int mglShaderCompileGLSLCullDistanceCapture(
     char *err_buf, size_t err_cap) {
     return compileGLSLImpl(src, MGL_STAGE_VERTEX, 3, /*has_gs=*/false,
                            /*force_tes_compute=*/false,
-                           /*tes_vertex_render=*/false, attrib_names,
+                           /*tes_vertex_render=*/false,
+                           /*clip_depth_zero_to_one=*/false, attrib_names,
                            0u, /*iface_location_peers=*/nullptr,
                            metallib_out, size_out, err_buf, err_cap);
 }
@@ -16219,9 +16227,11 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
         capture = 1;
     const bool tes_vertex_render =
         (flags & MGL_AIR_COMPILE_TES_VERTEX) != 0;
+    const bool clip_depth_zero_to_one =
+        (flags & MGL_AIR_COMPILE_CLIP_DEPTH_ZERO_TO_ONE) != 0;
 
     int rc = compileGLSLImpl(sess.src, stage, capture, has_gs, force_tes_compute,
-                             tes_vertex_render,
+                             tes_vertex_render, clip_depth_zero_to_one,
                              attrib_names, tessPatchVertices,
                              iface_location_peers, metallib_out, size_out,
                              err_buf, err_cap, &sess);

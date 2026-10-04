@@ -614,6 +614,20 @@ double mglRenderMetalViewportY(double y, double h, uint32_t pass_h) {
     return metal_y < 0.0 ? 0.0 : metal_y;
 }
 
+/* ARB_clip_control UPPER_LEFT negates clip-space Y (GL 4.6 §13.5).  Metal
+ * accepts a negative viewport height to invert that axis without a VS
+ * rewrite; pair with the existing winding invert for UPPER_LEFT. */
+void mglRenderApplyClipOriginToViewport(double *metal_y, double *h,
+                                        uint32_t clip_origin) {
+    if (!metal_y || !h) {
+        return;
+    }
+    if (clip_origin == GL_UPPER_LEFT && *h != 0.0) {
+        *metal_y = *metal_y + *h;
+        *h = -*h;
+    }
+}
+
 uint32_t mglRenderCompareFuncOrFallback(uint32_t func, int valid,
                                         uint32_t fallback) {
     return valid ? func : fallback;

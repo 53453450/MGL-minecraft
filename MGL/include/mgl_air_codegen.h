@@ -162,6 +162,7 @@ struct Codegen {
     llvm::Value *cullParams = nullptr;   /* VS cull-distance emu parameters */
     bool usesCullDistance = false;
     bool usesPatchCullDistance = false;  /* native TES: cull from gl_in records */
+    bool clipDepthZeroToOne = false;     /* skip [-1,1]→[0,1] position.z remap */
     llvm::Value *fragPos = nullptr;      /* fragment: [[position]] (gl_FragCoord) */
     bool hasFragDepth = false;           /* fragment writes gl_FragDepth */
     bool fragDepthInit = false;          /* gl_FragDepth lvalue initialized */

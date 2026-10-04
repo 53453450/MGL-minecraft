@@ -1092,6 +1092,8 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
                                    (uint32_t)passHeight);
             GLdouble metalVy = mglRenderMetalViewportY(vy, vh,
                                                        (uint32_t)passHeight);
+            mglRenderApplyClipOriginToViewport(&metalVy, &vh,
+                                               (uint32_t)state->var.clip_origin);
 
             Texture *guiRTColor = NULL;
             Texture *guiRTDepth = NULL;
@@ -1262,8 +1264,11 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
                     GLdouble avy = state->viewport_array[vi][1];
                     GLdouble avw = state->viewport_array[vi][2];
                     GLdouble avh = state->viewport_array[vi][3];
-                    GLdouble metalAvy = (GLdouble)passHeight - (avy + avh);
-                    if (metalAvy < 0.0) metalAvy = 0.0;
+                    GLdouble metalAvy = mglRenderMetalViewportY(
+                        avy, avh, (uint32_t)passHeight);
+                    mglRenderApplyClipOriginToViewport(
+                        &metalAvy, &avh,
+                        (uint32_t)state->var.clip_origin);
                     viewports[vi * 6 + 0] = avx;
                     viewports[vi * 6 + 1] = metalAvy;
                     viewports[vi * 6 + 2] = avw;
