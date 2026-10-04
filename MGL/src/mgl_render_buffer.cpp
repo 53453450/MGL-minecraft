@@ -809,6 +809,25 @@ int mglRenderSnapshotSharedDirtyBuffer(Buffer* buffer,
     }
     if (snapshotLength == 0) return 0;
 
+    /* Indexed GPU-write targets (SSBO / atomic / XFB) share one Metal store
+     * across VS and FS.  Cloning the CPU shadow per stage bind left the
+     * fragment shader on a copy that never saw the vertex stores
+     * (KHR-GL46.shader_storage_buffer_object.advanced-matrix). */
+    if (buffer->gpu_write_target) {
+        size_t uploadOffset = 0;
+        size_t uploadLength = 0;
+        if (cpuData && current->contents() &&
+            mgl::bufferShadowUploadRange(
+                buffer, snapshotLength, &uploadOffset, &uploadLength)) {
+            memcpy(static_cast<uint8_t*>(current->contents()) + uploadOffset,
+                   cpuData + uploadOffset, uploadLength);
+        }
+        buffer->written_min = -1;
+        buffer->written_max = -1;
+        *metal_buffer_out = current;
+        return 0;
+    }
+
     MTL::ResourceOptions options = MTL::ResourceStorageModeShared;
     if (current->cpuCacheMode() == MTL::CPUCacheModeWriteCombined) {
         options = static_cast<MTL::ResourceOptions>(

@@ -7170,11 +7170,17 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 flags = 4u;
             else
                 flags = 1u | 2u | 4u;
-            llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
-            llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
-            callAirFn(cg, "air.wg.barrier", voidTy,
-                      {llvm::ConstantInt::get(i32, flags),
-                       llvm::ConstantInt::get(i32, 1)});
+            /* air.wg.barrier is a threadgroup op (CS / TCS / GS kernels).
+             * GLSL memoryBarrier in VS/FS is a memory fence, not a workgroup
+             * barrier; emitting wg.barrier in raster AIR is illegal on Metal. */
+            if (cg.isCompute || cg.isTessControl || cg.isGeometry ||
+                cg.isTESCompute) {
+                llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+                llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
+                callAirFn(cg, "air.wg.barrier", voidTy,
+                          {llvm::ConstantInt::get(i32, flags),
+                           llvm::ConstantInt::get(i32, 1)});
+            }
             return cg.b->getInt32(0);
         }
         if (strncmp(name, "imageAtomic", 11) == 0) {
