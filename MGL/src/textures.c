@@ -1177,9 +1177,16 @@ void mglBindImageTextures(GLMContext ctx, GLuint first, GLsizei count, const GLu
     if (count == 0) {
         return;
     }
-    if (first >= TEXTURE_UNITS || (GLuint)count > TEXTURE_UNITS - first) {
-        ERROR_RETURN(GL_INVALID_VALUE);
-        return;
+    {
+        GLuint max_units = STATE(var).max_image_units;
+        if (max_units == 0u) {
+            max_units = 8u;
+        }
+        /* GL 4.6 §8.26: INVALID_OPERATION if first + count > MAX_IMAGE_UNITS. */
+        if (first >= max_units || (GLuint)count > max_units - first) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
     }
 
     for (GLsizei i = 0; i < count; i++) {
@@ -1189,8 +1196,17 @@ void mglBindImageTextures(GLMContext ctx, GLuint first, GLsizei count, const GLu
         }
 
         Texture *tex = findTexture(ctx, tex_name);
-        if (!tex || tex->num_levels == 0 || !tex->faces[0].levels ||
-            !tex->faces[0].levels[0].complete) {
+        if (!tex) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+        if (tex->target == GL_TEXTURE_BUFFER) {
+            if (!tex->complete || !tex->texture_buffer) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+        } else if (tex->num_levels == 0 || !tex->faces[0].levels ||
+                   !tex->faces[0].levels[0].complete) {
             ERROR_RETURN(GL_INVALID_OPERATION);
             return;
         }
@@ -1204,13 +1220,17 @@ void mglBindImageTextures(GLMContext ctx, GLuint first, GLsizei count, const GLu
         }
 
         Texture *tex = findTexture(ctx, tex_name);
+        if (!tex) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
         mglBindImageTexture(ctx,
                             first + i,
                             tex_name,
                             0,
-                            GL_FALSE,
+                            mglTextureTargetUsesImageLayerParameter(tex->target),
                             0,
-                            tex->access ? tex->access : GL_READ_ONLY,
+                            GL_READ_WRITE,
                             tex->internalformat);
     }
 

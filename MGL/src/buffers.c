@@ -1600,11 +1600,13 @@ void mglBindBuffersBase(GLMContext ctx, GLenum target, GLuint first, GLsizei cou
             return;
     }
 
-    if (first > MAX_BINDABLE_BUFFERS ||
-        (GLuint)count > MAX_BINDABLE_BUFFERS - first)
     {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
+        GLuint max_bind = mglMaxIndexedBindings(ctx, target);
+        if (first >= max_bind || (GLuint)count > max_bind - first)
+        {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
     }
 
     for (GLsizei i = 0; i < count; i++)
@@ -3381,11 +3383,13 @@ void mglBindBuffersRange(GLMContext ctx, GLenum target, GLuint first, GLsizei co
             return;
     }
 
-    if (first > MAX_BINDABLE_BUFFERS ||
-        (GLuint)count > MAX_BINDABLE_BUFFERS - first)
     {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
+        GLuint max_bind = mglMaxIndexedBindings(ctx, target);
+        if (first >= max_bind || (GLuint)count > max_bind - first)
+        {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
     }
 
     if (buffers && (!offsets || !sizes))
