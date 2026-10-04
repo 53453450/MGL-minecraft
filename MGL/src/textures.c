@@ -6796,6 +6796,48 @@ void mglTextureView(GLMContext ctx, GLuint texture, GLenum target, GLuint origte
     view->metal_data_authoritative = GL_TRUE;
 }
 
+static GLboolean mglTexBufferInternalFormatValid(GLenum internalformat)
+{
+    switch (internalformat) {
+        case GL_R8:
+        case GL_R16:
+        case GL_R16F:
+        case GL_R32F:
+        case GL_R8I:
+        case GL_R16I:
+        case GL_R32I:
+        case GL_R8UI:
+        case GL_R16UI:
+        case GL_R32UI:
+        case GL_RG8:
+        case GL_RG16:
+        case GL_RG16F:
+        case GL_RG32F:
+        case GL_RG8I:
+        case GL_RG16I:
+        case GL_RG32I:
+        case GL_RG8UI:
+        case GL_RG16UI:
+        case GL_RG32UI:
+        case GL_RGB32F:
+        case GL_RGB32I:
+        case GL_RGB32UI:
+        case GL_RGBA8:
+        case GL_RGBA16:
+        case GL_RGBA16F:
+        case GL_RGBA32F:
+        case GL_RGBA8I:
+        case GL_RGBA16I:
+        case GL_RGBA32I:
+        case GL_RGBA8UI:
+        case GL_RGBA16UI:
+        case GL_RGBA32UI:
+            return GL_TRUE;
+        default:
+            return GL_FALSE;
+    }
+}
+
 static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum internalformat, GLuint buffer,
                                       GLintptr offset, GLsizeiptr size, bool whole_buffer);
 
@@ -6833,6 +6875,11 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
     }
     ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
     ERROR_CHECK_RETURN(tex->target == GL_TEXTURE_BUFFER, GL_INVALID_OPERATION);
+
+    /* GL 4.6 Table 8.15 / §8.9: TexBuffer internalformat must be a sized
+     * color format from that table. DEPTH_COMPONENT32F is sized but not
+     * allowed (CTS texture_buffer_errors). */
+    ERROR_CHECK_RETURN(mglTexBufferInternalFormatValid(internalformat), GL_INVALID_ENUM);
 
     /* GL 4.6 §8.9 error list: "An INVALID_VALUE error is generated if offset
      * is not an integer multiple of the value of TEXTURE_BUFFER_OFFSET_ALIGNMENT."

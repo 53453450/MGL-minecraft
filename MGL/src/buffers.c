@@ -2139,6 +2139,7 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
     {
         fprintf(stderr, "MGL Error: mglBufferSubData: immutable storage without dynamic bit\n");
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
@@ -2519,6 +2520,18 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
     }
 
     memcpy(dst_data, src_data, size);
+    {
+        uint8_t *cpu_base = (dst_buf->data.buffer_data >= 0x1000u)
+            ? (uint8_t *)(uintptr_t)dst_buf->data.buffer_data
+            : NULL;
+        /* Map returns the CPU shadow when one exists and does not copy it
+         * back to Metal on unmap. Mark pending so GetBufferSubData does not
+         * clobber the copy with stale GPU bytes (GL 4.6 §6.2: CopyBufferSubData
+         * may update a store that lacks DYNAMIC_STORAGE_BIT). */
+        if (cpu_base && dst_data == cpu_base + (size_t)writeOffset) {
+            dst_buf->cpu_shadow_pending = GL_TRUE;
+        }
+    }
     dst_buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
     mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
     mglBufferMarkWrite(dst_buf,
