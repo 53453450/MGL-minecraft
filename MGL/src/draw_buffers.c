@@ -236,6 +236,83 @@ static bool should_skip_indexed_draw_no_element_buffer(GLMContext ctx, const cha
     return true;
 }
 
+/* Upload DrawElements client-memory indices into a context scratch EBO and
+ * bind it to the current VAO.  Call before building MGLDrawCommand so the
+ * full 64-bit client pointer is not truncated into indexBufferOffset. */
+static bool mglUploadClientElementIndices(GLMContext ctx, GLsizei count,
+                                          GLenum type, const void *indices)
+{
+    VertexArray *vao;
+    GLuint elem_size;
+    GLsizeiptr bytes;
+
+    if (!ctx || !indices || count <= 0) {
+        return false;
+    }
+    vao = mglGetSafeCurrentVAO(ctx, "mglUploadClientElementIndices");
+    if (!vao) {
+        return false;
+    }
+    switch (type) {
+        case GL_UNSIGNED_BYTE: elem_size = 1u; break;
+        case GL_UNSIGNED_SHORT: elem_size = 2u; break;
+        case GL_UNSIGNED_INT: elem_size = 4u; break;
+        default: return false;
+    }
+    bytes = (GLsizeiptr)count * (GLsizeiptr)elem_size;
+    if (bytes <= 0) {
+        return false;
+    }
+    if (ctx->client_element_array_buffer == 0u) {
+        mglGenBuffers(ctx, 1, &ctx->client_element_array_buffer);
+        if (ctx->client_element_array_buffer == 0u) {
+            return false;
+        }
+    }
+    mglBindBuffer(ctx, GL_ELEMENT_ARRAY_BUFFER, ctx->client_element_array_buffer);
+    if (STATE(error) != GL_NO_ERROR) {
+        return false;
+    }
+    mglBufferData(ctx, GL_ELEMENT_ARRAY_BUFFER, bytes, indices, GL_STREAM_DRAW);
+    if (STATE(error) != GL_NO_ERROR) {
+        return false;
+    }
+    return vao->element_array.buffer != NULL;
+}
+
+/* If no user EBO is bound, treat indices as a client pointer and stage it.
+ * Our scratch EBO left bound from a prior client-memory draw must not be
+ * treated as a user ELEMENT_ARRAY_BUFFER — otherwise the next client pointer
+ * is misread as a byte offset (CTS XFB DrawElements does this repeatedly). */
+static bool mglEnsureElementBufferForDraw(GLMContext ctx, GLsizei count,
+                                          GLenum type, const void **indices_io)
+{
+    VertexArray *vao;
+    Buffer *ebo;
+
+    if (!ctx || !indices_io) {
+        return false;
+    }
+    vao = mglGetSafeCurrentVAO(ctx, "mglEnsureElementBufferForDraw");
+    if (!vao) {
+        return false;
+    }
+    ebo = vao->element_array.buffer;
+    if (ebo &&
+        (ctx->client_element_array_buffer == 0u ||
+         ebo->name != ctx->client_element_array_buffer)) {
+        return true; /* user EBO: indices is a buffer offset */
+    }
+    if (!*indices_io) {
+        return false;
+    }
+    if (!mglUploadClientElementIndices(ctx, count, type, *indices_io)) {
+        return false;
+    }
+    *indices_io = NULL; /* bound scratch EBO; draw uses offset 0 */
+    return true;
+}
+
 static Buffer *mglCurrentElementBuffer(GLMContext ctx, const char *caller)
 {
     VertexArray *vao = mglGetSafeCurrentVAO(ctx, caller);
@@ -1576,6 +1653,8 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
             return;
         }
         if (should_skip_indexed_draw_no_element_buffer(ctx, "mglDrawDispatch")) {
+            /* Entry points should have staged client indices already. */
+            ERROR_RETURN(GL_INVALID_OPERATION);
             return;
         }
     }
@@ -1788,7 +1867,16 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
                                    cmd->mode) &&
         (cmd->type == MGL_CMD_DRAW_ARRAYS ||
          cmd->type == MGL_CMD_DRAW_ARRAYS_INSTANCED ||
-         cmd->type == MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE)) {
+         cmd->type == MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE ||
+         cmd->type == MGL_CMD_DRAW_ELEMENTS ||
+         cmd->type == MGL_CMD_DRAW_ELEMENTS_INSTANCED ||
+         cmd->type == MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX ||
+         cmd->type == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX ||
+         cmd->type == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE ||
+         cmd->type ==
+             MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE)) {
+        /* VS-only XFB capture runs on the immediate issue path
+         * (mglDrawHostHandleXFB / HandleXFBElements). Batch replay skips it. */
         Program *vs_prog = STATE(program_pipeline)
             ? STATE(program_pipeline)->stage_programs[_VERTEX_SHADER]
             : (STATE(program_name) != 0u ? STATE(program) : NULL);
@@ -1918,6 +2006,10 @@ void mglDrawArrays(GLMContext ctx, GLenum mode, GLint first, GLsizei count)
 void mglDrawElements(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices)
 {
     MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     memset(&cmd, 0, sizeof(cmd));
     cmd.type              = MGL_CMD_DRAW_ELEMENTS;
     cmd.mode              = mode;
@@ -1936,6 +2028,10 @@ void mglDrawRangeElements(GLMContext ctx, GLenum mode, GLuint start, GLuint end,
     if (end < start) { ERROR_RETURN(GL_INVALID_VALUE); return; }
 
     MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     memset(&cmd, 0, sizeof(cmd));
     cmd.type              = MGL_CMD_DRAW_ELEMENTS;
     cmd.mode              = mode;
@@ -1962,6 +2058,10 @@ void mglDrawArraysInstanced(GLMContext ctx, GLenum mode, GLint first, GLsizei co
 void mglDrawElementsInstanced(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount)
 {
     MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     memset(&cmd, 0, sizeof(cmd));
     cmd.type              = MGL_CMD_DRAW_ELEMENTS_INSTANCED;
     cmd.mode              = mode;
@@ -1976,6 +2076,10 @@ void mglDrawElementsInstanced(GLMContext ctx, GLenum mode, GLsizei count, GLenum
 void mglDrawElementsBaseVertex(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLint basevertex)
 {
     MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     memset(&cmd, 0, sizeof(cmd));
     cmd.type              = MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX;
     cmd.mode              = mode;
@@ -1994,6 +2098,10 @@ void mglDrawRangeElementsBaseVertex(GLMContext ctx, GLenum mode, GLuint start, G
     if (end < start) { ERROR_RETURN(GL_INVALID_VALUE); return; }
 
     MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     memset(&cmd, 0, sizeof(cmd));
     cmd.type              = MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX;
     cmd.mode              = mode;
@@ -2009,6 +2117,10 @@ void mglDrawRangeElementsBaseVertex(GLMContext ctx, GLenum mode, GLuint start, G
 void mglDrawElementsInstancedBaseVertex(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLint basevertex)
 {
     MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     memset(&cmd, 0, sizeof(cmd));
     cmd.type              = MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX;
     cmd.mode              = mode;
@@ -2162,6 +2274,10 @@ void mglDrawArraysInstancedBaseInstance(GLMContext ctx, GLenum mode, GLint first
 void mglDrawElementsInstancedBaseInstance(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLuint baseinstance)
 {
     MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     memset(&cmd, 0, sizeof(cmd));
     cmd.type              = MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE;
     cmd.mode              = mode;
@@ -2177,6 +2293,10 @@ void mglDrawElementsInstancedBaseInstance(GLMContext ctx, GLenum mode, GLsizei c
 void mglDrawElementsInstancedBaseVertexBaseInstance(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLint basevertex, GLuint baseinstance)
 {
     MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     memset(&cmd, 0, sizeof(cmd));
     cmd.type              = MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE;
     cmd.mode              = mode;

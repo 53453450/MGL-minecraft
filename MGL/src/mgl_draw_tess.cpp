@@ -2823,51 +2823,28 @@ extern "C" bool mglGeometryGatherIndices(const uint8_t *indexBytes,
     return true;
 }
 
-extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
-                                   GLsizei count, GLsizei instanceCount,
-                                   GLuint baseInstance,
-                                   const MGLXfbVsDrawHostOps *ops)
+/* Pack captured VS records into bound XFB buffers.  capture_pitch is the
+ * per-instance record count in the capture buffer (draw count for arrays,
+ * maxIndex+1 for indexed).  draw_to_record maps a draw-order vertex index to
+ * a capture record index within the instance; NULL means identity. */
+static int mglXfbFinishVsOnlyCapture(GLMContext ctx, GLenum mode, GLsizei count,
+                                     GLsizei instanceCount,
+                                     const MGLXfbVsPlan *plan, void *capture,
+                                     uint64_t captureOffset,
+                                     uint32_t capture_pitch,
+                                     const uint32_t *draw_to_record,
+                                     void *(*buffer_contents)(void *buffer))
 {
-    if (!ops || !ops->renderer || !ops->capture_vs_positions ||
-        !ops->flush_command_buffer || !ops->buffer_contents ||
-        !ops->mark_cb_has_work) {
-        return 0;
-    }
-    if (!ctx || first < 0 || count <= 0 || instanceCount <= 0) {
-        return 0;
-    }
     TransformFeedback *xfb = ctx->active_state->transform_feedback;
-    if (!xfb || !xfb->active || xfb->paused) {
-        return 0;
-    }
-    if (!mglXfbPrimitiveModeAccepts(xfb->primitive_mode, mode)) {
-        return 0;
-    }
-    Program *program =
-        mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
-    MGLXfbVsPlan plan = {0};
-    if (!mglXfbPlanVsCapture(program, &plan)) {
-        return 0;
-    }
-
-    uint64_t captureOffset = 0u;
-    void *capture = ops->capture_vs_positions(ops->renderer, ctx, first, count,
-                                              instanceCount, baseInstance,
-                                              &captureOffset);
-    if (!capture) {
-        return 0;
-    }
-    ops->mark_cb_has_work(ops->renderer);
-    ops->flush_command_buffer(ops->renderer, 1);
-
     const uint8_t *captureBytes =
-        (const uint8_t *)ops->buffer_contents(capture);
+        (const uint8_t *)buffer_contents(capture);
     const uint32_t vpp = mglXfbVerticesPerPrimitive(xfb->primitive_mode);
     const uint32_t primsPerInstance =
         mglXfbVsDecompose(mode, (uint32_t)count, NULL);
     const uint64_t primsTotal64 =
         (uint64_t)primsPerInstance * (uint64_t)(uint32_t)instanceCount;
-    if (!captureBytes || !mglXfbRecordCountFits(primsTotal64 * vpp)) {
+    if (!captureBytes || capture_pitch == 0u ||
+        !mglXfbRecordCountFits(primsTotal64 * vpp)) {
         CFRelease(capture);
         return 1;
     }
@@ -2877,8 +2854,8 @@ extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
      * is recorded in none of them. */
     MGLXfbVsBufferDest dests[MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS] = {};
     uint32_t primsWritten = primsTotal;
-    for (GLuint buffer = 0u; buffer < plan.buffer_count; buffer++) {
-        if (plan.buffer_stride[buffer] == 0u) {
+    for (GLuint buffer = 0u; buffer < plan->buffer_count; buffer++) {
+        if (plan->buffer_stride[buffer] == 0u) {
             continue;
         }
         BufferBaseTarget *slot =
@@ -2898,7 +2875,7 @@ extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
             (uint64_t)xfb->buffer_write_offsets[buffer], visible);
         MGLXfbVsBufferDest *dest = &dests[buffer];
         if (!mglXfbPlanVsBufferDest(primsTotal * vpp,
-                                    plan.buffer_stride[buffer],
+                                    plan->buffer_stride[buffer],
                                     slot->buf != NULL, slot->offset,
                                     sessionOffset, visible, dest) ||
             dest->skip) {
@@ -2913,7 +2890,7 @@ extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
     uint32_t *order = NULL;
     if (recordsWritten > 0u) {
         gathered = (uint8_t *)malloc((size_t)recordsWritten *
-                                     plan.capture_stride);
+                                     plan->capture_stride);
         order = (uint32_t *)malloc((size_t)primsPerInstance * vpp *
                                    sizeof(uint32_t));
         if (!gathered || !order) {
@@ -2927,18 +2904,22 @@ extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
         mglXfbVsDecompose(mode, (uint32_t)count, order);
         const uint32_t perInstance = primsPerInstance * vpp;
         for (uint32_t r = 0u; r < recordsWritten; r++) {
-            const uint64_t src = (uint64_t)(r / perInstance) * (uint32_t)count +
-                                 order[r % perInstance];
-            memcpy(gathered + (size_t)r * plan.capture_stride,
-                   captureBytes + captureOffset + src * plan.capture_stride,
-                   plan.capture_stride);
+            const uint32_t drawIdx = order[r % perInstance];
+            const uint32_t recordIdx =
+                draw_to_record ? draw_to_record[drawIdx] : drawIdx;
+            const uint64_t src =
+                (uint64_t)(r / perInstance) * (uint64_t)capture_pitch +
+                (uint64_t)recordIdx;
+            memcpy(gathered + (size_t)r * plan->capture_stride,
+                   captureBytes + captureOffset + src * plan->capture_stride,
+                   plan->capture_stride);
         }
         free(order);
     }
 
-    for (GLuint buffer = 0u; recordsWritten > 0u && buffer < plan.buffer_count;
+    for (GLuint buffer = 0u; recordsWritten > 0u && buffer < plan->buffer_count;
          buffer++) {
-        if (plan.buffer_stride[buffer] == 0u) {
+        if (plan->buffer_stride[buffer] == 0u) {
             continue;
         }
         BufferBaseTarget *slot =
@@ -2946,7 +2927,7 @@ extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
                  ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER]
                  .buffers[buffer];
         const uint32_t writtenBytes =
-            recordsWritten * plan.buffer_stride[buffer];
+            recordsWritten * plan->buffer_stride[buffer];
         uint8_t *packed = (uint8_t *)calloc(1u, writtenBytes);
         if (!packed) {
             free(gathered);
@@ -2955,9 +2936,9 @@ extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
             CFRelease(capture);
             return 1;
         }
-        mglXfbPackVsRecords(&plan, buffer, gathered, 0u, plan.capture_stride,
+        mglXfbPackVsRecords(plan, buffer, gathered, 0u, plan->capture_stride,
                             recordsWritten, packed,
-                            plan.buffer_stride[buffer]);
+                            plan->buffer_stride[buffer]);
         const uint32_t destinationOffset = dests[buffer].destination_offset;
         mglRendererBufferSubData(ctx, slot->buf, destinationOffset, writtenBytes,
                                  packed);
@@ -2967,7 +2948,7 @@ extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
                     0 &&
                 destinationOffset + writtenBytes <= liveInfo.length) {
                 uint8_t *liveBase =
-                    (uint8_t *)ops->buffer_contents(slot->buf->data.mtl_data);
+                    (uint8_t *)buffer_contents(slot->buf->data.mtl_data);
                 if (liveBase) {
                     memcpy(liveBase + destinationOffset, packed, writtenBytes);
                 }
@@ -2999,6 +2980,145 @@ extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
     }
     xfb->vs_capture_replay = GL_TRUE;
     return 0;
+}
+
+static bool mglXfbVsOnlyDrawPrelude(GLMContext ctx, GLenum mode, GLsizei count,
+                                    GLsizei instanceCount,
+                                    const MGLXfbVsDrawHostOps *ops,
+                                    MGLXfbVsPlan *planOut)
+{
+    if (!ops || !ops->renderer || !ops->flush_command_buffer ||
+        !ops->buffer_contents || !ops->mark_cb_has_work || !planOut) {
+        return false;
+    }
+    if (!ctx || count <= 0 || instanceCount <= 0) {
+        return false;
+    }
+    TransformFeedback *xfb = ctx->active_state->transform_feedback;
+    if (!xfb || !xfb->active || xfb->paused) {
+        return false;
+    }
+    if (!mglXfbPrimitiveModeAccepts(xfb->primitive_mode, mode)) {
+        return false;
+    }
+    Program *program =
+        mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    memset(planOut, 0, sizeof(*planOut));
+    return mglXfbPlanVsCapture(program, planOut);
+}
+
+extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
+                                   GLsizei count, GLsizei instanceCount,
+                                   GLuint baseInstance,
+                                   const MGLXfbVsDrawHostOps *ops)
+{
+    if (!ops || !ops->capture_vs_positions || first < 0) {
+        return 0;
+    }
+    MGLXfbVsPlan plan = {0};
+    if (!mglXfbVsOnlyDrawPrelude(ctx, mode, count, instanceCount, ops,
+                                 &plan)) {
+        return 0;
+    }
+
+    uint64_t captureOffset = 0u;
+    void *capture = ops->capture_vs_positions(ops->renderer, ctx, first, count,
+                                              instanceCount, baseInstance,
+                                              &captureOffset);
+    if (!capture) {
+        return 0;
+    }
+    ops->mark_cb_has_work(ops->renderer);
+    ops->flush_command_buffer(ops->renderer, 1);
+    return mglXfbFinishVsOnlyCapture(ctx, mode, count, instanceCount, &plan,
+                                     capture, captureOffset, (uint32_t)count,
+                                     NULL, ops->buffer_contents);
+}
+
+static bool mglXfbReadDrawIndex(const uint8_t *bytes, GLenum indexType,
+                                uint32_t drawIdx, uint32_t *outIndex)
+{
+    if (!bytes || !outIndex) {
+        return false;
+    }
+    switch (indexType) {
+        case GL_UNSIGNED_BYTE:
+            *outIndex = bytes[drawIdx];
+            return true;
+        case GL_UNSIGNED_SHORT:
+            *outIndex = ((const uint16_t *)(const void *)bytes)[drawIdx];
+            return true;
+        case GL_UNSIGNED_INT:
+            *outIndex = ((const uint32_t *)(const void *)bytes)[drawIdx];
+            return true;
+        default:
+            return false;
+    }
+}
+
+extern "C" int mglXfbRunVsOnlyDrawElements(GLMContext ctx, GLenum mode,
+                                           GLsizei count, GLenum indexType,
+                                           uint64_t index_offset,
+                                           GLint baseVertex,
+                                           GLsizei instanceCount,
+                                           GLuint baseInstance, void *index_mtl,
+                                           const MGLXfbVsDrawHostOps *ops)
+{
+    if (!ops || !ops->capture_vs_indexed || !index_mtl) {
+        return 0;
+    }
+    MGLXfbVsPlan plan = {0};
+    if (!mglXfbVsOnlyDrawPrelude(ctx, mode, count, instanceCount, ops,
+                                 &plan)) {
+        return 0;
+    }
+
+    const uint8_t *indexBytes =
+        (const uint8_t *)ops->buffer_contents(index_mtl);
+    if (!indexBytes) {
+        return 0;
+    }
+    indexBytes += index_offset;
+    uint32_t *draw_to_record =
+        (uint32_t *)malloc((size_t)count * sizeof(uint32_t));
+    if (!draw_to_record) {
+        mglDispatchError(ctx, "vertexTransformFeedback",
+                         (GLenum)mglRenderErrorOutOfMemory());
+        return 1;
+    }
+    uint32_t maxIndex = 0u;
+    for (GLsizei i = 0; i < count; i++) {
+        uint32_t idx = 0u;
+        if (!mglXfbReadDrawIndex(indexBytes, indexType, (uint32_t)i, &idx)) {
+            free(draw_to_record);
+            return 0;
+        }
+        const int64_t attrib = (int64_t)idx + (int64_t)baseVertex;
+        if (attrib < 0) {
+            free(draw_to_record);
+            return 0;
+        }
+        draw_to_record[i] = (uint32_t)attrib;
+        if ((uint32_t)attrib > maxIndex) {
+            maxIndex = (uint32_t)attrib;
+        }
+    }
+
+    uint64_t captureOffset = 0u;
+    void *capture = ops->capture_vs_indexed(
+        ops->renderer, ctx, index_mtl, indexType, index_offset, count,
+        baseVertex, instanceCount, baseInstance, maxIndex, &captureOffset);
+    if (!capture) {
+        free(draw_to_record);
+        return 0;
+    }
+    ops->mark_cb_has_work(ops->renderer);
+    ops->flush_command_buffer(ops->renderer, 1);
+    const int result = mglXfbFinishVsOnlyCapture(
+        ctx, mode, count, instanceCount, &plan, capture, captureOffset,
+        maxIndex + 1u, draw_to_record, ops->buffer_contents);
+    free(draw_to_record);
+    return result;
 }
 
 extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,

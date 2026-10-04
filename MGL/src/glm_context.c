@@ -729,7 +729,7 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     ctx->assert_on_error = GL_TRUE;
     ctx->error_func = error_func;
 
-    ctx->temp_element_buffer = NULL;
+    ctx->client_element_array_buffer = 0u;
     
     _ctx = save;
 

@@ -189,6 +189,21 @@ extern "C" void mglIssueDrawElements(GLMContext ctx, void *renderer, GLenum mode
                            baseVertex, instanceCount, baseInstance, label)) {
         return;
     }
+    if (mglDrawHostHandleXFBElements(renderer, ctx, liveMode, count, type,
+                                     indices, baseVertex, instanceCount,
+                                     baseInstance)) {
+        return;
+    }
+    struct MGLXfbReplayClear {
+        GLMContext ctx;
+        ~MGLXfbReplayClear() {
+            if (ctx && ctx->active_state &&
+                ctx->active_state->transform_feedback) {
+                ctx->active_state->transform_feedback->vs_capture_replay =
+                    GL_FALSE;
+            }
+        }
+    } xfb_replay_clear{ctx};
 
     if (!mglDrawHostProcessGLStateLocked(renderer, true)) {
         MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);

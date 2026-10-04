@@ -151,7 +151,10 @@ typedef struct GLMContextRec_t {
     GLuint      default_framebuffer_linear_mtl_pixel_format;
     GLuint      default_framebuffer_srgb_mtl_pixel_format;
 
-    BufferData  *temp_element_buffer;
+    /* Scratch ELEMENT_ARRAY_BUFFER used when DrawElements is given a
+     * client-memory index pointer (no EBO bound).  Core GL forbids that,
+     * but Khronos GL46 transform_feedback capture tests still pass one. */
+    GLuint       client_element_array_buffer;
 
     MGLCommandBuffer draw_command_buffer;
     bool            draw_defer_enabled;

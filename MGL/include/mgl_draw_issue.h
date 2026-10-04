@@ -74,6 +74,10 @@ bool mglDrawHostHandleGeometry(void *renderer, GLMContext ctx, GLenum mode,
 bool mglDrawHostHandleXFB(void *renderer, GLMContext ctx, GLenum mode,
                           GLint first, GLsizei count, GLsizei instanceCount,
                           GLuint baseInstance);
+bool mglDrawHostHandleXFBElements(void *renderer, GLMContext ctx, GLenum mode,
+                                  GLsizei count, GLenum indexType,
+                                  const void *indices, GLint baseVertex,
+                                  GLsizei instanceCount, GLuint baseInstance);
 bool mglDrawHostCaptureCullDistanceArray(void *renderer, GLMContext ctx,
                                          GLint first, GLsizei count,
                                          GLsizei instanceCount,

@@ -1658,9 +1658,16 @@ static bool mglValidateTransformFeedbackVaryings(GLMContext ctx, Program *pptr)
         if (strcmp(baseName, "gl_Position") == 0 ||
             strcmp(baseName, "gl_PointSize") == 0) {
             GLuint components = strcmp(baseName, "gl_Position") == 0 ? 4u : 1u;
-            if (pptr->transform_feedback_buffer_mode == GL_SEPARATE_ATTRIBS &&
-                components > maxSeparateComponents)
-                return false;
+            if (pptr->transform_feedback_buffer_mode == GL_SEPARATE_ATTRIBS) {
+                /* Same buffer assignment as user varyings: one buffer per
+                 * varying index. Without this, gl_Position kept the previous
+                 * buffer index and collided with the prior SEPARATE attrib
+                 * (CTS capture_*_separate packs Position in the last slot). */
+                buffer = (GLuint)i;
+                if (buffer >= maxSeparateAttribs ||
+                    components > maxSeparateComponents)
+                    return false;
+            }
             pptr->transform_feedback_layout[i].buffer_index = buffer;
             pptr->transform_feedback_layout[i].component_offset =
                 bufferOffsets[buffer];
@@ -1669,9 +1676,7 @@ static bool mglValidateTransformFeedbackVaryings(GLMContext ctx, Program *pptr)
              * captured varying. */
             pptr->transform_feedback_layout[i].stream = 0;
             pptr->transform_feedback_layout[i].builtin = GL_TRUE;
-            if (pptr->transform_feedback_buffer_mode ==
-                GL_INTERLEAVED_ATTRIBS)
-                bufferOffsets[buffer] += components;
+            bufferOffsets[buffer] += components;
             continue;
         }
 

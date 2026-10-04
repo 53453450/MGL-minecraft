@@ -1574,21 +1574,48 @@ static MGLValidateArraysHostOps mglStageMakeValidateOps(void *renderer)
 
 /* O1.4: host ABI entry points fill HostOps and call C++ runners. */
 
-bool mglDrawHostHandleXFB(void *renderer, GLMContext ctx, GLenum mode,
-                          GLint first, GLsizei count, GLsizei instanceCount,
-                          GLuint baseInstance)
+static MGLXfbVsDrawHostOps mglStageMakeXfbVsOps(void *renderer)
 {
-    if (!renderer) return false;
-    MGLXfbVsDrawHostOps ops = {
+    return (MGLXfbVsDrawHostOps){
         .renderer = renderer,
         .capture_vs_positions = mglStageCaptureArray,
+        .capture_vs_indexed = mglStageCaptureIndexed,
         .mark_cb_has_work = mglStageMarkCbHasWork,
         .flush_command_buffer = mglStageFlushCB,
         .buffer_contents = mglStageBufContents,
         .dispatch_error = NULL,
     };
+}
+
+bool mglDrawHostHandleXFB(void *renderer, GLMContext ctx, GLenum mode,
+                          GLint first, GLsizei count, GLsizei instanceCount,
+                          GLuint baseInstance)
+{
+    if (!renderer) return false;
+    MGLXfbVsDrawHostOps ops = mglStageMakeXfbVsOps(renderer);
     return mglXfbRunVsOnlyDraw(ctx, mode, first, count, instanceCount,
                                baseInstance, &ops) != 0;
+}
+
+bool mglDrawHostHandleXFBElements(void *renderer, GLMContext ctx, GLenum mode,
+                                  GLsizei count, GLenum indexType,
+                                  const void *indices, GLint baseVertex,
+                                  GLsizei instanceCount, GLuint baseInstance)
+{
+    if (!renderer || !ctx || count <= 0 || instanceCount <= 0) {
+        return false;
+    }
+    Buffer *glBuffer = NULL;
+    void *metalBuffer = NULL;
+    if (!mglDrawHostResolveElementBuffer(renderer, ctx, "XFBElements",
+                                         &glBuffer, &metalBuffer) ||
+        !metalBuffer) {
+        return false;
+    }
+    MGLXfbVsDrawHostOps ops = mglStageMakeXfbVsOps(renderer);
+    return mglXfbRunVsOnlyDrawElements(
+               ctx, mode, count, indexType, (uint64_t)(uintptr_t)indices,
+               baseVertex, instanceCount, baseInstance, metalBuffer, &ops) != 0;
 }
 
 bool mglDrawHostHandleTessellation(void *renderer, GLMContext ctx,

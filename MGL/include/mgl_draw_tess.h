@@ -673,6 +673,11 @@ typedef struct MGLXfbVsDrawHostOps {
     void *(*capture_vs_positions)(void *renderer, GLMContext ctx, GLint first,
                                   GLsizei count, GLsizei instanceCount,
                                   GLuint baseInstance, uint64_t *out_offset);
+    void *(*capture_vs_indexed)(void *renderer, GLMContext ctx, void *index_mtl,
+                                GLenum indexType, uint64_t index_offset,
+                                GLsizei count, GLint baseVertex,
+                                GLsizei instanceCount, GLuint baseInstance,
+                                uint32_t maxIndex, uint64_t *out_offset);
     void (*mark_cb_has_work)(void *renderer);
     void (*flush_command_buffer)(void *renderer, int wait);
     void *(*buffer_contents)(void *buffer);
@@ -683,6 +688,13 @@ typedef struct MGLXfbVsDrawHostOps {
 int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first, GLsizei count,
                         GLsizei instanceCount, GLuint baseInstance,
                         const MGLXfbVsDrawHostOps *ops);
+
+/* Indexed DrawElements counterpart of mglXfbRunVsOnlyDraw. */
+int mglXfbRunVsOnlyDrawElements(GLMContext ctx, GLenum mode, GLsizei count,
+                                GLenum indexType, uint64_t index_offset,
+                                GLint baseVertex, GLsizei instanceCount,
+                                GLuint baseInstance, void *index_mtl,
+                                const MGLXfbVsDrawHostOps *ops);
 
 typedef struct MGLTessPatchDrawHostOps {
     void *renderer;
