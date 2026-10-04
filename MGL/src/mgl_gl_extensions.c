@@ -4111,13 +4111,15 @@ static GLboolean mgl_tf_stage_references_varying(Program *pptr,
 {
 	if (!pptr || !name)
 		return GL_FALSE;
-	if (!(pptr->attached_shader_mask & SHADER_MASK_BIT(stage)))
-		return GL_FALSE;
+	/* Reflect the last successful link.  Attached shaders may already be
+	 * detached (GL 4.6 §7.3); stage presence is the linked resource list. */
 	MGLShaderResourceList *list =
 		&pptr->shader_resources_list[stage][resource_kind];
+	if (!list->list || list->count == 0u)
+		return GL_FALSE;
 	const char *bracket = strchr(name, '[');
 	size_t base_len = bracket ? (size_t)(bracket - name) : strlen(name);
-	for (GLuint i = 0; list->list && i < list->count; i++)
+	for (GLuint i = 0; i < list->count; i++)
 	{
 		MGLShaderResource *res = &list->list[i];
 		if (!res->name)
@@ -4165,10 +4167,11 @@ static MGLShaderResource *mgl_tf_find_varying_output(Program *pptr,
 	/* Base name length (up to '[' or end). */
 	size_t base_len = bracket ? (size_t)(bracket - name) : strlen(name);
 
-	/* Search vertex-processing stage outputs in pipeline order.  Transform
-	 * feedback captures from the last active vertex-processing stage, so
-	 * search geometry -> tess-eval -> tess-control -> vertex and return the
-	 * first match.  In practice these tests only use vertex. */
+	/* Search linked vertex-processing stage outputs in pipeline order.
+	 * Transform feedback captures from the last active vertex-processing
+	 * stage, so search geometry -> tess-eval -> tess-control -> vertex.
+	 * Do not require current attachments: GL keeps the linked executable
+	 * and its reflection after DetachShader/DeleteShader. */
 	static const int stages[] = {
 		_GEOMETRY_SHADER,
 		_TESS_EVALUATION_SHADER,
@@ -4178,11 +4181,11 @@ static MGLShaderResource *mgl_tf_find_varying_output(Program *pptr,
 	for (size_t si = 0; si < sizeof(stages) / sizeof(stages[0]); si++)
 	{
 		int stage = stages[si];
-		if (!(pptr->attached_shader_mask & SHADER_MASK_BIT(stage)))
-			continue;
 		MGLShaderResourceList *list =
 			&pptr->shader_resources_list[stage][_STAGE_OUTPUT_RES];
-		for (GLuint i = 0; list->list && i < list->count; i++)
+		if (!list->list || list->count == 0u)
+			continue;
+		for (GLuint i = 0; i < list->count; i++)
 		{
 			MGLShaderResource *res = &list->list[i];
 			if (!res->name)

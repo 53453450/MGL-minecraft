@@ -12767,13 +12767,16 @@ static int test_air_xfb_reflection(unsigned char *pixels,
     glTransformFeedbackVaryings(program, 4, interleaved,
                                 GL_INTERLEAVED_ATTRIBS);
     glLinkProgram(program);
-    glDeleteShader(vs_sh); vs_sh = 0u;
-    glDeleteShader(fs_sh); fs_sh = 0u;
     {
         GLint ok = 0;
         glGetProgramiv(program, GL_LINK_STATUS, &ok);
         if (!ok) goto cleanup;
     }
+    /* CTS detaches after link; reflection must survive that. */
+    glDetachShader(program, vs_sh);
+    glDetachShader(program, fs_sh);
+    glDeleteShader(vs_sh); vs_sh = 0u;
+    glDeleteShader(fs_sh); fs_sh = 0u;
     {
         static const struct {
             const char *name;
