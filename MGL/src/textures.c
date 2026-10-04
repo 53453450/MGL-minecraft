@@ -1189,29 +1189,9 @@ void mglBindImageTextures(GLMContext ctx, GLuint first, GLsizei count, const GLu
         }
     }
 
-    for (GLsizei i = 0; i < count; i++) {
-        GLuint tex_name = textures ? textures[i] : 0u;
-        if (tex_name == 0u) {
-            continue;
-        }
-
-        Texture *tex = findTexture(ctx, tex_name);
-        if (!tex) {
-            ERROR_RETURN(GL_INVALID_OPERATION);
-            return;
-        }
-        if (tex->target == GL_TEXTURE_BUFFER) {
-            if (!tex->complete || !tex->texture_buffer) {
-                ERROR_RETURN(GL_INVALID_OPERATION);
-                return;
-            }
-        } else if (tex->num_levels == 0 || !tex->faces[0].levels ||
-                   !tex->faces[0].levels[0].complete) {
-            ERROR_RETURN(GL_INVALID_OPERATION);
-            return;
-        }
-    }
-
+    /* Values are checked per image unit. An invalid entry leaves that unit
+     * unchanged and still generates an error; other units with valid values
+     * are updated (GL 4.6 §8.26). */
     for (GLsizei i = 0; i < count; i++) {
         GLuint tex_name = textures ? textures[i] : 0u;
         if (tex_name == 0u) {
@@ -1222,16 +1202,32 @@ void mglBindImageTextures(GLMContext ctx, GLuint first, GLsizei count, const GLu
         Texture *tex = findTexture(ctx, tex_name);
         if (!tex) {
             ERROR_RETURN(GL_INVALID_OPERATION);
-            return;
+            continue;
         }
+
+        GLenum format = tex->internalformat;
+        GLuint w = tex->width;
+        GLuint h = tex->height;
+        GLuint d = tex->depth;
+        if (tex->target != GL_TEXTURE_BUFFER &&
+            tex->faces[0].levels && tex->num_levels > 0u) {
+            w = tex->faces[0].levels[0].width;
+            h = tex->faces[0].levels[0].height;
+            d = tex->faces[0].levels[0].depth;
+        }
+        if (!mglIsLegalImageUnitFormat(format) || w == 0u || h == 0u || d == 0u) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            continue;
+        }
+
         mglBindImageTexture(ctx,
                             first + i,
                             tex_name,
                             0,
-                            mglTextureTargetUsesImageLayerParameter(tex->target),
+                            GL_TRUE,
                             0,
                             GL_READ_WRITE,
-                            tex->internalformat);
+                            format);
     }
 
     mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
