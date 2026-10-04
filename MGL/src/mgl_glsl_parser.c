@@ -166,6 +166,7 @@ typedef struct MGLParser {
     int member_mat_cols[128];
     int member_mat_rows[128];
     uint32_t member_type_count;
+    int in_struct; /* 1 while parsing `struct { ... }` members */
 } MGLParser;
 
 static unsigned int tk_line(MGLParser *p);
@@ -2409,6 +2410,8 @@ static MGLDecl *parse_declaration(MGLParser *p)
     d->layout_winding = MGL_AST_WINDING_DEFAULT;
     d->layout_point_mode = 0;
     d->layout_early_fragment_tests = 0;
+    int extra_bad = 0;
+    int saw_layout = 0;
 
     /* qualifiers and storage */
 more_qualifiers:
@@ -2450,7 +2453,10 @@ more_qualifiers:
         } else if (eat_ident(p, "coherent") ||
                    eat_ident(p, "volatile") ||
                    eat_ident(p, "restrict")) {
-            /* Memory coherency qualifiers; access legality is unchanged. */
+            extra_bad = 1;
+        } else if (p->in_struct &&
+                   (eat_ident(p, "attribute") || eat_ident(p, "varying"))) {
+            extra_bad = 1;
         } else if (at_ident(p, "lowp") || at_ident(p, "mediump") ||
                    at_ident(p, "highp")) {
             /* precision qualifier consumed; recorded on the type later */
@@ -2465,6 +2471,7 @@ more_qualifiers:
 
     /* layout(...) */
     if (eat_ident(p, "layout")) {
+        saw_layout = 1;
         if (!expect_punct(p, "(")) {
             free(d);
             return NULL;
@@ -2781,6 +2788,15 @@ more_qualifiers:
         return NULL;
     }
 
+    /* GLSL 4.60 §4.1.8 / CTS shaders.negative.non_precision_qualifiers:
+     * struct members may only take precision qualifiers. */
+    if (p->in_struct &&
+        (d->qualifiers != 0u || extra_bad || saw_layout)) {
+        parse_error(p,
+                    "struct members may only have precision qualifiers at line %u",
+                    tk_line(p));
+    }
+
     /* struct definition?  "struct" keyword or a type followed by '{' */
     if (eat_ident(p, "struct")) {
         /* struct name */
@@ -2799,6 +2815,8 @@ more_qualifiers:
             advance(p);
             MGLDecl **members = NULL;
             uint32_t mcount = 0;
+            int prev_in_struct = p->in_struct;
+            p->in_struct = 1;
             while (!ops_at(p, "}") && tk(p, 0)->kind != MGLGLSL_TOK_END) {
                 MGLDecl *m = parse_declaration(p);
                 if (!m) {
@@ -2814,6 +2832,7 @@ more_qualifiers:
                 members = new_members;
                 members[mcount++] = m;
             }
+            p->in_struct = prev_in_struct;
             expect_punct(p, "}");
             d->struct_members = members;
             d->struct_member_count = mcount;
