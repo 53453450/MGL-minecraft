@@ -843,7 +843,10 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
         return;
     }
 
-    ptr = getTex(ctx, texture, 0);
+    /* findTexture, not getTex: getTex reports INVALID_OPERATION for a
+     * missing name, but BindImageTexture must report INVALID_VALUE
+     * (GL 4.6 / ES 3.1; CTS negative-bind texture=123). */
+    ptr = findTexture(ctx, texture);
 
     if (!ptr) {
         fprintf(stderr, "MGL Error: mglBindImageTexture: texture %d not found\n", texture);
@@ -857,7 +860,9 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
         return;
     }
 
-    if (!layered && mglTextureTargetUsesImageLayerParameter(ptr->target) && layer < 0) {
+    /* GL 4.6 §8.26 / ES 3.1: INVALID_VALUE if layer is negative, including
+     * non-array 2D (CTS es_31_compatibility.negative-bind). */
+    if (layer < 0) {
         fprintf(stderr, "MGL Error: mglBindImageTexture: layer < 0 (%d)\n", layer);
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
@@ -874,6 +879,15 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
             fprintf(stderr, "MGL Error: mglBindImageTexture: invalid access 0x%x\n", access);
             ERROR_RETURN(GL_INVALID_ENUM);
             return;
+    }
+
+    /* ES 3.1 negative-bind: Gen+Bind with no TexStorage is a mutable
+     * incomplete object and must be INVALID_OPERATION. GL 4.6
+     * basic-api-bind uses complete mutable TexImage* and must succeed. */
+    if (!ptr->immutable_storage && !ptr->complete && ptr->num_levels == 0u) {
+        fprintf(stderr, "MGL Error: mglBindImageTexture: texture %u is not immutable\n", texture);
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
     /* Spec: an incompatible <format> vs texture internalformat makes image
