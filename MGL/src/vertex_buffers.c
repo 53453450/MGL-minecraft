@@ -31,11 +31,15 @@ extern void mglGenVertexArrays(GLMContext ctx, GLsizei n, GLuint *arrays);
 
 static GLuint mglVertexAttribBindingLimit(GLMContext ctx)
 {
-    GLuint limit = ctx ? STATE(var).max_vertex_attrib_bindings : MGL_MAX_VERTEX_ATTRIB_BINDINGS;
+    GLuint limit = ctx ? STATE(var).max_vertex_attrib_bindings : MAX_ATTRIBS;
+    GLuint cap = MAX_ATTRIBS;
+    if (cap > MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
+        cap = MGL_MAX_VERTEX_ATTRIB_BINDINGS;
+    }
     if (limit == 0u ||
         limit == 0x01010101u ||
-        limit > MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
-        limit = MGL_MAX_VERTEX_ATTRIB_BINDINGS;
+        limit > cap) {
+        limit = cap;
     }
     return limit;
 }

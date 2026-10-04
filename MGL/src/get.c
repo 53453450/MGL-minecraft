@@ -194,8 +194,12 @@ static GLuint mglSafeMaxViewports(GLMContext ctx)
 static GLuint mglSafeMaxVertexAttribBindings(GLMContext ctx)
 {
     GLuint value = ctx ? STATE(var).max_vertex_attrib_bindings : 0u;
-    if (value == 0u || value == 0x01010101u || value > MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
-        value = MGL_MAX_VERTEX_ATTRIB_BINDINGS;
+    GLuint cap = MAX_ATTRIBS;
+    if (cap > MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
+        cap = MGL_MAX_VERTEX_ATTRIB_BINDINGS;
+    }
+    if (value == 0u || value == 0x01010101u || value > cap) {
+        value = cap;
         if (ctx) {
             STATE(var).max_vertex_attrib_bindings = value;
         }

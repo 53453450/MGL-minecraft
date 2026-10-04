@@ -578,10 +578,10 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_VERTEX_BINDING_OFFSET,&glm_ctx->active_state->var.vertex_binding_offset);
     glGetIntegerv(GL_VERTEX_BINDING_STRIDE,&glm_ctx->active_state->var.vertex_binding_stride);
     glGetIntegerv(GL_MAX_VERTEX_ATTRIB_RELATIVE_OFFSET,&glm_ctx->active_state->var.max_vertex_attrib_relative_offset);
-    /* GL_MAX_VERTEX_ATTRIB_BINDINGS is independent from GL_MAX_VERTEX_ATTRIBS.
-     * The spec minimum is 16; MGL's VertexArray.bindings[] array supports
-     * MGL_MAX_VERTEX_ATTRIB_BINDINGS (64), so advertise the full capacity. */
-    glm_ctx->active_state->var.max_vertex_attrib_bindings = MGL_MAX_VERTEX_ATTRIB_BINDINGS;
+    /* Spec allows BINDINGS > ATTRIBS, but EnableVertexAttribArray and
+     * layout(location=N) are capped at MAX_VERTEX_ATTRIBS (MAX_ATTRIBS).
+     * CTS draw_bind_vertex_buffers enables 0..BINDINGS-1; advertising 64
+     * made EnableVertexAttribArray(30) INVALID_VALUE. */
     if (glm_ctx->active_state->var.max_vertex_attrib_relative_offset < 2047u ||
         glm_ctx->active_state->var.max_vertex_attrib_relative_offset == 0x01010101u) {
         glm_ctx->active_state->var.max_vertex_attrib_relative_offset = 2047u;
