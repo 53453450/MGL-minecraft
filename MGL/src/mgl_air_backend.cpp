@@ -10317,6 +10317,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 t.vec = 4;
             } else if (strcmp(name, "gl_PointSize") == 0) {
                 t.scalar = MGLIR_SCALAR_FLOAT;
+            } else if (strcmp(name, "gl_FragDepth") == 0) {
+                t.scalar = MGLIR_SCALAR_FLOAT;
             } else {
                 sym = findSymbol(mod, name);
                 if (!sym) { cg.err = 1; return nullptr; }
