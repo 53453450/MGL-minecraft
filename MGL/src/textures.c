@@ -895,17 +895,14 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
             return;
         }
     } else {
-        /* Immutable textures reject level past allocated mip count (GL 4.6
-         * §8.26). Mutable textures may bind any level in [0, MAX_LEVEL] even
-         * when that mip was never defined — image loads return 0 and stores
-         * are ignored (CTS incomplete_textures). */
-        if (ptr->immutable_storage) {
-            if (level >= (GLint)ptr->num_levels) {
-                fprintf(stderr, "MGL Error: mglBindImageTexture: level >= num_levels (%d >= %d)\n", level, ptr->num_levels);
-                ERROR_RETURN(GL_INVALID_VALUE);
-                return;
-            }
-        } else {
+        /* BindImageTexture records the requested level even if that mip is
+         * not allocated.  Missing-level loads return 0 and stores are
+         * ignored (GL 4.6 image completeness; CTS incomplete_textures).
+         * ES 3.1 / KHR-GL46.es_31_compatibility.basic-api-bind also binds
+         * level==immutable_levels (TexStorage levels=4, bind level=4) and
+         * expects the unit to take that binding with no error.  Reject only
+         * levels past TEXTURE_MAX_LEVEL. */
+        {
             GLint max_level = (GLint)ptr->params.max_level;
             if (max_level < 0) {
                 max_level = 1000;
