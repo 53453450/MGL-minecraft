@@ -192,6 +192,17 @@ struct Codegen {
     llvm::Value *samplerWrapPtr = nullptr; /* integer gather wrap/border table */
     std::map<std::string, std::vector<llvm::Value *>> texArrayValues;
     std::map<std::string, std::vector<llvm::Value *>> smpArrayValues;
+    /* Same-invocation imageStore→imageLoad forwarding (GLSL 4.60 §8.12 /
+     * coherent).  Metal texture.fence()+read is not reliable for VS
+     * imageBuffer on AGX (CTS advanced-memory-order).  Entries are only
+     * reused when the load is still in the store's basic block. */
+    struct ImageStoreFwd {
+        llvm::BasicBlock *bb = nullptr;
+        llvm::Value *tex = nullptr;
+        llvm::Value *coord = nullptr;
+        llvm::Value *value = nullptr;
+    };
+    std::vector<ImageStoreFwd> imageStoreFwd;
     std::map<std::string, const MGLIRType *> samplerIRTypes;
     /* Stage outputs living in entry-block allocas so user functions can
      * write them through hidden pointer args (SET_RESULT→helper pattern). */

@@ -7661,9 +7661,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 llvm::Type *retTy = llvm::StructType::get(
                     *cg.ctx, {vecTy, cg.b->getInt8Ty()});
                 /* Apple texture.read() is (tex, get_read_sampler, coord,
-                 * offset, lod, access).  The 4-arg form compiled but VS
-                 * store→load on the same image missed the write (CTS
-                 * advanced-memory-order). */
+                 * offset, lod, access). */
                 llvm::StructType *smpT = llvm::StructType::getTypeByName(
                     *cg.ctx, "struct._sampler_t");
                 if (!smpT)
@@ -7677,8 +7675,18 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     {cg.b->getInt32(0), cg.b->getInt32(0)});
                 llvm::Value *off3 = llvm::ConstantVector::get(
                     {cg.b->getInt32(0), cg.b->getInt32(0), cg.b->getInt32(0)});
+                /* Key by the GLSL coord SSA (before Metal packing) so a
+                 * buffer int and a 2D/3D ivec share one namespace per tex. */
+                llvm::Value *fwdCoord = coord;
                 auto emitLoad = [&](llvm::Value *t,
                                     llvm::Value *) -> llvm::Value * {
+                llvm::BasicBlock *bb = cg.b->GetInsertBlock();
+                for (auto it = cg.imageStoreFwd.rbegin();
+                     it != cg.imageStoreFwd.rend(); ++it) {
+                    if (it->bb == bb && it->tex == t &&
+                        it->coord == fwdCoord && it->value)
+                        return it->value;
+                }
                 llvm::Value *r = nullptr;
                 if (tk == MGLIR_TEX_BUFFER) {
                     r = callAirFn(cg, readName("air.read_texture_2d").c_str(),
@@ -7779,6 +7787,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 }
                 callAirFn(cg, fn, voidTy, {texH});
             };
+            llvm::Value *fwdCoordStore = coord;
             auto emitWrite = [&](llvm::Value *t) {
                 if (tk == MGLIR_TEX_3D) {
                     callAirFn(cg, writeName("air.write_texture_3d").c_str(),
@@ -7786,25 +7795,19 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                               {t, coord3, value, cg.b->getInt32(0),
                                cg.b->getInt32(3)});
                     fenceAfterImageWrite(t, tk);
-                    return;
-                }
-                if (tk == MGLIR_TEX_CUBE || tk == MGLIR_TEX_CUBE_ARRAY) {
+                } else if (tk == MGLIR_TEX_CUBE || tk == MGLIR_TEX_CUBE_ARRAY) {
                     callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
                               voidTy,
                               {t, coord2, layerOrFace, value, cg.b->getInt32(0),
                                cg.b->getInt32(3)});
                     fenceAfterImageWrite(t, tk);
-                    return;
-                }
-                if (tk == MGLIR_TEX_2D_MS) {
+                } else if (tk == MGLIR_TEX_2D_MS) {
                     callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
                               voidTy,
                               {t, coord2, msSample, value, cg.b->getInt32(0),
                                cg.b->getInt32(3)});
                     fenceAfterImageWrite(t, tk);
-                    return;
-                }
-                if (tk == MGLIR_TEX_2D_MS_ARRAY) {
+                } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
                     llvm::Value *flat = cg.b->CreateAdd(
                         cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
                         msSample);
@@ -7813,20 +7816,20 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                               {t, coord2, flat, value, cg.b->getInt32(0),
                                cg.b->getInt32(3)});
                     fenceAfterImageWrite(t, tk);
-                    return;
-                }
-                if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+                } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
                     callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
                               voidTy,
                               {t, coord2, layerOrFace, value, cg.b->getInt32(0),
                                cg.b->getInt32(3)});
                     fenceAfterImageWrite(t, tk);
-                    return;
+                } else {
+                    callAirFn(cg, writeName("air.write_texture_2d").c_str(), voidTy,
+                              {t, coord2, value, cg.b->getInt32(0),
+                               cg.b->getInt32(3)});
+                    fenceAfterImageWrite(t, tk);
                 }
-                callAirFn(cg, writeName("air.write_texture_2d").c_str(), voidTy,
-                          {t, coord2, value, cg.b->getInt32(0),
-                           cg.b->getInt32(3)});
-                fenceAfterImageWrite(t, tk);
+                cg.imageStoreFwd.push_back({cg.b->GetInsertBlock(), t,
+                                            fwdCoordStore, value});
             };
             const MGLExpr *storeIdxE = nullptr;
             if (ia && ia->kind == MGL_EXPR_INDEX)
