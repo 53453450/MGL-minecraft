@@ -1310,8 +1310,13 @@ static void mglPdGetDepthStencilImage(
                                           (double)d);
             } else if (type == GL_UNSIGNED_INT_24_8) {
                 const float c = d < 0.0f ? 0.0f : (d > 1.0f ? 1.0f : d);
-                const uint32_t packed =
-                    ((uint32_t)(c * 16777215.0f + 0.5f) << 8) | s;
+                /* float32 cannot round-trip 2^24-1; 1.0f * 16777215.0f
+                 * becomes 16777216 and << 8 wraps to 0. */
+                uint32_t d24 = (uint32_t)((double)c * 16777215.0 + 0.5);
+                if (d24 > 0x00FFFFFFu) {
+                    d24 = 0x00FFFFFFu;
+                }
+                const uint32_t packed = (d24 << 8) | (s & 0xffu);
                 memcpy(dst + x * 4u, &packed, sizeof(packed));
             } else {
                 memcpy(dst + x * 8u, &d, sizeof(d));
@@ -1373,7 +1378,11 @@ int mglTextureReadStencilPixels(void *renderer, GLMContext glm_ctx,
         &areas, glm_ctx, tex, texture,
         pixelBytes + (uint64_t)clip.dst_y * bytesPerRow + (uint64_t)clip.dst_x,
         bytesPerRow, metalRegion, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE,
-        subresource.level, subresource.slice, 1);
+        subresource.level, subresource.slice,
+        mglRenderTargetStorageYFlipped(tex->is_render_target ? 1 : 0,
+                                       tex->mtl_render_target_write_version)
+            ? 1
+            : 0);
     return 1;
 }
 

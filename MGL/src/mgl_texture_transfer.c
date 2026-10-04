@@ -441,8 +441,11 @@ bool mglConvertTextureRectToCPU(GLenum internalformat,
                             memcpy(&depth_value, read_pixel, sizeof(depth_value));
                             uint32_t stencil_word = 0u;
                             memcpy(&stencil_word, read_pixel + sizeof(depth_value), sizeof(stencil_word));
-                            packed = ((uint32_t)(depth_value * 16777215.0f + 0.5f) << 8) |
-                                      (stencil_word & 0xffu);
+                            uint32_t d24 = (uint32_t)((double)depth_value * 16777215.0 + 0.5);
+                            if (d24 > 0x00FFFFFFu) {
+                                d24 = 0x00FFFFFFu;
+                            }
+                            packed = (d24 << 8) | (stencil_word & 0xffu);
                         }
                         memcpy(dst_pixel, &packed, sizeof(packed));
                     }
@@ -571,8 +574,11 @@ bool mglConvertTextureRectToCPU(GLenum internalformat,
                             if (storage_pixel_size >= 5u)
                                 dst_pixel[4] = stencilVal;
                         } else { /* GL_DEPTH24_STENCIL8 */
-                            uint32_t packed = ((uint32_t)(depthVal * 16777215.0f + 0.5f) << 8) |
-                                              (uint32_t)stencilVal;
+                            uint32_t d24 = (uint32_t)((double)depthVal * 16777215.0 + 0.5);
+                            if (d24 > 0x00FFFFFFu) {
+                                d24 = 0x00FFFFFFu;
+                            }
+                            uint32_t packed = (d24 << 8) | (uint32_t)stencilVal;
                             memcpy(dst_pixel, &packed, sizeof(uint32_t));
                         }
                     }
@@ -1099,8 +1105,11 @@ bool mglCopyTextureRectFromCPU(GLenum internalformat,
                         }
                         if (format == GL_DEPTH_STENCIL) {
                             if (type == GL_UNSIGNED_INT_24_8) {
-                                uint32_t packed = ((uint32_t)(depthVal * 16777215.0f + 0.5f) << 8) |
-                                                  (uint32_t)stencilVal;
+                                uint32_t d24 = (uint32_t)((double)depthVal * 16777215.0 + 0.5);
+                                if (d24 > 0x00FFFFFFu) {
+                                    d24 = 0x00FFFFFFu;
+                                }
+                                uint32_t packed = (d24 << 8) | (uint32_t)stencilVal;
                                 memcpy(dst_pixel, &packed, sizeof(uint32_t));
                             } else if (type == GL_FLOAT_32_UNSIGNED_INT_24_8_REV) {
                                 memcpy(dst_pixel, &depthVal, sizeof(float));

@@ -65,6 +65,9 @@ extern void *getBufferData(GLMContext ctx, Buffer *ptr);
 extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
 extern GLsizei mglSafeMaxTextureSize(GLMContext ctx);
 extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);
+extern void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width,
+                          GLsizei height, GLenum format, GLenum type,
+                          void *pixels);
 extern bool getParam(GLMContext ctx, TextureParameter *tex_params, GLenum pname, GLint *iparam, GLfloat *fparam);
 #include "mgl_trace_log.h"
 extern GLint mglTexLevelCanonicalInternalFormat(GLint internalformat);
@@ -3251,6 +3254,34 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
                         }
                     }
                 }
+                if (canonical == GL_DEPTH24_STENCIL8 ||
+                    canonical == GL_DEPTH32F_STENCIL8) {
+                    if (!tex->stencil_shadow ||
+                        tex->stencil_shadow_width != tex->width ||
+                        tex->stencil_shadow_height != tex->height) {
+                        free(tex->stencil_shadow);
+                        tex->stencil_shadow = calloc((size_t)tex->width * tex->height, 1u);
+                        tex->stencil_shadow_width = tex->stencil_shadow ? tex->width : 0u;
+                        tex->stencil_shadow_height = tex->stencil_shadow ? tex->height : 0u;
+                    }
+                    if (tex->stencil_shadow && src && src_pitch > 0u && pixel_size > 0u) {
+                        for (GLuint row = 0u; row < tex->height; row++) {
+                            uint8_t *p = src + (size_t)row * src_pitch;
+                            for (GLuint col = 0u; col < tex->width; col++) {
+                                uint8_t *pixel = p + (size_t)col * pixel_size;
+                                uint8_t s = 0u;
+                                if (canonical == GL_DEPTH24_STENCIL8) {
+                                    uint32_t v;
+                                    memcpy(&v, pixel, sizeof(uint32_t));
+                                    s = (uint8_t)(v & 0xffu);
+                                } else if (pixel_size >= 5u) {
+                                    s = pixel[4];
+                                }
+                                tex->stencil_shadow[(size_t)row * tex->width + col] = s;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -5288,10 +5319,16 @@ static void mglCopyTexImageCommon(GLMContext ctx, GLenum target, GLuint face, GL
         case GL_DEPTH_COMPONENT24:
         case GL_DEPTH_COMPONENT32:
         case GL_DEPTH_COMPONENT32F:
-        case GL_DEPTH24_STENCIL8:
-        case GL_DEPTH32F_STENCIL8:
             srcFormat = GL_DEPTH_COMPONENT;
             srcType   = GL_FLOAT;
+            break;
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+        case GL_DEPTH_STENCIL:
+            srcFormat = GL_DEPTH_STENCIL;
+            srcType = (internalformat == GL_DEPTH32F_STENCIL8)
+                          ? GL_FLOAT_32_UNSIGNED_INT_24_8_REV
+                          : GL_UNSIGNED_INT_24_8;
             break;
         case GL_RGB10_A2UI:
             srcFormat = GL_RGBA_INTEGER;
@@ -5328,6 +5365,25 @@ static void mglCopyTexImageCommon(GLMContext ctx, GLenum target, GLuint face, GL
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
+    }
+
+    /* Packed depth-stencil cannot use Metal texture-to-texture copies (stencil
+     * is dropped). Read the FBO as DEPTH_STENCIL and TexSubImage the dest. */
+    if (mglInternalFormatIsCombinedDepthStencil(internalformat)) {
+        GLenum dsType = (internalformat == GL_DEPTH32F_STENCIL8)
+                            ? GL_FLOAT_32_UNSIGNED_INT_24_8_REV
+                            : GL_UNSIGNED_INT_24_8;
+        size_t px = (dsType == GL_FLOAT_32_UNSIGNED_INT_24_8_REV) ? 8u : 4u;
+        void *tmp = malloc((size_t)width * (size_t)height * px);
+        if (!tmp) {
+            ERROR_RETURN(GL_OUT_OF_MEMORY);
+            return;
+        }
+        mglReadPixels(ctx, x, y, width, height, GL_DEPTH_STENCIL, dsType, tmp);
+        mglTexSubImage2D(ctx, target, level, 0, 0, width, height,
+                         GL_DEPTH_STENCIL, dsType, tmp);
+        free(tmp);
+        return;
     }
 
     mglRendererCopyTexSubImage(ctx, tex, face, level, 0, 0, x, y, width, height);
@@ -5852,6 +5908,14 @@ static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
             render_target_needs_readback = true;
             break;
         }
+    }
+
+    /* Packed depth-stencil uploads live on the GPU even before the texture is
+     * used as a render target; CPU lvl->data can disagree with Metal layout. */
+    if (!render_target_needs_readback &&
+        mglInternalFormatIsCombinedDepthStencil(tex->internalformat) &&
+        (tex->mtl_data || (tex->dirty_bits & DIRTY_TEXTURE_DATA))) {
+        render_target_needs_readback = true;
     }
 
     if (!render_target_needs_readback &&

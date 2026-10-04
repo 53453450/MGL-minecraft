@@ -1624,6 +1624,24 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
         }
     }
 
+    /* GL 4.6 §9.4.3: depth and stencil may be different images, but
+     * implementations need not support that combination. Metal rejects a
+     * packed depth-stencil texture as only one of the two attachments when
+     * the other attachment is a different image. */
+    if (fbo->depth.texture != 0u && fbo->stencil.texture != 0u &&
+        (fbo->depth.texture != fbo->stencil.texture ||
+         fbo->depth.textarget != fbo->stencil.textarget ||
+         fbo->depth.level != fbo->stencil.level ||
+         fbo->depth.layer != fbo->stencil.layer)) {
+        GLint depth_fmt = mglFramebufferAttachmentInternalFormat(ctx, &fbo->depth);
+        GLint stencil_fmt = mglFramebufferAttachmentInternalFormat(ctx, &fbo->stencil);
+        if (mglInternalFormatIsCombinedDepthStencil(depth_fmt) ||
+            mglInternalFormatIsCombinedDepthStencil(stencil_fmt)) {
+            return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_UNSUPPORTED,
+                                              "packed-ds-mixed-images", 0u, NULL);
+        }
+    }
+
     return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_COMPLETE, "complete", 0u, NULL);
 }
 

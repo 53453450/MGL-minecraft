@@ -2652,18 +2652,13 @@ static bool mglReadPixelsDepthComponent(GLMContext ctx,
     return true;
 }
 
-/* Draw-written stencil exists only on the GPU (in Y-flipped storage); the
- * CPU stencil_shadow tracks clears and blits.  Returns a GL-ordered
- * width*height copy of the GPU stencil, or NULL when nothing has been drawn
- * into the attachment or it cannot be read here. */
+/* Stencil on the GPU (TexImage upload or draws).  CPU stencil_shadow tracks
+ * clears/blits when Metal storage is missing. */
 static GLubyte *mglReadPixelsGpuStencil(GLMContext ctx, Texture *stencilTexture,
                                         GLint x, GLint y,
                                         GLsizei width, GLsizei height)
 {
-    if (!stencilTexture || !STATE(readbuffer) ||
-        !mglRenderTargetStorageYFlipped(
-            stencilTexture->is_render_target ? 1 : 0,
-            stencilTexture->mtl_render_target_write_version)) {
+    if (!stencilTexture || !STATE(readbuffer) || !stencilTexture->mtl_data) {
         return NULL;
     }
     GLubyte *stencil = (GLubyte *)calloc((size_t)width * height, 1u);
@@ -2785,11 +2780,7 @@ static bool mglReadPixelsDepthStencil(GLMContext ctx,
     GLboolean useGpuDepth = GL_FALSE;
 
     mglFlushCommandBuffer(ctx);
-    if (depthTex && depthTex->depth_shadow &&
-        !depthTex->is_render_target) {
-        /* CPU shadow path — depth_shadow is authoritative for
-         * non-render-target depth textures. */
-    } else if (depthTex && depthTex->is_render_target) {
+    if (depthTex && depthTex->mtl_data) {
         gpuDepth = (GLfloat *)calloc((size_t)width * height, sizeof(GLfloat));
         if (!gpuDepth) {
             ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
@@ -2800,6 +2791,9 @@ static bool mglReadPixelsDepthStencil(GLMContext ctx,
                                           (GLuint)((size_t)width * height * sizeof(GLfloat)),
                                           x, y, width, height);
         useGpuDepth = GL_TRUE;
+    } else if (depthTex && depthTex->depth_shadow &&
+               !depthTex->is_render_target) {
+        /* CPU shadow when there is no Metal texture yet. */
     } else {
         static uint64_t s_unsupported_ds_readpixels_count = 0u;
         uint64_t hit = ++s_unsupported_ds_readpixels_count;
@@ -2844,8 +2838,11 @@ static bool mglReadPixelsDepthStencil(GLMContext ctx,
             if (depthVal > 1.0f) depthVal = 1.0f;
 
             if (type == GL_UNSIGNED_INT_24_8) {
-                uint32_t packed = ((uint32_t)(depthVal * 16777215.0f + 0.5f) << 8) |
-                                  (uint32_t)stencilVal;
+                uint32_t d24 = (uint32_t)((double)depthVal * 16777215.0 + 0.5);
+                if (d24 > 0x00FFFFFFu) {
+                    d24 = 0x00FFFFFFu;
+                }
+                uint32_t packed = (d24 << 8) | (uint32_t)stencilVal;
                 memcpy(dst + (size_t)column * sizeof(uint32_t), &packed, sizeof(uint32_t));
             } else if (type == GL_FLOAT_32_UNSIGNED_INT_24_8_REV) {
                 /* 64-bit: float depth, then 32 bits with stencil in low 8.
