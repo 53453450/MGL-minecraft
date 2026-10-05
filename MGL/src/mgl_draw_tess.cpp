@@ -227,11 +227,17 @@ extern "C" bool mglTessPlanDrawPath(GLMContext ctx, GLenum mode, GLsizei count,
             ctx && ctx->active_state && ctx->active_state->caps.rasterizer_discard
                 ? 1
                 : 0;
+        const int needs_partner_cull =
+            tes && tes->tess_cull_distance_count > 0u &&
+                    mglTessGenModeIsIsolines((uint32_t)tes->tess_gen_mode) &&
+                    !tes->tess_gen_point_mode
+                ? 1
+                : 0;
         out->exec = (MGLTessExecKind)mglTessSelectAirExec(
             tes && tes->tess_eval_render_vertex ? 1 : 0,
             tes && tes->tess_eval_compute ? 1 : 0, out->indexed ? 1 : 0,
             mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER") ? 1 : 0,
-            rasterizer_discard);
+            rasterizer_discard, needs_partner_cull);
     }
     return true;
 }
@@ -740,9 +746,14 @@ extern "C" void mglTessPlanRasterQuery(const Program *tes,
 }
 
 extern "C" int mglTessSelectAirExec(int tes_vertex, int tes_compute, int indexed,
-                                    int vertex_gate_on, int rasterizer_discard)
+                                    int vertex_gate_on, int rasterizer_discard,
+                                    int needs_partner_cull)
 {
-    if (tes_vertex && vertex_gate_on && !indexed &&
+    /* TES-vertex only sees its own gl_CullDistance. Isolines need both
+     * endpoints (partner = vertexId^1) before discarding a segment, so
+     * force the compute expansion + passthrough VS that already implements
+     * that rule. point_mode keeps TES-vertex (per-vertex own < 0). */
+    if (tes_vertex && vertex_gate_on && !indexed && !needs_partner_cull &&
         !(rasterizer_discard && tes_compute)) {
         return MGL_TESS_EXEC_TES_VERTEX;
     }
@@ -3520,12 +3531,19 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
                     ctx->active_state->caps.rasterizer_discard
                 ? 1
                 : 0;
+        const int needs_partner_cull =
+            tesProgram && tesProgram->tess_cull_distance_count > 0u &&
+                    mglTessGenModeIsIsolines(
+                        (uint32_t)tesProgram->tess_gen_mode) &&
+                    !tesProgram->tess_gen_point_mode
+                ? 1
+                : 0;
         const int air_exec = mglTessSelectAirExec(
             tesProgram && tesProgram->tess_eval_render_vertex ? 1 : 0,
             tesProgram && tesProgram->tess_eval_compute ? 1 : 0,
             path.indexed ? 1 : 0,
             mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER") ? 1 : 0,
-            rasterizer_discard);
+            rasterizer_discard, needs_partner_cull);
         if (air_exec == MGL_TESS_EXEC_TES_VERTEX) {
             const int dispatched = ops->dispatch_air_tes_vertex(
                 ops->renderer, ctx, tesProgram, &contract, patchCount,

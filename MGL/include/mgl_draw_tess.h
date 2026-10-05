@@ -259,9 +259,12 @@ int mglTessPlanEvalAfterCompute(int has_gs, int rasterizer_discard,
                                 uint32_t instance_count,
                                 MGLTessEvalAfterComputePlan *out);
 /* isolines / point_mode prefer TES-vertex raster, but RASTERIZER_DISCARD
- * still has to run TES (imageStore / SSBO). Use the compute kernel then. */
+ * still has to run TES (imageStore / SSBO). Use the compute kernel then.
+ * needs_partner_cull: isolines (non-point) with gl_CullDistance need the
+ * compute→record passthrough path so both endpoints are visible (GL §13.6.1). */
 int mglTessSelectAirExec(int tes_vertex, int tes_compute, int indexed,
-                         int vertex_gate_on, int rasterizer_discard);
+                         int vertex_gate_on, int rasterizer_discard,
+                         int needs_partner_cull);
 int mglTessPassthroughRasterReady(int state_ready, int has_encoder,
                                   int raster_empty);
 int mglTessNativePipelineReady(int state_ready, int has_encoder);
