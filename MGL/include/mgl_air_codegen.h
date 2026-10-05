@@ -171,8 +171,9 @@ struct Codegen {
      * non-MSAA FB; GL ignores gl_SampleMask writes in that case. */
     llvm::Value *fragSampleParams = nullptr;
     bool usesClipDistance = false;       /* vertex writes gl_ClipDistance */
+    bool emulateClipDiscard = false;     /* FS discards interpolated clip < 0 */
     uint32_t cullDistancePassthroughCount = 0; /* VS flat outs / FS ins */
-    uint32_t clipDistanceInputCount = 0; /* FS reads gl_ClipDistance */
+    uint32_t clipDistanceInputCount = 0; /* FS clip varyings (read or emulate) */
     bool pointSize = false;              /* vertex: writes gl_PointSize */
     bool layerViewport = false;          /* writes gl_Layer / gl_ViewportIndex */
     bool primitiveIdWritten = false;     /* writes gl_PrimitiveID (GS out) */

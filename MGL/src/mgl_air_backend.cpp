@@ -11069,6 +11069,47 @@ static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
  * discard) still need a defined [[position]].  Undef clip coords make
  * Metal pipeline creation throw, and the draw then uses the dummy
  * fallback PSO that does not run imageStore. */
+/* GL 4.6 §13.5: clip against clip_distance[i] >= 0.  AGX [[clip_distance]]
+ * drops a whole line when either endpoint is negative; interpolate the
+ * distances as ordinary varyings and suppress the fragment color here.
+ * air.discard_fragment in this CFG crashes the AGX metallib compiler
+ * (XPC_ERROR_CONNECTION_INTERRUPTED), so return a cleared color instead
+ * (CTS clears to 0 before drawing). */
+static llvm::Value *finishFragReturn(Codegen &cg, llvm::Value *ret)
+{
+    if (!cg.emulateClipDiscard || !ret)
+        return ret;
+    cg.emulateClipDiscard = false;
+    auto it = cg.lvalues.find("gl_ClipDistance");
+    if (it == cg.lvalues.end() || !it->second)
+        return ret;
+    llvm::Value *clip = it->second;
+    llvm::Type *arrTy = clip->getType();
+    if (!arrTy->isArrayTy())
+        return ret;
+    const uint32_t n = (uint32_t)arrTy->getArrayNumElements();
+    llvm::Value *anyNeg = cg.b->getFalse();
+    llvm::Value *zero =
+        llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 0.0);
+    for (uint32_t i = 0; i < n; i++) {
+        llvm::Value *d = cg.b->CreateExtractValue(clip, i);
+        anyNeg = cg.b->CreateOr(anyNeg, cg.b->CreateFCmpOLT(d, zero));
+    }
+    if (ret->getType()->isFloatingPointTy() || ret->getType()->isVectorTy()) {
+        llvm::Value *cleared = llvm::Constant::getNullValue(ret->getType());
+        return cg.b->CreateSelect(anyNeg, cleared, ret);
+    }
+    if (ret->getType()->isStructTy() &&
+        ret->getType()->getStructNumElements() > 0) {
+        llvm::Type *f0 = ret->getType()->getStructElementType(0);
+        llvm::Value *c0 = cg.b->CreateExtractValue(ret, 0);
+        llvm::Value *cleared0 = llvm::Constant::getNullValue(f0);
+        llvm::Value *new0 = cg.b->CreateSelect(anyNeg, cleared0, c0);
+        return cg.b->CreateInsertValue(ret, new0, 0);
+    }
+    return ret;
+}
+
 static llvm::Value *defaultClipPosition(Codegen &cg) {
     llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
     return llvm::ConstantVector::get(
@@ -11464,7 +11505,8 @@ llvm::Value *assembleReturn(Codegen &cg) {
                 llvm::Value *clip = cg.lvalues.count("gl_ClipDistance")
                     ? cg.lvalues["gl_ClipDistance"]
                     : defaultClipDistances(cg);
-                ret = cg.b->CreateInsertValue(ret, clip, ri++);
+                /* Varying mirrors only — no air.clip_distance (AGX drops
+                 * whole lines when any endpoint is negative). */
                 for (uint32_t i = 0; i < MGL_MAX_CLIP_DISTANCES; i++) {
                     ret = cg.b->CreateInsertValue(
                         ret, cg.b->CreateExtractValue(clip, i), ri++);
@@ -11662,7 +11704,7 @@ llvm::Value *assembleReturn(Codegen &cg) {
                              (cg.hasFragDepth ? 1u : 0u);
             ret = cg.b->CreateInsertValue(ret, resolveSampleMaskOut(cg), field);
         }
-        return ret;
+        return finishFragReturn(cg, ret);
     }
     if (cg.fragOutputs.size() > 1u || cg.hasFragDepth || cg.hasSampleMask) {
         llvm::Value *ret = llvm::UndefValue::get(cg.retTy);
@@ -11684,7 +11726,7 @@ llvm::Value *assembleReturn(Codegen &cg) {
         if (cg.hasSampleMask) {
             ret = cg.b->CreateInsertValue(ret, resolveSampleMaskOut(cg), field);
         }
-        return ret;
+        return finishFragReturn(cg, ret);
     }
     VarSym *out = cg.fragOutputs.empty() ? nullptr : cg.fragOutputs[0];
     if (cg.hasSampleMask) {
@@ -11702,13 +11744,14 @@ llvm::Value *assembleReturn(Codegen &cg) {
         if (cg.retTy->isStructTy()) {
             ret = cg.b->CreateInsertValue(ret, color, 0);
             ret = cg.b->CreateInsertValue(ret, resolveSampleMaskOut(cg), 1);
-            return ret;
+            return finishFragReturn(cg, ret);
         }
     }
     if (out && cg.lvalues.count(out->name)) {
-        return packScalarFragColor(cg, cg.lvalues[out->name], out->type);
+        return finishFragReturn(
+            cg, packScalarFragColor(cg, cg.lvalues[out->name], out->type));
     }
-    return llvm::UndefValue::get(cg.retTy);
+    return finishFragReturn(cg, llvm::UndefValue::get(cg.retTy));
 }
 
 /* ---- statements (C1g) ------------------------------------------------ */
@@ -11913,7 +11956,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                            const MGLShaderResourceList *iface_location_peers,
                            unsigned char **metallib_out, size_t *size_out,
                            char *err_buf, size_t err_cap,
-                           MGLFrontendSession *session_in = nullptr) {
+                           MGLFrontendSession *session_in = nullptr,
+                           bool fs_clip_emulate = false) {
     if (!src || !metallib_out || !size_out) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "bad args");
         return -1;
@@ -12010,11 +12054,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool sourceUsesClipDistanceRead =
         !isVS && !isTES && !isKernel && !isCapture &&
         irClipCount > 0;
-    const uint32_t activeClipCount = sourceUsesClipDistanceRead
-        ? irClipCount
+    const uint32_t activeClipCount =
+        (sourceUsesClipDistanceRead || fs_clip_emulate)
+        ? MGL_MAX_CLIP_DISTANCES
         : 0u;
-    const bool usesFragmentClipDistance =
-        sourceUsesClipDistanceRead && activeClipCount > 0;
+    const bool usesFragmentClipDistance = activeClipCount > 0 &&
+        !isVS && !isTES && !isKernel && !isCapture;
     const uint32_t runtimeArraySizeBufferIndex =
         (isGS || isTESCompute || isTESVertex)
             ? MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX
@@ -12350,9 +12395,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             retElems.push_back(llvm::Type::getFloatTy(ctx));
         }
         if (usesClipDistance) {
-            retElems.push_back(llvm::ArrayType::get(
-                llvm::Type::getFloatTy(ctx), MGL_MAX_CLIP_DISTANCES));
-            /* Metal FS cannot read clip_distance; also emit flat mirrors. */
+            /* Interpolable mirrors only.  AGX [[clip_distance]] drops a
+             * line when either endpoint is negative; FS selects cleared
+             * color when the interpolated distance is negative. */
             for (uint32_t i = 0; i < MGL_MAX_CLIP_DISTANCES; i++)
                 retElems.push_back(llvm::Type::getFloatTy(ctx));
         }
@@ -12917,6 +12962,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         usesCullDistancePassthrough ? activeCullCount : 0u;
     cg.clipDistanceInputCount =
         usesFragmentClipDistance ? activeClipCount : 0u;
+    cg.emulateClipDiscard = fs_clip_emulate && usesFragmentClipDistance;
     cg.controlPointGetter = controlPointGetter;
     struct OwnedIRTypes {
         std::vector<MGLIRType *> v;
@@ -15522,7 +15568,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             for (uint32_t i = 0; i < activeClipCount; i++) {
                 std::string elName =
                     "gl_ClipDistance_elm" + std::to_string(i);
-                emitFSVarying(elName, floatTy, mArgSlot++, true);
+                /* Smooth (center+perspective): flat would not clip mid-edge. */
+                emitFSVarying(elName, floatTy, mArgSlot++, false);
             }
         }
         if (usesFragmentCullDistance) {
@@ -15788,17 +15835,6 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "psize")}));
         }
         if (usesClipDistance) {
-            /* Reference shape from MSL 'float cd [[clip_distance]] [N]':
-             * air.clip_distance + air.clip_distance_array_size. */
-            outNodes.push_back(llvm::MDNode::get(ctx, {
-                llvm::MDString::get(ctx, "air.clip_distance"),
-                llvm::MDString::get(ctx, "air.clip_distance_array_size"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), MGL_MAX_CLIP_DISTANCES)),
-                llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, "float"),
-                llvm::MDString::get(ctx, "air.arg_name"),
-                llvm::MDString::get(ctx, "gl_ClipDistance")}));
             MType floatTy;
             floatTy.scalar = MGLIR_SCALAR_FLOAT;
             for (uint32_t i = 0; i < MGL_MAX_CLIP_DISTANCES; i++) {
@@ -16552,7 +16588,8 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
                              tes_vertex_render, clip_depth_zero_to_one,
                              attrib_names, tessPatchVertices,
                              iface_location_peers, metallib_out, size_out,
-                             err_buf, err_cap, &sess);
+                             err_buf, err_cap, &sess,
+                             (flags & MGL_AIR_COMPILE_FS_CLIP_INTERP) != 0);
     if (rc == 0 && tu_out)
         *tu_out = mglFrontendSessionStealTU(&sess);
     else if (tu_out)

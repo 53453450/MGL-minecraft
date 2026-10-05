@@ -392,6 +392,11 @@ enum {
     /* glClipControl(…, GL_ZERO_TO_ONE): leave clip z in [0,w]; skip the
      * default Metal remap z' = 0.5*z + 0.5*w used for NEGATIVE_ONE_TO_ONE. */
     MGL_AIR_COMPILE_CLIP_DEPTH_ZERO_TO_ONE = 1u << 7,
+    /* Fragment stage: take interpolated gl_ClipDistance varyings and
+     * discard fragments with any distance < 0.  Used when the linked VS
+     * writes clip distances — Metal [[clip_distance]] drops whole lines
+     * instead of clipping them to the plane (GL 4.6 §13.5). */
+    MGL_AIR_COMPILE_FS_CLIP_INTERP = 1u << 8,
 };
 
 /* Same as above plus stage-composition flags (bit0: a geometry shader is

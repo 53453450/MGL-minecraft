@@ -2021,6 +2021,10 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         (pptr->tess_eval_compute || pptr->tess_eval_render_vertex)) {
         air_flags |= MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER;
     }
+    /* VS compiles first in this loop, so clip_distance_count is already
+     * known.  Pair the FS with interpolated clip varyings + discard. */
+    if (stage == _FRAGMENT_SHADER && pptr->clip_distance_count > 0u)
+        air_flags |= MGL_AIR_COMPILE_FS_CLIP_INTERP;
     /* When a GS is present, FS mgl_loc_N tags must follow GS output
      * locations (passthrough VS).  Remap by name at compile time.
      * TES-compute / TES-vertex (no GS) remap FS inputs to TES outs the same

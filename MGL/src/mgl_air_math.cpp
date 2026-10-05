@@ -41,6 +41,30 @@ static llvm::Value *callFloatIntrinsic(Codegen &cg, llvm::Intrinsic::ID id,
     return cg.b->CreateIntrinsic(id, {v->getType()}, {v});
 }
 
+/* AIR fast math (scalar fn, vectors lowered per lane).  llvm.sin/cos
+ * flowing into a used VS→FS varying crashes the AGX metallib compiler
+ * (XPC_ERROR_CONNECTION_INTERRUPTED); air.fast_* matches asin/acos. */
+static llvm::Value *callAirFastUnary(Codegen &cg, const AirMathDeps &deps,
+                                     const char *airfn, llvm::Value *a0) {
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Type *retT = a0->getType();
+    auto cI = [&](uint32_t v) {
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), v);
+    };
+    if (retT->isVectorTy()) {
+        auto *vt = llvm::cast<llvm::FixedVectorType>(retT);
+        uint32_t n = vt->getElementCount().getFixedValue();
+        llvm::Value *r = llvm::UndefValue::get(retT);
+        for (uint32_t i = 0; i < n; i++) {
+            llvm::Value *x = cg.b->CreateExtractElement(a0, cI(i));
+            x = deps.callAirFn(cg, airfn, f32, {x});
+            r = cg.b->CreateInsertElement(r, x, cI(i));
+        }
+        return r;
+    }
+    return deps.callAirFn(cg, airfn, f32, {a0});
+}
+
 static bool typeIsIntLike(llvm::Type *t) {
     return t->isIntOrIntVectorTy() &&
            (!t->isVectorTy() || llvm::cast<llvm::FixedVectorType>(t)
@@ -189,8 +213,16 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         return cg.b->CreateBitCast(a0, cg.b->getInt32Ty());
     }
 
-    if (strcmp(name, "sin") == 0 || strcmp(name, "cos") == 0 ||
-        strcmp(name, "exp") == 0 || strcmp(name, "exp2") == 0 ||
+    if (strcmp(name, "sin") == 0 || strcmp(name, "cos") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        return callAirFastUnary(
+            cg, deps,
+            strcmp(name, "sin") == 0 ? "air.fast_sin.f32" : "air.fast_cos.f32",
+            a0);
+    }
+    if (strcmp(name, "exp") == 0 || strcmp(name, "exp2") == 0 ||
         strcmp(name, "log") == 0 || strcmp(name, "log2") == 0 ||
         strcmp(name, "floor") == 0 || strcmp(name, "ceil") == 0 ||
         strcmp(name, "trunc") == 0 || strcmp(name, "round") == 0 ||
@@ -199,9 +231,7 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         a0 = farg(0);
         if (!a0) return nullptr;
         llvm::Intrinsic::ID id;
-        if (strcmp(name, "sin") == 0) id = llvm::Intrinsic::sin;
-        else if (strcmp(name, "cos") == 0) id = llvm::Intrinsic::cos;
-        else if (strcmp(name, "exp") == 0) id = llvm::Intrinsic::exp;
+        if (strcmp(name, "exp") == 0) id = llvm::Intrinsic::exp;
         else if (strcmp(name, "exp2") == 0) id = llvm::Intrinsic::exp2;
         else if (strcmp(name, "log") == 0) id = llvm::Intrinsic::log;
         else if (strcmp(name, "log2") == 0) id = llvm::Intrinsic::log2;
@@ -261,8 +291,10 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         if (!need(1)) return nullptr;
         a0 = farg(0);
         if (!a0) return nullptr;
-        llvm::Value *s = callFloatIntrinsic(cg, llvm::Intrinsic::sin, a0);
-        llvm::Value *c = callFloatIntrinsic(cg, llvm::Intrinsic::cos, a0);
+        llvm::Value *s =
+            callAirFastUnary(cg, deps, "air.fast_sin.f32", a0);
+        llvm::Value *c =
+            callAirFastUnary(cg, deps, "air.fast_cos.f32", a0);
         return cg.b->CreateFDiv(s, c);
     }
     if (strcmp(name, "fract") == 0) {
