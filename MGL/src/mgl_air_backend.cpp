@@ -15191,13 +15191,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 forceFlat || varyingUsesFloatCarrier(mt, has_gs) ||
                 !scalarIsFloat(mt.scalar);
             const bool noPersp = interpFlat || noPerspective;
+            /* Keep the GLSL vector width.  `forceFlat` only selects
+             * air.flat; rewriting a float vecN to scalar float made
+             * generated() disagree with the VS vertex_output (CTS
+             * texture_gather: `flat out vec4` → Metal v_out mismatch).
+             * Bool still needs a float carrier (varyingUsesFloatCarrier
+             * is false for bool). */
             MType iface = mt;
-            if (varyingUsesFloatCarrier(mt, has_gs) || forceFlat) {
-                MType src = mt;
-                if (forceFlat && scalarIsFloat(mt.scalar))
-                    src = MType{MGLIR_SCALAR_FLOAT};
-                iface = floatCarrierType(src);
-            }
+            if (varyingUsesFloatCarrier(mt, has_gs) || forceFlat)
+                iface = floatCarrierType(mt);
             std::vector<llvm::Metadata *> elems = {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), argIdx)),
