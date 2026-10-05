@@ -522,6 +522,44 @@ TEST(Metallib, RuntimeSSBOArrayLengthAcrossStages) {
     }
 }
 
+/* CTS shader_storage_buffer_object.advanced-usage-sync vertex shader. */
+TEST(Metallib, VertexSSBOHelperInlinesOnTypeMismatch) {
+    static const char *src =
+        "#version 430 core\n"
+        "layout(std430, binding = 0) coherent buffer Buffer0 {\n"
+        "  int g_data0, g_inc0;\n"
+        "  int g_data1, g_inc1;\n"
+        "};\n"
+        "layout(std430, binding = 1) buffer Buffer12 {\n"
+        "  int inc, data;\n"
+        "} g_buffer12[2];\n"
+        "void Modify(int path) {\n"
+        "  if (path == 0) {\n"
+        "    atomicAdd(g_data0, g_inc0);\n"
+        "    atomicAdd(g_data1, g_inc0);\n"
+        "  } else if (path == 1) {\n"
+        "    atomicAdd(g_data0, - g_inc0);\n"
+        "    atomicAdd(g_data1, - g_inc0);\n"
+        "  } else if (path == 2) {\n"
+        "    atomicAdd(g_data0, g_inc1);\n"
+        "    atomicAdd(g_data1, g_inc1);\n"
+        "  }\n"
+        "  if (path == 0) {\n"
+        "    g_buffer12[0].data += g_buffer12[1].inc;\n"
+        "  } else if (path == 1) {\n"
+        "    g_buffer12[1].data += g_buffer12[0].inc;\n"
+        "  }\n"
+        "}\n"
+        "void main() {\n"
+        "  Modify(gl_VertexID);\n"
+        "  gl_Position = vec4(0, 0, 0, 1);\n"
+        "}\n";
+    CompileResult r = compile(src, MGL_STAGE_VERTEX);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
+}
+
 TEST(Metallib, ComputeWorkGroupID) {
     static const char *src =
         "#version 460 core\n"
@@ -1107,6 +1145,54 @@ TEST(FrontendSession, CompileReflectIsSingleParse) {
     EXPECT_GE(lists[_UNIFORM_CONSTANT_RES].count, 1u);
     mglShaderFree(out);
     mglAirReflectDestroy(lists);
+}
+
+/* CTS shader_storage_buffer_object.negative-glsl-compileTime: each of
+ * these fragments must fail parse or sema (GL compile status). */
+TEST(Sema, SSBONegativeGLSLCompileTime) {
+    static const char *kBodies[] = {
+        "buffer Buffer { int x = 10; }; void main() { x = 0; }",
+        "layout(binding = -1) buffer Buffer { int x; }; void main() { x = 0; }",
+        "layout(binding = 84) buffer Buffer { int x; }; void main() { x = 0; }",
+        "layout(binding = 82) buffer Buffer { int x; } g_array[4];"
+        " void main() { g_array[0].x = 0; g_array[1].x = 0;"
+        " g_array[2].x = 0; g_array[3].x = 0; }",
+        "buffer int x; void main() { x = 0; }",
+        "buffer Buffer { int y; }; void main() { y = 0; buffer int x = 0; }",
+        "buffer Buffer { int y; }; void Modify(buffer int a) { atomicAdd(a, 1); }"
+        " void main() { Modify(y); }",
+        "layout(std430) uniform UBO { int x; }; buffer SSBO { int y; };"
+        " void main() { y = x; }",
+        "buffer SSBO { layout(std430) int x; }; void main() { x = 0; }",
+        "buffer SSBO { layout(binding = 1) int x; }; void main() { x = 0; }",
+        "readonly buffer SSBO { int x; }; void main() { x = 0; }",
+        "buffer SSBO { int x; }; writeonly buffer SSBO2 { int y; };"
+        " void main() { x = y; }",
+        "buffer SSBO { int x; }; buffer SSBO2 { writeonly int y; readonly int z; };"
+        " void main() { x = y; z = 0; }",
+        "buffer SSBO { int x; }; readonly buffer SSBO2 { writeonly int y; };"
+        " void main() { x = y; }",
+        "layout(binding = 1) buffer; buffer SSBO { int x; }; void main() { x = 0; }",
+        "buffer Buffer { int x; }; int y; void main() { atomicAdd(x, 1); atomicAdd(y, 2); }",
+        "buffer b { vec4 x[10]; }; void main() { vec4 y = vec4(x); }",
+    };
+    for (size_t i = 0; i < sizeof(kBodies) / sizeof(kBodies[0]); i++) {
+        std::string src = std::string("#version 430 core\n") + kBodies[i];
+        MGLTranslationUnit *tu = mglGLSLParse(src.c_str(), src.size());
+        int failed = !tu || tu->error;
+        if (!failed) {
+            MGLIRModule *mod = (MGLIRModule *)calloc(1, sizeof(MGLIRModule));
+            MGLSemaError *errs = nullptr;
+            uint32_t ec = 0;
+            mglGLSLSemanticCheck(tu, MGL_STAGE_FRAGMENT, mod, &errs, &ec);
+            failed = (ec > 0);
+            mglGLSLSemanticCheckDestroy(errs, ec);
+            mglIRModuleDestroy(mod);
+        }
+        if (tu)
+            mglGLSLTranslationUnitDestroy(tu);
+        EXPECT_TRUE(failed) << "case " << i << " accepted:\n" << kBodies[i];
+    }
 }
 
 }  // namespace

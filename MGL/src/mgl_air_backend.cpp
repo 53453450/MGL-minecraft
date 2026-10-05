@@ -9263,6 +9263,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
              * so by-value LLVM calls cannot lose write-back). */
             if (cg.userFnDecls) {
                 auto dit = cg.userFnDecls->find(key);
+                if (dit == cg.userFnDecls->end())
+                    dit = cg.userFnDecls->find(
+                        userFnKey(name, e->u.call.arg_count, nullptr));
                 if (dit != cg.userFnDecls->end() && dit->second &&
                     dit->second->body) {
                     MGLDecl *fd = dit->second;
@@ -13442,15 +13445,39 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 d->params[p]->type->base == MGL_AST_TYPE_STRUCT)
                 force_inline = 1;
         }
+        /* Raster LLVM callees omit a definition when AST/IR param types
+         * disagree, and Metal rejects some SSBO/atomic helper ABIs.
+         * Inline every user helper; compute already took this path. */
+        force_inline = 1;
         if (isGS || isCompute || isTCS || force_inline) {
             const MGLIRSymbol *ks = fnSymForDecl(&mod, d);
+            userFnDecls[userFnKey(d->name, d->param_count, nullptr)] = d;
+            if (ks)
+                userFnDecls[userFnKey(d->name, ks->param_count,
+                                      ks->param_types)] = d;
+        }
+        const MGLIRSymbol *fs = fnSymForDecl(&mod, d);
+        if (!fs) {
+            /* Raster stages emit LLVM callees only when AST param types
+             * match IR.  If they do not (int vs scalar encoding), still
+             * inline by name+arity so calls do not become undefined. */
+            const MGLIRSymbol *ks = nullptr;
+            for (uint32_t si = 0; si < mod.symbol_count; si++) {
+                const MGLIRSymbol *cand = mod.symbols[si];
+                if (cand && cand->is_function && cand->name && d->name &&
+                    strcmp(cand->name, d->name) == 0 &&
+                    cand->param_count == d->param_count) {
+                    ks = cand;
+                    break;
+                }
+            }
             std::string key = ks
                 ? userFnKey(d->name, ks->param_count, ks->param_types)
                 : userFnKey(d->name, d->param_count, nullptr);
+            userFnDecls[userFnKey(d->name, d->param_count, nullptr)] = d;
             userFnDecls[key] = d;
+            continue;
         }
-        const MGLIRSymbol *fs = fnSymForDecl(&mod, d);
-        if (!fs) continue;
         /* GS/TCS/compute, out/inout helpers, or aggregate return: inline
          * only. By-value LLVM callees cannot write out params, and a later
          * outPtrs reload would clobber SSA writeback from inlined calls. */

@@ -3708,6 +3708,33 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 }
             }
             if (bknown && bt && e->u.call.arg_count > 0) {
+                const char *an = e->u.call.name;
+                /* GLSL 4.60 §8.11: atomicAdd and family operate only on
+                 * shader storage block members or shared variables. */
+                if (an && strncmp(an, "atomic", 6) == 0 &&
+                    strncmp(an, "atomicCounter", 13) != 0) {
+                    const MGLExpr *mem = e->u.call.args[0];
+                    while (mem && (mem->kind == MGL_EXPR_MEMBER ||
+                                   mem->kind == MGL_EXPR_INDEX)) {
+                        mem = mem->kind == MGL_EXPR_MEMBER
+                            ? mem->u.member.object : mem->u.index.object;
+                    }
+                    int mem_ok = 0;
+                    if (mem && mem->kind == MGL_EXPR_VAR_REF &&
+                        mem->u.var_ref.name) {
+                        Sym *sy = symtab_lookup(tab, mem->u.var_ref.name);
+                        if (sy && (sy->qualifiers &
+                                   (MGL_AST_Q_BUFFER | MGL_AST_Q_SHARED)))
+                            mem_ok = 1;
+                    }
+                    if (!mem_ok) {
+                        free(atb);
+                        sema_error(s, e->line,
+                                   "atomic memory functions require a shader "
+                                   "storage block member or shared variable");
+                        return NULL;
+                    }
+                }
                 /* Memory-qualifier and atomic-format checks for image ops. */
                 const char *bn = e->u.call.name;
                 int is_load = strcmp(bn, "imageLoad") == 0;
