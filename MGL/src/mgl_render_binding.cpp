@@ -303,6 +303,33 @@ int mglRenderAttribOffsetsValid(int64_t binding_offset,
     return binding_offset >= 0 && relativeoffset >= 0 ? 1 : 0;
 }
 
+void mglRenderPlanCurrentAttribFromShader(uint32_t shader_gl_type,
+                                          uint32_t *type_out,
+                                          uint32_t *size_out, int *integer_out) {
+    uint32_t type = GL_FLOAT;
+    int integer = 0;
+    if (shader_gl_type == GL_INT || shader_gl_type == GL_INT_VEC2 ||
+        shader_gl_type == GL_INT_VEC3 || shader_gl_type == GL_INT_VEC4) {
+        type = GL_INT;
+        integer = 1;
+    } else if (shader_gl_type == GL_UNSIGNED_INT ||
+               shader_gl_type == GL_UNSIGNED_INT_VEC2 ||
+               shader_gl_type == GL_UNSIGNED_INT_VEC3 ||
+               shader_gl_type == GL_UNSIGNED_INT_VEC4) {
+        type = GL_UNSIGNED_INT;
+        integer = 1;
+    }
+    if (type_out) {
+        *type_out = type;
+    }
+    if (size_out) {
+        *size_out = 4u;
+    }
+    if (integer_out) {
+        *integer_out = integer;
+    }
+}
+
 uint32_t mglRenderBuildCurrentVertexAttribBytes(
     uint32_t type, uint32_t size, const int32_t current_i[4],
     const uint32_t current_u[4], const float current_f[4], uint8_t bytes[16]) {

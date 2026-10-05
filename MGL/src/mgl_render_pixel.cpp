@@ -1063,7 +1063,15 @@ uint32_t mglRenderIntegerAttribConversionFormat(
         src_type == GL_UNSIGNED_INT;
     const bool src_is_signed =
         src_type == GL_BYTE || src_type == GL_SHORT || src_type == GL_INT;
-    if (!((shader_is_int && src_is_unsigned) ||
+    if (!src_is_unsigned && !src_is_signed) {
+        return static_cast<uint32_t>(MTL::VertexFormatInvalid);
+    }
+
+    const bool src_narrow =
+        src_type == GL_BYTE || src_type == GL_UNSIGNED_BYTE ||
+        src_type == GL_SHORT || src_type == GL_UNSIGNED_SHORT;
+    if (!src_narrow &&
+        !((shader_is_int && src_is_unsigned) ||
           (shader_is_uint && src_is_signed))) {
         return static_cast<uint32_t>(MTL::VertexFormatInvalid);
     }

@@ -1464,9 +1464,21 @@ unsigned long mglRendererBuildCurrentVertexAttribBytes(GLMContext ctx,
     }
     const CurrentVertexAttrib *current =
         &ctx->active_state->current_vertex_attrib[attribute];
+    uint32_t packType = (uint32_t)attrib->type;
+    uint32_t packSize = (uint32_t)attrib->size;
+    Program *program = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    if (program) {
+        MGLShaderResource *attrRes =
+            mglRendererProgramVertexAttribResource(program, attribute);
+        if (attrRes) {
+            int packInteger = 0;
+            mglRenderPlanCurrentAttribFromShader(
+                (uint32_t)attrRes->gl_type, &packType, &packSize, &packInteger);
+            (void)packInteger;
+        }
+    }
     return (unsigned long)mglRenderBuildCurrentVertexAttribBytes(
-        (uint32_t)attrib->type, (uint32_t)attrib->size, current->i, current->u,
-        current->f, bytes);
+        packType, packSize, current->i, current->u, current->f, bytes);
 }
 
 /* CPU-converted vertex streams bind a fresh Metal buffer per attribute
@@ -1692,9 +1704,15 @@ bool mglRenderGenerateVertexDescriptorState(GLMContext ctx,
             int needsConversion = 0;
             int effectiveNormalized = 0;
             int conversionKind = 0;
+            uint32_t planType = (uint32_t)vao->attrib[i].type;
+            uint32_t planSize = (uint32_t)vao->attrib[i].size;
+            int planInteger = vao->attrib[i].integer ? 1 : 0;
+            if (usesCurrentValue) {
+                mglRenderPlanCurrentAttribFromShader(
+                    (uint32_t)shaderGlType, &planType, &planSize, &planInteger);
+            }
             mglRenderPlanVertexAttribFormat(
-                (uint32_t)vao->attrib[i].type, (uint32_t)vao->attrib[i].size,
-                vao->attrib[i].integer ? 1 : 0,
+                planType, planSize, planInteger,
                 vao->attrib[i].normalized ? 1 : 0,
                 mglRendererVertexAttribIsColorInput(activeProgram, i) ? 1 : 0,
                 (uint32_t)shaderGlType, &format, &needsConversion,
@@ -1721,7 +1739,8 @@ bool mglRenderGenerateVertexDescriptorState(GLMContext ctx,
             uint32_t packedConverted =
                 (conversionKind == MGL_ATTRIB_CONV_UINT_1010102 ||
                  conversionKind == MGL_ATTRIB_CONV_REV2101010 ||
-                 conversionKind == MGL_ATTRIB_CONV_UINT_10F11F11F)
+                 conversionKind == MGL_ATTRIB_CONV_UINT_10F11F11F ||
+                 conversionKind == MGL_ATTRIB_CONV_INTEGER_SIGN)
                     ? 1u
                     : 0u;
             uint32_t attribOffset = mglRenderPlanVertexAttribOffset(
@@ -1738,10 +1757,19 @@ bool mglRenderGenerateVertexDescriptorState(GLMContext ctx,
                 (uint32_t)resolved.stride,
                 (uint32_t)layoutStride[mapped_buffer_index]);
             if (packedConverted) {
-                stride = (uint32_t)mglRenderAlignVertexStrideForMetal(
-                    conversionKind == MGL_ATTRIB_CONV_UINT_10F11F11F
-                        ? 12u
-                        : 16u);
+                if (conversionKind == MGL_ATTRIB_CONV_INTEGER_SIGN) {
+                    uint32_t n = (uint32_t)vao->attrib[i].size;
+                    if (n < 1u || n > 4u) {
+                        n = 4u;
+                    }
+                    stride = (uint32_t)mglRenderAlignVertexStrideForMetal(
+                        n * 4u);
+                } else {
+                    stride = (uint32_t)mglRenderAlignVertexStrideForMetal(
+                        conversionKind == MGL_ATTRIB_CONV_UINT_10F11F11F
+                            ? 12u
+                            : 16u);
+                }
             }
             layoutStride[mapped_buffer_index] = stride;
 

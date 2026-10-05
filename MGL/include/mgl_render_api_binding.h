@@ -88,6 +88,10 @@ int mglRenderBaseBindingTooSmall(int64_t range, uint64_t reflected);
 int mglRenderAttribOffsetsValid(int64_t binding_offset,
                                 int64_t relativeoffset);
 
+void mglRenderPlanCurrentAttribFromShader(uint32_t shader_gl_type,
+                                          uint32_t *type_out,
+                                          uint32_t *size_out, int *integer_out);
+
 uint32_t mglRenderBuildCurrentVertexAttribBytes(
     uint32_t type, uint32_t size, const int32_t current_i[4],
     const uint32_t current_u[4], const float current_f[4], uint8_t bytes[16]);
