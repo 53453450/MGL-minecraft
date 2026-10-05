@@ -425,26 +425,15 @@ int mglTryTexBufferLevelParameter(const Texture *tex, GLint level, GLenum pname,
 
 GLint mglTextureQueryCompressedImageSize(const Texture *tex, GLint level)
 {
-    GLenum fmt;
-    GLuint bw = 0, bh = 0, bd = 1, bs = 0;
-    GLuint w, h, d;
     if (!tex || level < 0 || !tex->faces[0].levels)
         return 0;
-    fmt = mglTextureQueryInternalFormat(tex);
-    if (!mglTexLevelInternalFormatCompressed((GLint)fmt))
+    /* Only real compressed block storage is downloadable. Remapped TexImage
+     * storage (uncompressed backing + compressed_internalformat) has no
+     * compressed image; reporting a synthetic size makes GetCompressedTexImage
+     * callers hit INVALID_OPERATION / InternalError. */
+    if (!mglTexLevelInternalFormatCompressed((GLint)tex->internalformat))
         return 0;
-    if (mglTexLevelInternalFormatCompressed((GLint)tex->internalformat))
-        return (GLint)tex->faces[0].levels[level].data_size;
-    if (!mglCompressedBlockInfoOf(fmt, &bw, &bh, &bd, &bs) ||
-        bw == 0u || bh == 0u || bd == 0u)
-        return 0;
-    w = tex->faces[0].levels[level].width;
-    h = tex->faces[0].levels[level].height;
-    d = tex->faces[0].levels[level].depth;
-    if (d < 1u)
-        d = 1u;
-    return (GLint)(((w + bw - 1u) / bw) * ((h + bh - 1u) / bh) *
-                   ((d + bd - 1u) / bd) * bs);
+    return (GLint)tex->faces[0].levels[level].data_size;
 }
 
 /*
@@ -1787,7 +1776,8 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
         case GL_TEXTURE_STENCIL_SIZE:
             *params = mglTexLevelComponentBits(internalformat, pname);            return;
         case GL_TEXTURE_COMPRESSED:
-            *params = mglTexLevelInternalFormatCompressed((GLint)mglTextureQueryInternalFormat(tex)) ? GL_TRUE : GL_FALSE;            return;
+            /* Match storage, not the remembered compressed request enum. */
+            *params = mglTexLevelInternalFormatCompressed((GLint)tex->internalformat) ? GL_TRUE : GL_FALSE;            return;
         case GL_TEXTURE_COMPRESSED_IMAGE_SIZE:
             *params = mglTextureQueryCompressedImageSize(tex, level);            return;
         case GL_TEXTURE_RED_TYPE:

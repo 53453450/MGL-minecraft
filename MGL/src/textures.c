@@ -2794,9 +2794,18 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
      * when glTexImage* is called multiple times for the same texture (e.g.
      * CubeMap face uploads) with a compressed internalformat: without this
      * early remap, the second call would see internalformat=compressed but
-     * tex->internalformat=uncompressed and invalidate the whole texture. */
+     * tex->internalformat=uncompressed and invalidate the whole texture.
+     *
+     * Sized block formats (RGTC/BPTC/ETC2/EAC/…): MGL has no online encoder.
+     * TexImage with client/PBO pixels must raise INVALID_OPERATION so CTS can
+     * fall back to uploading precompressed blocks via CompressedTexImage*.
+     * Generic COMPRESSED_* keep the remap path (pixel round-trip / 1D). */
     if (mglTexLevelInternalFormatCompressed(internalformat))
     {
+        if (pixels && !mglIsGenericCompressedFormat((GLenum)internalformat))
+        {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
         tex->compressed_internalformat = internalformat;
         internalformat = mglCompressedInternalFormatToSizedUncompressed(internalformat);
     }
@@ -7152,7 +7161,7 @@ void mglGetTextureLevelParameteriv(GLMContext ctx, GLuint texture, GLint level, 
             *params = mglTexLevelComponentBits(internalformat, pname);
             break;
         case GL_TEXTURE_COMPRESSED:
-            *params = mglTexLevelInternalFormatCompressed((GLint)mglTextureQueryInternalFormat(tex)) ? GL_TRUE : GL_FALSE;
+            *params = mglTexLevelInternalFormatCompressed((GLint)tex->internalformat) ? GL_TRUE : GL_FALSE;
             break;
         case GL_TEXTURE_COMPRESSED_IMAGE_SIZE:
             *params = mglTextureQueryCompressedImageSize(tex, level);
