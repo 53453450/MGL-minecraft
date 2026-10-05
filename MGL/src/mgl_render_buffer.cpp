@@ -1132,6 +1132,68 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
     return MGL_RENDER_BUFFER_OPERATION_HANDLED;
 }
 
+static float mglSnormBitsToFloat(int32_t c, int nbits)
+{
+    const int32_t maxp = (1 << (nbits - 1)) - 1;
+    if (c < -maxp) {
+        return -1.0f;
+    }
+    return static_cast<float>(c) / static_cast<float>(maxp);
+}
+
+static void mglUnpackPacked1010102ToFloat(uint32_t packed, uint32_t sourceType,
+                                          uint32_t normalized, uint32_t bgra,
+                                          float values[4])
+{
+    uint32_t ur;
+    uint32_t ug;
+    uint32_t ub;
+    uint32_t ua;
+    if (sourceType == GL_UNSIGNED_INT_10_10_10_2) {
+        ur = (packed >> 22) & 0x3ffu;
+        ug = (packed >> 12) & 0x3ffu;
+        ub = (packed >> 2) & 0x3ffu;
+        ua = packed & 0x3u;
+    } else {
+        ur = packed & 0x3ffu;
+        ug = (packed >> 10) & 0x3ffu;
+        ub = (packed >> 20) & 0x3ffu;
+        ua = (packed >> 30) & 0x3u;
+    }
+    if (sourceType == GL_INT_2_10_10_10_REV) {
+        const int32_t r = static_cast<int32_t>(ur << 22) >> 22;
+        const int32_t g = static_cast<int32_t>(ug << 22) >> 22;
+        const int32_t b = static_cast<int32_t>(ub << 22) >> 22;
+        const int32_t a = static_cast<int32_t>(ua << 30) >> 30;
+        if (normalized) {
+            values[0] = mglSnormBitsToFloat(r, 10);
+            values[1] = mglSnormBitsToFloat(g, 10);
+            values[2] = mglSnormBitsToFloat(b, 10);
+            values[3] = mglSnormBitsToFloat(a, 2);
+        } else {
+            values[0] = static_cast<float>(r);
+            values[1] = static_cast<float>(g);
+            values[2] = static_cast<float>(b);
+            values[3] = static_cast<float>(a);
+        }
+    } else if (normalized) {
+        values[0] = static_cast<float>(ur) / 1023.0f;
+        values[1] = static_cast<float>(ug) / 1023.0f;
+        values[2] = static_cast<float>(ub) / 1023.0f;
+        values[3] = static_cast<float>(ua) / 3.0f;
+    } else {
+        values[0] = static_cast<float>(ur);
+        values[1] = static_cast<float>(ug);
+        values[2] = static_cast<float>(ub);
+        values[3] = static_cast<float>(ua);
+    }
+    if (bgra) {
+        const float tmp = values[0];
+        values[0] = values[2];
+        values[2] = tmp;
+    }
+}
+
 int mglRenderConvertVertexBuffer(
     Buffer* sourceBuffer,
     const MGLRenderVertexConversion* conversion,
@@ -1254,7 +1316,9 @@ int mglRenderConvertVertexBuffer(
         }
 
         size_t convertedStrideBase = originalStride;
-        if (kind == MGL_RENDER_VERTEX_INTEGER_TO_32) {
+        if (kind == MGL_RENDER_VERTEX_INTEGER_TO_32 ||
+            kind == MGL_RENDER_VERTEX_PACKED_1010102_TO_FLOAT ||
+            kind == MGL_RENDER_VERTEX_PACKED_10F11F11F_TO_FLOAT) {
             convertedStrideBase = minimumConvertedStride;
         } else if (minimumConvertedStride > convertedStrideBase) {
             convertedStrideBase = minimumConvertedStride;
@@ -1393,8 +1457,7 @@ int mglRenderConvertVertexBuffer(
                     continue;
                 }
                 const size_t outputBytes = componentCount * sizeof(float);
-                if (relativeOffset > convertedStride ||
-                    outputBytes > convertedStride - relativeOffset) {
+                if (outputBytes > convertedStride) {
                     continue;
                 }
                 uint32_t packed = 0;
@@ -1403,13 +1466,10 @@ int mglRenderConvertVertexBuffer(
                        sizeof(packed));
                 float values[4] = {};
                 if (kind == MGL_RENDER_VERTEX_PACKED_1010102_TO_FLOAT) {
-                    values[0] = static_cast<float>((packed >> 22) & 0x3ffu) /
-                                1023.0f;
-                    values[1] = static_cast<float>((packed >> 12) & 0x3ffu) /
-                                1023.0f;
-                    values[2] = static_cast<float>((packed >> 2) & 0x3ffu) /
-                                1023.0f;
-                    values[3] = static_cast<float>(packed & 0x3u) / 3.0f;
+                    mglUnpackPacked1010102ToFloat(
+                        packed, conversion->source_type,
+                        conversion->normalized,
+                        conversion->destination_signed, values);
                 } else {
                     values[0] = mgl::decodeUnsignedFloatComponent(
                         (packed >> 0) & 0x7ffu, 6);
@@ -1418,8 +1478,8 @@ int mglRenderConvertVertexBuffer(
                     values[2] = mgl::decodeUnsignedFloatComponent(
                         (packed >> 22) & 0x3ffu, 5);
                 }
-                memcpy(converted.data() + destinationOffset + relativeOffset,
-                       values, outputBytes);
+                memcpy(converted.data() + destinationOffset, values,
+                       outputBytes);
                 continue;
             }
 

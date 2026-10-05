@@ -1483,7 +1483,9 @@ static int mglVertexAttribNeedsConvertedMetalStream(Program *program,
     }
     VertexAttrib *a = &vao->attrib[attrib];
     if (mglRenderAttribNeedsConvertedMetalStream((uint32_t)a->type,
-                                                 a->integer ? 1 : 0)) {
+                                                 a->integer ? 1 : 0,
+                                                 (uint32_t)a->size,
+                                                 a->normalized ? 1 : 0)) {
         return 1;
     }
     if (a->integer == 1 && program) {
@@ -1716,11 +1718,17 @@ bool mglRenderGenerateVertexDescriptorState(GLMContext ctx,
                 return false;
             }
 
+            uint32_t packedConverted =
+                (conversionKind == MGL_ATTRIB_CONV_UINT_1010102 ||
+                 conversionKind == MGL_ATTRIB_CONV_REV2101010 ||
+                 conversionKind == MGL_ATTRIB_CONV_UINT_10F11F11F)
+                    ? 1u
+                    : 0u;
             uint32_t attribOffset = mglRenderPlanVertexAttribOffset(
                 usesCurrentValue ? 1 : 0, needsConversion,
                 absoluteVertexBindingOffsets ? 1 : 0, i,
                 kMGLCurrentAttribPoolStride,
-                (uint32_t)resolved.relativeoffset,
+                packedConverted ? 0u : (uint32_t)resolved.relativeoffset,
                 (uint32_t)resolved.binding_offset);
 
             uint32_t stride = mglRenderPlanVertexAttribStride(
@@ -1729,6 +1737,12 @@ bool mglRenderGenerateVertexDescriptorState(GLMContext ctx,
                 conversionKind == MGL_ATTRIB_CONV_INTEGER_SIGN ? 1 : 0,
                 (uint32_t)resolved.stride,
                 (uint32_t)layoutStride[mapped_buffer_index]);
+            if (packedConverted) {
+                stride = (uint32_t)mglRenderAlignVertexStrideForMetal(
+                    conversionKind == MGL_ATTRIB_CONV_UINT_10F11F11F
+                        ? 12u
+                        : 16u);
+            }
             layoutStride[mapped_buffer_index] = stride;
 
             state->attrib_format[i] = (uint32_t)format;
@@ -1829,16 +1843,9 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
             Buffer *known = seenBuffers[s];
             int sameStream = 0;
             if (curNeedsConverted || seenNeedsConverted[s]) {
-                /* Converted clones start at each attrib's binding_offset;
-                 * sharing a Metal slot would overwrite the prior bind. */
-                sameStream = mglRendererSameVertexStream(known,
-                                                         seenOffsets[s],
-                                                         seenStrides[s],
-                                                         seenDivisors[s],
-                                                         attribBuffer,
-                                                         resolved.binding_offset,
-                                                         resolved.stride,
-                                                         resolved.divisor);
+                /* Converted clones are per-attrib; sharing a Metal slot
+                 * with a raw stream or another conversion overwrites the bind. */
+                sameStream = 0;
             } else if (known && attribBuffer &&
                        seenStrides[s] == resolved.stride &&
                        seenDivisors[s] == resolved.divisor &&

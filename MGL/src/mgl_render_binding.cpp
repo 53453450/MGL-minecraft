@@ -105,6 +105,17 @@ int mglRenderFillVertexConversionFromAttribKind(
             out->source_type = GL_UNSIGNED_INT_10_10_10_2;
             out->normalized = 1u;
             break;
+        case MGL_ATTRIB_CONV_REV2101010:
+            if (type != GL_UNSIGNED_INT_2_10_10_10_REV &&
+                type != GL_INT_2_10_10_10_REV) {
+                return -1;
+            }
+            out->kind = MGL_RENDER_VERTEX_PACKED_1010102_TO_FLOAT;
+            out->component_count = 4u;
+            out->source_type = type;
+            out->normalized = normalized ? 1u : 0u;
+            out->destination_signed = (size == GL_BGRA) ? 1u : 0u;
+            break;
         case MGL_ATTRIB_CONV_UINT_10F11F11F:
             out->kind = MGL_RENDER_VERTEX_PACKED_10F11F11F_TO_FLOAT;
             out->component_count = 3u;
@@ -192,14 +203,20 @@ int mglRenderAttribNeedsConversion(int long_attr, uint32_t type, int integer) {
     return 0;
 }
 
-int mglRenderAttribNeedsConvertedMetalStream(uint32_t type, int integer) {
+int mglRenderAttribNeedsConvertedMetalStream(uint32_t type, int integer,
+                                             uint32_t size, int normalized) {
     if (mglRenderAttribNeedsConversion(0, type, integer)) {
         return 1;
     }
-    return type == GL_FIXED || type == GL_UNSIGNED_INT_10_10_10_2 ||
-                   type == GL_UNSIGNED_INT_10F_11F_11F_REV
-               ? 1
-               : 0;
+    if (type == GL_FIXED || type == GL_UNSIGNED_INT_10_10_10_2 ||
+        type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+        return 1;
+    }
+    if (type == GL_UNSIGNED_INT_2_10_10_10_REV ||
+        type == GL_INT_2_10_10_10_REV) {
+        return (!normalized || size == GL_BGRA) ? 1 : 0;
+    }
+    return 0;
 }
 
 int mglRenderAttribColorUByteNeedsNormalize(uint32_t type, uint32_t size,
@@ -2073,6 +2090,15 @@ extern "C" void mglRenderPlanVertexAttribFormat(
         needs_conversion = 1;
         kind = MGL_ATTRIB_CONV_UINT_1010102;
         format = mglRenderDoubleVertexAttribFloatFormat(4u);
+    } else if (type == GL_UNSIGNED_INT_2_10_10_10_REV ||
+               type == GL_INT_2_10_10_10_REV) {
+        if (!norm || size == GL_BGRA) {
+            needs_conversion = 1;
+            kind = MGL_ATTRIB_CONV_REV2101010;
+            format = mglRenderDoubleVertexAttribFloatFormat(4u);
+        } else {
+            format = mglRenderGLTypeSizeToVertexFormat(type, size, norm);
+        }
     } else if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
         needs_conversion = 1;
         kind = MGL_ATTRIB_CONV_UINT_10F11F11F;

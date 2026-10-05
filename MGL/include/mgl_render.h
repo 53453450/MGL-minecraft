@@ -692,6 +692,7 @@ enum {
     MGL_ATTRIB_CONV_UINT_1010102 = 4,
     MGL_ATTRIB_CONV_UINT_10F11F11F = 5,
     MGL_ATTRIB_CONV_INTEGER_SIGN = 6,
+    MGL_ATTRIB_CONV_REV2101010 = 7,
 };
 
 uint32_t mglRenderGLTypeSizeToVertexFormat(uint32_t type, uint32_t size,

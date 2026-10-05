@@ -1998,6 +1998,10 @@ extern "C" uint32_t mglRenderGLTypeSizeToVertexFormat(uint32_t type,
                                                       int normalized) {
     switch (type) {
         case GL_UNSIGNED_BYTE:
+            if (size == GL_BGRA) {
+                return normalized ? MGLVertexFormatUChar4Normalized_BGRA
+                                  : MGLVertexFormatInvalid;
+            }
             if (normalized) {
                 switch (size) {
                     case 1u: return MGLVertexFormatUCharNormalized;
@@ -2099,12 +2103,12 @@ extern "C" uint32_t mglRenderGLTypeSizeToVertexFormat(uint32_t type,
             break;
         case GL_RGB10:
         case GL_INT_2_10_10_10_REV:
-            if (normalized) {
+            if (normalized && size != GL_BGRA) {
                 return MGLVertexFormatInt1010102Normalized;
             }
             break;
         case GL_UNSIGNED_INT_2_10_10_10_REV:
-            if (normalized) {
+            if (normalized && size != GL_BGRA) {
                 return MGLVertexFormatUInt1010102Normalized;
             }
             break;

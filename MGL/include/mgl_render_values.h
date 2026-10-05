@@ -217,6 +217,7 @@ enum {
     MGLVertexFormatUInt4 = 39,
     MGLVertexFormatInt1010102Normalized = 40,
     MGLVertexFormatUInt1010102Normalized = 41,
+    MGLVertexFormatUChar4Normalized_BGRA = 42,
     MGLVertexFormatUChar = 45,
     MGLVertexFormatChar = 46,
     MGLVertexFormatUCharNormalized = 47,

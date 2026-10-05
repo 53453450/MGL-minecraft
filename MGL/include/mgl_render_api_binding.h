@@ -68,7 +68,8 @@ uint32_t mglRenderAttribFormatOrFallback(uint32_t planned, uint32_t type,
 
 int mglRenderAttribNeedsConversion(int long_attr, uint32_t type, int integer);
 
-int mglRenderAttribNeedsConvertedMetalStream(uint32_t type, int integer);
+int mglRenderAttribNeedsConvertedMetalStream(uint32_t type, int integer,
+                                             uint32_t size, int normalized);
 
 int mglRenderAttribColorUByteNeedsNormalize(uint32_t type, uint32_t size,
                                             int already_norm);
