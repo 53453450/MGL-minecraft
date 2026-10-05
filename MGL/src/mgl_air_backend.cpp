@@ -10723,9 +10723,12 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
 
 static uint32_t mtypeLength(const MType &t)
 {
+    /* GLSL 4.6 §5.8: array.length() is the array size.  A vec4[16] therefore
+     * yields 16, not 4; checking vec/matrix first truncated vertex-attrib
+     * copies in KHR-GL46.vertex_attrib_binding. */
+    if (t.isArray() && t.arr) return t.arr;
     if (t.isMatrix()) return t.cols;
     if (t.vec) return t.vec;
-    if (t.isArray() && t.arr) return t.arr;
     return 0;
 }
 
