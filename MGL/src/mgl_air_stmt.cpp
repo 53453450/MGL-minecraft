@@ -382,6 +382,31 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
     case MGL_STMT_WHILE:
     case MGL_STMT_FOR:
     case MGL_STMT_DO_WHILE: {
+        /* GLSL for-init (`for (int i = …)`) is scoped to the loop.  Keep
+         * the names that existed before this statement so a later use of
+         * the same identifier (CTS `uniform mat3x2 i` after `for (int i)`)
+         * is not left bound to the loop integer. */
+        std::set<std::string> localsBefore;
+        if (st->kind == MGL_STMT_FOR && locals) {
+            for (const auto &kv : *locals)
+                localsBefore.insert(kv.first);
+        }
+        auto dropForInitLocals = [&]() {
+            if (st->kind != MGL_STMT_FOR || !locals)
+                return;
+            std::vector<std::string> drop;
+            for (const auto &kv : *locals) {
+                if (!localsBefore.count(kv.first))
+                    drop.push_back(kv.first);
+            }
+            for (const auto &n : drop) {
+                locals->erase(n);
+                cg.lvalues.erase(n);
+                cg.arrayMem.erase(n);
+                cg.arrayMemTypes.erase(n);
+                cg.localIRTypes.erase(n);
+            }
+        };
         /* Unroll tiny constant for-loops of the form
          *   for (T i = 0; i < N; ++i) ...
          * with N <= 16.  CTS 420pack binding_*_array uses this pattern to
@@ -428,6 +453,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                     emitStmt(cg, st->u.loop.body, mod, locals, deps);
                     if (cg.err) return;
                 }
+                dropForInitLocals();
                 break;
             }
         }
@@ -632,6 +658,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             }
             cg.lvalues[n] = e;
         }
+        dropForInitLocals();
         break;
     }
     case MGL_STMT_SWITCH: {

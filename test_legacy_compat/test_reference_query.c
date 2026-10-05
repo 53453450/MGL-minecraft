@@ -234,8 +234,10 @@ int main(void)
                   "tint", 0);
     expect_member("the accessed instance's member is a use", kTwoBlocks, "other",
                   "tint", 1);
-    expect_name("unqualified query still sees the matching use", kTwoBlocks,
-                "tint", 1);
+    expect_name("unqualified query does not match another instance's member",
+                kTwoBlocks, "tint", 0);
+    expect_name("qualified access is a use of that path", kTwoBlocks,
+                "other.tint", 1);
 
     static const char *kAoa =
         "#version 430\n"

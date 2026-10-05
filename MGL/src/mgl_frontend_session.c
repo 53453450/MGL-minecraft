@@ -588,17 +588,16 @@ static int mglFrontendRefPathMatches(const MGLFrontendRefPath *path,
     if (path->count == 0u || query->count == 0u ||
         query->count > path->count)
         return 0;
-    for (uint32_t s = 0; s + query->count <= path->count; s++) {
-        uint32_t i = 0;
-        for (; i < query->count; i++) {
-            if (!mglFrontendRefComponentMatches(&query->comps[i],
-                                                &path->comps[s + i]))
-                break;
-        }
-        if (i == query->count)
-            return 1;
+    /* The query is a prefix of the access (`tint` vs `tint.xyzw`,
+     * `colors[0]` vs `colors[0].rgb`).  Matching in the middle would treat
+     * `j.b` / `l[2].a.c` as uses of the unrelated uniforms `b` / `a`. */
+    uint32_t i = 0;
+    for (; i < query->count; i++) {
+        if (!mglFrontendRefComponentMatches(&query->comps[i],
+                                            &path->comps[i]))
+            break;
     }
-    return 0;
+    return i == query->count;
 }
 
 /* Walk every expression of a body.  `match_self` is 0 for a path that dropped
