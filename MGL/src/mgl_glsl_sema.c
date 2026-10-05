@@ -3408,9 +3408,14 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             sema_error(s, e->line, "array index must be an integer");
             return NULL;
         }
-        /* ESSL 3.10: indexing an *array of shader storage blocks* requires
-         * a constant expression.  Arrays that are members of a single block
-         * are not covered (CTS basic-atomic / length()). */
+        /* ESSL 3.10 §4.3.9: "All indices used to index a uniform or shader
+         * storage block array must be constant integral expressions."
+         * That rule targets *arrays of interface blocks*
+         * (`buffer B { ... } blocks[N]; blocks[i]`), not arrays that are
+         * *members of* a single block (`buffer B { T a[N]; }; a[i]`).
+         * Anonymous-block members are BUFFER-qualified array-of-struct
+         * vars without is_interface_block; matching on type alone falsely
+         * rejected CTS advanced-indirectAddressing / usage / write-fragment. */
         if (s->tu && s->tu->version_profile &&
             strcmp(s->tu->version_profile, "es") == 0 &&
             e->u.index.object &&
@@ -3418,6 +3423,7 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             e->u.index.object->u.var_ref.name) {
             Sym *bs = symtab_lookup(tab, e->u.index.object->u.var_ref.name);
             if (bs && (bs->qualifiers & MGL_AST_Q_BUFFER) &&
+                bs->ir && bs->ir->is_interface_block &&
                 bs->type && bs->type->kind == MGLIR_TYPE_ARRAY &&
                 bs->type->elem_type &&
                 bs->type->elem_type->kind == MGLIR_TYPE_STRUCT) {
