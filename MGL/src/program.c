@@ -2799,6 +2799,39 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         }
     }
 
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        if ((pptr->attached_shader_mask & (1u << stage)) == 0u)
+            continue;
+        GLboolean have_main = GL_FALSE;
+        GLboolean saw_tu = GL_FALSE;
+        GLuint attached_count = mglProgramAttachedShaderCount(pptr, (GLuint)stage);
+        for (GLuint attached = 0u; attached < attached_count; attached++) {
+            Shader *shader = (pptr->attached_shader_counts[stage] > 0u)
+                ? pptr->attached_shader_slots[stage][attached]
+                : pptr->shader_slots[stage];
+            const MGLTranslationUnit *tu = shader ? shader->frontend_tu : NULL;
+            if (!tu)
+                continue;
+            saw_tu = GL_TRUE;
+            for (uint32_t di = 0; di < tu->decl_count; di++) {
+                const MGLDecl *d = tu->decls[di];
+                if (d && d->name && d->body && strcmp(d->name, "main") == 0) {
+                    have_main = GL_TRUE;
+                    break;
+                }
+            }
+            if (have_main)
+                break;
+        }
+        if (saw_tu && !have_main) {
+            fprintf(stderr,
+                    "MGL WARNING: mglLinkProgram failed program %u: "
+                    "shader stage %d has no main\n",
+                    pptr->name, stage);
+            goto link_fail;
+        }
+    }
+
     if ((pptr->attached_shader_mask & (1u << _COMPUTE_SHADER)) != 0u &&
         !mglComputeLocalSizeLinkOk(pptr)) {
         fprintf(stderr,
@@ -4163,8 +4196,26 @@ void mglUseProgramStages(GLMContext ctx, GLuint pipeline, GLbitfield stages, GLu
             mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
             return;
         }
+        if (!prog_ptr->link_success || !prog_ptr->linked_program_separable)
+        {
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            return;
+        }
     }
-    
+
+    {
+        const GLbitfield stage_bits =
+            GL_VERTEX_SHADER_BIT | GL_FRAGMENT_SHADER_BIT |
+            GL_GEOMETRY_SHADER_BIT | GL_TESS_CONTROL_SHADER_BIT |
+            GL_TESS_EVALUATION_SHADER_BIT | GL_COMPUTE_SHADER_BIT;
+        if (stages != GL_ALL_SHADER_BITS && (stages & ~stage_bits) != 0u)
+        {
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+            return;
+        }
+        if (stages == GL_ALL_SHADER_BITS)
+            stages = stage_bits;
+    } 
     /* Attach program to specified stages.  Each stage slot owns an
      * independent reference: retain the new program BEFORE releasing the
      * old one so re-attaching a program that is already in a slot (or is

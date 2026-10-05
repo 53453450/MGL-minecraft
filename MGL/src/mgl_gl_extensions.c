@@ -2773,6 +2773,13 @@ void mglCopyImageSubData(GLMContext ctx, GLuint srcName, GLenum srcTarget, GLint
 
 void mglCreateProgramPipelines(GLMContext ctx, GLsizei n, GLuint *pipelines)
 {
+	if (n < 0)
+	{
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		return;
+	}
+	if (!pipelines)
+		return;
 	for (GLsizei i = 0; i < n; i++)
 	{
 		mglGenProgramPipelines(ctx, 1, &pipelines[i]);
