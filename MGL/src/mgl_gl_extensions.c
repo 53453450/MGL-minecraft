@@ -5634,6 +5634,9 @@ void mglGetQueryBufferObjecti64v(GLMContext ctx, GLuint id, GLuint buffer, GLenu
 
 	stored = (GLint64)value;
 	memcpy((void *)(uintptr_t)(buf->data.buffer_data + (vm_address_t)offset), &stored, sizeof(stored));
+	/* CPU-side write: keep MapBuffer(READ) from overwriting the shadow with
+	 * a stale Metal copy (GL 4.5 GetQueryBufferObject* + MapBuffer path). */
+	buf->cpu_shadow_pending = GL_TRUE;
 	buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
 	buf->has_initialized_data = GL_TRUE;
 	buf->ever_written = GL_TRUE;
@@ -5674,6 +5677,7 @@ void mglGetQueryBufferObjectiv(GLMContext ctx, GLuint id, GLuint buffer, GLenum 
 
 	stored = (GLint)value;
 	memcpy((void *)(uintptr_t)(buf->data.buffer_data + (vm_address_t)offset), &stored, sizeof(stored));
+	buf->cpu_shadow_pending = GL_TRUE;
 	buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
 	buf->has_initialized_data = GL_TRUE;
 	buf->ever_written = GL_TRUE;
@@ -5712,6 +5716,7 @@ void mglGetQueryBufferObjectui64v(GLMContext ctx, GLuint id, GLuint buffer, GLen
 	}
 
 	memcpy((void *)(uintptr_t)(buf->data.buffer_data + (vm_address_t)offset), &stored, sizeof(stored));
+	buf->cpu_shadow_pending = GL_TRUE;
 	buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
 	buf->has_initialized_data = GL_TRUE;
 	buf->ever_written = GL_TRUE;
@@ -5752,6 +5757,7 @@ void mglGetQueryBufferObjectuiv(GLMContext ctx, GLuint id, GLuint buffer, GLenum
 
 	stored = (GLuint)value;
 	memcpy((void *)(uintptr_t)(buf->data.buffer_data + (vm_address_t)offset), &stored, sizeof(stored));
+	buf->cpu_shadow_pending = GL_TRUE;
 	buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
 	buf->has_initialized_data = GL_TRUE;
 	buf->ever_written = GL_TRUE;
