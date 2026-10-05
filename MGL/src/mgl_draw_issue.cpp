@@ -293,7 +293,16 @@ static unsigned mglIssueProgramName(GLMContext ctx)
 static bool mglIssueIndirectNeedsCPUExpand(GLMContext ctx, GLenum mode)
 {
     return mode == GL_PATCHES || mode == GL_QUADS || mode == GL_LINE_LOOP ||
-           mglDrawHostHasGeometry(ctx) || mglDrawHostUsesCullDistance(ctx);
+           mode == GL_TRIANGLE_FAN || mglDrawHostHasGeometry(ctx) ||
+           mglDrawHostUsesCullDistance(ctx);
+}
+
+static bool mglIssueIndirectElementsNeedCPUExpand(GLMContext ctx, GLenum mode,
+                                                 GLenum type)
+{
+    uint32_t restartIndex = 0u;
+    return mglIssueIndirectNeedsCPUExpand(ctx, mode) ||
+           mglPrimitiveRestartIndexForType(ctx, type, &restartIndex);
 }
 
 static bool mglIssueIndirectPreamble(GLMContext ctx, void *renderer, GLenum mode,
@@ -374,6 +383,9 @@ static const char *mglIssueArraysIndirectPrepLabel(GLMContext ctx, GLenum mode)
     if (mode == GL_LINE_LOOP) {
         return "drawArraysIndirect.lineLoop";
     }
+    if (mode == GL_TRIANGLE_FAN) {
+        return "drawArraysIndirect.triangleFan";
+    }
     if (mode == GL_QUADS) {
         return "drawArraysIndirect.quads";
     }
@@ -390,6 +402,9 @@ static const char *mglIssueElementsIndirectPrepLabel(GLMContext ctx, GLenum mode
     }
     if (mode == GL_LINE_LOOP) {
         return "drawElementsIndirect.lineLoop";
+    }
+    if (mode == GL_TRIANGLE_FAN) {
+        return "drawElementsIndirect.triangleFan";
     }
     if (mode == GL_QUADS) {
         return "drawElementsIndirect.quads";
@@ -409,6 +424,9 @@ static const char *mglIssueMultiArraysIndirectPrepLabel(GLMContext ctx,
     if (mode == GL_LINE_LOOP) {
         return "multiDrawArraysIndirect.lineLoop";
     }
+    if (mode == GL_TRIANGLE_FAN) {
+        return "multiDrawArraysIndirect.triangleFan";
+    }
     if (mode == GL_QUADS) {
         return "multiDrawArraysIndirect.quads";
     }
@@ -426,6 +444,9 @@ static const char *mglIssueMultiElementsIndirectPrepLabel(GLMContext ctx,
     }
     if (mode == GL_LINE_LOOP) {
         return "multiDrawElementsIndirect.lineLoop";
+    }
+    if (mode == GL_TRIANGLE_FAN) {
+        return "multiDrawElementsIndirect.triangleFan";
     }
     if (mode == GL_QUADS) {
         return "multiDrawElementsIndirect.quads";
@@ -525,11 +546,6 @@ extern "C" void mglIssueDrawElementsIndirect(GLMContext ctx, void *renderer,
     if (!mglIssueIndirectPreamble(ctx, renderer, mode, tag)) {
         return;
     }
-    if (mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled(ctx, type, tag)) {
-        mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=primitive_restart program=%u",
-                    mglIssueProgramName(ctx));
-        return;
-    }
     Buffer *glElement = NULL;
     void *metalElement = NULL;
     if (!mglDrawHostResolveElementBuffer(renderer, ctx, tag, &glElement,
@@ -547,7 +563,7 @@ extern "C" void mglIssueDrawElementsIndirect(GLMContext ctx, void *renderer,
         return;
     }
     const size_t cmdOffset = (size_t)(uintptr_t)indirect;
-    if (mglIssueIndirectNeedsCPUExpand(ctx, mode)) {
+    if (mglIssueIndirectElementsNeedCPUExpand(ctx, mode, type)) {
         if (!mglDrawHostPrepareIndirectCPURead(
                 renderer, ctx, mglIssueElementsIndirectPrepLabel(ctx, mode))) {
             return;
@@ -667,11 +683,6 @@ extern "C" void mglIssueMultiDrawElementsIndirect(
     if (!mglIssueIndirectPreamble(ctx, renderer, mode, tag)) {
         return;
     }
-    if (mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled(ctx, type, tag)) {
-        mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=primitive_restart program=%u",
-                    mglIssueProgramName(ctx));
-        return;
-    }
     Buffer *glElement = NULL;
     void *metalElement = NULL;
     if (!mglDrawHostResolveElementBuffer(renderer, ctx, tag, &glElement,
@@ -688,7 +699,7 @@ extern "C" void mglIssueMultiDrawElementsIndirect(
                     mglIssueProgramName(ctx));
         return;
     }
-    if (mglIssueIndirectNeedsCPUExpand(ctx, mode)) {
+    if (mglIssueIndirectElementsNeedCPUExpand(ctx, mode, type)) {
         if (stride < 0 || drawcount <= 0) {
             return;
         }
