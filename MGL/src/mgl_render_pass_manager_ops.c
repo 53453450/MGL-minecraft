@@ -3116,6 +3116,37 @@ static int mglPdPassthroughSkipBuiltinOutput(const MGLShaderResource *output)
            strcmp(output->name, "gl_ViewportIndex") == 0;
 }
 
+/* Interface-block members keep query names like "BLOCK.value".  Those are not
+ * GLSL identifiers; Metal still matches the FS by layout(location). */
+static int mglPdPassthroughNameIsIdent(const char *name)
+{
+    unsigned char c;
+    if (!name || !*name)
+        return 0;
+    c = (unsigned char)name[0];
+    if (!(c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')))
+        return 0;
+    for (name++; *name; name++) {
+        c = (unsigned char)*name;
+        if (!(c == '_' || (c >= '0' && c <= '9') ||
+              (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')))
+            return 0;
+    }
+    return 1;
+}
+
+static const char *mglPdPassthroughIdent(const MGLShaderResource *output,
+                                         unsigned index, char *buf, size_t cap)
+{
+    if (!output || !buf || cap < 20u)
+        return NULL;
+    if (mglPdPassthroughNameIsIdent(output->name))
+        return output->name;
+    if (snprintf(buf, cap, "mgl_ptvs_%u", index) < 0)
+        return NULL;
+    return buf;
+}
+
 static GLenum mglPdPassthroughDeclType(const MGLShaderResourceList *fsInputs,
                                        const MGLShaderResource *output)
 {
@@ -3219,11 +3250,14 @@ int mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(
         const GLenum declType = mglPdPassthroughDeclType(fsInputs, output);
         const unsigned matCols = mglPdGeometryPassthroughMatrixCols(declType);
         const unsigned matRows = mglPdGeometryPassthroughMatrixRows(declType);
+        char identBuf[32];
+        const char *ident =
+            mglPdPassthroughIdent(output, (unsigned)i, identBuf, sizeof identBuf);
         if (matCols > 0u) {
             /* Metal rejects matrix stage-out attributes; emit one vector
              * output per column at consecutive locations (GL 4.6 4.4.1). */
             const char *colType = mglPdGeometryPassthroughColumnType(matRows);
-            if (!colType || !output->name) {
+            if (!colType || !ident) {
                 fprintf(stderr,
                         "MGL GS ERROR: unsupported passthrough matrix type 0x%x\n",
                         (unsigned)output->gl_type);
@@ -3232,7 +3266,7 @@ int mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(
             for (unsigned c = 0; c < matCols; c++) {
                 mglPdSourceAppendF(
                     &src, "layout(location = %u) out %s %s_c%u;\n",
-                    (unsigned)(output->location + c), colType, output->name, c);
+                    (unsigned)(output->location + c), colType, ident, c);
             }
             continue;
         }
@@ -3243,7 +3277,7 @@ int mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(
             mglPdGeometryPassthroughNeedsFlat(declType)
                 ? mglPdGeometryPassthroughFloatType(declType)
                 : mglPdGeometryPassthroughType(declType);
-        if (!type || !output->name) {
+        if (!type || !ident) {
             fprintf(stderr,
                     "MGL GS ERROR: unsupported passthrough varying type 0x%x\n",
                     (unsigned)output->gl_type);
@@ -3253,7 +3287,7 @@ int mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(
             &src, "layout(location = %u) %sout %s %s;\n",
             (unsigned)output->location,
             mglPdGeometryPassthroughNeedsFlat(output->gl_type) ? "flat " : "",
-            type, output->name);
+            type, ident);
     }
     mglPdSourceAppendF(&src,
                        "void main() {\n"
@@ -3381,12 +3415,15 @@ int mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(
         const GLenum declType = mglPdPassthroughDeclType(fsInputs, output);
         const unsigned matCols = mglPdGeometryPassthroughMatrixCols(declType);
         const unsigned matRows = mglPdGeometryPassthroughMatrixRows(declType);
+        char identBuf[32];
+        const char *ident =
+            mglPdPassthroughIdent(output, (unsigned)i, identBuf, sizeof identBuf);
         if (matCols > 0u) {
             /* Stage-out stores one column per location slot (GL 4.6 4.4.1).
              * Forward each column as its own vector varying. */
             const char *colSwizzle =
                 mglPdGeometryPassthroughColumnSwizzle(matRows);
-            if (!colSwizzle || !output->name) goto done;
+            if (!colSwizzle || !ident) goto done;
             const unsigned baseSlot =
                 (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location);
             for (unsigned c = 0; c < matCols; c++) {
@@ -3394,13 +3431,13 @@ int mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(
                     &src,
                     "    vec4 mgl_slot_%u_%u = mgl_gs_output.records[mgl_base + %u];\n"
                     "    %s_c%u = mgl_slot_%u_%u%s;\n",
-                    (unsigned)i, c, baseSlot + c, output->name, c, (unsigned)i,
+                    (unsigned)i, c, baseSlot + c, ident, c, (unsigned)i,
                     c, colSwizzle);
             }
             continue;
         }
         const char *swizzle = mglPdGeometryPassthroughSwizzle(declType);
-        if (!swizzle || !output->name) goto done;
+        if (!swizzle || !ident) goto done;
         /* Integer records already hold SIToFP/UIToFP float carriers - forward
          * the float swizzle; do not floatBitsTo*. */
         mglPdSourceAppendF(
@@ -3409,7 +3446,7 @@ int mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(
             "    %s = mgl_slot_%u%s;\n",
             (unsigned)i,
             (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
-            output->name, (unsigned)i, swizzle);
+            ident, (unsigned)i, swizzle);
     }
     mglPdSourceAppendRaw(&src, "}\n");
     if (getenv("MGL_GS_DIAG")) {
@@ -3515,9 +3552,12 @@ int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(void *renderer,
             output->gl_type);
         const unsigned matRows = mglPdGeometryPassthroughMatrixRows(
             output->gl_type);
+        char identBuf[32];
+        const char *ident =
+            mglPdPassthroughIdent(output, (unsigned)i, identBuf, sizeof identBuf);
         if (matCols > 0u) {
             const char *colType = mglPdGeometryPassthroughColumnType(matRows);
-            if (!colType || !output->name) {
+            if (!colType || !ident) {
                 fprintf(stderr,
                         "MGL TESS ERROR: unsupported passthrough matrix type 0x%x\n",
                         (unsigned)output->gl_type);
@@ -3526,7 +3566,7 @@ int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(void *renderer,
             for (unsigned c = 0; c < matCols; c++) {
                 mglPdSourceAppendF(
                     &src, "layout(location = %u) out %s %s_c%u;\n",
-                    (unsigned)(output->location + c), colType, output->name, c);
+                    (unsigned)(output->location + c), colType, ident, c);
             }
             continue;
         }
@@ -3534,7 +3574,7 @@ int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(void *renderer,
             mglPdGeometryPassthroughNeedsFlat(output->gl_type)
                 ? mglPdGeometryPassthroughFloatType(output->gl_type)
                 : mglPdGeometryPassthroughType(output->gl_type);
-        if (!type || !output->name) {
+        if (!type || !ident) {
             fprintf(stderr,
                     "MGL TESS ERROR: unsupported passthrough varying type 0x%x\n",
                     (unsigned)output->gl_type);
@@ -3544,7 +3584,7 @@ int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(void *renderer,
             &src, "layout(location = %u) %sout %s %s;\n",
             (unsigned)output->location,
             mglPdGeometryPassthroughNeedsFlat(output->gl_type) ? "flat " : "",
-            type, output->name);
+            type, ident);
     }
     mglPdSourceAppendF(&src,
                        "void main() {\n"
@@ -3618,6 +3658,9 @@ int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(void *renderer,
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
         if (mglPdPassthroughSkipBuiltinOutput(output)) continue;
+        char identBuf[32];
+        const char *ident =
+            mglPdPassthroughIdent(output, (unsigned)i, identBuf, sizeof identBuf);
         const unsigned matCols = mglPdGeometryPassthroughMatrixCols(
             output->gl_type);
         const unsigned matRows = mglPdGeometryPassthroughMatrixRows(
@@ -3625,7 +3668,7 @@ int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(void *renderer,
         if (matCols > 0u) {
             const char *colSwizzle =
                 mglPdGeometryPassthroughColumnSwizzle(matRows);
-            if (!colSwizzle || !output->name) goto done;
+            if (!colSwizzle || !ident) goto done;
             const unsigned baseSlot =
                 (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location);
             for (unsigned c = 0; c < matCols; c++) {
@@ -3633,20 +3676,20 @@ int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(void *renderer,
                     &src,
                     "    vec4 mgl_slot_%u_%u = mgl_tes_output.records[mgl_base + %u];\n"
                     "    %s_c%u = mgl_slot_%u_%u%s;\n",
-                    (unsigned)i, c, baseSlot + c, output->name, c, (unsigned)i,
+                    (unsigned)i, c, baseSlot + c, ident, c, (unsigned)i,
                     c, colSwizzle);
             }
             continue;
         }
         const char *swizzle = mglPdGeometryPassthroughSwizzle(output->gl_type);
-        if (!swizzle || !output->name) goto done;
+        if (!swizzle || !ident) goto done;
         mglPdSourceAppendF(
             &src,
             "    vec4 mgl_slot_%u = mgl_tes_output.records[mgl_base + %u];\n"
             "    %s = mgl_slot_%u%s;\n",
             (unsigned)i,
             (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
-            output->name, (unsigned)i, swizzle);
+            ident, (unsigned)i, swizzle);
     }
     mglPdSourceAppendRaw(&src, "}\n");
     if (getenv("MGL_GS_DIAG")) {
