@@ -778,12 +778,16 @@ ProgramPipeline *newProgramPipeline(GLMContext ctx, GLuint pipeline)
 
 ProgramPipeline *findProgramPipeline(GLMContext ctx, GLuint pipeline)
 {
-    return (ProgramPipeline *)searchHashTable(&STATE(program_pipeline_table), pipeline);
+    ProgramPipeline *ptr =
+        (ProgramPipeline *)searchHashTable(&STATE(program_pipeline_table), pipeline);
+    if (!ptr || !ptr->created)
+        return NULL;
+    return ptr;
 }
 
 ProgramPipeline *getProgramPipeline(GLMContext ctx, GLuint pipeline)
 {
-    ProgramPipeline *ptr = findProgramPipeline(ctx, pipeline);
+    ProgramPipeline *ptr = (ProgramPipeline *)searchHashTable(&STATE(program_pipeline_table), pipeline);
 
     if (!ptr)
     {
@@ -793,6 +797,16 @@ ProgramPipeline *getProgramPipeline(GLMContext ctx, GLuint pipeline)
         insertHashElement(&STATE(program_pipeline_table), pipeline, ptr);
     }
 
+    return ptr;
+}
+
+static ProgramPipeline *ensureProgramPipeline(GLMContext ctx, GLuint pipeline)
+{
+    ProgramPipeline *ptr =
+        (ProgramPipeline *)searchHashTable(&STATE(program_pipeline_table), pipeline);
+    if (!ptr)
+        return NULL;
+    ptr->created = GL_TRUE;
     return ptr;
 }
 
@@ -3321,6 +3335,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
     pptr->link_success = GL_TRUE;
     pptr->link_state = MGL_PROGRAM_LINK_OK;
+    pptr->linked_program_separable = pptr->program_separable;
     pptr->dirty_bits |= DIRTY_PROGRAM;
     /* Cache the legacy clip-plane uniform locations (the translator injects
      * them only for VS stages that use gl_ClipVertex). */
@@ -3839,6 +3854,9 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
         case GL_LINK_STATUS:
             *params = pptr->link_success ? GL_TRUE : GL_FALSE;
             break;
+        case GL_PROGRAM_SEPARABLE:
+            *params = pptr->linked_program_separable ? GL_TRUE : GL_FALSE;
+            break;
         case GL_DELETE_STATUS:
             *params = GL_FALSE;  /* Programs are not deleted by default */
             break;
@@ -4000,6 +4018,14 @@ void mglGetProgramInfoLog(GLMContext ctx, GLuint program, GLsizei bufSize, GLsiz
 #pragma mark program pipelines
 void mglGenProgramPipelines(GLMContext ctx, GLsizei n, GLuint *pipelines)
 {
+    if (n < 0)
+    {
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+        return;
+    }
+    if (!pipelines)
+        return;
+    /* Reserve names only. IsProgramPipeline stays FALSE until Bind. */
     for (GLsizei i = 0; i < n; i++)
     {
         pipelines[i] = getNewName(&STATE(program_pipeline_table));
@@ -4022,7 +4048,9 @@ void mglDeleteProgramPipelines(GLMContext ctx, GLsizei n, const GLuint *pipeline
         if (pipelines[i] == 0)
             continue;
             
-        ProgramPipeline *ptr = findProgramPipeline(ctx, pipelines[i]);
+        ProgramPipeline *ptr =
+            (ProgramPipeline *)searchHashTable(&STATE(program_pipeline_table),
+                                               pipelines[i]);
         if (!ptr)
             continue;
             
@@ -4067,10 +4095,16 @@ void mglBindProgramPipeline(GLMContext ctx, GLuint pipeline)
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_PROGRAM);
         return;
     }
-    
-    ProgramPipeline *ptr = getProgramPipeline(ctx, pipeline);
+
+    ProgramPipeline *ptr = ensureProgramPipeline(ctx, pipeline);
+    if (!ptr)
+    {
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        return;
+    }
+
     STATE(program_pipeline) = ptr;
-    STATE(var.program_pipeline_binding) = ptr ? pipeline : 0;
+    STATE(var.program_pipeline_binding) = pipeline;
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_PROGRAM);
 }
 
@@ -4078,7 +4112,7 @@ void mglBindProgramPipeline(GLMContext ctx, GLuint pipeline)
  * no program is bound with UseProgram (§7.6.1). */
 void mglActiveShaderProgram(GLMContext ctx, GLuint pipeline, GLuint program)
 {
-    ProgramPipeline *pipe_ptr = findProgramPipeline(ctx, pipeline);
+    ProgramPipeline *pipe_ptr = ensureProgramPipeline(ctx, pipeline);
     if (!pipe_ptr)
     {
         mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
@@ -4111,7 +4145,7 @@ void mglActiveShaderProgram(GLMContext ctx, GLuint pipeline, GLuint program)
 
 void mglUseProgramStages(GLMContext ctx, GLuint pipeline, GLbitfield stages, GLuint program)
 {
-    ProgramPipeline *pipe_ptr = findProgramPipeline(ctx, pipeline);
+    ProgramPipeline *pipe_ptr = ensureProgramPipeline(ctx, pipeline);
     if (!pipe_ptr)
     {
         mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);

@@ -378,6 +378,51 @@ GLenum mglTextureQueryInternalFormat(const Texture *tex)
     return tex->internalformat;
 }
 
+/* TEXTURE_BUFFER has no mip faces. Level must be 0 (GL 4.6 §8.11).
+ * Returns 1 if answered, -1 if *err is set, 0 if caller should continue. */
+int mglTryTexBufferLevelParameter(const Texture *tex, GLint level, GLenum pname,
+                                  GLint *params, GLenum *err)
+{
+    if (!tex || tex->target != GL_TEXTURE_BUFFER || !params)
+        return 0;
+    if (level != 0) {
+        if (err)
+            *err = GL_INVALID_VALUE;
+        return -1;
+    }
+    switch (pname) {
+        case GL_TEXTURE_BUFFER_DATA_STORE_BINDING:
+            *params = tex->texture_buffer ? (GLint)tex->texture_buffer->name : 0;
+            return 1;
+        case GL_TEXTURE_BUFFER_OFFSET:
+            *params = (GLint)tex->texture_buffer_offset;
+            return 1;
+        case GL_TEXTURE_BUFFER_SIZE:
+            if (tex->texture_buffer_whole && tex->texture_buffer) {
+                GLsizeiptr remaining =
+                    tex->texture_buffer->size - tex->texture_buffer_offset;
+                *params = remaining > 0 ? (GLint)remaining : 0;
+            } else {
+                *params = (GLint)tex->texture_buffer_size;
+            }
+            return 1;
+        case GL_TEXTURE_INTERNAL_FORMAT:
+            *params = (GLint)tex->internalformat;
+            return 1;
+        case GL_TEXTURE_WIDTH:
+            *params = (GLint)tex->width;
+            return 1;
+        case GL_TEXTURE_HEIGHT:
+            *params = (GLint)tex->height;
+            return 1;
+        case GL_TEXTURE_DEPTH:
+            *params = (GLint)tex->depth;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 GLint mglTextureQueryCompressedImageSize(const Texture *tex, GLint level)
 {
     GLenum fmt;
@@ -1703,6 +1748,18 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
     if (!tex)
     {
         *params = 0;        return;
+    }
+
+    {
+        GLenum tb_err = GL_NO_ERROR;
+        int tb = mglTryTexBufferLevelParameter(tex, level, pname, params, &tb_err);
+        if (tb < 0)
+        {
+            ERROR_RETURN(tb_err);
+            return;
+        }
+        if (tb > 0)
+            return;
     }
 
     if (level >= (GLint)tex->num_levels || !tex->faces[0].levels)

@@ -215,6 +215,7 @@ typedef struct Texture_t {
     Buffer  *texture_buffer;
     GLintptr texture_buffer_offset;
     GLsizeiptr texture_buffer_size;
+    GLboolean texture_buffer_whole;
     GLubyte *stencil_shadow;
     GLuint stencil_shadow_width;
     GLuint stencil_shadow_height;

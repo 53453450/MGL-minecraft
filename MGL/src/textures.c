@@ -75,6 +75,8 @@ extern bool mglTexLevelInternalFormatCompressed(GLint internalformat);
 extern GLint mglCompressedInternalFormatToSizedUncompressed(GLint internalformat);
 extern GLenum mglTextureQueryInternalFormat(const Texture *tex);
 extern GLint mglTextureQueryCompressedImageSize(const Texture *tex, GLint level);
+extern int mglTryTexBufferLevelParameter(const Texture *tex, GLint level, GLenum pname,
+                                         GLint *params, GLenum *err);
 
 /* Spec default image-unit state: name=0, level=0, layered=FALSE, layer=0,
  * access=GL_READ_ONLY, format=GL_R8. */
@@ -6903,6 +6905,7 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
         tex->texture_buffer = NULL;
         tex->texture_buffer_offset = 0;
         tex->texture_buffer_size = 0;
+        tex->texture_buffer_whole = GL_FALSE;
         tex->internalformat = internalformat;
         tex->width = 0;
         tex->height = 1;
@@ -6981,6 +6984,7 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
     tex->texture_buffer = buf;
     tex->texture_buffer_offset = offset;
     tex->texture_buffer_size = attach_size;
+    tex->texture_buffer_whole = whole_buffer ? GL_TRUE : GL_FALSE;
     tex->internalformat = internalformat;
     tex->width = (GLuint)((size_t)attach_size / bytes_per_texel);
     tex->height = 1;
@@ -7077,6 +7081,17 @@ void mglGetTextureLevelParameteriv(GLMContext ctx, GLuint texture, GLint level, 
     if (!tex) {
         *params = 0;
         return;
+    }
+
+    {
+        GLenum tb_err = GL_NO_ERROR;
+        int tb = mglTryTexBufferLevelParameter(tex, level, pname, params, &tb_err);
+        if (tb < 0) {
+            ERROR_RETURN(tb_err);
+            return;
+        }
+        if (tb > 0)
+            return;
     }
 
     if (level >= (GLint)tex->num_levels || !tex->faces[0].levels) {

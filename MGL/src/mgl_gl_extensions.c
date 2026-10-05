@@ -222,6 +222,7 @@ TransformFeedback *findTransformFeedback(GLMContext ctx, GLuint name);
 TransformFeedback *getTransformFeedback(GLMContext ctx, GLuint name);
 Program *findProgram(GLMContext ctx, GLuint program);
 ProgramPipeline *findProgramPipeline(GLMContext ctx, GLuint pipeline);
+ProgramPipeline *getProgramPipeline(GLMContext ctx, GLuint pipeline);
 GLboolean mglProgramPipelinePerVertexCompatible(Program *const *stage_programs);
 
 // Forward declaration for texture lookup from textures.c
@@ -2775,6 +2776,9 @@ void mglCreateProgramPipelines(GLMContext ctx, GLsizei n, GLuint *pipelines)
 	for (GLsizei i = 0; i < n; i++)
 	{
 		mglGenProgramPipelines(ctx, 1, &pipelines[i]);
+		ProgramPipeline *ptr = getProgramPipeline(ctx, pipelines[i]);
+		if (ptr)
+			ptr->created = GL_TRUE;
 	}
 }
 
@@ -2813,6 +2817,23 @@ void mglCreateQueries(GLMContext ctx, GLenum target, GLsizei n, GLuint *ids)
 
 GLuint  mglCreateShaderProgramv(GLMContext ctx, GLenum type, GLsizei count, const GLchar *const*strings)
 {
+	switch (type) {
+		case GL_VERTEX_SHADER:
+		case GL_FRAGMENT_SHADER:
+		case GL_GEOMETRY_SHADER:
+		case GL_TESS_CONTROL_SHADER:
+		case GL_TESS_EVALUATION_SHADER:
+		case GL_COMPUTE_SHADER:
+			break;
+		default:
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
+			return 0;
+	}
+	if (count < 0) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		return 0;
+	}
+
 	GLuint shader = mglCreateShader(ctx, type);
 	if (!shader)
 		return 0;
@@ -4528,10 +4549,11 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 
 void mglGetProgramPipelineInfoLog(GLMContext ctx, GLuint pipeline, GLsizei bufSize, GLsizei *length, GLchar *infoLog)
 {
-	ProgramPipeline *pp = findProgramPipeline(ctx, pipeline);
+	ProgramPipeline *pp =
+		(ProgramPipeline *)searchHashTable(&STATE(program_pipeline_table), pipeline);
 	if (!pp)
 	{
-		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (bufSize < 0)
@@ -4546,7 +4568,8 @@ void mglGetProgramPipelineInfoLog(GLMContext ctx, GLuint pipeline, GLsizei bufSi
 
 void mglGetProgramPipelineiv(GLMContext ctx, GLuint pipeline, GLenum pname, GLint *params)
 {
-	ProgramPipeline *pp = findProgramPipeline(ctx, pipeline);
+	ProgramPipeline *pp =
+		(ProgramPipeline *)searchHashTable(&STATE(program_pipeline_table), pipeline);
 	if (!params)
 	{
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
@@ -6580,6 +6603,11 @@ void mglProgramParameteri(GLMContext ctx, GLuint program, GLenum pname, GLint va
 	switch (pname)
 	{
 		case GL_PROGRAM_SEPARABLE:
+			if (value != GL_FALSE && value != GL_TRUE)
+			{
+				mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+				return;
+			}
 			pptr->program_separable = value ? GL_TRUE : GL_FALSE;
 			break;
 		case GL_PROGRAM_BINARY_RETRIEVABLE_HINT:
@@ -7232,13 +7260,30 @@ void mglValidateProgram(GLMContext ctx, GLuint program)
 
 void mglValidateProgramPipeline(GLMContext ctx, GLuint pipeline)
 {
-	ProgramPipeline *pp = findProgramPipeline(ctx, pipeline);
+	ProgramPipeline *pp =
+		(ProgramPipeline *)searchHashTable(&STATE(program_pipeline_table), pipeline);
 	if (!pp)
 	{
-		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
-	pp->validated = mglProgramPipelinePerVertexCompatible(pp->stage_programs);
+
+	GLboolean ok = GL_TRUE;
+	int attached = 0;
+	for (int s = 0; s < _MAX_SHADER_TYPES; s++)
+	{
+		Program *prog = pp->stage_programs[s];
+		if (!prog)
+			continue;
+		attached++;
+		if (!prog->link_success || !prog->linked_program_separable)
+			ok = GL_FALSE;
+	}
+	if (attached == 0)
+		ok = GL_FALSE;
+	else if (ok)
+		ok = mglProgramPipelinePerVertexCompatible(pp->stage_programs);
+	pp->validated = ok;
 }
 
 void mglVertexAttrib1d(GLMContext ctx, GLuint index, GLdouble x)

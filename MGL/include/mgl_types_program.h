@@ -418,6 +418,8 @@ typedef struct Program_t {
     uint64_t pipeline_cache_instance_id;
     uint64_t pipeline_cache_generation;
     GLboolean program_separable;
+    /* Latched at successful link (GL 4.6 table 23.32 / CTS PipelineApi). */
+    GLboolean linked_program_separable;
     BufferBaseTarget plain_uniform_buffers[MAX_PLAIN_UNIFORM_LOCATIONS];
     /* Active-binding bitmap for plain_uniform_buffers: bit i is set iff
      * plain_uniform_buffers[i].buf != NULL. */
@@ -525,6 +527,7 @@ static inline void mglProgramPlainUniformSetActive(Program *program, GLuint inde
 
 typedef struct ProgramPipeline_t {
     GLuint name;
+    GLboolean created;
     GLboolean validated;
     Program *stage_programs[_MAX_SHADER_TYPES];  // Programs attached to each stage
     Program *active_program;  // ActiveShaderProgram target for Uniform*; retained
