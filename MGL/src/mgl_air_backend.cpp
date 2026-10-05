@@ -9478,6 +9478,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     std::map<std::string, const MGLIRType *> callerIR =
                         cg.localIRTypes;
                     std::set<std::string> wroteBack;
+                    std::set<std::string> localsBeforeCall;
+                    for (const auto &kv : ilocals)
+                        localsBeforeCall.insert(kv.first);
                     for (uint32_t a = 0; a < fd->param_count &&
                                         a < e->u.call.arg_count; a++) {
                         MGLDecl *pd = fd->params[a];
@@ -9611,29 +9614,50 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                  pd->type->base == MGL_AST_TYPE_STRUCT)
                             cg.localIRTypes.erase(pd->name);
                     }
+                    /* Callee locals that shadow a name (e.g. bool result vs
+                     * out vec4 result) must restore the caller SSA.  Shader
+                     * globals — including freestanding temps like Ambient
+                     * and stage outs like color — share storage across the
+                     * call and must keep the callee's writes (CTS
+                     * buffer_objects.triangles lighting). */
+                    std::set<std::string> calleeLocalNames;
+                    for (const auto &kv : ilocals) {
+                        if (!localsBeforeCall.count(kv.first))
+                            calleeLocalNames.insert(kv.first);
+                    }
+                    auto isModuleGlobal = [&](const std::string &n) {
+                        const MGLIRSymbol *s = findSymbol(mod, n.c_str());
+                        return s && !s->is_function;
+                    };
                     for (const auto &kv : callerLvalues) {
-                        if (!wroteBack.count(kv.first))
+                        if (wroteBack.count(kv.first)) continue;
+                        if (calleeLocalNames.count(kv.first) ||
+                            !isModuleGlobal(kv.first))
                             cg.lvalues[kv.first] = kv.second;
                     }
                     for (auto it = cg.lvalues.begin();
                          it != cg.lvalues.end();) {
-                        if (!callerLvalues.count(it->first) &&
-                            !wroteBack.count(it->first))
-                            it = cg.lvalues.erase(it);
-                        else
+                        if (callerLvalues.count(it->first) ||
+                            wroteBack.count(it->first) ||
+                            isModuleGlobal(it->first))
                             ++it;
+                        else
+                            it = cg.lvalues.erase(it);
                     }
                     for (const auto &kv : callerIR) {
-                        if (!wroteBack.count(kv.first))
+                        if (wroteBack.count(kv.first)) continue;
+                        if (calleeLocalNames.count(kv.first) ||
+                            !isModuleGlobal(kv.first))
                             cg.localIRTypes[kv.first] = kv.second;
                     }
                     for (auto it = cg.localIRTypes.begin();
                          it != cg.localIRTypes.end();) {
-                        if (!callerIR.count(it->first) &&
-                            !wroteBack.count(it->first))
-                            it = cg.localIRTypes.erase(it);
-                        else
+                        if (callerIR.count(it->first) ||
+                            wroteBack.count(it->first) ||
+                            isModuleGlobal(it->first))
                             ++it;
+                        else
+                            it = cg.localIRTypes.erase(it);
                     }
                     if (cg.err == 1) return nullptr;
                     /* Helper return ends the inlined body, not the caller. */
