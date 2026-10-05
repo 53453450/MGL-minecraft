@@ -4220,12 +4220,17 @@ void mglUseProgramStages(GLMContext ctx, GLuint pipeline, GLbitfield stages, GLu
      * independent reference: retain the new program BEFORE releasing the
      * old one so re-attaching a program that is already in a slot (or is
      * the only reference keeping it alive) does not free it mid-op. */
+    /* GL 4.6 §7.4: a specified stage with no shader in program is
+     * disabled (unbound), not attached to a program that lacks it. */
 #define MGL_REPLACE_STAGE_SLOT(slot)                                         \
     do {                                                                     \
+        Program *_new = prog_ptr;                                            \
+        if (_new && !_new->shader_slots[(slot)])                             \
+            _new = NULL;                                                     \
         Program *_old = pipe_ptr->stage_programs[(slot)];                    \
-        if (prog_ptr)                                                        \
-            mglRetainProgramReference(ctx, prog_ptr);                        \
-        pipe_ptr->stage_programs[(slot)] = prog_ptr;                         \
+        if (_new)                                                            \
+            mglRetainProgramReference(ctx, _new);                            \
+        pipe_ptr->stage_programs[(slot)] = _new;                             \
         if (_old)                                                            \
             mglReleaseProgramReference(ctx, _old);                           \
     } while (0)

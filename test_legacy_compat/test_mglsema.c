@@ -694,15 +694,23 @@ static void test_constructors(void)
             "    mat3 a = mat3(vec3(1.0), vec3(2.0));\n"
             "}\n");
     CHECK(error_count == 1, "mat3 from 2 columns rejected");
-    CHECK(has_error("expects 3 column vector(s)"), "column count message");
+    CHECK(has_error("expected 9"), "component count message");
     teardown();
 
     analyze("#version 450 core\n"
             "void main() {\n"
             "    mat3 a = mat3(vec2(1.0), vec2(2.0), vec2(3.0));\n"
             "}\n");
-    CHECK(error_count == 1, "mat3 from vec2 columns rejected");
-    CHECK(has_error("must be a vec3"), "column dimension message");
+    CHECK(error_count == 1, "mat3 from 6 components rejected");
+    CHECK(has_error("expected 9"), "short matrix ctor message");
+    teardown();
+
+    analyze("#version 450 core\n"
+            "void main() {\n"
+            "    mat2x3 a = mat2x3(vec2(1.0), vec2(2.0), vec2(3.0));\n"
+            "    mat3x2 b = mat3x2(vec3(1.0), vec3(2.0));\n"
+            "}\n");
+    CHECK(error_count == 0, "non-square matrix component ctors clean");
     teardown();
 }
 

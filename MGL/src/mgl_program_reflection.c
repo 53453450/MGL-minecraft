@@ -137,6 +137,27 @@ GLboolean mglProgramPipelinePerVertexCompatible(
     return GL_TRUE;
 }
 
+GLboolean mglProgramPipelineHasOrphanedLinkedStages(
+    Program *const *stage_programs)
+{
+    if (!stage_programs) {
+        return GL_FALSE;
+    }
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        Program *program = stage_programs[stage];
+        if (!program) {
+            continue;
+        }
+        for (int other = 0; other < _MAX_SHADER_TYPES; other++) {
+            if (program->shader_slots[other] &&
+                stage_programs[other] != program) {
+                return GL_TRUE;
+            }
+        }
+    }
+    return GL_FALSE;
+}
+
 GLboolean mglLinkedProgramPerVertexCompatible(Program *program)
 {
     Program *stages[_MAX_SHADER_TYPES] = {0};

@@ -505,24 +505,15 @@ bool validate_program(GLMContext ctx, GLenum mode)
         }
     }
 
-    /* GL 4.6 §11.4: a draw issued while a program pipeline without an
-     * active vertex shader stage is bound (and any graphics stage is
-     * present) generates INVALID_OPERATION. */
+    /* GL 4.6 §7.4: missing pipeline stages are undefined, no error.
+     * A program linked with extra stages that are not all bound to that
+     * same program is INVALID_OPERATION on a vertex-transferring command. */
     if (!program && st && !st->program_name) {
         ProgramPipeline *pipeline = st->program_pipeline;
-        if (pipeline) {
-            bool has_vs = pipeline->stage_programs[_VERTEX_SHADER] != NULL;
-            bool has_any_graphics =
-                pipeline->stage_programs[_TESS_CONTROL_SHADER] != NULL ||
-                pipeline->stage_programs[_TESS_EVALUATION_SHADER] != NULL ||
-                pipeline->stage_programs[_GEOMETRY_SHADER] != NULL ||
-                pipeline->stage_programs[_FRAGMENT_SHADER] != NULL;
-            if (!has_vs && has_any_graphics) {
-                fprintf(stderr,
-                        "MGL WARNING: draw rejected: bound program pipeline "
-                        "has no active vertex shader\n");
-                return false;
-            }
+        if (pipeline &&
+            mglProgramPipelineHasOrphanedLinkedStages(
+                pipeline->stage_programs)) {
+            return false;
         }
     }
 

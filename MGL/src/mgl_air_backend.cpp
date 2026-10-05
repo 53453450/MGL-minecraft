@@ -7018,38 +7018,76 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     }
                     arr = cg.b->CreateInsertValue(arr, col, c);
                 }
-            } else if (e->u.call.arg_count == (uint32_t)(mcols * mrows)) {
-                /* Scalar list: column-major fill (defensive; sema prefers
-                 * vector columns). */
-                uint32_t a = 0;
+            } else {
+                /* GLSL 4.60 §5.4.2: scalars/vectors/matrices fill
+                 * column-major until cols*rows components are set. */
+                uint32_t need = mcols * mrows;
+                llvm::SmallVector<llvm::Value *, 16> comps;
+                for (uint32_t a = 0;
+                     a < e->u.call.arg_count && comps.size() < need; a++) {
+                    llvm::Value *arg = emitExpr(cg, e->u.call.args[a],
+                                                mod, locals);
+                    if (!arg) return nullptr;
+                    auto pushf = [&](llvm::Value *x) {
+                        comps.push_back(
+                            coerceScalar(cg, x, MGLIR_SCALAR_FLOAT));
+                    };
+                    if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
+                            arg->getType())) {
+                        uint32_t ncols = (uint32_t)arrTy->getNumElements();
+                        llvm::Type *colElt = arrTy->getElementType();
+                        uint32_t nrows = 1;
+                        if (auto *cv =
+                                llvm::dyn_cast<llvm::FixedVectorType>(colElt))
+                            nrows = (uint32_t)cv->getNumElements();
+                        for (uint32_t oc = 0;
+                             oc < ncols && comps.size() < need; oc++) {
+                            llvm::Value *ocol =
+                                cg.b->CreateExtractValue(arg, oc);
+                            if (ocol->getType()->isVectorTy()) {
+                                for (uint32_t r = 0;
+                                     r < nrows && comps.size() < need; r++) {
+                                    pushf(cg.b->CreateExtractElement(
+                                        ocol,
+                                        llvm::ConstantInt::get(
+                                            llvm::Type::getInt32Ty(*cg.ctx),
+                                            r)));
+                                }
+                            } else {
+                                pushf(ocol);
+                            }
+                        }
+                    } else if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(
+                                   arg->getType())) {
+                        uint32_t lanes =
+                            (uint32_t)vt->getNumElements();
+                        for (uint32_t lane = 0;
+                             lane < lanes && comps.size() < need; lane++) {
+                            pushf(cg.b->CreateExtractElement(
+                                arg,
+                                llvm::ConstantInt::get(
+                                    llvm::Type::getInt32Ty(*cg.ctx), lane)));
+                        }
+                    } else {
+                        pushf(arg);
+                    }
+                }
+                if (comps.size() < need) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: constructor '") +
+                                name + "' component mismatch";
+                    return nullptr;
+                }
+                uint32_t k = 0;
                 for (uint32_t c = 0; c < mcols; c++) {
                     llvm::Value *col = llvm::UndefValue::get(colTy);
-                    for (uint32_t r = 0; r < mrows; r++, a++) {
-                        llvm::Value *arg = emitExpr(cg, e->u.call.args[a],
-                                                    mod, locals);
-                        if (!arg) return nullptr;
-                        arg = coerceScalar(cg, arg, MGLIR_SCALAR_FLOAT);
-                        col = cg.b->CreateInsertElement(col, arg,
+                    for (uint32_t r = 0; r < mrows; r++, k++) {
+                        col = cg.b->CreateInsertElement(
+                            col, comps[k],
                             llvm::ConstantInt::get(
                                 llvm::Type::getInt32Ty(*cg.ctx), r));
                     }
                     arr = cg.b->CreateInsertValue(arr, col, c);
-                }
-            } else {
-                /* Vector columns: matN(vecN, ...). */
-                uint32_t c = 0;
-                for (uint32_t a = 0; a < e->u.call.arg_count; a++, c++) {
-                    llvm::Value *arg = emitExpr(cg, e->u.call.args[a],
-                                                mod, locals);
-                    if (!arg) return nullptr;
-                    arg = coerceScalar(cg, arg, MGLIR_SCALAR_FLOAT);
-                    if (!arg->getType()->isVectorTy() || c >= mcols) {
-                        cg.err = 1;
-                        cg.errmsg = std::string("codegen: constructor '") +
-                                    name + "' column mismatch";
-                        return nullptr;
-                    }
-                    arr = cg.b->CreateInsertValue(arr, arg, c);
                 }
             }
             return arr;

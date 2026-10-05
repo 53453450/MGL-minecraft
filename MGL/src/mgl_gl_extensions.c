@@ -224,6 +224,7 @@ Program *findProgram(GLMContext ctx, GLuint program);
 ProgramPipeline *findProgramPipeline(GLMContext ctx, GLuint pipeline);
 ProgramPipeline *getProgramPipeline(GLMContext ctx, GLuint pipeline);
 GLboolean mglProgramPipelinePerVertexCompatible(Program *const *stage_programs);
+GLboolean mglProgramPipelineHasOrphanedLinkedStages(Program *const *stage_programs);
 
 // Forward declaration for texture lookup from textures.c
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
@@ -6030,15 +6031,6 @@ void mglGetUniformSubroutineuiv(GLMContext ctx, GLenum shadertype, GLint locatio
 	(void)ctx;
 }
 
-void mglGetUniformuiv(GLMContext ctx, GLuint program, GLint location, GLuint *params)
-{
-	GLint tmp = 0;
-	if (!params)
-		return;
-	mglGetUniformiv(ctx, program, location, &tmp);
-	*params = (GLuint)tmp;
-}
-
 void mglGetVertexAttribIiv(GLMContext ctx, GLuint index, GLenum pname, GLint *params)
 {
 	ERROR_CHECK_RETURN(params, GL_INVALID_VALUE);
@@ -6625,11 +6617,21 @@ void mglProgramParameteri(GLMContext ctx, GLuint program, GLenum pname, GLint va
 	}
 }
 
-static GLboolean mgl_program_uniform_begin(GLMContext ctx, GLuint program, Program **saved_program)
+typedef struct MGLProgramUniformSaved {
+	Program *program;
+	GLuint program_name;
+	ProgramPipeline *pipeline;
+} MGLProgramUniformSaved;
+
+/* ProgramUniform writes the named object (GL 4.6 §7.6.1), not CURRENT_PROGRAM
+ * or the pipeline ACTIVE_PROGRAM. Swap those bindings for the Uniform* call
+ * without UseProgram so TF-active and pipeline state stay put. */
+static GLboolean mgl_program_uniform_begin(GLMContext ctx, GLuint program,
+                                          MGLProgramUniformSaved *saved)
 {
 	Program *target;
 
-	if (!saved_program)
+	if (!saved)
 		return GL_FALSE;
 
 	target = findProgram(ctx, program);
@@ -6644,29 +6646,34 @@ static GLboolean mgl_program_uniform_begin(GLMContext ctx, GLuint program, Progr
 		return GL_FALSE;
 	}
 
-	*saved_program = STATE(program);
-	if (STATE(program) != target)
-		mglUseProgram(ctx, program);
+	saved->program = STATE(program);
+	saved->program_name = STATE(program_name);
+	saved->pipeline = STATE(program_pipeline);
+	STATE(program) = target;
+	STATE(program_name) = program;
+	STATE(program_pipeline) = NULL;
 	return GL_TRUE;
 }
 
-static void mgl_program_uniform_end(GLMContext ctx, Program *saved_program)
+static void mgl_program_uniform_end(GLMContext ctx,
+                                   const MGLProgramUniformSaved *saved)
 {
-	if (STATE(program) != saved_program)
-	{
-		GLuint restore_program = saved_program ? saved_program->name : 0;
-		mglUseProgram(ctx, restore_program);
-	}
+	if (!saved)
+		return;
+	STATE(program) = saved->program;
+	STATE(program_name) = saved->program_name;
+	STATE(program_pipeline) = saved->pipeline;
 }
 
 #define DEFINE_PROGRAM_UNIFORM_FORWARD(_suffix, _decl, ...) \
 void mglProgramUniform##_suffix _decl \
 { \
-	Program *saved_program = NULL; \
-	if (!mgl_program_uniform_begin(ctx, program, &saved_program)) \
+	MGLProgramUniformSaved saved; \
+	memset(&saved, 0, sizeof(saved)); \
+	if (!mgl_program_uniform_begin(ctx, program, &saved)) \
 		return; \
 	mglUniform##_suffix(ctx, __VA_ARGS__); \
-	mgl_program_uniform_end(ctx, saved_program); \
+	mgl_program_uniform_end(ctx, &saved); \
 }
 
 DEFINE_PROGRAM_UNIFORM_FORWARD(1d, (GLMContext ctx, GLuint program, GLint location, GLdouble v0), location, v0)
@@ -7290,6 +7297,8 @@ void mglValidateProgramPipeline(GLMContext ctx, GLuint pipeline)
 		ok = GL_FALSE;
 	else if (ok)
 		ok = mglProgramPipelinePerVertexCompatible(pp->stage_programs);
+	if (ok && mglProgramPipelineHasOrphanedLinkedStages(pp->stage_programs))
+		ok = GL_FALSE;
 	pp->validated = ok;
 }
 

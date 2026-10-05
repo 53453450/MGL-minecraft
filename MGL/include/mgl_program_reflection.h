@@ -24,6 +24,10 @@ GLboolean mglProgramPerVertexSignature(Program *program, int stage,
                                        unsigned *signature);
 GLboolean mglProgramPipelinePerVertexCompatible(
     Program *const *stage_programs);
+/* GL 4.6 §7.4: a program used by a pipeline must have every linked
+ * graphics/compute stage also bound to that same program. */
+GLboolean mglProgramPipelineHasOrphanedLinkedStages(
+    Program *const *stage_programs);
 GLboolean mglLinkedProgramPerVertexCompatible(Program *program);
 
 void applyMultiDimArrayUniformNames(Program *program);

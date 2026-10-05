@@ -2548,32 +2548,44 @@ static int check_constructor(Sema *s, uint32_t line, const char *tname,
                        ir_type_str(ats[0], (char[64]){0}, 64));
             return 0;
         }
-        if (argc == c * r) {
-            /* Scalar list: column-major fill (GLSL 4.60 5.4.2). */
-            for (uint32_t i = 0; i < argc; i++) {
-                if (!ats[i] || ats[i]->kind != MGLIR_TYPE_SCALAR ||
-                    !constructor_scalar_convert(ats[i], t->scalar)) {
-                    sema_error(s, line, "constructor 'mat%ux%u' argument %u "
-                               "must be a scalar convertible to %s", c, r,
-                               i + 1, ir_type_str(t, (char[64]){0}, 64));
-                    return 0;
-                }
-            }
-            return 1;
-        }
-        if (argc != c) {
-            sema_error(s, line, "constructor 'mat%ux%u' expects %u column "
-                       "vector(s), got %u", c, r, c, argc);
-            return 0;
-        }
+        /* GLSL 4.60 §5.4.2: remaining constructors consume scalars/vectors
+         * (and matrices) left to right until cols*rows components are
+         * filled.  Column-vector form matCxR(vecR × C) is just one case. */
+        uint32_t need = c * r;
+        uint32_t total = 0;
         for (uint32_t i = 0; i < argc; i++) {
-            if (!ats[i] || ats[i]->kind != MGLIR_TYPE_VECTOR ||
-                ats[i]->cols != r) {
+            int ncomp = ats[i] ? constructor_components(ats[i]) : -1;
+            if (ncomp < 0) {
                 sema_error(s, line,
-                           "constructor 'mat%ux%u' column %u must be a vec%u",
-                           c, r, i + 1, r);
+                           "cannot construct 'mat%ux%u' from a %s argument",
+                           c, r,
+                           ats[i] ? ir_type_str(ats[i], (char[64]){0}, 64)
+                                  : "?");
                 return 0;
             }
+            if (total >= need) {
+                sema_error(s, line,
+                           "constructor 'mat%ux%u' has unused extra arguments",
+                           c, r);
+                return 0;
+            }
+            if (!constructor_scalar_convert(ats[i], t->scalar)) {
+                char sa[64], sb[64];
+                sema_error(s, line,
+                           "constructor 'mat%ux%u' argument %u: %s not "
+                           "convertible to %s",
+                           c, r, i + 1, ir_type_str(ats[i], sa, sizeof(sa)),
+                           ir_type_str(t, sb, sizeof(sb)));
+                return 0;
+            }
+            total += (uint32_t)ncomp;
+        }
+        if (total < need) {
+            sema_error(s, line,
+                       "constructor 'mat%ux%u' from %u component(s), "
+                       "expected %u",
+                       c, r, total, need);
+            return 0;
         }
         return 1;
     }

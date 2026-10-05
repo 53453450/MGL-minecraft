@@ -2378,6 +2378,39 @@ void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *para
     }
 }
 
+void mglGetUniformuiv(GLMContext ctx, GLuint program, GLint location, GLuint *params)
+{
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr || !ptr->link_success) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (!params) {
+        return;
+    }
+
+    uint32_t bits[16];
+    GLboolean is_float = GL_TRUE;
+    GLuint comps = mglReadPlainUniform(ptr, location, bits, &is_float);
+    if (comps == 0) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    for (GLuint i = 0; i < comps; i++) {
+        if (is_float) {
+            GLfloat f;
+            memcpy(&f, &bits[i], sizeof(f));
+            params[i] = (GLuint)(f >= 0.0f ? f + 0.5f : 0.0f);
+        } else {
+            params[i] = bits[i];
+        }
+    }
+}
+
 
 void mglGetUniformIndices(GLMContext ctx, GLuint program, GLsizei uniformCount, const GLchar *const*uniformNames, GLuint *uniformIndices)
 {
