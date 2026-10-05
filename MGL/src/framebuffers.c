@@ -2524,6 +2524,11 @@ void mglFramebufferRenderbuffer(GLMContext ctx, GLenum target, GLenum attachment
     fbo = currentFBOForType(ctx, target);
     mglFlushPendingDraws(ctx);
 
+    if (renderbuffertarget != GL_RENDERBUFFER) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
     switch(attachment)
     {
         case GL_DEPTH_ATTACHMENT:
@@ -2547,12 +2552,12 @@ void mglFramebufferRenderbuffer(GLMContext ctx, GLenum target, GLenum attachment
                 break;
             }
 
-            fprintf(stderr,
-                    "MGL ERROR: mglFramebufferRenderbuffer invalid attachment=0x%x maxColor=%u target=0x%x renderbuffer=%u\n",
-                    attachment,
-                    STATE(max_color_attachments),
-                    target,
-                    renderbuffer);
+            /* COLOR_ATTACHMENTm beyond MAX → OPERATION; else ENUM. */
+            if (attachment >= GL_COLOR_ATTACHMENT0 &&
+                attachment <= GL_COLOR_ATTACHMENT31) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
             ERROR_RETURN(GL_INVALID_ENUM);
             return;
         }
@@ -2975,6 +2980,15 @@ void getFramebufferAttachmentParameteriv(GLMContext ctx, GLuint framebuffer, GLe
         GLenum object_type = GL_NONE;
         GLenum attachment_target;
 
+        /* COLOR_ATTACHMENTm with m >= MAX_COLOR_ATTACHMENTS → OPERATION;
+         * other unknown attachment points → ENUM. */
+        if (attachment >= GL_COLOR_ATTACHMENT0 &&
+            attachment <= GL_COLOR_ATTACHMENT31 &&
+            !mglColorAttachmentIndex(ctx, attachment, NULL)) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
         fbo_attachment_ptr = getFBOAttachment(ctx, fbo, attachment);
 
         if (fbo_attachment_ptr == NULL)
@@ -3026,6 +3040,23 @@ void getFramebufferAttachmentParameteriv(GLMContext ctx, GLuint framebuffer, GLe
         }
 
         GLenum internalformat = tex ? tex->internalformat : 0u;
+
+        /* GL 4.6 §9.2.3: with OBJECT_TYPE NONE only TYPE/NAME are legal;
+         * texture-level queries are invalid for RENDERBUFFER attachments. */
+        if (object_type == GL_NONE &&
+            pname != GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE &&
+            pname != GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+        if (object_type == GL_RENDERBUFFER &&
+            (pname == GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL ||
+             pname == GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE ||
+             pname == GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER ||
+             pname == GL_FRAMEBUFFER_ATTACHMENT_LAYERED)) {
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+        }
 
         switch(pname)
         {
@@ -4069,19 +4100,26 @@ void mglGetNamedFramebufferParameteriv(GLMContext ctx, GLuint framebuffer, GLenu
 
     switch (pname) {
         case GL_FRAMEBUFFER_DEFAULT_WIDTH:
-            *param = fbo ? fbo->default_width : 0;
-            break;
         case GL_FRAMEBUFFER_DEFAULT_HEIGHT:
-            *param = fbo ? fbo->default_height : 0;
-            break;
         case GL_FRAMEBUFFER_DEFAULT_LAYERS:
-            *param = fbo ? fbo->default_layers : 0;
-            break;
         case GL_FRAMEBUFFER_DEFAULT_SAMPLES:
-            *param = fbo ? fbo->default_samples : 0;
-            break;
         case GL_FRAMEBUFFER_DEFAULT_FIXED_SAMPLE_LOCATIONS:
-            *param = fbo ? fbo->default_fixed_sample_locations : GL_TRUE;
+            /* Default FB only allows DOUBLEBUFFER / STEREO / SAMPLES /
+             * SAMPLE_BUFFERS / IMPLEMENTATION_COLOR_READ_*. */
+            if (!fbo) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+            if (pname == GL_FRAMEBUFFER_DEFAULT_WIDTH)
+                *param = fbo->default_width;
+            else if (pname == GL_FRAMEBUFFER_DEFAULT_HEIGHT)
+                *param = fbo->default_height;
+            else if (pname == GL_FRAMEBUFFER_DEFAULT_LAYERS)
+                *param = fbo->default_layers;
+            else if (pname == GL_FRAMEBUFFER_DEFAULT_SAMPLES)
+                *param = fbo->default_samples;
+            else
+                *param = fbo->default_fixed_sample_locations;
             break;
         case GL_DOUBLEBUFFER:
             *param = fbo ? GL_FALSE : GL_TRUE;
