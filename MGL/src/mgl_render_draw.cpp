@@ -141,7 +141,11 @@ int mglRenderIndexStreamFits(uint64_t offset, uint64_t count, uint32_t elem_byte
 }
 
 int mglRenderDrawModeNeedsEmulate(uint32_t mode) {
-    return mode == GL_TRIANGLE_FAN || mode == GL_LINE_LOOP || mode == GL_QUADS
+    return mode == GL_TRIANGLE_FAN || mode == GL_LINE_LOOP || mode == GL_QUADS ||
+                   mode == GL_LINES_ADJACENCY ||
+                   mode == GL_LINE_STRIP_ADJACENCY ||
+                   mode == GL_TRIANGLES_ADJACENCY ||
+                   mode == GL_TRIANGLE_STRIP_ADJACENCY
                ? 1
                : 0;
 }
@@ -1225,4 +1229,182 @@ int mglRenderExpandLineLoopIndices(
     *out_indices = dst;
     *out_count = need;
     return 0;
+}
+
+/* GL 4.6 §10.1.11–14 adjacency assembly with adjacent verts dropped. */
+static uint64_t mglAdjacencyCoreIndexCount(uint32_t mode, uint32_t count)
+{
+    switch (mode) {
+        case GL_LINES_ADJACENCY:
+            return (uint64_t)(count / 4u) * 2u;
+        case GL_LINE_STRIP_ADJACENCY:
+            return count >= 4u ? (uint64_t)(count - 3u) * 2u : 0u;
+        case GL_TRIANGLES_ADJACENCY:
+            return (uint64_t)(count / 6u) * 3u;
+        case GL_TRIANGLE_STRIP_ADJACENCY: {
+            if (count < 6u) {
+                return 0u;
+            }
+            const uint32_t usable = count & ~1u; /* drop odd trailing vertex */
+            if (usable < 6u) {
+                return 0u;
+            }
+            const uint32_t n = usable / 2u - 2u;
+            return (uint64_t)n * 3u;
+        }
+        default:
+            return 0u;
+    }
+}
+
+static int mglAdjacencyFillCoreIndices(
+    uint32_t mode, uint32_t count,
+    uint32_t (*read_index)(void *ctx, uint32_t i), void *ctx,
+    uint32_t *dst)
+{
+    uint32_t o = 0u;
+    switch (mode) {
+        case GL_LINES_ADJACENCY: {
+            const uint32_t n = count / 4u;
+            for (uint32_t i = 0u; i < n; i++) {
+                const uint32_t b = i * 4u;
+                dst[o++] = read_index(ctx, b + 1u);
+                dst[o++] = read_index(ctx, b + 2u);
+            }
+            return 0;
+        }
+        case GL_LINE_STRIP_ADJACENCY: {
+            const uint32_t n = count - 3u;
+            for (uint32_t i = 0u; i < n; i++) {
+                dst[o++] = read_index(ctx, i + 1u);
+                dst[o++] = read_index(ctx, i + 2u);
+            }
+            return 0;
+        }
+        case GL_TRIANGLES_ADJACENCY: {
+            const uint32_t n = count / 6u;
+            for (uint32_t i = 0u; i < n; i++) {
+                const uint32_t b = i * 6u;
+                dst[o++] = read_index(ctx, b + 0u);
+                dst[o++] = read_index(ctx, b + 2u);
+                dst[o++] = read_index(ctx, b + 4u);
+            }
+            return 0;
+        }
+        case GL_TRIANGLE_STRIP_ADJACENCY: {
+            const uint32_t usable = count & ~1u;
+            const uint32_t n = usable / 2u - 2u;
+            for (uint32_t i = 0u; i < n; i++) {
+                if (i & 1u) {
+                    dst[o++] = read_index(ctx, 2u * i + 2u);
+                    dst[o++] = read_index(ctx, 2u * i);
+                    dst[o++] = read_index(ctx, 2u * i + 4u);
+                } else {
+                    dst[o++] = read_index(ctx, 2u * i);
+                    dst[o++] = read_index(ctx, 2u * i + 2u);
+                    dst[o++] = read_index(ctx, 2u * i + 4u);
+                }
+            }
+            return 0;
+        }
+        default:
+            return -1;
+    }
+}
+
+static uint32_t mglAdjacencyReadSequential(void *ctx, uint32_t i)
+{
+    (void)ctx;
+    return i;
+}
+
+struct MGLAdjacencyElementReadCtx {
+    const uint8_t *bytes;
+    int width;
+};
+
+static uint32_t mglAdjacencyReadElement(void *ctx, uint32_t i)
+{
+    auto *c = static_cast<MGLAdjacencyElementReadCtx *>(ctx);
+    return MGLRenderReadIndexBytes(c->bytes, c->width, i);
+}
+
+extern "C"
+int mglRenderExpandAdjacencyArrayIndices(
+    uint32_t mode, uint32_t vertex_count,
+    uint32_t **out_indices, uint64_t *out_count)
+{
+    if (!out_indices || !out_count || !mglRenderEmulateAdjacency(mode)) {
+        return -1;
+    }
+    const uint64_t need = mglAdjacencyCoreIndexCount(mode, vertex_count);
+    if (need == 0u) {
+        *out_indices = nullptr;
+        *out_count = 0u;
+        return 0;
+    }
+    if (need > (uint64_t)(SIZE_MAX / sizeof(uint32_t))) {
+        return -1;
+    }
+    uint32_t *const dst = (uint32_t *)malloc((size_t)need * sizeof(uint32_t));
+    if (!dst) {
+        return -1;
+    }
+    if (mglAdjacencyFillCoreIndices(mode, vertex_count, mglAdjacencyReadSequential,
+                                    nullptr, dst) != 0) {
+        free(dst);
+        return -1;
+    }
+    *out_indices = dst;
+    *out_count = need;
+    return 0;
+}
+
+extern "C"
+int mglRenderExpandAdjacencyElementIndices(
+    uint32_t mode, const uint8_t *bytes, uint32_t elem_width, uint32_t count,
+    uint32_t **out_indices, uint64_t *out_count)
+{
+    if (!bytes || !out_indices || !out_count || !mglRenderEmulateAdjacency(mode) ||
+        (elem_width != 1u && elem_width != 2u && elem_width != 4u)) {
+        return -1;
+    }
+    const uint64_t need = mglAdjacencyCoreIndexCount(mode, count);
+    if (need == 0u) {
+        *out_indices = nullptr;
+        *out_count = 0u;
+        return 0;
+    }
+    if (need > (uint64_t)(SIZE_MAX / sizeof(uint32_t))) {
+        return -1;
+    }
+    uint32_t *const dst = (uint32_t *)malloc((size_t)need * sizeof(uint32_t));
+    if (!dst) {
+        return -1;
+    }
+    MGLAdjacencyElementReadCtx ctx = {
+        bytes, (elem_width == 1u) ? 1 : (elem_width == 2u ? 2 : 4)};
+    if (mglAdjacencyFillCoreIndices(mode, count, mglAdjacencyReadElement, &ctx,
+                                    dst) != 0) {
+        free(dst);
+        return -1;
+    }
+    *out_indices = dst;
+    *out_count = need;
+    return 0;
+}
+
+extern "C"
+uint32_t mglRenderAdjacencyMetalPrimitiveType(uint32_t mode)
+{
+    switch (mode) {
+        case GL_LINES_ADJACENCY:
+        case GL_LINE_STRIP_ADJACENCY:
+            return 1u; /* MTLPrimitiveTypeLine */
+        case GL_TRIANGLES_ADJACENCY:
+        case GL_TRIANGLE_STRIP_ADJACENCY:
+            return 3u; /* MTLPrimitiveTypeTriangle */
+        default:
+            return 0xFFFFFFFFu;
+    }
 }

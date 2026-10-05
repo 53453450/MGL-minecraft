@@ -128,6 +128,21 @@ int mglRenderExpandQuadElementLineIndices(
     const uint8_t *bytes, uint32_t elem_width, uint32_t quad_count,
     uint32_t **out_indices, uint64_t *out_count);
 
+/* Adjacency (no-GS) ARRAY emulation — GL 4.6 §10.1.11–14 core verts only.
+ * Pure CPU; caller frees. need==0 is success with a NULL buffer. */
+int mglRenderExpandAdjacencyArrayIndices(
+    uint32_t mode, uint32_t vertex_count,
+    uint32_t **out_indices, uint64_t *out_count);
+
+/* Adjacency (no-GS) ELEMENT emulation — same assembly over a source index
+ * stream. Pure CPU; caller frees. */
+int mglRenderExpandAdjacencyElementIndices(
+    uint32_t mode, const uint8_t *bytes, uint32_t elem_width, uint32_t count,
+    uint32_t **out_indices, uint64_t *out_count);
+
+/* Metal primitive type after adjacency core expansion (line/triangle list). */
+uint32_t mglRenderAdjacencyMetalPrimitiveType(uint32_t mode);
+
 uint32_t mglRenderResolveUploadSwizzlePixelFormat(
     uint32_t native, int single_ch, uint32_t single_fmt, int int_multi,
     uint32_t int_fmt, int stencil, uint32_t stencil_fmt, int ds_depth,

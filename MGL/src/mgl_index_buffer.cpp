@@ -204,6 +204,31 @@ MGLIndexMetalHandle mglNewQuadArrayLineIndexBuffer(
                         mglRenderExpandQuadArrayLineIndices, quads, out_count);
 }
 
+MGLIndexMetalHandle mglNewAdjacencyArrayIndexBuffer(
+    MGLIndexMetalHandle device, GLenum mode, size_t vertex_count,
+    size_t *out_count) {
+    if (out_count) *out_count = 0u;
+    if (!device || vertex_count > UINT32_MAX ||
+        !mglRenderEmulateAdjacency((uint32_t)mode)) {
+        return nullptr;
+    }
+    uint32_t *expanded = nullptr;
+    uint64_t count = 0;
+    if (mglRenderExpandAdjacencyArrayIndices(
+            (uint32_t)mode, (uint32_t)vertex_count, &expanded, &count) != 0) {
+        std::free(expanded);
+        return nullptr;
+    }
+    if (count == 0u) {
+        std::free(expanded);
+        return nullptr;
+    }
+    void *buffer = copyIndices(device, expanded, static_cast<size_t>(count));
+    std::free(expanded);
+    if (buffer && out_count) *out_count = static_cast<size_t>(count);
+    return buffer;
+}
+
 MGLIndexMetalHandle mglNewLineLoopArrayIndexBuffer(
     MGLIndexMetalHandle device, size_t first, size_t vertex_count,
     size_t *out_count) {
@@ -302,6 +327,33 @@ MGLIndexMetalHandle mglNewQuadElementLineIndexBuffer(
     uint64_t count = 0;
     if (mglRenderExpandQuadElementLineIndices(
             source, width, static_cast<uint32_t>(quads), &expanded, &count) != 0) {
+        std::free(expanded);
+        return nullptr;
+    }
+    void *buffer = copyIndices(device, expanded, static_cast<size_t>(count));
+    std::free(expanded);
+    if (buffer && out_count) *out_count = static_cast<size_t>(count);
+    return buffer;
+}
+
+MGLIndexMetalHandle mglNewAdjacencyElementIndexBuffer(
+    MGLIndexMetalHandle device, GLenum mode, const uint8_t *source, GLenum type,
+    size_t source_count, size_t *out_count) {
+    if (out_count) *out_count = 0u;
+    const uint32_t width = elementWidth(type);
+    if (!device || !source || width == 0u || source_count > UINT32_MAX ||
+        !mglRenderEmulateAdjacency((uint32_t)mode)) {
+        return nullptr;
+    }
+    uint32_t *expanded = nullptr;
+    uint64_t count = 0;
+    if (mglRenderExpandAdjacencyElementIndices(
+            (uint32_t)mode, source, width, (uint32_t)source_count, &expanded,
+            &count) != 0) {
+        std::free(expanded);
+        return nullptr;
+    }
+    if (count == 0u) {
         std::free(expanded);
         return nullptr;
     }

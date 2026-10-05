@@ -630,6 +630,9 @@ int mglRenderStopColorAttachmentScan(uint32_t next_index, uint32_t max,
 int mglRenderEmulateTriangleFan(uint32_t mode, int polygon_point);
 int mglRenderEmulateLineLoop(uint32_t mode);
 int mglRenderEmulateQuads(uint32_t mode, int polygon_point);
+/* GL 4.6 §10.1.11–14: adjacency modes without an active GS ignore
+ * adjacent vertices and emit the core line/triangle stream. */
+int mglRenderEmulateAdjacency(uint32_t mode);
 int mglRenderFilterIsNearest(uint32_t filter);
 uint32_t mglRenderNearestFilter(void);
 int mglRenderCPUFormatTypeForInternalFormat(uint32_t internalformat,

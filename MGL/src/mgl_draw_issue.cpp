@@ -293,8 +293,8 @@ static unsigned mglIssueProgramName(GLMContext ctx)
 static bool mglIssueIndirectNeedsCPUExpand(GLMContext ctx, GLenum mode)
 {
     return mode == GL_PATCHES || mode == GL_QUADS || mode == GL_LINE_LOOP ||
-           mode == GL_TRIANGLE_FAN || mglDrawHostHasGeometry(ctx) ||
-           mglDrawHostUsesCullDistance(ctx);
+           mode == GL_TRIANGLE_FAN || mglRenderEmulateAdjacency((uint32_t)mode) ||
+           mglDrawHostHasGeometry(ctx) || mglDrawHostUsesCullDistance(ctx);
 }
 
 static bool mglIssueIndirectElementsNeedCPUExpand(GLMContext ctx, GLenum mode,
@@ -389,6 +389,9 @@ static const char *mglIssueArraysIndirectPrepLabel(GLMContext ctx, GLenum mode)
     if (mode == GL_QUADS) {
         return "drawArraysIndirect.quads";
     }
+    if (mglRenderEmulateAdjacency((uint32_t)mode)) {
+        return "drawArraysIndirect.adjacency";
+    }
     if (mglDrawHostHasGeometry(ctx)) {
         return "drawArraysIndirect.geometry";
     }
@@ -408,6 +411,9 @@ static const char *mglIssueElementsIndirectPrepLabel(GLMContext ctx, GLenum mode
     }
     if (mode == GL_QUADS) {
         return "drawElementsIndirect.quads";
+    }
+    if (mglRenderEmulateAdjacency((uint32_t)mode)) {
+        return "drawElementsIndirect.adjacency";
     }
     if (mglDrawHostHasGeometry(ctx)) {
         return "drawElementsIndirect.geometry";
@@ -430,6 +436,9 @@ static const char *mglIssueMultiArraysIndirectPrepLabel(GLMContext ctx,
     if (mode == GL_QUADS) {
         return "multiDrawArraysIndirect.quads";
     }
+    if (mglRenderEmulateAdjacency((uint32_t)mode)) {
+        return "multiDrawArraysIndirect.adjacency";
+    }
     if (mglDrawHostHasGeometry(ctx)) {
         return "multiDrawArraysIndirect.geometry";
     }
@@ -450,6 +459,9 @@ static const char *mglIssueMultiElementsIndirectPrepLabel(GLMContext ctx,
     }
     if (mode == GL_QUADS) {
         return "multiDrawElementsIndirect.quads";
+    }
+    if (mglRenderEmulateAdjacency((uint32_t)mode)) {
+        return "multiDrawElementsIndirect.adjacency";
     }
     if (mglDrawHostHasGeometry(ctx)) {
         return "multiDrawElementsIndirect.geometry";

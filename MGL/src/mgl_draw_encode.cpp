@@ -141,6 +141,37 @@ static bool mglEncodeArrayTriangleFanTarget(void *renderEncoderOwner,
     return true;
 }
 
+static bool mglEncodeArrayAdjacencyTarget(void *renderEncoderOwner,
+                                          MGLDrawMetalHandle device,
+                                          GLenum mode,
+                                          GLsizei count,
+                                          GLint baseVertex,
+                                          size_t instanceCount,
+                                          size_t baseInstance,
+                                          const char *label)
+{
+    if (count <= 0) {
+        return true;
+    }
+    const uint32_t prim =
+        mglRenderAdjacencyMetalPrimitiveType((uint32_t)mode);
+    if (prim == 0xFFFFFFFFu) {
+        return false;
+    }
+    size_t adjIndexCount = 0u;
+    MGLDrawMetalHandle adjIndexBuffer = mglNewAdjacencyArrayIndexBuffer(
+        device, mode, (size_t)count, &adjIndexCount);
+    if (!adjIndexBuffer || adjIndexCount == 0u) {
+        /* Degenerate adjacency stream (too few verts) — no-op success. */
+        return true;
+    }
+    mglDrawEncodeIndexed(renderEncoderOwner, prim, adjIndexCount,
+                         MGL_DRAW_INDEX_UINT32, adjIndexBuffer, 0,
+                         instanceCount, baseVertex, baseInstance);
+    (void)label;
+    return true;
+}
+
 static bool mglEncodeElementLineLoopTarget(void *renderEncoderOwner,
                                      MGLDrawMetalHandle device,
                                      Buffer *glElementBuffer,
@@ -226,6 +257,42 @@ static bool mglEncodeElementTriangleFanTarget(void *renderEncoderOwner,
                          MGL_DRAW_PRIMITIVE_TRIANGLE, fanIndexCount,
                          MGL_DRAW_INDEX_UINT32, fanIndexBuffer, 0,
                          instanceCount, baseVertex, baseInstance);
+    return true;
+}
+
+static bool mglEncodeElementAdjacencyTarget(void *renderEncoderOwner,
+                                            MGLDrawMetalHandle device,
+                                            Buffer *glElementBuffer,
+                                            MGLDrawMetalHandle metalElementBuffer,
+                                            GLenum mode,
+                                            GLenum glIndexType,
+                                            size_t indexOffset,
+                                            GLsizei count,
+                                            size_t instanceCount,
+                                            int64_t baseVertex,
+                                            size_t baseInstance,
+                                            const char *label)
+{
+    if (count <= 0) {
+        return true;
+    }
+    const uint32_t prim =
+        mglRenderAdjacencyMetalPrimitiveType((uint32_t)mode);
+    if (prim == 0xFFFFFFFFu) {
+        return false;
+    }
+    const uint8_t *src = mglElementIndexSourceForDraw(
+        glElementBuffer, metalElementBuffer, glIndexType, indexOffset, count);
+    size_t adjIndexCount = 0u;
+    MGLDrawMetalHandle adjIndexBuffer = mglNewAdjacencyElementIndexBuffer(
+        device, mode, src, glIndexType, (size_t)count, &adjIndexCount);
+    if (!adjIndexBuffer || adjIndexCount == 0u) {
+        return true;
+    }
+    mglDrawEncodeIndexed(renderEncoderOwner, prim, adjIndexCount,
+                         MGL_DRAW_INDEX_UINT32, adjIndexBuffer, 0,
+                         instanceCount, baseVertex, baseInstance);
+    (void)label;
     return true;
 }
 
@@ -898,6 +965,11 @@ bool mglEncodeDrawArraysForRenderEncoderOwner(
             instanceCount, baseInstance,
             mglPolygonModeLineForDrawMode(ctx, mode), label);
     }
+    if (mglRenderEmulateAdjacency((uint32_t)mode)) {
+        return mglEncodeArrayAdjacencyTarget(
+            renderEncoderOwner, device, mode, count, first, instanceCount,
+            baseInstance, label);
+    }
     const uint32_t primitiveType =
         mglRenderMTLPrimitiveTypeForGLMode((uint32_t)mode);
     if (primitiveType == 0xFFFFFFFFu) {
@@ -942,6 +1014,13 @@ bool mglEncodeDrawElementsForRenderEncoderOwner(
         return false;
     }
 
+    if (mglRenderEmulateAdjacency((uint32_t)mode) &&
+        !mglPolygonModePointForDrawMode(ctx, mode)) {
+        return mglEncodeElementAdjacencyTarget(
+            renderEncoderOwner, device, glElementBuffer, metalElementBuffer,
+            mode, glIndexType, indexOffset, count, instanceCount, baseVertex,
+            baseInstance, label);
+    }
     const bool polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
     uint32_t primitiveType;
     if (polygonModePoint) {

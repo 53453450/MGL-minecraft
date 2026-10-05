@@ -230,6 +230,11 @@ MGLIndexMetalHandle mglNewQuadArrayLineIndexBuffer(MGLIndexMetalHandle device,
                                                     size_t vertexCount,
                                                     size_t *outIndexCount);
 
+MGLIndexMetalHandle mglNewAdjacencyArrayIndexBuffer(MGLIndexMetalHandle device,
+                                                     GLenum mode,
+                                                     size_t vertexCount,
+                                                     size_t *outIndexCount);
+
 /* Element (indexed) variants — read source indices and expand. */
 MGLIndexMetalHandle mglNewTriangleFanElementIndexBuffer(MGLIndexMetalHandle device,
                                                          const uint8_t *sourceIndexBytes,
@@ -260,6 +265,10 @@ MGLIndexMetalHandle mglNewQuadElementLineIndexBuffer(MGLIndexMetalHandle device,
                                                       GLenum sourceIndexType,
                                                       size_t sourceIndexCount,
                                                       size_t *outIndexCount);
+
+MGLIndexMetalHandle mglNewAdjacencyElementIndexBuffer(
+    MGLIndexMetalHandle device, GLenum mode, const uint8_t *sourceIndexBytes,
+    GLenum sourceIndexType, size_t sourceIndexCount, size_t *outIndexCount);
 
 /* Expands GL_UNSIGNED_BYTE indices to Metal-compatible UInt16. */
 MGLIndexMetalHandle mglNewUInt16IndexBufferFromUInt8(MGLIndexMetalHandle device,

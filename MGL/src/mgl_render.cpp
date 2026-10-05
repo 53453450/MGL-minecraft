@@ -1599,6 +1599,18 @@ int mglRenderEmulateQuads(uint32_t mode, int polygon_point) {
     return mode == GL_QUADS && !polygon_point ? 1 : 0;
 }
 
+int mglRenderEmulateAdjacency(uint32_t mode) {
+    switch (mode) {
+        case GL_LINES_ADJACENCY:
+        case GL_LINE_STRIP_ADJACENCY:
+        case GL_TRIANGLES_ADJACENCY:
+        case GL_TRIANGLE_STRIP_ADJACENCY:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 
 int mglRenderFilterIsNearest(uint32_t filter) {
     return filter == GL_NEAREST ? 1 : 0;
