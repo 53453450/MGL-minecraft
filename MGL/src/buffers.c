@@ -3700,6 +3700,11 @@ void mglGetBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizei
         return;
     }
 
+    /* Deferred draws live in the CPU batch until mglFlushCommandBuffer.
+     * RendererFlush only waits for already-submitted GPU work, so omit the
+     * batch drain and a post-barrier DrawArrays is still unsubmitted when
+     * the CPU reads an SSBO (KHR-GL46 advanced-usage-sync: 2 vs 4). */
+    mglFlushCommandBuffer(ctx);
     /* MGL_SYNC_STRICT: mtlFlush(ctx, true) already performed commit +
      * waitUntilCompleted here, a conservative path needing no extra strict
      * branch (avoids a double wait). */
@@ -3938,6 +3943,7 @@ void mglGetNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GL
         return;
     }
 
+    mglFlushCommandBuffer(ctx);
     mglRendererFlush(ctx, true);
 
     /* Same shadow refresh as mglGetBufferSubData: shader-written ranges

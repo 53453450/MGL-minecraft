@@ -394,8 +394,18 @@ bool mglBindingStateBindStageBufferMapEntries(
         if (!(is_fragment && plan.use_mtl_as_inline_src)) {
             if (!ptr->data.mtl_data) {
                 mglRendererBindMTLBuffer(renderer, ptr);
-            } else if (mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
+            }
+            /* Create-on-first-bind used to skip this; written_min then
+             * survived and the next draw's dirty upload overwrote GPU
+             * SSBO stores with the original glBufferData shadow
+             * (KHR-GL46 advanced-usage-sync: 2 vs 4). */
+            if (ptr->data.mtl_data &&
+                mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
                 (void)mglRendererUpdateDirtyBuffer(renderer, ptr);
+            }
+            if (mglRenderWritableStorageNeedsGPUAuthoritative(
+                    (int)map->resource_type)) {
+                mglRenderClearCPUWriteRange(ptr);
             }
         }
 
