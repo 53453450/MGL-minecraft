@@ -6177,6 +6177,13 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
+    /* GL 4.5 §8.11.4: buffer and multisample textures are rejected. */
+    if (tex->target == GL_TEXTURE_BUFFER ||
+        tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+        tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     if (level >= (GLint)tex->num_levels || !tex->faces[0].levels) {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
