@@ -11934,6 +11934,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         ? stageRecordStride(syms, VarSym::VARYING, false,
                             MGL_AIR_PER_VERTEX_STRIDE)
         : MGL_AIR_PER_VERTEX_STRIDE;
+    /* VS-only XFB (mglXfbPlanVsCapture) addresses user varyings at
+     * MGL_AIR_PER_VERTEX_STRIDE + location*16.  The capture store must use
+     * that same record, not a packed {position, varyings} blob. */
+    const uint32_t vsXfbCaptureStride =
+        (isVS && isCapture && !isTessCapture && !isCullCapture)
+            ? stageRecordStride(syms, VarSym::VARYING, false,
+                                MGL_AIR_PER_VERTEX_STRIDE)
+            : MGL_AIR_PER_VERTEX_STRIDE;
     const uint32_t patchInputStride = isTES
         ? stageRecordStride(syms, VarSym::CONTROL_POINT_INPUT, true, 16u)
         : 16u;
@@ -14269,7 +14277,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
             uint64_t recSize = module.getDataLayout().getTypeAllocSize(recTy);
             uint64_t recStride = isTessCapture
-                ? tessCaptureStride : recSize;
+                ? tessCaptureStride
+                : ((isVS && isCapture && !isCullCapture)
+                       ? (uint64_t)vsXfbCaptureStride
+                       : recSize);
+            if (recStride == 0u)
+                recStride = recSize;
             llvm::Value *vid = b.CreateSExtOrTrunc(cg.vertexId,
                                                    b.getInt64Ty());
             if ((isCullCapture || isTessCapture) && cg.instanceId &&
@@ -14321,7 +14334,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 b.CreateAlignedStore(cg.lvalues["gl_ClipDistance"], clipPtr,
                                     llvm::Align(4));
             }
-            if (isTessCapture) {
+            if (isTessCapture || (isVS && isCapture && !isCullCapture)) {
                 llvm::Value *recordBase = b.CreateGEP(
                     b.getInt8Ty(), cg.captureBuf,
                     b.CreateMul(vid, b.getInt64(recStride)));
@@ -14512,7 +14525,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::MDString::get(ctx, "air.struct_type_info"), sti,
             llvm::MDString::get(ctx, "air.arg_type_size"),
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                i32, isTessCapture ? tessCaptureStride : recSize)),
+                i32, isTessCapture ? tessCaptureStride
+                     : ((isVS && isCapture && !isCullCapture)
+                            ? vsXfbCaptureStride : recSize))),
             llvm::MDString::get(ctx, "air.arg_type_align_size"),
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 16)),
             llvm::MDString::get(ctx, "air.arg_type_name"),
