@@ -1649,8 +1649,23 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         tess_next_vertex_out += span;
                     }
                 } else {
+                    /* GL 4.6 §4.4.1: arrays/matrices consume consecutive
+                     * locations.  Stepping next_user_out by 1 packed the
+                     * next output at location 1 while codegen stored it at
+                     * base+span (VAB inputI attribui[0] read attribi[1]). */
+                    uint32_t span = 1u;
+                    if (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 1u) {
+                        span = t->array_size;
+                        if (t->elem_type &&
+                            t->elem_type->kind == MGLIR_TYPE_MATRIX &&
+                            t->elem_type->cols > 1u) {
+                            span *= t->elem_type->cols;
+                        }
+                    } else if (t->kind == MGLIR_TYPE_MATRIX && t->cols > 1u) {
+                        span = t->cols;
+                    }
                     location = next_user_out;
-                    next_user_out += 1u;
+                    next_user_out += span;
                 }
             }
             if (!push_resource(&lists[_STAGE_OUTPUT_RES], s, t, location, 0,
