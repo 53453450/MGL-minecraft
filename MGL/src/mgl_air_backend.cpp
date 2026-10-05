@@ -8725,6 +8725,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
              * patterns, it passed the first quadrant and failed the rest). */
             if (sampleType && sampleType->kind == MGLIR_TYPE_SAMPLER &&
                 sampleType->tex_depth) {
+                /* GLSL coord packing:
+                 *   2D:        vec3(xy, ref)
+                 *   2DArray:   vec4(xy, layer, ref)
+                 *   Cube:      vec4(dir.xyz, ref)
+                 *   CubeArray: texture*(s, vec4(dir, layer), ref [, lod/bias])
+                 * AIR has_lod / has_offset flags match Metal sample_compare. */
                 const char *cmpName = nullptr;
                 if (sampleKind == MGLIR_TEX_2D) {
                     cmpName = "air.sample_compare_depth_2d.f32";
@@ -8736,13 +8742,114 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 } else if (sampleKind == MGLIR_TEX_CUBE_ARRAY) {
                     cmpName = "air.sample_compare_depth_cube_array.f32";
                 }
-                if (tex && smp && cmpName &&
-                    sampleKind == MGLIR_TEX_CUBE_ARRAY) {
-                    /* GLSL texture(samplerCubeArrayShadow, vec4 P, float d):
-                     * P.xyz direction, P.w layer. AIR:
-                     *   sample_compare_depth_cube_array.f32(
-                     *     tex, smp, i32 1, <3 x float>, i32 layer, float ref,
-                     *     i1, float, float, i32) */
+                if (!tex || !smp || !cmpName || !uv ||
+                    !uv->getType()->isVectorTy()) {
+                    return llvm::ConstantFP::get(f32, 0.0);
+                }
+                auto *uvv =
+                    llvm::cast<llvm::FixedVectorType>(uv->getType());
+                const unsigned ncomp = uvv->getNumElements();
+                if (!uvv->getElementType()->isFloatTy()) {
+                    return llvm::ConstantFP::get(f32, 0.0);
+                }
+
+                llvm::Value *lodFlag = cg.b->getInt1(false);
+                llvm::Value *lodOrBias = llvm::ConstantFP::get(f32, 0.0);
+                llvm::Value *offsetFlag = cg.b->getInt1(false);
+                llvm::Value *cmpOffset = llvm::Constant::getNullValue(
+                    llvm::FixedVectorType::get(i32, 2));
+
+                /* Arg layout after the sampler+coord:
+                 *   textureLod(*, P, lod)
+                 *   textureLod(cubeArray, P, compare, lod)
+                 *   textureOffset(2dArrayShadow, P, offset [, bias])
+                 *   textureLodOffset(2dArrayShadow, P, lod, offset)
+                 *   texture(cubeArray, P, compare [, bias])
+                 *   texture(2dArrayShadow, P [, bias]) */
+                auto emitFloatArg = [&](uint32_t idx) -> llvm::Value * {
+                    if (idx >= e->u.call.arg_count) return nullptr;
+                    llvm::Value *v =
+                        emitExpr(cg, e->u.call.args[idx], mod, locals);
+                    return v ? coerceScalar(cg, v, MGLIR_SCALAR_FLOAT)
+                             : nullptr;
+                };
+                auto emitOffsetArg = [&](uint32_t idx) -> bool {
+                    if (idx >= e->u.call.arg_count) return false;
+                    llvm::Value *off =
+                        emitExpr(cg, e->u.call.args[idx], mod, locals);
+                    if (!off) return false;
+                    cmpOffset = emitAirSampleOffset(cg, off);
+                    offsetFlag = cg.b->getInt1(true);
+                    return true;
+                };
+
+                if (isLod) {
+                    if (hasOffset) {
+                        /* textureLodOffset(s, P, lod, offset) */
+                        llvm::Value *lod = emitFloatArg(2);
+                        if (!lod || !emitOffsetArg(3)) {
+                            return llvm::ConstantFP::get(f32, 0.0);
+                        }
+                        lodFlag = cg.b->getInt1(true);
+                        lodOrBias = lod;
+                    } else if (sampleKind == MGLIR_TEX_CUBE_ARRAY) {
+                        /* textureLod(s, P, compare, lod) — compare handled
+                         * below; lod is arg 3. */
+                        llvm::Value *lod = emitFloatArg(3);
+                        if (!lod) {
+                            return llvm::ConstantFP::get(f32, 0.0);
+                        }
+                        lodFlag = cg.b->getInt1(true);
+                        lodOrBias = lod;
+                    } else {
+                        llvm::Value *lod = emitFloatArg(2);
+                        if (!lod) {
+                            return llvm::ConstantFP::get(f32, 0.0);
+                        }
+                        lodFlag = cg.b->getInt1(true);
+                        lodOrBias = lod;
+                    }
+                } else if (hasOffset) {
+                    /* textureOffset(s, P, offset [, bias]) */
+                    if (!emitOffsetArg(2)) {
+                        return llvm::ConstantFP::get(f32, 0.0);
+                    }
+                    if (e->u.call.arg_count >= 4) {
+                        llvm::Value *bias = emitFloatArg(3);
+                        if (!bias) {
+                            return llvm::ConstantFP::get(f32, 0.0);
+                        }
+                        /* Metal bias keeps has_lod=false; the float slot is
+                         * the bias (level() sets has_lod=true instead). */
+                        lodFlag = cg.b->getInt1(false);
+                        lodOrBias = bias;
+                    }
+                } else if (sampleKind == MGLIR_TEX_CUBE_ARRAY) {
+                    if (e->u.call.arg_count >= 4) {
+                        llvm::Value *bias = emitFloatArg(3);
+                        if (!bias) {
+                            return llvm::ConstantFP::get(f32, 0.0);
+                        }
+                        lodFlag = cg.b->getInt1(false);
+                        lodOrBias = bias;
+                    }
+                } else if (e->u.call.arg_count >= 3) {
+                    /* texture(s, P, bias) for 2D / 2DArray / Cube shadow. */
+                    llvm::Value *bias = emitFloatArg(2);
+                    if (!bias) {
+                        return llvm::ConstantFP::get(f32, 0.0);
+                    }
+                    lodFlag = cg.b->getInt1(false);
+                    lodOrBias = bias;
+                }
+
+                llvm::Type *cmpRet = llvm::StructType::get(
+                    *cg.ctx, {f32, cg.b->getInt8Ty()});
+                auto extractCmp = [&](llvm::Value *cmp) {
+                    return cg.b->CreateExtractValue(cmp, 0);
+                };
+
+                if (sampleKind == MGLIR_TEX_CUBE_ARRAY) {
                     llvm::Value *sampleCoord = uv;
                     llvm::Value *arrayLayer = nullptr;
                     if (!splitSampleArrayCoord(cg, sampleKind, uv,
@@ -8750,58 +8857,74 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         e->u.call.arg_count < 3) {
                         return llvm::ConstantFP::get(f32, 0.0);
                     }
-                    llvm::Value *ref = emitExpr(cg, e->u.call.args[2], mod,
-                                                locals);
+                    llvm::Value *ref = emitFloatArg(2);
                     if (!ref) return nullptr;
-                    ref = coerceScalar(cg, ref, MGLIR_SCALAR_FLOAT);
                     std::vector<llvm::Value *> cmpArgs = {
                         tex, smp, cg.b->getInt32(1), sampleCoord,
                         arrayLayer ? arrayLayer : cg.b->getInt32(0), ref,
-                        cg.b->getInt1(false),
-                        llvm::ConstantFP::get(f32, 0.0),
-                        llvm::ConstantFP::get(f32, 0.0),
+                        lodFlag, lodOrBias, llvm::ConstantFP::get(f32, 0.0),
                         cg.b->getInt32(0)};
-                    llvm::Type *cmpRet = llvm::StructType::get(
-                        *cg.ctx, {f32, cg.b->getInt8Ty()});
-                    llvm::Value *cmp =
-                        callAirFn(cg, cmpName, cmpRet, cmpArgs);
-                    return cg.b->CreateExtractValue(cmp, 0);
+                    return extractCmp(callAirFn(cg, cmpName, cmpRet, cmpArgs));
                 }
-                bool coordUsable = false;
-                if (uv && uv->getType()->isVectorTy()) {
-                    auto *uvv = llvm::cast<llvm::FixedVectorType>(
-                        uv->getType());
-                    coordUsable = uvv->getNumElements() >= 3 &&
-                                  uvv->getElementType()->isFloatTy();
-                }
-                if (tex && smp && cmpName && coordUsable) {
+
+                if (sampleKind == MGLIR_TEX_CUBE) {
+                    if (ncomp < 4) {
+                        return llvm::ConstantFP::get(f32, 0.0);
+                    }
+                    llvm::Value *dir = cg.b->CreateShuffleVector(
+                        uv, llvm::UndefValue::get(uv->getType()),
+                        llvm::ConstantVector::get(
+                            {cg.b->getInt32(0), cg.b->getInt32(1),
+                             cg.b->getInt32(2)}));
                     llvm::Value *ref =
-                        cg.b->CreateExtractElement(uv, cg.b->getInt32(2));
+                        cg.b->CreateExtractElement(uv, cg.b->getInt32(3));
+                    /* Cube compare has no offset pair. */
+                    std::vector<llvm::Value *> cmpArgs = {
+                        tex, smp, cg.b->getInt32(1), dir, ref, lodFlag,
+                        lodOrBias, llvm::ConstantFP::get(f32, 0.0),
+                        cg.b->getInt32(0)};
+                    return extractCmp(callAirFn(cg, cmpName, cmpRet, cmpArgs));
+                }
+
+                if (sampleKind == MGLIR_TEX_2D_ARRAY ||
+                    sampleKind == MGLIR_TEX_1D_ARRAY) {
+                    if (ncomp < 4) {
+                        return llvm::ConstantFP::get(f32, 0.0);
+                    }
                     llvm::Value *xy = cg.b->CreateShuffleVector(
                         uv, llvm::UndefValue::get(uv->getType()),
                         llvm::ConstantVector::get(
-                            {llvm::ConstantInt::get(
-                                 llvm::Type::getInt32Ty(*cg.ctx), 0),
-                             llvm::ConstantInt::get(
-                                 llvm::Type::getInt32Ty(*cg.ctx), 1)}));
-                    llvm::Value *cmpOffset = llvm::Constant::getNullValue(
-                        llvm::FixedVectorType::get(i32, 2));
+                            {cg.b->getInt32(0), cg.b->getInt32(1)}));
+                    llvm::Value *layerF =
+                        cg.b->CreateExtractElement(uv, cg.b->getInt32(2));
+                    llvm::Value *layer = cg.b->CreateFPToSI(layerF, i32);
+                    llvm::Value *ref =
+                        cg.b->CreateExtractElement(uv, cg.b->getInt32(3));
+                    /* Metal's frontend always sets has_offset=true for
+                     * depth2d_array sample_compare (zero offset when unused). */
+                    offsetFlag = cg.b->getInt1(true);
                     std::vector<llvm::Value *> cmpArgs = {
-                        tex, smp, cg.b->getInt32(1), xy, ref,
-                        cg.b->getInt1(false), cmpOffset, cg.b->getInt1(false),
-                        llvm::ConstantFP::get(f32, 0.0),
-                        llvm::ConstantFP::get(f32, 0.0),
-                        cg.b->getInt32(0)};
-                    llvm::Type *cmpRet = llvm::StructType::get(
-                        *cg.ctx, {f32, cg.b->getInt8Ty()});
-                    llvm::Value *cmp =
-                        callAirFn(cg, cmpName, cmpRet, cmpArgs);
-                    return cg.b->CreateExtractValue(cmp, 0);
+                        tex, smp, cg.b->getInt32(1), xy, layer, ref,
+                        offsetFlag, cmpOffset, lodFlag, lodOrBias,
+                        llvm::ConstantFP::get(f32, 0.0), cg.b->getInt32(0)};
+                    return extractCmp(callAirFn(cg, cmpName, cmpRet, cmpArgs));
                 }
-                /* Unsupported shape (non-2D kind, integer/projected coord,
-                 * missing operand): keep the previous constant rather than
-                 * emitting an intrinsic we cannot type. */
-                return llvm::ConstantFP::get(f32, 0.0);
+
+                /* sampler2DShadow: vec3(xy, ref) */
+                if (ncomp < 3) {
+                    return llvm::ConstantFP::get(f32, 0.0);
+                }
+                llvm::Value *ref =
+                    cg.b->CreateExtractElement(uv, cg.b->getInt32(2));
+                llvm::Value *xy = cg.b->CreateShuffleVector(
+                    uv, llvm::UndefValue::get(uv->getType()),
+                    llvm::ConstantVector::get(
+                        {cg.b->getInt32(0), cg.b->getInt32(1)}));
+                std::vector<llvm::Value *> cmpArgs = {
+                    tex, smp, cg.b->getInt32(1), xy, ref, offsetFlag, cmpOffset,
+                    lodFlag, lodOrBias, llvm::ConstantFP::get(f32, 0.0),
+                    cg.b->getInt32(0)};
+                return extractCmp(callAirFn(cg, cmpName, cmpRet, cmpArgs));
             }
             auto sampledRetType = [&](llvm::Type *vecTy) {
                 return llvm::StructType::get(*cg.ctx,
