@@ -746,6 +746,14 @@ static GLboolean mglSetProgramAttribName(Program *program, GLuint index, const c
     }
 
     mglFreeProgramAttribName(program, index, "replace");
+    for (GLuint i = 0; i < MAX_ATTRIBS; i++) {
+        if (i == index || !program->attrib_location_names[i]) {
+            continue;
+        }
+        if (strcmp(program->attrib_location_names[i], name) == 0) {
+            mglFreeProgramAttribName(program, i, "rebind");
+        }
+    }
     program->attrib_location_names[index] = strdup(name);
     if (!program->attrib_location_names[index]) {
         return GL_FALSE;
