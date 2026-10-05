@@ -1173,6 +1173,23 @@ static GLboolean mglRenderbufferInternalFormatRenderable(GLint internalformat)
         return GL_TRUE;
     }
 
+    /* Legacy sized formats: not required CR in Table 8.12 for texture
+     * attachments, but RenderbufferStorage + CopyImage CTS (and common
+     * drivers) accept them.  Metal already maps these in
+     * mtlFormatForGLInternalFormat. */
+    switch (internalformat) {
+    case GL_R3_G3_B2:
+    case GL_RGB4:
+    case GL_RGB5:
+    case GL_RGB10:
+    case GL_RGB12:
+    case GL_RGBA2:
+    case GL_RGBA12:
+        return GL_TRUE;
+    default:
+        break;
+    }
+
     return bitcountForInternalFormat(internalformat, GL_DEPTH) > 0 ||
            bitcountForInternalFormat(internalformat, GL_STENCIL) > 0;
 }
@@ -1544,11 +1561,17 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
          * rather than failing on incomplete. */
         GLint ifmt = mglFramebufferAttachmentInternalFormat(ctx, &fbo->color_attachments[i]);
         Texture *tex = mglFramebufferAttachmentTextureObject(ctx, &fbo->color_attachments[i]);
-        if (ifmt != 0 && !mglIsColorRenderableInternalFormat(ifmt)) {
-            if (tex && tex->samples > 1u) {
-                return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_UNSUPPORTED, "color-not-renderable-ms", i, &fbo->color_attachments[i]);
+        {
+            GLboolean color_ok =
+                (fbo->color_attachments[i].textarget == GL_RENDERBUFFER)
+                    ? mglRenderbufferInternalFormatRenderable(ifmt)
+                    : mglIsColorRenderableInternalFormat(ifmt);
+            if (ifmt != 0 && !color_ok) {
+                if (tex && tex->samples > 1u) {
+                    return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_UNSUPPORTED, "color-not-renderable-ms", i, &fbo->color_attachments[i]);
+                }
+                return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT, "color-not-renderable", i, &fbo->color_attachments[i]);
             }
-            return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT, "color-not-renderable", i, &fbo->color_attachments[i]);
         }
         /* Table 8.12 marks SNORM CR, but MSAA SNORM RTs are not a useful
          * AGX path; keep CTS fillMSTexture on UNSUPPORTED. */
