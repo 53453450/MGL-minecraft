@@ -41,9 +41,11 @@ static llvm::Value *callFloatIntrinsic(Codegen &cg, llvm::Intrinsic::ID id,
     return cg.b->CreateIntrinsic(id, {v->getType()}, {v});
 }
 
-/* AIR fast math (scalar fn, vectors lowered per lane).  llvm.sin/cos
- * flowing into a used VS→FS varying crashes the AGX metallib compiler
- * (XPC_ERROR_CONNECTION_INTERRUPTED); air.fast_* matches asin/acos. */
+/* AGX metallib crashes (XPC_ERROR_CONNECTION_INTERRUPTED) when llvm.sin/cos
+ * results are written to gl_ClipDistance mirrors that the FS later reads.
+ * air.fast_sin/cos avoids that crash, but using them for ordinary VS→FS
+ * color varyings fails CTS aggressive_optimizations.  Only switch to
+ * air.fast_* when the stage actually emits clip-distance mirrors. */
 static llvm::Value *callAirFastUnary(Codegen &cg, const AirMathDeps &deps,
                                      const char *airfn, llvm::Value *a0) {
     llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
@@ -217,9 +219,17 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         if (!need(1)) return nullptr;
         a0 = farg(0);
         if (!a0) return nullptr;
-        return callAirFastUnary(
-            cg, deps,
-            strcmp(name, "sin") == 0 ? "air.fast_sin.f32" : "air.fast_cos.f32",
+        if (cg.usesClipDistance) {
+            return callAirFastUnary(
+                cg, deps,
+                strcmp(name, "sin") == 0 ? "air.fast_sin.f32"
+                                         : "air.fast_cos.f32",
+                a0);
+        }
+        return callFloatIntrinsic(
+            cg,
+            strcmp(name, "sin") == 0 ? llvm::Intrinsic::sin
+                                     : llvm::Intrinsic::cos,
             a0);
     }
     if (strcmp(name, "exp") == 0 || strcmp(name, "exp2") == 0 ||
@@ -291,10 +301,15 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         if (!need(1)) return nullptr;
         a0 = farg(0);
         if (!a0) return nullptr;
-        llvm::Value *s =
-            callAirFastUnary(cg, deps, "air.fast_sin.f32", a0);
-        llvm::Value *c =
-            callAirFastUnary(cg, deps, "air.fast_cos.f32", a0);
+        llvm::Value *s;
+        llvm::Value *c;
+        if (cg.usesClipDistance) {
+            s = callAirFastUnary(cg, deps, "air.fast_sin.f32", a0);
+            c = callAirFastUnary(cg, deps, "air.fast_cos.f32", a0);
+        } else {
+            s = callFloatIntrinsic(cg, llvm::Intrinsic::sin, a0);
+            c = callFloatIntrinsic(cg, llvm::Intrinsic::cos, a0);
+        }
         return cg.b->CreateFDiv(s, c);
     }
     if (strcmp(name, "fract") == 0) {
