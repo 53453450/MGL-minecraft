@@ -2392,6 +2392,7 @@ static MGLDecl *parse_declaration(MGLParser *p)
     }
     d->line = line;
     d->layout_location = -1;   /* "unspecified", per mgl_glsl_ast.h */
+    d->layout_index = -1;      /* dual-source blend index, unspecified */
     d->layout_component = -1;
     d->layout_binding = -1;    /* "unspecified", per mgl_glsl_ast.h */
     d->layout_offset = -1;     /* atomic-counter offset, -1 = unspecified */
@@ -2590,6 +2591,7 @@ more_qualifiers:
                      * integer-constant-expression, not a float like 0.0. */
                     int need_int =
                         (n == 8 && memcmp(s, "location", 8) == 0) ||
+                        (n == 5 && memcmp(s, "index", 5) == 0) ||
                         (n == 9 && memcmp(s, "component", 9) == 0) ||
                         (n == 7 && memcmp(s, "binding", 7) == 0) ||
                         (n == 6 && memcmp(s, "offset", 6) == 0) ||
@@ -2606,6 +2608,8 @@ more_qualifiers:
                             n, s, tk_line(p));
                     } else if (n == 8 && memcmp(s, "location", 8) == 0) {
                         d->layout_location = (int32_t)cur_double(p);
+                    } else if (n == 5 && memcmp(s, "index", 5) == 0) {
+                        d->layout_index = (int32_t)cur_double(p);
                     } else if (n == 9 && memcmp(s, "component", 9) == 0) {
                         d->layout_component = (int32_t)cur_double(p);
                     } else if (n == 7 && memcmp(s, "binding", 7) == 0) {

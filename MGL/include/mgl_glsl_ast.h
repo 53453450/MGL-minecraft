@@ -313,6 +313,7 @@ struct MGLDecl {
     uint32_t layout;       /* MGL_AST_LAYOUT_* */
     uint32_t matrix_major; /* MGL_AST_MATRIX_* */
     int32_t layout_location; /* layout(location=N), -1 if unspecified */
+    int32_t layout_index;    /* layout(index=N) dual-source, -1 unspecified */
     int32_t layout_component; /* layout(component=N), -1 if unspecified */
     int32_t layout_binding;  /* layout(binding=N), -1 if unspecified */
     int32_t layout_offset;   /* layout(offset=N) atomic-counter byte

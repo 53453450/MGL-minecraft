@@ -644,6 +644,7 @@ static int push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
         return 0;
     }
     r.location = location;
+    r.location_index = (s->index != UINT32_MAX) ? s->index : 0u;
     r.gl_binding = binding;
     r.binding = binding;
     /* Resource reflection keeps the top-level array type for array size and

@@ -5038,6 +5038,9 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             isym->location = (d->layout_location >= 0)
                                  ? (uint32_t)d->layout_location
                                  : UINT32_MAX;
+            isym->index = (d->layout_index >= 0)
+                              ? (uint32_t)d->layout_index
+                              : UINT32_MAX;
             isym->component = (d->layout_component > 0)
                                   ? (uint32_t)d->layout_component
                                   : 0u;
