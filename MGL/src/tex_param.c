@@ -19,6 +19,7 @@
  */
 
 #include "glm_context.h"
+#include "utils.h"
 #include "mgl_render_api_pixel.h"
 #include "mgl_trace_log.h"
 #include "mgl_env_flag.h"
@@ -1707,7 +1708,8 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
             case GL_TEXTURE_COMPRESSED:
                 *params = mglTexLevelInternalFormatCompressed(proxy_internal) ? GL_TRUE : GL_FALSE;                return;
             case GL_TEXTURE_COMPRESSED_IMAGE_SIZE:
-                *params = 0;                return;
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
             case GL_TEXTURE_RED_TYPE:
             case GL_TEXTURE_GREEN_TYPE:
             case GL_TEXTURE_BLUE_TYPE:
@@ -1737,6 +1739,16 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
     if (!tex)
     {
         *params = 0;        return;
+    }
+
+    if (level > (GLint)ilog2(STATE(var).max_texture_size)) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (pname == GL_TEXTURE_COMPRESSED_IMAGE_SIZE &&
+        !mglTexLevelInternalFormatCompressed((GLint)tex->internalformat)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
     {

@@ -903,10 +903,21 @@ void mglVertexArrayElementBuffer(GLMContext ctx, GLuint vaobj, GLuint buffer)
     }
 }
 
+static GLuint mglAttribBindingLimit(GLMContext ctx)
+{
+    GLuint limit = ctx ? STATE(var).max_vertex_attrib_bindings : MAX_ATTRIBS;
+    GLuint cap = MAX_ATTRIBS;
+    if (cap > MGL_MAX_VERTEX_ATTRIB_BINDINGS)
+        cap = MGL_MAX_VERTEX_ATTRIB_BINDINGS;
+    if (limit == 0u || limit == 0x01010101u || limit > cap)
+        limit = cap;
+    return limit;
+}
+
 void setVertexBindingIndex(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLuint bindingindex)
 {
     ERROR_CHECK_RETURN(attribindex < MAX_ATTRIBS, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(bindingindex < MGL_MAX_VERTEX_ATTRIB_BINDINGS, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(bindingindex < mglAttribBindingLimit(ctx), GL_INVALID_VALUE);
 
     VertexAttrib *attrib = &vao->attrib[attribindex];
     if (attrib->buffer_bindingindex == bindingindex)
@@ -1213,7 +1224,7 @@ void mglVertexAttribDivisor(GLMContext ctx, GLuint index, GLuint divisor)
 
 void setBindingDivisor(GLMContext ctx, VertexArray *vao, GLuint bindingindex, GLuint divisor)
 {
-    ERROR_CHECK_RETURN(bindingindex < MGL_MAX_VERTEX_ATTRIB_BINDINGS, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(bindingindex < mglAttribBindingLimit(ctx), GL_INVALID_VALUE);
 
     GLboolean changed = (vao->bindings[bindingindex].divisor != divisor);
     if (!changed)

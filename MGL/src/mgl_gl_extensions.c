@@ -5968,7 +5968,12 @@ void mglGetTransformFeedbacki64_v(GLMContext ctx, GLuint xfb, GLenum pname, GLui
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
-	if (index >= MAX_BINDABLE_BUFFERS)
+	/* GL 4.6 §22.2 / CTS xfb_errors: index must be < MAX_TRANSFORM_FEEDBACK_BUFFERS
+	 * (not the larger generic MAX_BINDABLE_BUFFERS UBO/SSBO budget). */
+	GLuint maxXfb = STATE(var).max_transform_feedback_buffers;
+	if (maxXfb == 0u || maxXfb > MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS)
+		maxXfb = MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS;
+	if (index >= maxXfb)
 	{
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;

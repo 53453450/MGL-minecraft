@@ -7114,7 +7114,20 @@ void mglGetTextureLevelParameteriv(GLMContext ctx, GLuint texture, GLint level, 
 
     Texture *tex = getTex(ctx, texture, 0);
     if (!tex) {
-        *params = 0;
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    /* GL 4.6 §8.11: level > log2(MAX_TEXTURE_SIZE) is INVALID_VALUE.
+     * TEXTURE_COMPRESSED_IMAGE_SIZE on uncompressed storage is
+     * INVALID_OPERATION (CTS textures_level_parameter_errors). */
+    if (level > (GLint)ilog2(STATE(var).max_texture_size)) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (pname == GL_TEXTURE_COMPRESSED_IMAGE_SIZE &&
+        !mglTexLevelInternalFormatCompressed((GLint)tex->internalformat)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
 
