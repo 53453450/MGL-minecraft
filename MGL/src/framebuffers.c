@@ -614,6 +614,33 @@ static GLboolean mglFramebufferBufferIsColorAttachment(GLMContext ctx, GLenum bu
            buffer < (GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS);
 }
 
+/* GL 4.6 tables 17.4 / 17.5 — default-FB color buffer tokens. */
+static GLboolean mglIsDefaultFramebufferColorBuffer(GLenum buffer)
+{
+    switch (buffer) {
+        case GL_NONE:
+        case GL_FRONT_LEFT:
+        case GL_FRONT_RIGHT:
+        case GL_BACK_LEFT:
+        case GL_BACK_RIGHT:
+        case GL_FRONT:
+        case GL_BACK:
+        case GL_LEFT:
+        case GL_RIGHT:
+        case GL_FRONT_AND_BACK:
+            return GL_TRUE;
+        default:
+            return GL_FALSE;
+    }
+}
+
+/* DrawBuffers forbids these because each names multiple buffers (§17.4.1). */
+static GLboolean mglIsDrawBuffersMultiBufferToken(GLenum buffer)
+{
+    return buffer == GL_FRONT || buffer == GL_LEFT || buffer == GL_RIGHT ||
+           buffer == GL_FRONT_AND_BACK;
+}
+
 static GLuint mglFramebufferMaxDrawBuffers(GLMContext ctx)
 {
     GLuint maxDrawBuffers = ctx ? STATE(var).max_draw_buffers : 0u;
@@ -3698,31 +3725,48 @@ void mglNamedFramebufferDrawBuffers(GLMContext ctx, GLuint framebuffer, GLsizei 
             continue;
         }
 
+        /* FRONT/LEFT/RIGHT/FRONT_AND_BACK: INVALID_ENUM on both FBO and
+         * default FB (they expand to multiple buffers). */
+        if (mglIsDrawBuffersMultiBufferToken(buf)) {
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+        }
+
         if (fbo) {
-            if (!mglFramebufferBufferIsColorAttachment(ctx, buf)) {
-                ERROR_RETURN(GL_INVALID_ENUM);
-                return;
+            if (mglFramebufferBufferIsColorAttachment(ctx, buf)) {
+                GLuint attachmentIndex = (GLuint)(buf - GL_COLOR_ATTACHMENT0);
+                GLbitfield attachmentBit = (GLbitfield)(1u << attachmentIndex);
+                if (seenColorAttachments & attachmentBit) {
+                    ERROR_RETURN(GL_INVALID_OPERATION);
+                    return;
+                }
+                seenColorAttachments |= attachmentBit;
+                continue;
             }
-            GLuint attachmentIndex = (GLuint)(buf - GL_COLOR_ATTACHMENT0);
-            GLbitfield attachmentBit = (GLbitfield)(1u << attachmentIndex);
-            if (seenColorAttachments & attachmentBit) {
+            /* Known default-FB tokens on an FBO → INVALID_OPERATION;
+             * anything else → INVALID_ENUM (CTS draw_read_buffers_errors). */
+            ERROR_RETURN(mglIsDefaultFramebufferColorBuffer(buf)
+                             ? GL_INVALID_OPERATION
+                             : GL_INVALID_ENUM);
+            return;
+        }
+
+        if (mglFramebufferBufferIsColorAttachment(ctx, buf)) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+        if (buf == GL_BACK) {
+            if (n != 1) {
                 ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
             }
-            seenColorAttachments |= attachmentBit;
             continue;
         }
-
         switch (buf) {
-            case GL_FRONT:
-            case GL_BACK:
             case GL_FRONT_LEFT:
             case GL_FRONT_RIGHT:
             case GL_BACK_LEFT:
             case GL_BACK_RIGHT:
-            case GL_LEFT:
-            case GL_RIGHT:
-            case GL_FRONT_AND_BACK:
                 break;
             default:
                 ERROR_RETURN(GL_INVALID_ENUM);
@@ -3785,28 +3829,28 @@ void mglNamedFramebufferReadBuffer(GLMContext ctx, GLuint framebuffer, GLenum sr
     }
 
     if (fbo) {
-        if (src != GL_NONE && !mglFramebufferBufferIsColorAttachment(ctx, src)) {
+        if (src == GL_NONE || mglFramebufferBufferIsColorAttachment(ctx, src)) {
+            readBuffer = &fbo->read_buffer;
+        } else if (mglIsDefaultFramebufferColorBuffer(src) ||
+                   (src >= GL_COLOR_ATTACHMENT0 &&
+                    src <= GL_COLOR_ATTACHMENT31)) {
+            /* Table-17.4 token, or COLOR_ATTACHMENTm past MAX → OPERATION. */
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        } else {
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+        }
+    } else {
+        if (src >= GL_COLOR_ATTACHMENT0 && src <= GL_COLOR_ATTACHMENT31) {
             ERROR_RETURN(GL_INVALID_OPERATION);
             return;
         }
-        readBuffer = &fbo->read_buffer;
-    } else {
-        switch (src) {
-            case GL_FRONT:
-            case GL_BACK:
-            case GL_NONE:
-            case GL_FRONT_LEFT:
-            case GL_FRONT_RIGHT:
-            case GL_BACK_LEFT:
-            case GL_BACK_RIGHT:
-            case GL_LEFT:
-            case GL_RIGHT:
-                readBuffer = &STATE(default_read_buffer);
-                break;
-            default:
-                ERROR_RETURN(GL_INVALID_ENUM);
-                return;
+        if (!mglIsDefaultFramebufferColorBuffer(src)) {
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
         }
+        readBuffer = &STATE(default_read_buffer);
     }
 
     if (readBuffer && *readBuffer != src) {
@@ -3821,9 +3865,50 @@ void mglNamedFramebufferReadBuffer(GLMContext ctx, GLuint framebuffer, GLenum sr
 
 }
 
+static GLboolean mglValidateInvalidateAttachments(GLMContext ctx, GLboolean isFbo,
+                                                  GLsizei numAttachments,
+                                                  const GLenum *attachments)
+{
+    GLuint maxColor = ctx ? STATE(max_color_attachments) : MAX_COLOR_ATTACHMENTS;
+    if (maxColor > MAX_COLOR_ATTACHMENTS)
+        maxColor = MAX_COLOR_ATTACHMENTS;
+
+    for (GLsizei i = 0; i < numAttachments; ++i) {
+        GLenum a = attachments[i];
+        if (isFbo) {
+            if (a == GL_DEPTH_ATTACHMENT || a == GL_STENCIL_ATTACHMENT ||
+                a == GL_DEPTH_STENCIL_ATTACHMENT) {
+                continue;
+            }
+            if (a >= GL_COLOR_ATTACHMENT0 && a <= GL_COLOR_ATTACHMENT31) {
+                if (a >= (GL_COLOR_ATTACHMENT0 + maxColor)) {
+                    ERROR_RETURN_VALUE(GL_INVALID_OPERATION, GL_FALSE);
+                }
+                continue;
+            }
+            ERROR_RETURN_VALUE(GL_INVALID_ENUM, GL_FALSE);
+        } else {
+            switch (a) {
+                case GL_FRONT_LEFT:
+                case GL_FRONT_RIGHT:
+                case GL_BACK_LEFT:
+                case GL_BACK_RIGHT:
+                case GL_COLOR:
+                case GL_DEPTH:
+                case GL_STENCIL:
+                    break;
+                default:
+                    ERROR_RETURN_VALUE(GL_INVALID_ENUM, GL_FALSE);
+            }
+        }
+    }
+    return GL_TRUE;
+}
+
 void mglInvalidateNamedFramebufferData(GLMContext ctx, GLuint framebuffer, GLsizei numAttachments, const GLenum *attachments)
 {
-    if (framebuffer != 0u && !findFrameBuffer(ctx, framebuffer)) {
+    Framebuffer *fbo = framebuffer ? findFrameBuffer(ctx, framebuffer) : NULL;
+    if (framebuffer != 0u && !fbo) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
@@ -3831,16 +3916,27 @@ void mglInvalidateNamedFramebufferData(GLMContext ctx, GLuint framebuffer, GLsiz
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
+    if (numAttachments > 0 &&
+        !mglValidateInvalidateAttachments(ctx, fbo != NULL, numAttachments,
+                                          attachments)) {
+        return;
+    }
 }
 
 void mglInvalidateNamedFramebufferSubData(GLMContext ctx, GLuint framebuffer, GLsizei numAttachments, const GLenum *attachments, GLint x, GLint y, GLsizei width, GLsizei height)
 {
-    if (framebuffer != 0u && !findFrameBuffer(ctx, framebuffer)) {
+    Framebuffer *fbo = framebuffer ? findFrameBuffer(ctx, framebuffer) : NULL;
+    if (framebuffer != 0u && !fbo) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
     if (numAttachments < 0 || (numAttachments > 0 && !attachments) || width < 0 || height < 0) {
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (numAttachments > 0 &&
+        !mglValidateInvalidateAttachments(ctx, fbo != NULL, numAttachments,
+                                          attachments)) {
         return;
     }
 
