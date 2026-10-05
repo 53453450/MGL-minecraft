@@ -176,6 +176,7 @@ static uint32_t air_named_symbol_location(const MGLIRModule *mod,
  * (element size apart), not at the std140 array stride. */
 static int air_push_aoa_rows(const MGLIRType *t, uint32_t off,
                              const char *path, int packed,
+                             GLint inherit_top_size, GLint inherit_top_stride,
                              SpirvUBOMember **out, uint32_t *count,
                              uint32_t *cap)
 {
@@ -234,8 +235,12 @@ static int air_push_aoa_rows(const MGLIRType *t, uint32_t off,
             else
                 u->top_level_array_stride = u->array_stride;
         } else {
-            u->top_level_array_size = u->size;
-            u->top_level_array_stride = u->array_stride;
+            u->top_level_array_size = 1;
+            u->top_level_array_stride = 0;
+        }
+        if (inherit_top_size > 1) {
+            u->top_level_array_size = inherit_top_size;
+            u->top_level_array_stride = inherit_top_stride;
         }
     }
     return 0;
@@ -458,6 +463,7 @@ static GLuint air_uniform_block_element_count(const MGLIRType *type)
  * pass, which caches member_offsets on every nested struct type. */
 static int air_block_flatten(const MGLIRType *st, uint32_t base_off,
                              const char *prefix,
+                             GLint top_size, GLint top_stride,
                              SpirvUBOMember **out, uint32_t *count,
                              uint32_t *cap)
 {
@@ -480,7 +486,8 @@ static int air_block_flatten(const MGLIRType *st, uint32_t base_off,
         }
 
         if (mt->kind == MGLIR_TYPE_STRUCT) {
-            if (air_block_flatten(mt, off, path, out, count, cap) != 0) {
+            if (air_block_flatten(mt, off, path, top_size, top_stride,
+                                  out, count, cap) != 0) {
                 free(path);
                 return -1;
             }
@@ -493,6 +500,12 @@ static int air_block_flatten(const MGLIRType *st, uint32_t base_off,
             uint32_t stride = mt->layout.array_stride > 0
                                   ? (uint32_t)mt->layout.array_stride
                                   : 0u;
+            GLint child_size = top_size;
+            GLint child_stride = top_stride;
+            if (prefix[0] == '\0') {
+                child_size = (GLint)n;
+                child_stride = (GLint)stride;
+            }
             for (uint32_t el = 0; el < n; el++) {
                 char *epath = air_element_path(path, mt, el,
                                                mt->aoa_dim_count);
@@ -504,6 +517,7 @@ static int air_block_flatten(const MGLIRType *st, uint32_t base_off,
                 if (air_u32_mul(el, stride, &element_offset) != 0 ||
                     air_u32_add(off, element_offset, &element_offset) != 0 ||
                     air_block_flatten(mt->elem_type, element_offset, epath,
+                                      child_size, child_stride,
                                       out, count, cap) != 0) {
                     free(epath);
                     free(path);
@@ -531,7 +545,8 @@ static int air_block_flatten(const MGLIRType *st, uint32_t base_off,
         }
 
         if (mt->kind == MGLIR_TYPE_ARRAY && mt->aoa_dim_count > 1) {
-            int rc = air_push_aoa_rows(mt, off, path, 0, out, count, cap);
+            int rc = air_push_aoa_rows(mt, off, path, 0, top_size, top_stride,
+                                       out, count, cap);
             free(path);
             if (rc != 0) {
                 return -1;
@@ -598,8 +613,13 @@ static int air_block_flatten(const MGLIRType *st, uint32_t base_off,
                               : GL_FALSE;
         u->location_offset = -1;
         u->explicit_location = -1;
-        u->top_level_array_size = u->size;
-        u->top_level_array_stride = u->array_stride;
+        if (top_size > 1) {
+            u->top_level_array_size = top_size;
+            u->top_level_array_stride = top_stride;
+        } else {
+            u->top_level_array_size = 1;
+            u->top_level_array_stride = 0;
+        }
     }
     return 0;
 }
@@ -766,7 +786,7 @@ static int push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
         {
             SpirvUBOMember *leaves = NULL;
             uint32_t leaf_count = 0, leaf_cap = 0;
-            int flatten_rc = air_block_flatten(type, 0u, "", &leaves,
+            int flatten_rc = air_block_flatten(type, 0u, "", 1, 0, &leaves,
                                                &leaf_count, &leaf_cap);
             if (flatten_rc == 0 && leaf_count > 0) {
                 r.ubo_members = leaves;
@@ -1636,6 +1656,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         }
                         if (air_block_flatten(ty->elem_type,
                                               element_offset, epath,
+                                              1, 0,
                                               &leaves, &leaf_count,
                                               &leaf_cap) != 0) {
                             free(epath);
@@ -1654,6 +1675,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         free(epath);
                     }
                 } else if (air_block_flatten(st, off, nm ? nm : "?",
+                                             1, 0,
                                              &leaves, &leaf_count,
                                              &leaf_cap) != 0) {
                     for (uint32_t i = 0; i < leaf_count; i++) {
@@ -1671,7 +1693,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             } else if (ty->kind == MGLIR_TYPE_ARRAY && ty->aoa_dim_count > 1) {
                 /* Default-block AOA uses the same std140 array_stride as
                  * collectUniforms / emitSSBOAggregateLoad. */
-                if (air_push_aoa_rows(ty, off, nm ? nm : "?", 0, &leaves,
+                if (air_push_aoa_rows(ty, off, nm ? nm : "?", 0, 1, 0, &leaves,
                                       &leaf_count, &leaf_cap) != 0) {
                     for (uint32_t i = 0; i < leaf_count; i++) {
                         free((void *)leaves[i].name);
