@@ -60,6 +60,14 @@ bool ensureTextureLevelCapacity(GLMContext ctx, Texture *tex, GLuint required_le
 /* Externs for helpers declared in other translation units. */
 extern void *getBufferData(GLMContext ctx, Buffer *ptr);
 extern GLsizei mglSafeMaxTextureSize(GLMContext ctx);
+
+static bool mglUnpackMappedWithoutPersistent(const Buffer *buf)
+{
+    if (!buf || !buf->mapped)
+        return false;
+    return !((buf->storage_flags & GL_MAP_PERSISTENT_BIT) &&
+             (buf->access_flags & GL_MAP_PERSISTENT_BIT));
+}
 extern size_t mglPixelTypeDatumBytes(GLenum type);
 
 /* Depth-only formats are stored as Depth16Unorm (2 bytes) or Depth32Float
@@ -1664,7 +1672,7 @@ bool mglResolveTexSubImageSource(GLMContext ctx,
     bool source_range_is_bounded = false;
 
     if (unpack_buf) {
-        if (unpack_buf->mapped) {
+        if (mglUnpackMappedWithoutPersistent(unpack_buf)) {
             fprintf(stderr, "MGL ERROR: texSubImage source resolve: unpack buffer %u is mapped\n", unpack_name);
             ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
         }
@@ -1943,7 +1951,7 @@ bool mglStoreCompressedTextureImage(GLMContext ctx,
     Buffer *unpack_buf = STATE(buffers[_PIXEL_UNPACK_BUFFER]);
     if (unpack_buf) {
         const uint8_t *pbo_data = (const uint8_t *)getBufferData(ctx, unpack_buf);
-        if (unpack_buf->mapped || !pbo_data) {
+        if (mglUnpackMappedWithoutPersistent(unpack_buf) || !pbo_data) {
             ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
         }
         uintptr_t raw_off = (uintptr_t)data;
@@ -2215,7 +2223,7 @@ bool mglCompressedSubImageUpdate(GLMContext ctx,
     Buffer *unpack_buf = STATE(buffers[_PIXEL_UNPACK_BUFFER]);
     if (unpack_buf) {
         const uint8_t *pbo_data = (const uint8_t *)getBufferData(ctx, unpack_buf);
-        if (unpack_buf->mapped || !pbo_data) {
+        if (mglUnpackMappedWithoutPersistent(unpack_buf) || !pbo_data) {
             ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
         }
         uintptr_t raw_off = (uintptr_t)data;

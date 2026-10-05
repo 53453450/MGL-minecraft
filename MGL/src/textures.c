@@ -73,6 +73,8 @@ extern bool getParam(GLMContext ctx, TextureParameter *tex_params, GLenum pname,
 extern GLint mglTexLevelCanonicalInternalFormat(GLint internalformat);
 extern bool mglTexLevelInternalFormatCompressed(GLint internalformat);
 extern GLint mglCompressedInternalFormatToSizedUncompressed(GLint internalformat);
+extern GLenum mglTextureQueryInternalFormat(const Texture *tex);
+extern GLint mglTextureQueryCompressedImageSize(const Texture *tex, GLint level);
 
 /* Spec default image-unit state: name=0, level=0, layered=FALSE, layer=0,
  * access=GL_READ_ONLY, format=GL_R8. */
@@ -7124,7 +7126,7 @@ void mglGetTextureLevelParameteriv(GLMContext ctx, GLuint texture, GLint level, 
             *params = (GLint)tex_level->depth;
             break;
         case GL_TEXTURE_INTERNAL_FORMAT:
-            *params = internalformat;
+            *params = (GLint)mglTextureQueryInternalFormat(tex);
             break;
         case GL_TEXTURE_RED_SIZE:
         case GL_TEXTURE_GREEN_SIZE:
@@ -7135,12 +7137,10 @@ void mglGetTextureLevelParameteriv(GLMContext ctx, GLuint texture, GLint level, 
             *params = mglTexLevelComponentBits(internalformat, pname);
             break;
         case GL_TEXTURE_COMPRESSED:
-            *params = mglTexLevelInternalFormatCompressed(internalformat) ? GL_TRUE : GL_FALSE;
+            *params = mglTexLevelInternalFormatCompressed((GLint)mglTextureQueryInternalFormat(tex)) ? GL_TRUE : GL_FALSE;
             break;
         case GL_TEXTURE_COMPRESSED_IMAGE_SIZE:
-            *params = mglTexLevelInternalFormatCompressed(internalformat)
-                ? (GLint)tex_level->data_size
-                : 0;
+            *params = mglTextureQueryCompressedImageSize(tex, level);
             break;
         case GL_TEXTURE_RED_TYPE:
         case GL_TEXTURE_GREEN_TYPE:

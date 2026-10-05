@@ -23,6 +23,7 @@
 #include "mgl_trace_log.h"
 #include "mgl_env_flag.h"
 #include "pixel_utils.h"
+#include "mgl_pixel_format.h"
 #include "mgl_texture_compat.h"
 #include <stdlib.h>
 #include <stddef.h>
@@ -365,6 +366,40 @@ bool mglTexLevelInternalFormatCompressed(GLint internalformat)
         default:
             return false;
     }
+}
+
+GLenum mglTextureQueryInternalFormat(const Texture *tex)
+{
+    if (!tex)
+        return 0;
+    if (tex->compressed_internalformat &&
+        mglTexLevelInternalFormatCompressed((GLint)tex->compressed_internalformat))
+        return tex->compressed_internalformat;
+    return tex->internalformat;
+}
+
+GLint mglTextureQueryCompressedImageSize(const Texture *tex, GLint level)
+{
+    GLenum fmt;
+    GLuint bw = 0, bh = 0, bd = 1, bs = 0;
+    GLuint w, h, d;
+    if (!tex || level < 0 || !tex->faces[0].levels)
+        return 0;
+    fmt = mglTextureQueryInternalFormat(tex);
+    if (!mglTexLevelInternalFormatCompressed((GLint)fmt))
+        return 0;
+    if (mglTexLevelInternalFormatCompressed((GLint)tex->internalformat))
+        return (GLint)tex->faces[0].levels[level].data_size;
+    if (!mglCompressedBlockInfoOf(fmt, &bw, &bh, &bd, &bs) ||
+        bw == 0u || bh == 0u || bd == 0u)
+        return 0;
+    w = tex->faces[0].levels[level].width;
+    h = tex->faces[0].levels[level].height;
+    d = tex->faces[0].levels[level].depth;
+    if (d < 1u)
+        d = 1u;
+    return (GLint)(((w + bw - 1u) / bw) * ((h + bh - 1u) / bh) *
+                   ((d + bd - 1u) / bd) * bs);
 }
 
 /*
@@ -1685,8 +1720,8 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
             *params = tex->faces[0].levels[level].height;            return;
         case GL_TEXTURE_DEPTH:
             *params = tex->faces[0].levels[level].depth;            return;
-        case GL_TEXTURE_INTERNAL_FORMAT:
-            *params = internalformat;            return;
+            case GL_TEXTURE_INTERNAL_FORMAT:
+            *params = (GLint)mglTextureQueryInternalFormat(tex);            return;
         case GL_TEXTURE_RED_SIZE:
         case GL_TEXTURE_GREEN_SIZE:
         case GL_TEXTURE_BLUE_SIZE:
@@ -1695,11 +1730,9 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
         case GL_TEXTURE_STENCIL_SIZE:
             *params = mglTexLevelComponentBits(internalformat, pname);            return;
         case GL_TEXTURE_COMPRESSED:
-            *params = mglTexLevelInternalFormatCompressed(internalformat) ? GL_TRUE : GL_FALSE;            return;
+            *params = mglTexLevelInternalFormatCompressed((GLint)mglTextureQueryInternalFormat(tex)) ? GL_TRUE : GL_FALSE;            return;
         case GL_TEXTURE_COMPRESSED_IMAGE_SIZE:
-            *params = mglTexLevelInternalFormatCompressed(internalformat)
-                ? (GLint)tex->faces[0].levels[level].data_size
-                : 0;            return;
+            *params = mglTextureQueryCompressedImageSize(tex, level);            return;
         case GL_TEXTURE_RED_TYPE:
         case GL_TEXTURE_GREEN_TYPE:
         case GL_TEXTURE_BLUE_TYPE:
