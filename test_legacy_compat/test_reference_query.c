@@ -178,6 +178,26 @@ int main(void)
                   1);
     expect_member("a sibling element is not a use", kArray, "blk", "colors[1]",
                   0);
+
+    static const char *kArrayOther =
+        "#version 450\n"
+        "layout(std140, binding = 0) uniform Blk { vec4 colors[4]; } blk;\n"
+        "layout(location = 0) out vec4 color;\n"
+        "void main() { color = blk.colors[1]; }\n";
+    expect_member("the [0] array resource covers a later element", kArrayOther,
+                  "blk", "colors[0]", 1);
+
+    static const char *kTricky =
+        "#version 430\n"
+        "struct U { float d[2]; };\n"
+        "struct UU { U b[2]; };\n"
+        "uniform TrickyBlock { UU a[3]; } e[2];\n"
+        "layout(location = 0) out vec4 color;\n"
+        "void main() { color = vec4(e[0].a[2].b[0].d[1]); }\n";
+    expect_member("nested UBO leaf [0] covers d[1] on instance 0", kTricky, "e",
+                  "a[2].b[0].d[0]", 1);
+    expect_name("array-of-blocks element 0 is a use", kTricky, "e[0]", 1);
+    expect_name("array-of-blocks element 1 is unused", kTricky, "e[1]", 0);
     expect_member("index-less member name covers every element", kArray, "blk",
                   "colors", 1);
     expect_member("another instance does not match", kArray, "other", "colors[0]",

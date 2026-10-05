@@ -562,7 +562,8 @@ static int mglFrontendRefFlatten(const MGLExpr *e, MGLFrontendRefPath *out)
 }
 
 static int mglFrontendRefComponentMatches(const MGLFrontendRefComponent *q,
-                                          const MGLFrontendRefComponent *p)
+                                          const MGLFrontendRefComponent *p,
+                                          int last_query_comp)
 {
     if (strcmp(q->name, p->name) != 0)
         return 0;
@@ -574,6 +575,12 @@ static int mglFrontendRefComponentMatches(const MGLFrontendRefComponent *q,
                        * one element must not answer for its siblings */
         const long long qi = q->indices[i];
         const long long pi = p->indices[i];
+        /* GL 4.6 §7.3.1.1 names an array of basic types as `name[0]` with
+         * ARRAY_SIZE covering every element, so a query whose last index is
+         * that postfix matches any access index.  A non-zero last index, or
+         * an index on an earlier component, stays exact. */
+        if (last_query_comp && i + 1u == q->index_count && qi == 0)
+            continue;
         if (qi >= 0 && pi >= 0 && qi != pi)
             return 0;
     }
@@ -594,7 +601,8 @@ static int mglFrontendRefPathMatches(const MGLFrontendRefPath *path,
     uint32_t i = 0;
     for (; i < query->count; i++) {
         if (!mglFrontendRefComponentMatches(&query->comps[i],
-                                            &path->comps[i]))
+                                            &path->comps[i],
+                                            i + 1u == query->count))
             break;
     }
     return i == query->count;

@@ -1037,21 +1037,30 @@ static GLboolean mgl_program_block_referenced_by_stage(Program *pptr, int res_ty
 	if (block->ubo_members && block->ubo_member_count > 0) {
 		const GLboolean have_instance =
 			block->ubo_has_instance_name && block->ubo_instance_name;
+		if (have_instance) {
+			/* A named instance is referenced if any access starts at that
+			 * instance.  Array-of-blocks elements (`e[0]` vs `e[1]`) are
+			 * distinct resources (GL 4.6 §7.3.1.1). */
+			char inst[128];
+			const char *query = block->ubo_instance_name;
+			if (mgl_program_uniform_block_array_size(block) > 1u) {
+				int n = snprintf(inst, sizeof(inst), "%s[%u]",
+				                 block->ubo_instance_name,
+				                 block->ubo_array_element);
+				if (n <= 0 || (size_t)n >= sizeof(inst))
+					return GL_FALSE;
+				query = inst;
+			}
+			return mgl_program_stage_references_name(pptr, query_stage,
+			                                          query)
+				       ? GL_TRUE
+				       : GL_FALSE;
+		}
 		for (GLuint m = 0; m < block->ubo_member_count; m++) {
 			const char *member = block->ubo_members[m].name;
 			if (!member)
 				continue;
-			/* With the instance name known, require a qualified access so
-			 * an unrelated identifier that merely shares the member's name
-			 * cannot fake a reference. */
-			const GLboolean referenced =
-				have_instance
-					? mgl_program_stage_references_member(
-					      pptr, query_stage, block->ubo_instance_name,
-					      member)
-					: mgl_program_stage_references_name(
-					      pptr, query_stage, member);
-			if (referenced)
+			if (mgl_program_stage_references_name(pptr, query_stage, member))
 				return GL_TRUE;
 		}
 		return GL_FALSE;
@@ -1589,9 +1598,21 @@ static GLboolean mgl_program_active_uniform_referenced_by_stage(Program *pptr,
 	{
 		/* Active-uniform enumeration de-duplicates blocks shared by several
 		 * shader stages, so res_stage is only the first owner encountered. */
-		if (res_type == _UNIFORM_BUFFER_RES)
-			return mgl_program_block_referenced_by_stage(pptr, res_type, res,
-			                                            target_stage);
+		if (res_type == _UNIFORM_BUFFER_RES) {
+			const char *member = res->ubo_member->name;
+			if (!member)
+				return GL_FALSE;
+			if (res->ubo_has_instance_name && res->ubo_instance_name)
+				return mgl_program_stage_references_member(
+					       pptr, target_stage, res->ubo_instance_name,
+					       member)
+					       ? GL_TRUE
+					       : GL_FALSE;
+			return mgl_program_stage_references_name(pptr, target_stage,
+			                                          member)
+				       ? GL_TRUE
+				       : GL_FALSE;
+		}
 		if (res_type == _UNIFORM_CONSTANT_RES && pptr &&
 		    res->ubo_member->query_name)
 			return mgl_program_stage_references_name(pptr, target_stage,
@@ -5465,55 +5486,37 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 			case GL_REFERENCED_BY_VERTEX_SHADER:
 				params[out_idx++] = (res_type == _UNIFORM_BUFFER_RES ||
 				             res_type == _STORAGE_BUFFER_RES)
-					? ((res_type == _STORAGE_BUFFER_RES ||
-					    res->ubo_array_element == 0)
-						? mgl_program_block_referenced_by_stage(pptr, res_type, res, _VERTEX_SHADER)
-						: GL_FALSE)
+					? mgl_program_block_referenced_by_stage(pptr, res_type, res, _VERTEX_SHADER)
 					: ((stage == _VERTEX_SHADER) ? GL_TRUE : GL_FALSE);
 				break;
 			case GL_REFERENCED_BY_FRAGMENT_SHADER:
 				params[out_idx++] = (res_type == _UNIFORM_BUFFER_RES ||
 				             res_type == _STORAGE_BUFFER_RES)
-					? ((res_type == _STORAGE_BUFFER_RES ||
-					    res->ubo_array_element == 0)
-						? mgl_program_block_referenced_by_stage(pptr, res_type, res, _FRAGMENT_SHADER)
-						: GL_FALSE)
+					? mgl_program_block_referenced_by_stage(pptr, res_type, res, _FRAGMENT_SHADER)
 					: ((stage == _FRAGMENT_SHADER) ? GL_TRUE : GL_FALSE);
 				break;
 			case GL_REFERENCED_BY_GEOMETRY_SHADER:
 				params[out_idx++] = (res_type == _UNIFORM_BUFFER_RES ||
 				             res_type == _STORAGE_BUFFER_RES)
-					? ((res_type == _STORAGE_BUFFER_RES ||
-					    res->ubo_array_element == 0)
 					? mgl_program_block_referenced_by_stage(pptr, res_type, res, _GEOMETRY_SHADER)
-					: GL_FALSE)
 					: ((stage == _GEOMETRY_SHADER) ? GL_TRUE : GL_FALSE);
 				break;
 			case GL_REFERENCED_BY_TESS_CONTROL_SHADER:
 				params[out_idx++] = (res_type == _UNIFORM_BUFFER_RES ||
 				             res_type == _STORAGE_BUFFER_RES)
-					? ((res_type == _STORAGE_BUFFER_RES ||
-					    res->ubo_array_element == 0)
-						? mgl_program_block_referenced_by_stage(pptr, res_type, res, _TESS_CONTROL_SHADER)
-						: GL_FALSE)
+					? mgl_program_block_referenced_by_stage(pptr, res_type, res, _TESS_CONTROL_SHADER)
 					: ((stage == _TESS_CONTROL_SHADER) ? GL_TRUE : GL_FALSE);
 				break;
 			case GL_REFERENCED_BY_TESS_EVALUATION_SHADER:
 				params[out_idx++] = (res_type == _UNIFORM_BUFFER_RES ||
 				             res_type == _STORAGE_BUFFER_RES)
-					? ((res_type == _STORAGE_BUFFER_RES ||
-					    res->ubo_array_element == 0)
-						? mgl_program_block_referenced_by_stage(pptr, res_type, res, _TESS_EVALUATION_SHADER)
-						: GL_FALSE)
+					? mgl_program_block_referenced_by_stage(pptr, res_type, res, _TESS_EVALUATION_SHADER)
 					: ((stage == _TESS_EVALUATION_SHADER) ? GL_TRUE : GL_FALSE);
 				break;
 			case GL_REFERENCED_BY_COMPUTE_SHADER:
 				params[out_idx++] = (res_type == _UNIFORM_BUFFER_RES ||
 				             res_type == _STORAGE_BUFFER_RES)
-					? ((res_type == _STORAGE_BUFFER_RES ||
-					    res->ubo_array_element == 0)
-						? mgl_program_block_referenced_by_stage(pptr, res_type, res, _COMPUTE_SHADER)
-						: GL_FALSE)
+					? mgl_program_block_referenced_by_stage(pptr, res_type, res, _COMPUTE_SHADER)
 					: ((stage == _COMPUTE_SHADER) ? GL_TRUE : GL_FALSE);
 				break;
 			case GL_LOCATION:
