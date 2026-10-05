@@ -1215,6 +1215,49 @@ static bool splitSampleArrayCoord(Codegen &cg, MGLIRTexKind kind,
     return true;
 }
 
+/* GLSL 4.60 §8.9.2: array layer = clamp(floor(layer + 0.5), 0, N − 1).
+ * Metal's uint(float) truncates toward zero, which fails CTS cases that
+ * sweep layer through half-integers (e.g. −0.5 … 3.5). */
+static llvm::Value *emitGlArrayLayerIndex(Codegen &cg, llvm::Value *tex,
+                                          llvm::Value *layerF,
+                                          MGLIRTexKind kind, bool isDepth)
+{
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+    if (!layerF) {
+        return cg.b->getInt32(0);
+    }
+    if (!layerF->getType()->isFloatingPointTy()) {
+        layerF = cg.b->CreateSIToFP(layerF, f32);
+    }
+    llvm::Value *rounded = cg.b->CreateUnaryIntrinsic(
+        llvm::Intrinsic::floor,
+        cg.b->CreateFAdd(layerF, llvm::ConstantFP::get(f32, 0.5)));
+    llvm::Value *idx = cg.b->CreateFPToSI(rounded, i32);
+    const char *sizeFn = nullptr;
+    if (kind == MGLIR_TEX_2D_ARRAY || kind == MGLIR_TEX_1D_ARRAY ||
+        kind == MGLIR_TEX_2D_MS_ARRAY) {
+        sizeFn = isDepth ? "air.get_array_size_depth_2d_array"
+                         : "air.get_array_size_texture_2d_array";
+    } else if (kind == MGLIR_TEX_CUBE_ARRAY) {
+        sizeFn = isDepth ? "air.get_array_size_depth_cube_array"
+                         : "air.get_array_size_texture_cube_array";
+    }
+    llvm::Value *zero = cg.b->getInt32(0);
+    if (sizeFn && tex) {
+        llvm::Value *n = callAirFn(cg, sizeFn, i32, {tex});
+        llvm::Value *nPos = cg.b->CreateICmpSGT(n, zero);
+        llvm::Value *maxIdx = cg.b->CreateSelect(
+            nPos, cg.b->CreateSub(n, cg.b->getInt32(1)), zero);
+        idx = cg.b->CreateSelect(cg.b->CreateICmpSLT(idx, zero), zero, idx);
+        idx = cg.b->CreateSelect(cg.b->CreateICmpSGT(idx, maxIdx), maxIdx,
+                                 idx);
+    } else {
+        idx = cg.b->CreateSelect(cg.b->CreateICmpSLT(idx, zero), zero, idx);
+    }
+    return idx;
+}
+
 static llvm::Value *addTexelOffset(Codegen &cg, llvm::Value *coord,
                                    llvm::Value *off)
 {
@@ -8841,6 +8884,13 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     }
                     lodFlag = cg.b->getInt1(false);
                     lodOrBias = bias;
+                } else if (cg.isVS || cg.isCompute || cg.isTessControl ||
+                           cg.isTessEval || cg.isGeometry) {
+                    /* GLSL: non-fragment texture() uses LOD 0 (zero
+                     * derivatives). Metal sample_compare without level() can
+                     * disagree on depth2d_array; pin level(0). */
+                    lodFlag = cg.b->getInt1(true);
+                    lodOrBias = llvm::ConstantFP::get(f32, 0.0);
                 }
 
                 llvm::Type *cmpRet = llvm::StructType::get(
@@ -8856,6 +8906,17 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                                &sampleCoord, &arrayLayer) ||
                         e->u.call.arg_count < 3) {
                         return llvm::ConstantFP::get(f32, 0.0);
+                    }
+                    /* Re-derive layer with GLSL round-to-nearest; split uses
+                     * truncating FPToSI which fails half-integer sweeps. */
+                    if (ncomp >= 4) {
+                        arrayLayer = emitGlArrayLayerIndex(
+                            cg, tex,
+                            cg.b->CreateExtractElement(uv, cg.b->getInt32(3)),
+                            sampleKind, true);
+                    } else if (arrayLayer) {
+                        arrayLayer = emitGlArrayLayerIndex(
+                            cg, tex, arrayLayer, sampleKind, true);
                     }
                     llvm::Value *ref = emitFloatArg(2);
                     if (!ref) return nullptr;
@@ -8897,7 +8958,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             {cg.b->getInt32(0), cg.b->getInt32(1)}));
                     llvm::Value *layerF =
                         cg.b->CreateExtractElement(uv, cg.b->getInt32(2));
-                    llvm::Value *layer = cg.b->CreateFPToSI(layerF, i32);
+                    llvm::Value *layer = emitGlArrayLayerIndex(
+                        cg, tex, layerF, sampleKind, true);
                     llvm::Value *ref =
                         cg.b->CreateExtractElement(uv, cg.b->getInt32(3));
                     /* Metal's frontend always sets has_offset=true for
@@ -8920,6 +8982,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     uv, llvm::UndefValue::get(uv->getType()),
                     llvm::ConstantVector::get(
                         {cg.b->getInt32(0), cg.b->getInt32(1)}));
+                /* Metal's frontend always sets has_offset=true for depth2d. */
+                offsetFlag = cg.b->getInt1(true);
                 std::vector<llvm::Value *> cmpArgs = {
                     tex, smp, cg.b->getInt32(1), xy, ref, offsetFlag, cmpOffset,
                     lodFlag, lodOrBias, llvm::ConstantFP::get(f32, 0.0),
