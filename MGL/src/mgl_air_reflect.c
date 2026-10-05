@@ -215,8 +215,28 @@ static int air_push_aoa_rows(const MGLIRType *t, uint32_t off,
                            lt->row_major) ? GL_TRUE : GL_FALSE;
         u->location_offset = -1;
         u->explicit_location = -1;
-        u->top_level_array_size = u->size;
-        u->top_level_array_stride = u->array_stride;
+        /* GL 4.6 Table 7.6: TOP_LEVEL_ARRAY_SIZE is the outermost declared
+         * dimension of an array of arrays; ARRAY_SIZE stays the innermost.
+         * TOP_LEVEL_ARRAY_STRIDE is the byte stride between a[i] and a[i+1]. */
+        if (t->aoa_dim_count > 1) {
+            uint32_t rest = 1u;
+            uint32_t tls = 0u;
+            u->top_level_array_size = (GLint)t->aoa_dims[0];
+            for (uint32_t d = 1; d < t->aoa_dim_count; d++) {
+                if (air_u32_mul(rest, t->aoa_dims[d], &rest) != 0) {
+                    rest = 0u;
+                    break;
+                }
+            }
+            if (rest > 0u &&
+                air_u32_mul(rest, elem_bytes ? elem_bytes : stride, &tls) == 0)
+                u->top_level_array_stride = (GLint)tls;
+            else
+                u->top_level_array_stride = u->array_stride;
+        } else {
+            u->top_level_array_size = u->size;
+            u->top_level_array_stride = u->array_stride;
+        }
     }
     return 0;
 }
