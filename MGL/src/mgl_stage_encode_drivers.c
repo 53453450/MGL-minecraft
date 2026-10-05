@@ -669,6 +669,10 @@ static bool mglStageEncodeBindVertexAttributes(
         if (!attrib_buffer->data.mtl_data) {
             mglRendererBindMTLBuffer(renderer, attrib_buffer);
         }
+        if (attrib_buffer->data.mtl_data &&
+            mglRenderBufferHasCPUDirty(attrib_buffer->data.dirty_bits)) {
+            (void)mglRendererUpdateDirtyBuffer(renderer, attrib_buffer);
+        }
         if (!attrib_buffer->data.mtl_data) {
             fprintf(stderr,
                     "MGL VBIND skip attrib=%u buffer=%u: no Metal backing\n",

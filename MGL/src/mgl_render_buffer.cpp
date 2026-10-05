@@ -1119,6 +1119,21 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
         if (buffer->data.buffer_size > 0) {
             modifyLength = std::min(modifyLength, buffer->data.buffer_size);
         }
+        uint8_t* cpuData = buffer->data.buffer_data >= 0x1000u
+            ? reinterpret_cast<uint8_t*>(
+                  static_cast<uintptr_t>(buffer->data.buffer_data))
+            : nullptr;
+        uint8_t* metalData =
+            static_cast<uint8_t*>(metalBuffer->contents());
+        if (cpuData && metalData && cpuData != metalData && modifyLength > 0) {
+            size_t uploadOffset = 0;
+            size_t uploadLength = 0;
+            if (mgl::bufferShadowUploadRange(
+                    buffer, modifyLength, &uploadOffset, &uploadLength)) {
+                memmove(metalData + uploadOffset, cpuData + uploadOffset,
+                        uploadLength);
+            }
+        }
         if (modifyLength > 0 &&
             metalBuffer->storageMode() == MTL::StorageModeManaged) {
             metalBuffer->didModifyRange(NS::Range::Make(0, modifyLength));
