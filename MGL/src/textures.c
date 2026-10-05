@@ -2787,25 +2787,51 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         return true;
     }
 
-    /* Remap compressed internalformat to sized uncompressed equivalent early,
-     * so that all downstream comparisons (level==0 base-level change check,
-     * Metal format selection, storage allocation) see the actual uncompressed
-     * storage format.  This prevents false-positive base-level invalidation
-     * when glTexImage* is called multiple times for the same texture (e.g.
-     * CubeMap face uploads) with a compressed internalformat: without this
-     * early remap, the second call would see internalformat=compressed but
-     * tex->internalformat=uncompressed and invalidate the whole texture.
-     *
-     * Sized block formats (RGTC/BPTC/ETC2/EAC/…): MGL has no online encoder.
-     * TexImage with client/PBO pixels must raise INVALID_OPERATION so CTS can
-     * fall back to uploading precompressed blocks via CompressedTexImage*.
-     * Generic COMPRESSED_* keep the remap path (pixel round-trip / 1D). */
-    if (mglTexLevelInternalFormatCompressed(internalformat))
+    /* Compressed TexImage* policy:
+     * - Sized block formats (RGTC/BPTC/ETC2/EAC/…): no online encoder.
+     *   Non-NULL pixels → INVALID_OPERATION (CTS falls back to CompressedTex*).
+     *   NULL pixels → allocate empty compressed storage (so
+     *   TEXTURE_COMPRESSED_IMAGE_SIZE / INTERNAL_FORMAT stay usable, e.g.
+     *   buffer_storage.map_persistent_texture).
+     * - Generic COMPRESSED_* → remap to sized uncompressed for pixel
+     *   round-trip / 1D (Metal cannot encode). */
+    if (mglTexLevelInternalFormatCompressed(internalformat) &&
+        !mglIsGenericCompressedFormat((GLenum)internalformat))
     {
-        if (pixels && !mglIsGenericCompressedFormat((GLenum)internalformat))
+        if (pixels)
         {
             ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
         }
+        if (!proxy)
+        {
+            GLuint bw = 0u, bh = 0u, bd = 1u, bs = 0u;
+            GLsizei store_depth = depth > 0 ? depth : 1;
+            GLsizei image_size;
+            GLenum store_target = tex->target;
+
+            if (!mglCompressedBlockInfoOf((GLenum)internalformat, &bw, &bh, &bd,
+                                          &bs) ||
+                bw == 0u || bh == 0u || bd == 0u || bs == 0u)
+            {
+                ERROR_RETURN_VALUE(GL_INVALID_ENUM, false);
+            }
+            image_size = (GLsizei)((((GLuint)width + bw - 1u) / bw) *
+                                   (((GLuint)height + bh - 1u) / bh) *
+                                   (((GLuint)store_depth + bd - 1u) / bd) * bs);
+            if (store_target == GL_TEXTURE_CUBE_MAP)
+            {
+                store_target =
+                    (GLenum)(GL_TEXTURE_CUBE_MAP_POSITIVE_X + (GLint)face);
+            }
+            return mglStoreCompressedTextureImage(
+                ctx, store_target, level, (GLenum)internalformat, width, height,
+                store_depth, 0, image_size, NULL);
+        }
+        /* Proxy: keep compressed IF; fall through for metadata-only path. */
+        tex->compressed_internalformat = internalformat;
+    }
+    else if (mglTexLevelInternalFormatCompressed(internalformat))
+    {
         tex->compressed_internalformat = internalformat;
         internalformat = mglCompressedInternalFormatToSizedUncompressed(internalformat);
     }
