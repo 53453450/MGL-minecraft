@@ -250,6 +250,196 @@ static bool mglSamplerResourceNamesMatch(const char *left,
            strncmp(left, right, left_length) == 0;
 }
 
+static GLint mglPlainUniformLocationCount(const MGLShaderResource *resource);
+static int mglPlainUniformSpanAvailable(
+    const bool used[MAX_PLAIN_UNIFORM_LOCATIONS],
+    const char *used_by[MAX_PLAIN_UNIFORM_LOCATIONS],
+    GLint base, GLint span, const char *name);
+static void mglPlainUniformMarkSpan(
+    bool used[MAX_PLAIN_UNIFORM_LOCATIONS],
+    const char *used_by[MAX_PLAIN_UNIFORM_LOCATIONS],
+    GLint base, GLint span, const char *name);
+static GLint mglFirstFreePlainUniformSpan(
+    const bool used[MAX_PLAIN_UNIFORM_LOCATIONS], GLint span);
+
+void mglAssignSamplerUniformLocations(Program *program)
+{
+    static const int resource_types[] = {
+        _UNIFORM_CONSTANT_RES,
+        _SAMPLED_IMAGE_RES,
+        _SEPARATE_IMAGE_RES,
+        _SEPARATE_SAMPLERS_RES,
+        _STORAGE_IMAGE_RES
+    };
+    bool used[MAX_PLAIN_UNIFORM_LOCATIONS] = {false};
+    if (!program) {
+        return;
+    }
+
+    /* Reserve locations already claimed by non-sampler plain uniforms so
+     * sampler/image locations share the same GL location space (GL 4.6
+     * §7.6.1).  Reflection may leave synthetic ids (>= 0x4000) on opaque
+     * uniforms; those are rewritten below into free low slots. */
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *resources =
+            &program->shader_resources_list[stage][_UNIFORM_CONSTANT_RES];
+        for (GLuint index = 0;
+             resources->list && index < resources->count;
+             index++) {
+            MGLShaderResource *resource = &resources->list[index];
+            if (mglProgramResourceLooksSamplerLike(resource,
+                                                   _UNIFORM_CONSTANT_RES)) {
+                continue;
+            }
+            if (resource->ubo_members && resource->ubo_member_count > 0u) {
+                for (GLuint m = 0u; m < resource->ubo_member_count; m++) {
+                    const SpirvUBOMember *member = &resource->ubo_members[m];
+                    GLint base = member->location_offset;
+                    GLint span = mglUniformTypeLocationSpan(member->gl_type,
+                                                            member->size);
+                    if (base >= 0 &&
+                        base + span <= (GLint)MAX_PLAIN_UNIFORM_LOCATIONS) {
+                        mglPlainUniformMarkSpan(used, NULL, base, span, NULL);
+                    }
+                }
+                continue;
+            }
+            GLint base = resource->uniform_location;
+            GLint span = mglPlainUniformLocationCount(resource);
+            if (base >= 0 &&
+                base + span <= (GLint)MAX_PLAIN_UNIFORM_LOCATIONS) {
+                mglPlainUniformMarkSpan(used, NULL, base, span, NULL);
+            }
+        }
+    }
+
+    /* Pass 0: keep explicit / already-dense sampler locations and mark them. */
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        for (size_t ti = 0;
+             ti < sizeof(resource_types) / sizeof(resource_types[0]);
+             ti++) {
+            int resource_type = resource_types[ti];
+            MGLShaderResourceList *resources =
+                &program->shader_resources_list[stage][resource_type];
+            for (GLuint index = 0;
+                 resources->list && index < resources->count;
+                 index++) {
+                MGLShaderResource *resource = &resources->list[index];
+                if (!mglProgramResourceLooksSamplerLike(resource,
+                                                       resource_type) ||
+                    !resource->name || resource->uniform_location < 0) {
+                    continue;
+                }
+                GLint base = resource->uniform_location;
+                GLint span = resource->gl_array_size > 1
+                                 ? resource->gl_array_size
+                                 : 1;
+                if (base >= MGL_SYNTHETIC_SAMPLER_LOCATION_BASE ||
+                    base + span > (GLint)MAX_PLAIN_UNIFORM_LOCATIONS) {
+                    continue;
+                }
+                if (!mglPlainUniformSpanAvailable(used, NULL, base, span,
+                                                  NULL)) {
+                    /* Collision with a plain uniform or earlier sampler:
+                     * force reassignment in pass 1. */
+                    resource->uniform_location =
+                        MGL_SYNTHETIC_SAMPLER_LOCATION_BASE;
+                    continue;
+                }
+                mglPlainUniformMarkSpan(used, NULL, base, span, NULL);
+            }
+        }
+    }
+
+    /* Pass 1: rewrite synthetic / colliding locations into free low slots,
+     * sharing one location across stages for the same sampler name. */
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        for (size_t ti = 0;
+             ti < sizeof(resource_types) / sizeof(resource_types[0]);
+             ti++) {
+            int resource_type = resource_types[ti];
+            MGLShaderResourceList *resources =
+                &program->shader_resources_list[stage][resource_type];
+            for (GLuint index = 0;
+                 resources->list && index < resources->count;
+                 index++) {
+                MGLShaderResource *resource = &resources->list[index];
+                if (!mglProgramResourceLooksSamplerLike(resource,
+                                                       resource_type) ||
+                    !resource->name) {
+                    continue;
+                }
+                GLint span = resource->gl_array_size > 1
+                                 ? resource->gl_array_size
+                                 : 1;
+                if (resource->uniform_location >= 0 &&
+                    resource->uniform_location <
+                        MGL_SYNTHETIC_SAMPLER_LOCATION_BASE &&
+                    resource->uniform_location + span <=
+                        (GLint)MAX_PLAIN_UNIFORM_LOCATIONS) {
+                    continue;
+                }
+
+                GLint shared = -1;
+                for (int s2 = _VERTEX_SHADER; s2 < _MAX_SHADER_TYPES; s2++) {
+                    for (size_t tj = 0;
+                         tj < sizeof(resource_types) / sizeof(resource_types[0]);
+                         tj++) {
+                        int rt2 = resource_types[tj];
+                        MGLShaderResourceList *others =
+                            &program->shader_resources_list[s2][rt2];
+                        for (GLuint j = 0;
+                             others->list && j < others->count;
+                             j++) {
+                            MGLShaderResource *other = &others->list[j];
+                            if (other == resource ||
+                                !mglProgramResourceLooksSamplerLike(other,
+                                                                    rt2) ||
+                                !other->name ||
+                                !mglSamplerResourceNamesMatch(other->name,
+                                                              resource->name)) {
+                                continue;
+                            }
+                            if (other->uniform_location >= 0 &&
+                                other->uniform_location <
+                                    MGL_SYNTHETIC_SAMPLER_LOCATION_BASE &&
+                                other->uniform_location + span <=
+                                    (GLint)MAX_PLAIN_UNIFORM_LOCATIONS) {
+                                shared = other->uniform_location;
+                                break;
+                            }
+                        }
+                        if (shared >= 0) {
+                            break;
+                        }
+                    }
+                    if (shared >= 0) {
+                        break;
+                    }
+                }
+
+                GLint assigned = shared;
+                if (assigned < 0) {
+                    assigned = mglFirstFreePlainUniformSpan(used, span);
+                }
+                if (assigned < 0) {
+                    fprintf(stderr,
+                            "MGL WARNING: no sampler uniform location left "
+                            "program=%u name=%s stage=%d\n",
+                            program->name,
+                            resource->name ? resource->name : "(null)",
+                            stage);
+                    continue;
+                }
+                resource->uniform_location = assigned;
+                if (shared < 0) {
+                    mglPlainUniformMarkSpan(used, NULL, assigned, span, NULL);
+                }
+            }
+        }
+    }
+}
+
 void mglUnifySamplerUniformLocations(Program *program)
 {
     static const int resource_types[] = {

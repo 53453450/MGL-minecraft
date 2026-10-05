@@ -2980,6 +2980,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                 pptr->name);
         goto link_fail;
     }
+    mglAssignSamplerUniformLocations(pptr);
     mglUnifySamplerUniformLocations(pptr);
 
     /* The AIR compute expansion consumes fixed 32-byte input records

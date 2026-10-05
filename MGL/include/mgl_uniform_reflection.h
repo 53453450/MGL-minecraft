@@ -37,6 +37,9 @@ GLenum mglProgramActiveAttribType(const MGLShaderResource *res);
 GLint mglSyntheticSamplerUniformLocation(int stage, int resource_type,
                                          GLuint index);
 void mglUnifySamplerUniformLocations(Program *program);
+/* Map sampler/image uniforms into free GL locations shared with plain
+ * uniforms (0..).  Reflection may temporarily use synthetic high ids. */
+void mglAssignSamplerUniformLocations(Program *program);
 
 void mglAssignPlainUniformLocations(Program *program);
 int mglAssignAggregateMemberLocations(Program *program);
