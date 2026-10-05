@@ -5612,6 +5612,18 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return cg.lvalues["gl_FrontFacing"];
         }
+        if (strcmp(e->u.var_ref.name, "gl_HelperInvocation") == 0) {
+            if (cg.isVS || cg.isCompute || cg.isTessControl ||
+                cg.isTessEval || cg.isGeometry) {
+                cg.err = 1;
+                cg.errmsg =
+                    "codegen: gl_HelperInvocation requires a fragment stage";
+                return nullptr;
+            }
+            /* Metal: simd_is_helper_thread() -> air.simd_is_helper_thread. */
+            return callAirFn(cg, "air.simd_is_helper_thread", cg.b->getInt1Ty(),
+                             {});
+        }
         if (strcmp(e->u.var_ref.name, "gl_PointCoord") == 0) {
             if (!cg.lvalues.count("gl_PointCoord")) {
                 cg.err = 1;
@@ -10669,12 +10681,14 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         } else if (strcmp(name, "normalize") == 0 ||
                    strcmp(name, "abs") == 0 ||
                    strcmp(name, "clamp") == 0 ||
-                   strcmp(name, "mix") == 0 ||
                    strcmp(name, "fma") == 0) {
             /* genType result: width follows the first argument. */
             t.scalar = MGLIR_SCALAR_FLOAT;
             if (e->u.call.arg_count > 0)
                 t.vec = exprType(cg, e->u.call.args[0], mod, locals).vec;
+        } else if (strcmp(name, "mix") == 0) {
+            if (e->u.call.arg_count > 0)
+                t = exprType(cg, e->u.call.args[0], mod, locals);
         } else if (strcmp(name, "floatBitsToInt") == 0 ||
                    strcmp(name, "floatBitsToUint") == 0) {
             t.scalar = strcmp(name, "floatBitsToUint") == 0

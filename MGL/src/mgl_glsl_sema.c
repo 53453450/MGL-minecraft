@@ -1919,6 +1919,9 @@ static const BiFn kBuiltins[] = {
     { "clamp",     3, { BI_ARG_GENF, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_GENF },
     { "mix",       3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
     { "mix",       3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_FLOAT }, BI_RET_GENF },
+    { "mix",       3, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_BVEC }, BI_RET_GENI },
+    { "mix",       3, { BI_ARG_BVEC, BI_ARG_BVEC, BI_ARG_BVEC }, BI_RET_BVEC },
+    { "mix",       3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_BVEC }, BI_RET_GENF },
     { "fma",       3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
     /* trigonometric */
     { "sin",  1, { BI_ARG_GENF }, BI_RET_GENF },
@@ -2297,7 +2300,7 @@ static MGLIRType *builtin_call_type(const char *name,
                 break;
             }
             if (f->args[j] == BI_ARG_GENF || f->args[j] == BI_ARG_GENI ||
-                f->args[j] == BI_ARG_OUT_GENI) {
+                f->args[j] == BI_ARG_OUT_GENI || f->args[j] == BI_ARG_BVEC) {
                 if (gen_dim == 0) {
                     gen_dim = d;
                 } else if (gen_dim != d) {
@@ -3047,11 +3050,18 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 strcmp(e->u.var_ref.name, "gl_WorkGroupSize") == 0 ||
                 strcmp(e->u.var_ref.name, "gl_WorkGroupID") == 0 ||
                 strcmp(e->u.var_ref.name, "gl_NumWorkGroups") == 0) {
-                if (s->stage != MGL_STAGE_COMPUTE ||
-                    (s->tu && s->tu->version > 0 && s->tu->version < 430)) {
+                /* Desktop: #version 430+.  ES: #version 310 es (ES 3.1). */
+                const int es_profile =
+                    s->tu && s->tu->version_profile &&
+                    strcmp(s->tu->version_profile, "es") == 0;
+                const uint32_t ver = s->tu ? s->tu->version : 0u;
+                const int version_ok =
+                    ver == 0u ||
+                    (es_profile ? ver >= 310u : ver >= 430u);
+                if (s->stage != MGL_STAGE_COMPUTE || !version_ok) {
                     sema_error(s, e->line,
                                "'%s' requires a compute shader with "
-                               "#version 430 or later",
+                               "#version 430 or later (or #version 310 es)",
                                e->u.var_ref.name);
                     return NULL;
                 }
@@ -3078,6 +3088,11 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             if (strcmp(e->u.var_ref.name, "gl_FrontFacing") == 0) {
                 /* Fragment built-in front/back facing flag; the AIR
                  * backend maps it to the front_facing fragment argument. */
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_BOOL));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_HelperInvocation") == 0) {
+                /* Fragment built-in helper-invocation flag (GLSL 4.50 /
+                 * ES 3.1).  AIR maps it to air.simd_is_helper_thread. */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_BOOL));
             }
             if (strcmp(e->u.var_ref.name, "gl_PointCoord") == 0) {

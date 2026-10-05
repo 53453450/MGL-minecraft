@@ -408,7 +408,22 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
             return cg.b->CreateIntrinsic(llvm::Intrinsic::minnum, {t},
                                          {mx, a2});
         }
-        /* mix(x, y, a) = fma(a, y, x * (1 - a)) */
+        /* mix(x, y, a) with boolean a is a per-component select (GLSL 4.50
+         * mix(genType, genType, genBType)).  Float a stays the lerp. */
+        if (typeIsIntLike(a2->getType()) &&
+            a2->getType()->getScalarSizeInBits() <= 8u) {
+            llvm::Value *cond = a2;
+            if (a2->getType()->getScalarSizeInBits() != 1u) {
+                cond = cg.b->CreateICmpNE(
+                    a2, llvm::Constant::getNullValue(a2->getType()));
+            }
+            if (t->isVectorTy() && !cond->getType()->isVectorTy()) {
+                auto *vt = llvm::cast<llvm::FixedVectorType>(t);
+                cond = cg.b->CreateVectorSplat(
+                    vt->getElementCount().getFixedValue(), cond);
+            }
+            return cg.b->CreateSelect(cond, a1, a0);
+        }
         a1 = coerceScalar(cg, a1, MGLIR_SCALAR_FLOAT);
         a2 = coerceScalar(cg, a2, MGLIR_SCALAR_FLOAT);
         if (t->isVectorTy()) a2 = deps.broadcastTo(cg, a2, t);
