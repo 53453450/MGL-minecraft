@@ -15501,12 +15501,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             /* GLSL 4.60 §4.3.4 / §4.5: integers are flat; `flat` is
              * constant-across-primitive; `noperspective` is linear in
              * window space; default/smooth is perspective-correct.
-             * Apple AIR: center+perspective, center+no_perspective,
-             * or flat+no_perspective. */
+             * Apple AIR (metal frontend): center+perspective,
+             * center+no_perspective, or bare air.flat — do NOT pair
+             * air.flat with air.no_perspective (AGX then treats the
+             * input as center+no_perspective, so flat==noperspective). */
             const bool interpFlat =
                 forceFlat || varyingUsesFloatCarrier(mt, has_gs) ||
                 !scalarIsFloat(mt.scalar);
-            const bool noPersp = interpFlat || noPerspective;
             /* Keep the GLSL vector width.  `forceFlat` only selects
              * air.flat; rewriting a float vecN to scalar float made
              * generated() disagree with the VS vertex_output (CTS
@@ -15522,14 +15523,16 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "air.fragment_input"),
                 llvm::MDString::get(ctx, airGenerated(tagName, iface)),
                 llvm::MDString::get(ctx,
-                                    interpFlat ? "air.flat" : "air.center"),
-                llvm::MDString::get(ctx,
-                                    noPersp ? "air.no_perspective"
-                                            : "air.perspective"),
-                llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, mslTypeName(iface)),
-                llvm::MDString::get(ctx, "air.arg_name"),
-                llvm::MDString::get(ctx, tagName)};
+                                    interpFlat ? "air.flat" : "air.center")};
+            if (!interpFlat) {
+                elems.push_back(llvm::MDString::get(
+                    ctx, noPerspective ? "air.no_perspective"
+                                       : "air.perspective"));
+            }
+            elems.push_back(llvm::MDString::get(ctx, "air.arg_type_name"));
+            elems.push_back(llvm::MDString::get(ctx, mslTypeName(iface)));
+            elems.push_back(llvm::MDString::get(ctx, "air.arg_name"));
+            elems.push_back(llvm::MDString::get(ctx, tagName));
             argNodes.push_back(llvm::MDNode::get(ctx, elems));
         };
         for (VarSym &v : syms) {
