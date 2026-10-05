@@ -3096,6 +3096,26 @@ static bool mglPdGeometryPassthroughNeedsFlat(GLenum type)
     return mglRenderGLSLNeedsFlat((uint32_t)type) != 0;
 }
 
+/* gl_PerVertex members stay in STAGE_OUTPUT with location UINT32_MAX so they
+ * do not steal user slots, but they are not user varyings.  Emitting
+ * layout(location=4294967295) out vec4 gl_Position overwrites the builtin
+ * position load (slot wraparound) and breaks Metal PSO creation. */
+static int mglPdPassthroughSkipBuiltinOutput(const MGLShaderResource *output)
+{
+    if (!output || !output->name)
+        return 1;
+    if (output->location >= 0x0fffffffu)
+        return 1;
+    if (strncmp(output->name, "gl_", 3) != 0)
+        return 0;
+    return strcmp(output->name, "gl_Position") == 0 ||
+           strcmp(output->name, "gl_PointSize") == 0 ||
+           strcmp(output->name, "gl_ClipDistance") == 0 ||
+           strcmp(output->name, "gl_CullDistance") == 0 ||
+           strcmp(output->name, "gl_Layer") == 0 ||
+           strcmp(output->name, "gl_ViewportIndex") == 0;
+}
+
 static GLenum mglPdPassthroughDeclType(const MGLShaderResourceList *fsInputs,
                                        const MGLShaderResource *output)
 {
@@ -3191,12 +3211,7 @@ int mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(
         if (output->is_per_patch) continue;
 
         if (output->stream > 0) continue;
-        /* gl_PointSize is a built-in: it cannot carry a layout(location)
-         * redeclaration.  The kernel parks it in slot 1.x; main() only forwards
-         * it when the GS actually declared it, because the pipeline builder
-         * rejects a vertex stage that writes point size on a Line/Triangle
-         * topology. */
-        if (strcmp(output->name, "gl_PointSize") == 0) continue;
+        if (mglPdPassthroughSkipBuiltinOutput(output)) continue;
         if (getenv("MGL_DUMP_AIR"))
             fprintf(stderr, "MGL PTVS varying: name=%s gl_type=0x%x loc=%u\n",
                     output->name ? output->name : "?",
@@ -3362,6 +3377,7 @@ int mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
         if (output->stream > 0) continue;
+        if (mglPdPassthroughSkipBuiltinOutput(output)) continue;
         const GLenum declType = mglPdPassthroughDeclType(fsInputs, output);
         const unsigned matCols = mglPdGeometryPassthroughMatrixCols(declType);
         const unsigned matRows = mglPdGeometryPassthroughMatrixRows(declType);
@@ -3491,6 +3507,7 @@ int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(void *renderer,
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
+        if (mglPdPassthroughSkipBuiltinOutput(output)) continue;
         /* Integer varyings are stored as float carriers in the TES record (same
          * ABI as GS expansion); declare float attributes and forward the
          * swizzle - FS converts with fptosi/fptoui. */
@@ -3600,6 +3617,7 @@ int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(void *renderer,
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
+        if (mglPdPassthroughSkipBuiltinOutput(output)) continue;
         const unsigned matCols = mglPdGeometryPassthroughMatrixCols(
             output->gl_type);
         const unsigned matRows = mglPdGeometryPassthroughMatrixRows(

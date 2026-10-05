@@ -1330,8 +1330,13 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         }
     }
     /* Extra auto-location stride consumed by interface-block array
-     * members (one location per element, see the Q_IN branch below). */
-    uint32_t gs_input_span_pad = 0;
+     * members (one location per element, see the Q_IN branch below).
+     * Next user in/out slot: gl_PerVertex builtins stay in the resource
+     * list at UINT32_MAX and must not advance these counters (codegen
+     * skips the same names; using list.count assigned out_gs_1 to
+     * location 1 while the kernel stored it at 0). */
+    uint32_t next_user_in = 0;
+    uint32_t next_user_out = 0;
     /* TCS/TES: patch and per-vertex I/O use separate location spaces
      * (matches mgl_air_backend.cpp).  Reflection used to share one counter,
      * so TES←TCS name remapping picked the wrong slot when a TES omitted
@@ -1585,8 +1590,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                                                        attrib_names);
             }
             if (location == UINT32_MAX && !air_is_per_vertex_builtin_io(s)) {
-                location = lists[_STAGE_INPUT_RES].count +
-                           gs_input_span_pad;
+                location = next_user_in;
             }
             if (!push_resource(&lists[_STAGE_INPUT_RES], s, t, location, 0,
                                stage) ||
@@ -1602,12 +1606,14 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
              * column so glGetAttribLocation("a[i]") == base+i stays aligned
              * with VAO binds and the AIR vertex_input location_index
              * sequence (GL 4.6 §4.4.1). */
-            if (!air_is_per_vertex_builtin_io(s)) {
+            if (!air_is_per_vertex_builtin_io(s) && location != UINT32_MAX) {
+                uint32_t span = 1u;
                 if (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 1u) {
-                    gs_input_span_pad += t->array_size - 1u;
+                    span = t->array_size;
                 } else if (t->kind == MGLIR_TYPE_MATRIX && t->cols > 1u) {
-                    gs_input_span_pad += t->cols - 1u;
+                    span = t->cols;
                 }
+                next_user_in = location + span;
             }
         } else if (q & MGL_AST_Q_OUT) {
             if (location == UINT32_MAX && !air_is_per_vertex_builtin_io(s)) {
@@ -1643,7 +1649,8 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         tess_next_vertex_out += span;
                     }
                 } else {
-                    location = lists[_STAGE_OUTPUT_RES].count;
+                    location = next_user_out;
+                    next_user_out += 1u;
                 }
             }
             if (!push_resource(&lists[_STAGE_OUTPUT_RES], s, t, location, 0,

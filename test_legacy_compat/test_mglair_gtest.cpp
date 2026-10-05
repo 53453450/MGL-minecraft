@@ -947,6 +947,57 @@ TEST(Reflect, TessEvalPerVertexBuiltinDoesNotStealUserLocations) {
     mglGLSLTranslationUnitDestroy(tu);
 }
 
+TEST(Reflect, GeometryPerVertexBuiltinDoesNotStealUserLocations) {
+    static const char *src =
+        "#version 460 core\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices = 1) out;\n"
+        "in gl_PerVertex {\n"
+        "    vec4 gl_Position;\n"
+        "} gl_in[];\n"
+        "out gl_PerVertex {\n"
+        "    vec4 gl_Position;\n"
+        "};\n"
+        "flat in int vertexID[];\n"
+        "flat in ivec4 out_vs_1[];\n"
+        "out vec4 out_gs_1;\n"
+        "void main() {\n"
+        "    out_gs_1 = vec4(vertexID[0] * 2, vertexID[0] * 2 + 1,\n"
+        "                    vertexID[0] * 2 + 2, vertexID[0] * 2 + 3);\n"
+        "    gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+        "    EmitVertex();\n"
+        "}\n";
+    MGLTranslationUnit *tu = nullptr;
+    MGLIRModule *mod = semacheck(src, MGL_STAGE_GEOMETRY, &tu);
+    ASSERT_NE(nullptr, mod);
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES] = {{0}};
+    ASSERT_EQ(0, mglAirReflectModule(mod, MGL_STAGE_GEOMETRY, nullptr,
+                                     lists, nullptr, 0));
+
+    GLint out_gs_1_loc = -2;
+    GLint vertexID_loc = -2;
+    GLint out_vs_1_loc = -2;
+    for (GLuint i = 0; i < lists[_STAGE_OUTPUT_RES].count; i++) {
+        const char *name = lists[_STAGE_OUTPUT_RES].list[i].name;
+        if (name && strcmp(name, "out_gs_1") == 0)
+            out_gs_1_loc = (GLint)lists[_STAGE_OUTPUT_RES].list[i].location;
+    }
+    for (GLuint i = 0; i < lists[_STAGE_INPUT_RES].count; i++) {
+        const char *name = lists[_STAGE_INPUT_RES].list[i].name;
+        if (name && strcmp(name, "vertexID") == 0)
+            vertexID_loc = (GLint)lists[_STAGE_INPUT_RES].list[i].location;
+        if (name && strcmp(name, "out_vs_1") == 0)
+            out_vs_1_loc = (GLint)lists[_STAGE_INPUT_RES].list[i].location;
+    }
+    EXPECT_EQ(0, out_gs_1_loc);
+    EXPECT_EQ(0, vertexID_loc);
+    EXPECT_EQ(1, out_vs_1_loc);
+
+    mglAirReflectDestroy(lists);
+    mglIRModuleDestroy(mod);
+    mglGLSLTranslationUnitDestroy(tu);
+}
+
 TEST(Reflect, UniformBlockInstanceArray) {
     static const char *src =
         "#version 460 core\n"
