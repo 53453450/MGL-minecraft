@@ -4937,6 +4937,16 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             }
         }
     }
+    /* GLSL 4.60 §7.1: sized redecl of gl_ClipDistance / gl_CullDistance
+     * must not exceed gl_MaxClipDistances / gl_MaxCullDistances. */
+    if (global && var_name &&
+        (strcmp(var_name, "gl_ClipDistance") == 0 ||
+         strcmp(var_name, "gl_CullDistance") == 0) &&
+        t->kind == MGLIR_TYPE_ARRAY && t->array_size > 8u) {
+        sema_error(s, d->line,
+                   "'%s' array size %u exceeds implementation limit 8",
+                   var_name, t->array_size);
+    }
     /* GLSL 4.60 §4.3: compute shaders have no user in/out variables. */
     if (global && s->stage == MGL_STAGE_COMPUTE && d->name &&
         (d->qualifiers & (MGL_AST_Q_IN | MGL_AST_Q_OUT)) &&
