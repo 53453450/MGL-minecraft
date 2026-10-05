@@ -904,6 +904,49 @@ TEST(Reflect, VertexResources) {
     mglGLSLTranslationUnitDestroy(tu);
 }
 
+TEST(Reflect, TessEvalPerVertexBuiltinDoesNotStealUserLocations) {
+    static const char *src =
+        "#version 460 core\n"
+        "layout(isolines, point_mode) in;\n"
+        "in gl_PerVertex {\n"
+        "    vec4 gl_Position;\n"
+        "} gl_in[];\n"
+        "out gl_PerVertex {\n"
+        "    vec4 gl_Position;\n"
+        "};\n"
+        "in OUT_TC { vec2 value1; ivec4 value2; } tc_data[];\n"
+        "out vec4 te_position;\n"
+        "out vec2 te_value1;\n"
+        "out flat ivec4 te_value2;\n"
+        "void main() {\n"
+        "    te_position = gl_in[0].gl_Position;\n"
+        "    te_value1 = tc_data[0].value1;\n"
+        "    te_value2 = tc_data[0].value2;\n"
+        "}\n";
+    MGLTranslationUnit *tu = nullptr;
+    MGLIRModule *mod = semacheck(src, MGL_STAGE_TESS_EVALUATION, &tu);
+    ASSERT_NE(nullptr, mod);
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES] = {{0}};
+    ASSERT_EQ(0, mglAirReflectModule(mod, MGL_STAGE_TESS_EVALUATION, nullptr,
+                                     lists, nullptr, 0));
+
+    GLint te_position_loc = -2;
+    GLint te_value1_loc = -2;
+    for (GLuint i = 0; i < lists[_STAGE_OUTPUT_RES].count; i++) {
+        const char *name = lists[_STAGE_OUTPUT_RES].list[i].name;
+        if (name && strcmp(name, "te_position") == 0)
+            te_position_loc = (GLint)lists[_STAGE_OUTPUT_RES].list[i].location;
+        if (name && strcmp(name, "te_value1") == 0)
+            te_value1_loc = (GLint)lists[_STAGE_OUTPUT_RES].list[i].location;
+    }
+    EXPECT_EQ(0, te_position_loc);
+    EXPECT_EQ(1, te_value1_loc);
+
+    mglAirReflectDestroy(lists);
+    mglIRModuleDestroy(mod);
+    mglGLSLTranslationUnitDestroy(tu);
+}
+
 TEST(Reflect, UniformBlockInstanceArray) {
     static const char *src =
         "#version 460 core\n"
