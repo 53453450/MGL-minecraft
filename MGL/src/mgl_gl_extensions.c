@@ -4250,6 +4250,24 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 		return;
 	}
 
+	/* GL 4.6 §7.3.1: an unsuccessful (or missing) link leaves
+	 * GetProgramInterfaceiv as INVALID_OPERATION except for
+	 * ACTIVE_RESOURCES / MAX_NAME_LENGTH / MAX_NUM_ACTIVE_VARIABLES /
+	 * MAX_NUM_COMPATIBLE_SUBROUTINES, which return 0. */
+	if (!pptr->link_success)
+	{
+		if (pname == GL_ACTIVE_RESOURCES ||
+		    pname == GL_MAX_NAME_LENGTH ||
+		    pname == GL_MAX_NUM_ACTIVE_VARIABLES ||
+		    pname == GL_MAX_NUM_COMPATIBLE_SUBROUTINES)
+		{
+			*params = 0;
+			return;
+		}
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+		return;
+	}
+
 	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
 	if (res_type_count <= 0)
 	{
