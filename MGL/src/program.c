@@ -57,6 +57,7 @@
 #include "mgl_env_flag.h"
 #include "mgl_glsl_parser.h"
 #include "mgl_glsl_ast.h"
+#include "mgl_frontend_session.h"
 
 
 
@@ -2528,6 +2529,86 @@ static bool mglValidateCrossStageLayoutBindings(Program *pptr)
     return true;
 }
 
+static void mglProgramClearBuiltinInterface(Program *pptr)
+{
+    if (!pptr)
+        return;
+    for (int s = 0; s < _MAX_SHADER_TYPES; s++) {
+        for (GLuint i = 0; i < pptr->builtin_program_input_count[s] && i < 16; i++) {
+            free((void *)pptr->builtin_program_inputs[s][i].name);
+            pptr->builtin_program_inputs[s][i].name = NULL;
+        }
+        memset(pptr->builtin_program_inputs[s], 0,
+               sizeof(pptr->builtin_program_inputs[s]));
+        pptr->builtin_program_input_count[s] = 0;
+        for (GLuint i = 0; i < pptr->builtin_program_output_count[s] && i < 16; i++) {
+            free((void *)pptr->builtin_program_outputs[s][i].name);
+            pptr->builtin_program_outputs[s][i].name = NULL;
+        }
+        memset(pptr->builtin_program_outputs[s], 0,
+               sizeof(pptr->builtin_program_outputs[s]));
+        pptr->builtin_program_output_count[s] = 0;
+    }
+}
+
+static void mglProgramPushBuiltinResource(MGLShaderResource *slots, GLuint *count,
+                                          const char *name, GLuint gl_type,
+                                          GLint array_size, GLboolean is_array)
+{
+    MGLShaderResource *r;
+    if (!slots || !count || !name || *count >= 16)
+        return;
+    r = &slots[*count];
+    memset(r, 0, sizeof(*r));
+    r->name = strdup(name);
+    if (!r->name)
+        return;
+    r->gl_type = gl_type;
+    r->gl_array_size = array_size;
+    r->is_array = is_array;
+    r->location = 0xffffffffu;
+    r->location_index = 0xffffffffu;
+    r->uniform_location = -1;
+    (*count)++;
+}
+
+static void mglProgramApplyBuiltinInterface(Program *pptr)
+{
+    if (!pptr)
+        return;
+    mglProgramClearBuiltinInterface(pptr);
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        Shader *sh = pptr->shader_slots[stage];
+        MGLTranslationUnit *tu = sh ? sh->frontend_tu : NULL;
+        if (!tu)
+            continue;
+        if (stage == _VERTEX_SHADER) {
+            if (mglFrontendBuiltinUsed(NULL, tu, "gl_VertexID"))
+                mglProgramPushBuiltinResource(
+                    pptr->builtin_program_inputs[stage],
+                    &pptr->builtin_program_input_count[stage],
+                    "gl_VertexID", GL_INT, 1, GL_FALSE);
+            if (mglFrontendBuiltinUsed(NULL, tu, "gl_InstanceID"))
+                mglProgramPushBuiltinResource(
+                    pptr->builtin_program_inputs[stage],
+                    &pptr->builtin_program_input_count[stage],
+                    "gl_InstanceID", GL_INT, 1, GL_FALSE);
+        }
+        if (stage == _FRAGMENT_SHADER) {
+            if (mglFrontendBuiltinUsed(NULL, tu, "gl_FragDepth"))
+                mglProgramPushBuiltinResource(
+                    pptr->builtin_program_outputs[stage],
+                    &pptr->builtin_program_output_count[stage],
+                    "gl_FragDepth", GL_FLOAT, 1, GL_FALSE);
+            if (mglFrontendBuiltinUsed(NULL, tu, "gl_SampleMask"))
+                mglProgramPushBuiltinResource(
+                    pptr->builtin_program_outputs[stage],
+                    &pptr->builtin_program_output_count[stage],
+                    "gl_SampleMask", GL_INT, 1, GL_TRUE);
+        }
+    }
+}
+
 void mglLinkProgram(GLMContext ctx, GLuint program)
 {
     Program *pptr;
@@ -2627,6 +2708,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     pptr->cull_distance_count = 0u;
     pptr->clip_distance_count = 0u;
     memset(pptr->air_builtin_mask, 0, sizeof(pptr->air_builtin_mask));
+    mglProgramClearBuiltinInterface(pptr);
     pptr->tess_uses_cull_distance = GL_FALSE;
     pptr->tess_cull_distance_count = 0u;
     memset(pptr->validated_resource_lists, 0, sizeof(pptr->validated_resource_lists));
@@ -2833,6 +2915,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
     applyFragmentOutputLocationIndices(pptr);
     applyMultiDimArrayUniformNames(pptr);
+    mglProgramApplyBuiltinInterface(pptr);
     alignFragmentInputLocationsToVertexOutputs(pptr);
     mglBridgeSkippedGeometryShaderVaryings(pptr);
     mglAssignPlainUniformLocations(pptr);

@@ -4680,6 +4680,10 @@ GLint  mglGetProgramResourceLocation(GLMContext ctx, GLuint program, GLenum prog
 	res = mgl_program_resource_find_by_name(pptr, res_types, res_type_count, name, NULL, &found_stage, &found_type);
 	if (res)
 	{
+		if ((programInterface == GL_PROGRAM_INPUT ||
+		     programInterface == GL_PROGRAM_OUTPUT) &&
+		    res->location == 0xffffffffu)
+			return -1;
 		GLint location = (res->location != 0xffffffffu) ? (GLint)res->location : (GLint)res->gl_binding;
 		if (programInterface == GL_PROGRAM_INPUT || programInterface == GL_PROGRAM_OUTPUT)
 			location += (GLint)(res->ubo_array_element * mgl_program_resource_location_span(res));

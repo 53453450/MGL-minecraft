@@ -237,6 +237,19 @@ int main(void)
     expect_name("unqualified query still sees the matching use", kTwoBlocks,
                 "tint", 1);
 
+    static const char *kAoa =
+        "#version 430\n"
+        "uniform vec4 a[3][4][5];\n"
+        "layout(location = 0) out vec4 color;\n"
+        "void main() {\n"
+        "    color = vec4(0.0);\n"
+        "    for (int i = 0; i < 5; ++i)\n"
+        "        color += a[2][1][i];\n"
+        "}\n";
+    expect_name("aoa innermost row used by a loop is a use", kAoa, "a[2][1][0]",
+                1);
+    expect_name("aoa unused sibling row is not a use", kAoa, "a[0][0][0]", 0);
+
     /* ---- degenerate inputs ---- */
     {
         MGLTranslationUnit *tu = analyze("degenerate", kNested);

@@ -480,6 +480,45 @@ fail:
     return 0;
 }
 
+static int mglFrontendRefAppendIndex(MGLFrontendRefPath *out, long long v)
+{
+    if (!out || out->count == 0u)
+        return 0;
+    MGLFrontendRefComponent *c = &out->comps[out->count - 1u];
+    if (c->index_count == MGL_FRONTEND_REF_MAX_INDICES)
+        return 0;
+    c->indices[c->index_count++] = v;
+    return 1;
+}
+
+/* Inverse of sema's ast_flat_index: int(row)*N + int(k) becomes the
+ * original row subscripts followed by k. */
+static int mglFrontendRefUnpackIndexExpr(const MGLExpr *e,
+                                         MGLFrontendRefPath *out)
+{
+    if (!e)
+        return 0;
+    if (e->kind == MGL_EXPR_CALL && e->u.call.name &&
+        (strcmp(e->u.call.name, "int") == 0 ||
+         strcmp(e->u.call.name, "uint") == 0) &&
+        e->u.call.arg_count == 1u)
+        return mglFrontendRefUnpackIndexExpr(e->u.call.args[0], out);
+    if (e->kind == MGL_EXPR_BINARY && e->u.binary.op == MGL_OP_ADD) {
+        const MGLExpr *lhs = e->u.binary.lhs;
+        const MGLExpr *rhs = e->u.binary.rhs;
+        if (lhs && lhs->kind == MGL_EXPR_BINARY &&
+            lhs->u.binary.op == MGL_OP_MUL && lhs->u.binary.rhs &&
+            lhs->u.binary.rhs->kind == MGL_EXPR_LITERAL)
+            return mglFrontendRefUnpackIndexExpr(lhs->u.binary.lhs, out) &&
+                   mglFrontendRefUnpackIndexExpr(rhs, out);
+    }
+    if (e->kind == MGL_EXPR_LITERAL &&
+        (e->u.literal.base == MGL_AST_TYPE_INT ||
+         e->u.literal.base == MGL_AST_TYPE_UINT))
+        return mglFrontendRefAppendIndex(out, (long long)e->u.literal.value);
+    return mglFrontendRefAppendIndex(out, -1);
+}
+
 /* Flatten an expression into its access path; 0 when it is not a plain path
  * (a call result, a literal, ...). */
 static int mglFrontendRefFlatten(const MGLExpr *e, MGLFrontendRefPath *out)
@@ -500,6 +539,11 @@ static int mglFrontendRefFlatten(const MGLExpr *e, MGLFrontendRefPath *out)
     case MGL_EXPR_INDEX: {
         if (!mglFrontendRefFlatten(e->u.index.object, out) || out->count == 0u)
             return 0;
+        /* Sema rewrites a[i][j][k] into a[int(i)*N+int(j)*M+int(k)] and
+         * sets index.flat.  Unpack that tree back into GLSL subscripts so
+         * a query for "a[2][1][0]" still matches. */
+        if (e->u.index.flat)
+            return mglFrontendRefUnpackIndexExpr(e->u.index.index, out);
         MGLFrontendRefComponent *c = &out->comps[out->count - 1u];
         const MGLExpr *ix = e->u.index.index;
         long long v = -1;
