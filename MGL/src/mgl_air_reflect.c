@@ -669,6 +669,70 @@ static int apply_block_interface_name(MGLShaderResource *res,
     return 0;
 }
 
+/* GL 4.6 §7.3.1.1: named I/O interface-block members are queried as
+ * "<blockType>.<member>"; anonymous blocks use the bare member name. */
+static char *air_io_query_name(const MGLIRModule *mod, const MGLIRSymbol *s)
+{
+    const char *block_type = NULL;
+    uint32_t i;
+
+    if (!s || !s->name)
+        return NULL;
+    if (!s->block_name || !mod)
+        return strdup(s->name);
+    for (i = 0; i < mod->symbol_count; i++) {
+        const MGLIRSymbol *inst = mod->symbols[i];
+        const MGLIRType *bt;
+        if (!inst || !inst->is_io_block || !inst->name)
+            continue;
+        if (strcmp(inst->name, s->block_name) != 0)
+            continue;
+        bt = inst->type;
+        while (bt && bt->kind == MGLIR_TYPE_ARRAY)
+            bt = bt->elem_type;
+        if (bt && bt->name && bt->name[0])
+            block_type = bt->name;
+        break;
+    }
+    if (!block_type || strcmp(block_type, s->block_name) == 0)
+        return strdup(s->name);
+    return air_format("%s.%s", block_type, s->name);
+}
+
+static int air_apply_io_query_name(MGLShaderResourceList *list,
+                                   const MGLIRModule *mod,
+                                   const MGLIRSymbol *s)
+{
+    char *qn;
+    MGLShaderResource *last;
+    if (!s || !s->block_name)
+        return 1;
+    if (!list || list->count == 0)
+        return 0;
+    qn = air_io_query_name(mod, s);
+    if (!qn)
+        return 0;
+    last = &list->list[list->count - 1];
+    free((void *)last->name);
+    last->name = qn;
+    return 1;
+}
+
+/* True when a gl_* symbol is a backend builtin rather than a reflected
+ * interface resource.  Flattened gl_PerVertex members keep block_name. */
+static int air_skip_gl_symbol(const MGLIRSymbol *s)
+{
+    if (!s || !s->name || strncmp(s->name, "gl_", 3) != 0)
+        return 0;
+    if (s->qualifiers & MGL_AST_Q_UNIFORM)
+        return 0;
+    if (s->location != UINT32_MAX)
+        return 0;
+    if (s->block_name)
+        return 0;
+    return 1;
+}
+
 /* Returns 1 on success, 0 on realloc failure (partial `r` is freed). */
 static int push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
                          const MGLIRType *type, GLuint location,
@@ -684,7 +748,12 @@ static int push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
         return 0;
     }
     r.location = location;
-    r.location_index = (s->index != UINT32_MAX) ? s->index : 0u;
+    if (s->index != UINT32_MAX)
+        r.location_index = s->index;
+    else if (stage == MGL_STAGE_FRAGMENT && (s->qualifiers & MGL_AST_Q_OUT))
+        r.location_index = 0u; /* unspecified FS color index is 0 */
+    else
+        r.location_index = 0xffffffffu;
     r.gl_binding = binding;
     r.binding = binding;
     /* Resource reflection keeps the top-level array type for array size and
@@ -1048,10 +1117,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
          * contract and the attrCount-driven slot math stay consistent with
          * the metallib the AIR backend emits (which counts every
          * VarSym::ATTR, gl_-prefixed or not). */
-        if (s->is_function ||
-            (s->name && strncmp(s->name, "gl_", 3) == 0 &&
-             !(s->qualifiers & MGL_AST_Q_UNIFORM) &&
-             s->location == UINT32_MAX)) {
+        if (s->is_function || air_skip_gl_symbol(s)) {
             continue;
         }
         uint32_t q = s->qualifiers;
@@ -1266,10 +1332,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
          * contract and the attrCount-driven slot math stay consistent with
          * the metallib the AIR backend emits (which counts every
          * VarSym::ATTR, gl_-prefixed or not). */
-        if (s->is_function ||
-            (s->name && strncmp(s->name, "gl_", 3) == 0 &&
-             !(s->qualifiers & MGL_AST_Q_UNIFORM) &&
-             s->location == UINT32_MAX)) {
+        if (s->is_function || air_skip_gl_symbol(s)) {
             continue;
         }
         const MGLIRType *t = s->type;
@@ -1506,7 +1569,8 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                            gs_input_span_pad;
             }
             if (!push_resource(&lists[_STAGE_INPUT_RES], s, t, location, 0,
-                               stage)) {
+                               stage) ||
+                !air_apply_io_query_name(&lists[_STAGE_INPUT_RES], mod, s)) {
                 if (err && errCap)
                     snprintf(err, errCap, "out of memory");
                 free(agg_types);
@@ -1561,7 +1625,8 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 }
             }
             if (!push_resource(&lists[_STAGE_OUTPUT_RES], s, t, location, 0,
-                               stage)) {
+                               stage) ||
+                !air_apply_io_query_name(&lists[_STAGE_OUTPUT_RES], mod, s)) {
                 if (err && errCap)
                     snprintf(err, errCap, "out of memory");
                 free(agg_types);

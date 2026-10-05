@@ -5194,6 +5194,7 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
                 ms->layout = d->layout;
                 ms->binding = isym->binding;
                 ms->location = UINT32_MAX;
+                ms->index = UINT32_MAX;
                 ms->offset = bt->member_offsets ? bt->member_offsets[m]
                                                 : UINT32_MAX;
                 ms->block_name = strdup(var_name);

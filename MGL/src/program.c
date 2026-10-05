@@ -2606,6 +2606,13 @@ static void mglProgramApplyBuiltinInterface(Program *pptr)
                     &pptr->builtin_program_output_count[stage],
                     "gl_SampleMask", GL_INT, 1, GL_TRUE);
         }
+        if (stage == _TESS_CONTROL_SHADER) {
+            if (mglFrontendBuiltinUsed(NULL, tu, "gl_InvocationID"))
+                mglProgramPushBuiltinResource(
+                    pptr->builtin_program_inputs[stage],
+                    &pptr->builtin_program_input_count[stage],
+                    "gl_InvocationID", GL_INT, 1, GL_FALSE);
+        }
     }
 }
 
