@@ -895,6 +895,10 @@ static int lookup_builtin_const_int(const char *name, int64_t *value)
         { "gl_MaxTransformFeedbackBuffers", 4 },
         { "gl_MaxVertexStreams", 4 },
         { "gl_MaxViewports", 16 },
+        /* GLSL 4.60 §7.3 — clip/cull distance limits (glm_params = 8). */
+        { "gl_MaxClipDistances", 8 },
+        { "gl_MaxCullDistances", 8 },
+        { "gl_MaxCombinedClipAndCullDistances", 8 },
     };
     if (!name || !value) return 0;
     for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
