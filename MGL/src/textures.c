@@ -2787,19 +2787,17 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         return true;
     }
 
-    /* Compressed TexImage* policy:
-     * - Sized block formats (RGTC/BPTC/ETC2/EAC/…): no online encoder.
-     *   Non-NULL pixels are discarded and empty compressed storage is
-     *   allocated — GL allows TexImage* with a sized compressed IF (impl
-     *   would compress); error-path CTS only needs a compressed object.
-     *   NULL pixels → same empty compressed storage (e.g.
-     *   buffer_storage.map_persistent_texture).
-     * - Generic COMPRESSED_* → remap to sized uncompressed for pixel
-     *   round-trip / 1D (Metal cannot encode). */
+    /* Compressed TexImage* policy (no Metal online encoder):
+     * - Non-NULL uncompressed pixels + sized compressed IF → remap to a
+     *   sized uncompressed IF and store the pixels (packed_pixels RGTC
+     *   GetTexImage round-trip).
+     * - NULL pixels → empty compressed storage (error-path / persistent
+     *   map CTS that only needs a compressed object).
+     * - Generic COMPRESSED_* → same remap path. */
     if (mglTexLevelInternalFormatCompressed(internalformat) &&
-        !mglIsGenericCompressedFormat((GLenum)internalformat))
+        !mglIsGenericCompressedFormat((GLenum)internalformat) &&
+        pixels == NULL)
     {
-        pixels = NULL;
         if (!proxy)
         {
             GLuint bw = 0u, bh = 0u, bd = 1u, bs = 0u;

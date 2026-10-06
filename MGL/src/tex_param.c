@@ -454,12 +454,14 @@ GLint mglCompressedInternalFormatToSizedUncompressed(GLint internalformat)
     {
         case GL_COMPRESSED_RED:
         case GL_COMPRESSED_RED_RGTC1:
-        case GL_COMPRESSED_SIGNED_RED_RGTC1:
             return GL_R8;
+        case GL_COMPRESSED_SIGNED_RED_RGTC1:
+            return GL_R8_SNORM;
         case GL_COMPRESSED_RG:
         case GL_COMPRESSED_RG_RGTC2:
-        case GL_COMPRESSED_SIGNED_RG_RGTC2:
             return GL_RG8;
+        case GL_COMPRESSED_SIGNED_RG_RGTC2:
+            return GL_RG8_SNORM;
         case GL_COMPRESSED_RGB:
         case GL_COMPRESSED_RGB8_ETC2:
         case GL_COMPRESSED_SRGB8_ETC2:
