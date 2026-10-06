@@ -14147,9 +14147,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         MType gt = typeFromIR(gs->type);
         const bool isConst = (gs->qualifiers & MGL_AST_Q_CONST) != 0;
         const bool isUniform = (gs->qualifiers & MGL_AST_Q_UNIFORM) != 0;
-        if (gt.isArray() && !isConst && !isUniform) continue;
         if (isUniform && !isConst)
             continue; /* pack load; defaults seeded at link (program.c) */
+        /* Non-const file-scope arrays (ESSL CTS often omits `const` on
+         * `vec2 g_quad[4] = ...`) need memory backing so dynamic indices
+         * work; skipping the init left reads as zero and blackened
+         * advanced-write-fragment-{fs,cs}. */
+        if (gt.isArray() && !isConst && !isUniform) {
+            llvm::Type *arrTy = llvmType(gt, ctx);
+            if (!arrTy || !arrTy->isArrayTy())
+                continue;
+            llvm::Value *gv = emitExpr(cg, d->init, &mod, locals);
+            if (!gv)
+                break;
+            llvm::Value *ptr = cg.b->CreateAlloca(
+                arrTy, nullptr, std::string(d->name) + ".garr");
+            cg.b->CreateAlignedStore(gv, ptr, llvm::Align(4));
+            cg.arrayMem[d->name] = ptr;
+            cg.arrayMemTypes[d->name] = arrTy;
+            continue;
+        }
         llvm::Value *gv = emitExpr(cg, d->init, &mod, locals);
         if (!gv) break;
         cg.lvalues[d->name] = gv;
