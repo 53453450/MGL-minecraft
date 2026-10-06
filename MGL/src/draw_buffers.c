@@ -2374,6 +2374,8 @@ void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const G
 void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLenum type, const void *const*indices, GLsizei drawcount)
 {
     ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
+    /* GL 4.6 §10.4: bad type → INVALID_ENUM; check before pointer guards. */
+    ERROR_CHECK_RETURN(check_element_type(type), GL_INVALID_ENUM);
 
     ERROR_CHECK_RETURN(drawcount >= 0, GL_INVALID_VALUE);
     if (drawcount == 0) return;
@@ -2382,8 +2384,6 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
     {
         ERROR_CHECK_RETURN(count[i] >= 0, GL_INVALID_VALUE);
     }
-
-    ERROR_CHECK_RETURN(check_element_type(type), GL_INVALID_ENUM);
 
     /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
     if (!mglValidateDrawFramebuffer(ctx))
@@ -2437,6 +2437,9 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
 void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *count, GLenum type, const void *const*indices, GLsizei drawcount, const GLint *basevertex)
 {
     ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
+    /* GL 4.6 §10.4 MultiDrawElementsBaseVertex: type → INVALID_ENUM
+     * (same as DrawElementsBaseVertex). Check before NULL-pointer guards. */
+    ERROR_CHECK_RETURN(check_element_type(type), GL_INVALID_ENUM);
 
     ERROR_CHECK_RETURN(drawcount >= 0, GL_INVALID_VALUE);
     if (drawcount == 0) return;
@@ -2445,8 +2448,6 @@ void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *
     {
         ERROR_CHECK_RETURN(count[i] >= 0, GL_INVALID_VALUE);
     }
-
-    ERROR_CHECK_RETURN(check_element_type(type), GL_INVALID_ENUM);
 
     /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
     if (!mglValidateDrawFramebuffer(ctx))
