@@ -2281,12 +2281,46 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
     }
 }
 
+/* GLSL 4.60 §8.9: optional bias parameters on texture / textureProj /
+ * textureOffset / textureProjOffset are fragment-shader only.  The lone
+ * exception is texture(samplerCubeArrayShadow, P, compare) — the float is
+ * the compare ref, not a bias. */
+static int bif_is_frag_bias_overload(const BiFn *f)
+{
+    if (!f || !f->name) {
+        return 0;
+    }
+    if (strcmp(f->name, "texture") == 0) {
+        if (f->argc == 4 && f->args[0] == BI_ARG_SCUBEA_SHADOW) {
+            return 1; /* compare + bias (EXT_texture_shadow_lod) */
+        }
+        if (f->argc == 3 && f->args[2] == BI_ARG_FLOAT &&
+            f->args[0] != BI_ARG_SCUBEA_SHADOW) {
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(f->name, "textureOffset") == 0 && f->argc >= 4 &&
+        f->args[f->argc - 1u] == BI_ARG_FLOAT) {
+        return 1;
+    }
+    if (strcmp(f->name, "textureProj") == 0 && f->argc == 3 &&
+        f->args[2] == BI_ARG_FLOAT) {
+        return 1;
+    }
+    if (strcmp(f->name, "textureProjOffset") == 0 && f->argc == 4 &&
+        f->args[3] == BI_ARG_FLOAT) {
+        return 1;
+    }
+    return 0;
+}
+
 /* Match a builtin call.  On success returns a new MGLIRType for the result
  * (caller owns it), on failure returns NULL and sets *known (1 = the name is
  * a builtin but no signature matched, 0 = unknown name). */
 static MGLIRType *builtin_call_type(const char *name,
                                     const MGLIRType *const *arg_types,
-                                    uint32_t argc, int *known)
+                                    uint32_t argc, int stage, int *known)
 {
     *known = 0;
     for (size_t i = 0; i < sizeof(kBuiltins) / sizeof(kBuiltins[0]); i++) {
@@ -2296,6 +2330,9 @@ static MGLIRType *builtin_call_type(const char *name,
         }
         *known = 1;
         if (f->argc != argc) {
+            continue;
+        }
+        if (stage != MGL_STAGE_FRAGMENT && bif_is_frag_bias_overload(f)) {
             continue;
         }
         uint32_t gen_dim = 0;
@@ -3724,7 +3761,8 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             int bknown = 0;
             MGLIRType *bt = builtin_call_type(e->u.call.name,
                                               (const MGLIRType *const *)atb,
-                                              e->u.call.arg_count, &bknown);
+                                              e->u.call.arg_count, s->stage,
+                                              &bknown);
             /* GLSL 4.20: imageSize is ARB_shader_image_size; 4.30 core. */
             if (bknown && bt && strcmp(e->u.call.name, "imageSize") == 0) {
                 uint32_t ver = s->tu ? s->tu->version : 0;
