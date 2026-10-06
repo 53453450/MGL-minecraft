@@ -708,12 +708,19 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
         if (colorSlot >= MAX_COLOR_ATTACHMENTS) {
             continue;
         }
+        const GLenum drawBuffer = mglMetalDrawBufferAt(ctx, i);
         int drawSlotPresent =
-            mglMetalResolveFboDrawAttachmentIndex(ctx,
-                                                  mglMetalDrawBufferAt(ctx, i),
+            mglMetalResolveFboDrawAttachmentIndex(ctx, drawBuffer,
                                                   &attachmentIndex) &&
             attachmentIndex < MAX_COLOR_ATTACHMENTS &&
             ((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) != 0u;
+        if (!drawSlotPresent &&
+            mglRenderDrawBufferIsNone((uint32_t)drawBuffer) &&
+            ((fbo->color_attachment_bitfield >> i) & 1u) != 0u) {
+            /* Match configureUserFBO: GL_NONE keeps Metal slot i occupied. */
+            attachmentIndex = i;
+            drawSlotPresent = 1;
+        }
         FBOAttachment *attachment = drawSlotPresent ? &fbo->color_attachments[attachmentIndex] : NULL;
         Texture *tex = drawSlotPresent ? mglRendererAttachmentTextureFor(ctx, attachment) : NULL;
         void * expected = NULL;
@@ -980,11 +987,26 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
         if (colorSlot >= MAX_COLOR_ATTACHMENTS) {
             continue;
         }
-        if (mglMetalResolveFboDrawAttachmentIndex(
-                ctx, mglMetalDrawBufferAt(ctx, (GLuint)i), &attachmentIndex) &&
+        /* GL maps FS location i -> draw_buffers[i].  Metal keeps the same
+         * color(i) index, so a GL_NONE hole must still occupy Metal slot i
+         * (writeMask=0) or later locations land on the wrong attachment /
+         * nowhere.  Prefer COLOR_ATTACHMENTi when present. */
+        const GLenum drawBuffer = mglMetalDrawBufferAt(ctx, (GLuint)i);
+        int haveAttachment = 0;
+        if (mglMetalResolveFboDrawAttachmentIndex(ctx, drawBuffer,
+                                                  &attachmentIndex) &&
             attachmentIndex < MAX_COLOR_ATTACHMENTS &&
             (fbo->color_attachment_bitfield & (1u << attachmentIndex)) &&
             fbo->color_attachments[attachmentIndex].texture) {
+            haveAttachment = 1;
+        } else if (mglRenderDrawBufferIsNone((uint32_t)drawBuffer) &&
+                   (GLuint)i < MAX_COLOR_ATTACHMENTS &&
+                   (fbo->color_attachment_bitfield & (1u << i)) &&
+                   fbo->color_attachments[i].texture) {
+            attachmentIndex = (GLuint)i;
+            haveAttachment = 1;
+        }
+        if (haveAttachment) {
             Texture *tex = mglRendererAttachmentTextureFor(
                 ctx, &fbo->color_attachments[attachmentIndex]);
             if (!tex) {
