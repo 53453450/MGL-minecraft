@@ -2097,10 +2097,17 @@ static GLuint mglPlainUniformTypeInfo(GLuint gl_type, GLboolean *is_float)
         case GL_FLOAT_MAT2x3: case GL_FLOAT_MAT3x2: return 6;
         case GL_FLOAT_MAT2x4: case GL_FLOAT_MAT4x2: return 8;
         case GL_FLOAT_MAT3x4: case GL_FLOAT_MAT4x3: return 12;
-        case GL_INT: case GL_UNSIGNED_INT: case GL_BOOL: *is_float = GL_FALSE; return 1;
-        case GL_INT_VEC2: case GL_UNSIGNED_INT_VEC2: case GL_BOOL_VEC2: *is_float = GL_FALSE; return 2;
-        case GL_INT_VEC3: case GL_UNSIGNED_INT_VEC3: case GL_BOOL_VEC3: *is_float = GL_FALSE; return 3;
-        case GL_INT_VEC4: case GL_UNSIGNED_INT_VEC4: case GL_BOOL_VEC4: *is_float = GL_FALSE; return 4;
+        case GL_INT: case GL_UNSIGNED_INT: *is_float = GL_FALSE; return 1;
+        case GL_INT_VEC2: case GL_UNSIGNED_INT_VEC2: *is_float = GL_FALSE; return 2;
+        case GL_INT_VEC3: case GL_UNSIGNED_INT_VEC3: *is_float = GL_FALSE; return 3;
+        case GL_INT_VEC4: case GL_UNSIGNED_INT_VEC4: *is_float = GL_FALSE; return 4;
+        /* Bool uniforms are stored as IEEE 0.0/1.0 floats in the plain pack
+         * (Metal has no bool buffer type).  Report as float so GetUniformfv
+         * returns 0.0/1.0 and GetUniformiv rounds to 0/1. */
+        case GL_BOOL: *is_float = GL_TRUE; return 1;
+        case GL_BOOL_VEC2: *is_float = GL_TRUE; return 2;
+        case GL_BOOL_VEC3: *is_float = GL_TRUE; return 3;
+        case GL_BOOL_VEC4: *is_float = GL_TRUE; return 4;
         default: return 0;
     }
 }
@@ -2255,13 +2262,29 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
 
 void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *params);
 
+/* GL 4.6 §7.6.1: INVALID_VALUE if <program> was never generated;
+ * INVALID_OPERATION if it names a non-program object (e.g. a shader). */
+static GLenum mglGetUniformProgramNameError(GLMContext ctx, GLuint program)
+{
+    if (isProgram(ctx, program)) {
+        return GL_NO_ERROR;
+    }
+    if (program != 0u && isShader(ctx, program)) {
+        return GL_INVALID_OPERATION;
+    }
+    return GL_INVALID_VALUE;
+}
+
 /* Returns the component count written to out[16], 0 when an error was raised. */
 static GLuint mglGetUniformAsFloat(GLMContext ctx, GLuint program, GLint location,
                                    const char *caller, GLfloat *out)
 {
-    if (isProgram(ctx, program) == GL_FALSE) {
-        mglDispatchError(ctx, caller, GL_INVALID_VALUE);
-        return 0;
+    {
+        GLenum name_err = mglGetUniformProgramNameError(ctx, program);
+        if (name_err != GL_NO_ERROR) {
+            mglDispatchError(ctx, caller, name_err);
+            return 0;
+        }
     }
     Program *ptr = mglUniformGetNamedProgram(ctx, program, caller);
     if (!ptr || !ptr->link_success) {
@@ -2326,9 +2349,12 @@ void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *para
     if (!ctx) {
         return;
     }
-    if (isProgram(ctx, program) == GL_FALSE) {
-        ERROR_RETURN(GL_INVALID_VALUE);
-        return;
+    {
+        GLenum name_err = mglGetUniformProgramNameError(ctx, program);
+        if (name_err != GL_NO_ERROR) {
+            ERROR_RETURN(name_err);
+            return;
+        }
     }
     Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
     if (!ptr || !ptr->link_success) {

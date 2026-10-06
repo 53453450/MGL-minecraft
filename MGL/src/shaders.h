@@ -25,6 +25,7 @@
 #include "glm_context.h"
 
 Shader *findShader(GLMContext ctx, GLuint shader);
+int isShader(GLMContext ctx, GLuint shader);
 void mglFreeShader(GLMContext ctx, Shader *ptr);
 void mglShaderReplaceFrontendTU(Shader *ptr, struct MGLTranslationUnit *tu);
 

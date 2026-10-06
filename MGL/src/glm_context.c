@@ -723,7 +723,19 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     initHashTable(&ctx->query_table, 64);
     memset(ctx->active_query_by_target, 0, sizeof(ctx->active_query_by_target));
     ctx->query_timestamp_counter = 1;
-    
+
+    /* Core GL requires a bound VAO for EnableVertexAttribArray.  CTS cases
+     * such as get_uniform never Gen/Bind one; bind a private default VAO
+     * (non-zero name) at context creation.  Draws still fail if the app
+     * later BindVertexArray(0). */
+    {
+        GLuint default_vao = 0u;
+        mglGenVertexArrays(ctx, 1, &default_vao);
+        if (default_vao != 0u) {
+            mglBindVertexArray(ctx, default_vao);
+        }
+    }
+
     init_dispatch(ctx);
 
     ctx->assert_on_error = GL_TRUE;

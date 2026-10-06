@@ -1176,7 +1176,9 @@ static GLboolean mglRenderbufferInternalFormatRenderable(GLint internalformat)
     /* Legacy sized formats: not required CR in Table 8.12 for texture
      * attachments, but RenderbufferStorage + CopyImage CTS (and common
      * drivers) accept them.  Metal already maps these in
-     * mtlFormatForGLInternalFormat. */
+     * mtlFormatForGLInternalFormat.  RGB9_E5 stays non-CR for texture FBO
+     * attachments (Table 8.11) but EXT_texture_shared_exponent CTS expects
+     * RenderbufferStorage to accept it. */
     switch (internalformat) {
     case GL_R3_G3_B2:
     case GL_RGB4:
@@ -1185,6 +1187,7 @@ static GLboolean mglRenderbufferInternalFormatRenderable(GLint internalformat)
     case GL_RGB12:
     case GL_RGBA2:
     case GL_RGBA12:
+    case GL_RGB9_E5:
         return GL_TRUE;
     default:
         break;

@@ -16,4 +16,7 @@ VertexArray *newVAO(GLMContext ctx, GLuint vao);
  * VAO 0 (throttled warning naming caller) and NULL is returned. */
 VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *caller);
 
+void mglGenVertexArrays(GLMContext ctx, GLsizei n, GLuint *arrays);
+void mglBindVertexArray(GLMContext ctx, GLuint array);
+
 #endif /* vertex_arrays_h */
