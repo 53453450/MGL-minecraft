@@ -304,6 +304,9 @@ void mglDeleteVertexArrays(GLMContext ctx, GLsizei n, const GLuint *arrays)
                 {
                     mglBindVertexArray(ctx, 0);
                 }
+                if (ctx->core_attrib_default_vao == vao) {
+                    ctx->core_attrib_default_vao = 0u;
+                }
 
                 // delete any mtl_data
                 ptr->magic = 0;

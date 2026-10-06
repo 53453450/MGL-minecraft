@@ -156,6 +156,12 @@ typedef struct GLMContextRec_t {
      * but Khronos GL46 transform_feedback capture tests still pass one. */
     GLuint       client_element_array_buffer;
 
+    /* Private non-zero VAO bound at context creation so core-profile
+     * EnableVertexAttribArray works for CTS cases that never Gen/Bind a
+     * VAO (e.g. get_uniform).  VERTEX_ARRAY_BINDING reports 0 while this
+     * VAO is current, and draws reject it (core: no user VAO bound). */
+    GLuint       core_attrib_default_vao;
+
     MGLCommandBuffer draw_command_buffer;
     bool            draw_defer_enabled;
     bool            sync_strict;

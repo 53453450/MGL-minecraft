@@ -410,6 +410,12 @@ bool validate_vao(GLMContext ctx, bool uses_elements)
          * Do not silently create/bind VAO 0 (compatibility-profile habit). */
         return false;
     }
+    /* Context-private attrib default is not a user-bound VAO; draws must
+     * fail with INVALID_OPERATION (KHR-GL46.draw_indirect.negative-noVAO-*). */
+    if (ctx->core_attrib_default_vao != 0u &&
+        vao->name == ctx->core_attrib_default_vao) {
+        return false;
+    }
 
     // no attribs enabled..
     // if (VAO_STATE(enabled_attribs) == 0)

@@ -3196,7 +3196,68 @@ static void mglUniformStoreArrayRange(GLMContext ctx, Program *program,
     free(data);
 }
 
+typedef enum {
+    MGL_UNIFORM_PAYLOAD_BYTES = 0,
+    MGL_UNIFORM_PAYLOAD_FLOAT,
+    MGL_UNIFORM_PAYLOAD_INT,
+    MGL_UNIFORM_PAYLOAD_UINT
+} MGLUniformPayloadKind;
+
+static GLboolean mglGLTypeIsBoolUniform(GLuint gl_type)
+{
+    return gl_type == GL_BOOL || gl_type == GL_BOOL_VEC2 ||
+           gl_type == GL_BOOL_VEC3 || gl_type == GL_BOOL_VEC4;
+}
+
+/* Bool plain-pack storage is IEEE 0.0/1.0 (Metal has no bool buffer type).
+ * Uniform*i/*ui must convert before store so GetUniform*f/i agree (GL 4.6 §2.2.1). */
+static GLboolean mglNormalizeBoolUniformPayload(MGLUniformPayloadKind kind,
+                                                const void *ptr,
+                                                GLsizeiptr size,
+                                                GLfloat *out,
+                                                GLsizeiptr out_cap_bytes,
+                                                GLsizeiptr *out_size)
+{
+    if (!ptr || size <= 0 || !out || !out_size) {
+        return GL_FALSE;
+    }
+    if ((size % (GLsizeiptr)sizeof(GLfloat)) != 0) {
+        return GL_FALSE;
+    }
+    GLsizeiptr comps = size / (GLsizeiptr)sizeof(GLfloat);
+    if (comps * (GLsizeiptr)sizeof(GLfloat) > out_cap_bytes) {
+        return GL_FALSE;
+    }
+    for (GLsizeiptr i = 0; i < comps; i++) {
+        GLboolean truth = GL_FALSE;
+        if (kind == MGL_UNIFORM_PAYLOAD_FLOAT) {
+            GLfloat f;
+            memcpy(&f, (const GLfloat *)ptr + i, sizeof(f));
+            /* 0.0 and -0.0 → false; all other floats → true. */
+            truth = (f != 0.0f) ? GL_TRUE : GL_FALSE;
+        } else if (kind == MGL_UNIFORM_PAYLOAD_INT) {
+            truth = ((const GLint *)ptr)[i] != 0 ? GL_TRUE : GL_FALSE;
+        } else if (kind == MGL_UNIFORM_PAYLOAD_UINT) {
+            truth = ((const GLuint *)ptr)[i] != 0u ? GL_TRUE : GL_FALSE;
+        } else {
+            return GL_FALSE;
+        }
+        out[i] = truth ? 1.0f : 0.0f;
+    }
+    *out_size = comps * (GLsizeiptr)sizeof(GLfloat);
+    return GL_TRUE;
+}
+
+static void mglUniformWithPayload(GLMContext ctx, GLint location, void *ptr,
+                                  GLsizeiptr size, MGLUniformPayloadKind kind);
+
 void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
+{
+    mglUniformWithPayload(ctx, location, ptr, size, MGL_UNIFORM_PAYLOAD_BYTES);
+}
+
+static void mglUniformWithPayload(GLMContext ctx, GLint location, void *ptr,
+                                  GLsizeiptr size, MGLUniformPayloadKind kind)
 {
     ctx = mglUniformResolveContext(ctx, __FUNCTION__);
     if (!ctx) {
@@ -3240,6 +3301,33 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         return;
     }
 
+    GLfloat bool_norm_stack[64];
+    GLfloat *bool_norm = NULL;
+    if (mglGLTypeIsBoolUniform(glType) &&
+        kind != MGL_UNIFORM_PAYLOAD_BYTES && size > 0 && ptr) {
+        GLsizeiptr need = size; /* same component count, float words */
+        GLsizeiptr out_size = 0;
+        if (need <= (GLsizeiptr)sizeof(bool_norm_stack)) {
+            bool_norm = bool_norm_stack;
+        } else {
+            bool_norm = (GLfloat *)malloc((size_t)need);
+            if (!bool_norm) {
+                mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+                return;
+            }
+        }
+        if (!mglNormalizeBoolUniformPayload(kind, ptr, size, bool_norm,
+                                            need, &out_size)) {
+            if (bool_norm != bool_norm_stack) {
+                free(bool_norm);
+            }
+            mglUniformSetError(ctx, GL_INVALID_VALUE);
+            return;
+        }
+        ptr = bool_norm;
+        size = out_size;
+    }
+
     /* Storage is indexed by location.  An array that runs past the last
      * slot keeps all of its elements in the slot of element 0. */
     if (arraySize > 1 && elemBytes > 0 && arrayBase >= 0 &&
@@ -3247,14 +3335,9 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         arrayBase + arraySize > MAX_PLAIN_UNIFORM_LOCATIONS) {
         mglUniformStoreArrayRange(ctx, program, arrayBase, arraySize,
                                   location - arrayBase, elemBytes, ptr, size);
-        return;
-    }
-    if (location >= MAX_PLAIN_UNIFORM_LOCATIONS) {
+    } else if (location >= MAX_PLAIN_UNIFORM_LOCATIONS) {
         mglUniformSetError(ctx, GL_INVALID_OPERATION);
-        return;
-    }
-
-    if (arraySize > 1 && elemBytes > 0 && size > elemBytes) {
+    } else if (arraySize > 1 && elemBytes > 0 && size > elemBytes) {
         GLsizeiptr n = size / elemBytes;
         GLsizeiptr remaining = (GLsizeiptr)(arrayBase + arraySize - location);
         if (n > remaining)
@@ -3264,9 +3347,12 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
             mglUniformStore(ctx, program, location + (GLint)i,
                             (uint8_t *)ptr + i * elemBytes, elemBytes);
         }
-        return;
+    } else {
+        mglUniformStore(ctx, program, location, ptr, size);
     }
-    mglUniformStore(ctx, program, location, ptr, size);
+    if (bool_norm && bool_norm != bool_norm_stack) {
+        free(bool_norm);
+    }
 }
 
 static void mglUniformStore(GLMContext ctx, Program *program, GLint location,
@@ -3392,12 +3478,12 @@ void mglUniform1dv(GLMContext ctx, GLint location, GLsizei count, const GLdouble
 
 void mglUniform1f(GLMContext ctx, GLint location, GLfloat v0)
 {
-    mglUniform(ctx, location, &v0, sizeof(GLfloat));
+    mglUniformWithPayload(ctx, location, &v0, sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
 }
 
 void mglUniform1fv(GLMContext ctx, GLint location, GLsizei count, const GLfloat *value)
 {
-    mglUniform(ctx, location, (void *)value, count * sizeof(GLfloat));
+    mglUniformWithPayload(ctx, location, (void *)value, count * sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
 }
 
 void mglUniform1i(GLMContext ctx, GLint location, GLint v0)
@@ -3406,7 +3492,7 @@ void mglUniform1i(GLMContext ctx, GLint location, GLint v0)
         return;
     }
 
-    mglUniform(ctx, location, &v0, sizeof(GLint));
+    mglUniformWithPayload(ctx, location, &v0, sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
 }
 
 void mglUniform1iv(GLMContext ctx, GLint location, GLsizei count, const GLint *value)
@@ -3419,7 +3505,7 @@ void mglUniform1iv(GLMContext ctx, GLint location, GLsizei count, const GLint *v
         return;
     }
 
-    mglUniform(ctx, location, (void *)value, count * sizeof(GLint));
+    mglUniformWithPayload(ctx, location, (void *)value, count * sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
 }
 
 void mglUniform1ui(GLMContext ctx, GLint location, GLuint v0)
@@ -3433,7 +3519,7 @@ void mglUniform1ui(GLMContext ctx, GLint location, GLuint v0)
         return;
     }
 
-    mglUniform(ctx, location, &v0, sizeof(GLuint));
+    mglUniformWithPayload(ctx, location, &v0, sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
 }
 
 void mglUniform1uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint *value)
@@ -3453,7 +3539,7 @@ void mglUniform1uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint 
         return;
     }
 
-    mglUniform(ctx, location, (void *)value, count * sizeof(GLuint));
+    mglUniformWithPayload(ctx, location, (void *)value, count * sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
 }
 
 void mglUniform2d(GLMContext ctx, GLint location, volatile GLdouble x, volatile GLdouble y)
@@ -3472,12 +3558,12 @@ void mglUniform2f(GLMContext ctx, GLint location, GLfloat v0, GLfloat v1)
 {
     GLfloat data[] = {v0, v1};
     
-    mglUniform(ctx, location, data, 2 * sizeof(GLfloat));
+    mglUniformWithPayload(ctx, location, data, 2 * sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
 }
 
 void mglUniform2fv(GLMContext ctx, GLint location, GLsizei count, const GLfloat *value)
 {
-    mglUniform(ctx, location, (void *)value, 2 * count * sizeof(GLfloat));
+    mglUniformWithPayload(ctx, location, (void *)value, 2 * count * sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
 }
 
 void mglUniform2i(GLMContext ctx, GLint location, GLint v0, GLint v1)
@@ -3488,24 +3574,24 @@ void mglUniform2i(GLMContext ctx, GLint location, GLint v0, GLint v1)
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
-    mglUniform(ctx, location, data, 2 * sizeof(GLint));
+    mglUniformWithPayload(ctx, location, data, 2 * sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
 }
 
 void mglUniform2iv(GLMContext ctx, GLint location, GLsizei count, const GLint *value)
 {
-    mglUniform(ctx, location, (void *)value, 2 * count * sizeof(GLint));
+    mglUniformWithPayload(ctx, location, (void *)value, 2 * count * sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
 }
 
 void mglUniform2ui(GLMContext ctx, GLint location, GLuint v0, GLuint v1)
 {
     GLuint data[] = {v0, v1};
     
-    mglUniform(ctx, location, data, 2 * sizeof(GLuint));
+    mglUniformWithPayload(ctx, location, data, 2 * sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
 }
 
 void mglUniform2uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint *value)
 {
-    mglUniform(ctx, location, (void *)value, 2 * count * sizeof(GLuint));
+    mglUniformWithPayload(ctx, location, (void *)value, 2 * count * sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
 }
 
 void mglUniform3d(GLMContext ctx, GLint location, GLdouble x, GLdouble y, GLdouble z)
@@ -3524,36 +3610,36 @@ void mglUniform3f(GLMContext ctx, GLint location, GLfloat v0, GLfloat v1, GLfloa
 {
     GLfloat data[] = {v0, v1, v2};
     
-    mglUniform(ctx, location, data, 3 * sizeof(GLfloat));
+    mglUniformWithPayload(ctx, location, data, 3 * sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
 }
 
 void mglUniform3fv(GLMContext ctx, GLint location, GLsizei count, const GLfloat *value)
 {
-    mglUniform(ctx, location, (void *)value, 3 * count * sizeof(GLfloat));
+    mglUniformWithPayload(ctx, location, (void *)value, 3 * count * sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
 }
 
 void mglUniform3i(GLMContext ctx, GLint location, GLint v0, GLint v1, GLint v2)
 {
     GLint data[] = {v0, v1, v2};
     
-    mglUniform(ctx, location, data, 3 * sizeof(GLint));
+    mglUniformWithPayload(ctx, location, data, 3 * sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
 }
 
 void mglUniform3iv(GLMContext ctx, GLint location, GLsizei count, const GLint *value)
 {
-    mglUniform(ctx, location, (void *)value, 3 * count * sizeof(GLint));
+    mglUniformWithPayload(ctx, location, (void *)value, 3 * count * sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
 }
 
 void mglUniform3ui(GLMContext ctx, GLint location, GLuint v0, GLuint v1, GLuint v2)
 {
     GLuint data[] = {v0, v1, v2};
     
-    mglUniform(ctx, location, (void *)data, 3 * sizeof(GLuint));
+    mglUniformWithPayload(ctx, location, (void *)data, 3 * sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
 }
 
 void mglUniform3uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint *value)
 {
-    mglUniform(ctx, location, (void *)value, 3 * count * sizeof(GLuint));
+    mglUniformWithPayload(ctx, location, (void *)value, 3 * count * sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
 }
 
 void mglUniform4d(GLMContext ctx, GLint location, GLdouble x, GLdouble y, GLdouble z, GLdouble w)
@@ -3572,36 +3658,36 @@ void mglUniform4f(GLMContext ctx, GLint location, GLfloat v0, GLfloat v1, GLfloa
 {
     GLfloat data[] = {v0, v1, v2, v3};
     
-    mglUniform(ctx, location, (void *)data, 4 * sizeof(GLfloat));
+    mglUniformWithPayload(ctx, location, (void *)data, 4 * sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
 }
 
 void mglUniform4fv(GLMContext ctx, GLint location, GLsizei count, const GLfloat *value)
 {
-    mglUniform(ctx, location, (void *)value, 4 * count * sizeof(GLfloat));
+    mglUniformWithPayload(ctx, location, (void *)value, 4 * count * sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
 }
 
 void mglUniform4i(GLMContext ctx, GLint location, GLint v0, GLint v1, GLint v2, GLint v3)
 {
     GLint data[] = {v0, v1, v2, v3};
     
-    mglUniform(ctx, location, data, 4 * sizeof(GLint));
+    mglUniformWithPayload(ctx, location, data, 4 * sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
 }
 
 void mglUniform4iv(GLMContext ctx, GLint location, GLsizei count, const GLint *value)
 {
-    mglUniform(ctx, location, (void *)value, 4 * count * sizeof(GLint));
+    mglUniformWithPayload(ctx, location, (void *)value, 4 * count * sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
 }
 
 void mglUniform4ui(GLMContext ctx, GLint location, GLuint v0, GLuint v1, GLuint v2, GLuint v3)
 {
     GLuint data[] = {v0, v1, v2, v3};
     
-    mglUniform(ctx, location, data, 4 * sizeof(GLuint));
+    mglUniformWithPayload(ctx, location, data, 4 * sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
 }
 
 void mglUniform4uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint *value)
 {
-    mglUniform(ctx, location, (void *)value, 4 * count * sizeof(GLuint));
+    mglUniformWithPayload(ctx, location, (void *)value, 4 * count * sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
 }
 
 

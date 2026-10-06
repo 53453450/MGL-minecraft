@@ -332,6 +332,11 @@ static GLuint mglCurrentVertexArrayBinding(GLMContext ctx)
         mglObjectPointerLooksPlausible(vao) &&
         mglHashTableContainsData(&STATE(vao_table), vao) &&
         mglPointerRangeIsReadable(vao, sizeof(*vao))) {
+        /* Context-private attrib default reports as unbound (VAO 0). */
+        if (ctx->core_attrib_default_vao != 0u &&
+            vao->name == ctx->core_attrib_default_vao) {
+            return 0u;
+        }
         return vao->name;
     }
     return 0u;

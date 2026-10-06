@@ -726,12 +726,14 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 
     /* Core GL requires a bound VAO for EnableVertexAttribArray.  CTS cases
      * such as get_uniform never Gen/Bind one; bind a private default VAO
-     * (non-zero name) at context creation.  Draws still fail if the app
-     * later BindVertexArray(0). */
+     * (non-zero name) at context creation.  While it remains current,
+     * VERTEX_ARRAY_BINDING reports 0 and draws reject it (negative-noVAO). */
+    ctx->core_attrib_default_vao = 0u;
     {
         GLuint default_vao = 0u;
         mglGenVertexArrays(ctx, 1, &default_vao);
         if (default_vao != 0u) {
+            ctx->core_attrib_default_vao = default_vao;
             mglBindVertexArray(ctx, default_vao);
         }
     }
