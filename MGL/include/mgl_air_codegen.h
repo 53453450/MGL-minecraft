@@ -197,7 +197,9 @@ struct Codegen {
     /* Same-invocation imageStore→imageLoad forwarding (GLSL 4.60 §8.12 /
      * coherent).  Metal texture.fence()+read is not reliable for VS
      * imageBuffer on AGX (CTS advanced-memory-order).  Entries are only
-     * reused when the load is still in the store's basic block. */
+     * reused when the load is still in the store's basic block; cleared on
+     * barrier / memoryBarrier* / imageAtomic*.  Load path applies image
+     * layout missing-component fill (r32f → (R,0,0,1)). */
     struct ImageStoreFwd {
         llvm::BasicBlock *bb = nullptr;
         llvm::Value *tex = nullptr;

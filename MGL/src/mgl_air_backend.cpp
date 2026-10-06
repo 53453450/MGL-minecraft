@@ -1396,6 +1396,69 @@ static const MGLIRType *imageElementType(const MGLIRSymbol *s) {
     return (t && t->kind == MGLIR_TYPE_IMAGE) ? t : nullptr;
 }
 
+/* GLSL 4.60 §8.12 imageLoad missing-component fill: R→(R,0,0,1),
+ * RG→(R,G,0,1), RGB→(R,G,B,1).  Applied when forwarding imageStore→imageLoad
+ * so layout(r32f) + vec4(x) loads as (x,0,0,1) (CTS basic-glsl-misc /
+ * advanced-memory-order), not (x,x,x,x). */
+static llvm::Value *expandImageLoadFromStore(Codegen &cg, llvm::Value *stored,
+                                             const char *fmt, bool isInt) {
+    if (!stored || !fmt || !fmt[0])
+        return stored;
+    auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(stored->getType());
+    if (!vt || vt->getNumElements() != 4)
+        return stored;
+    unsigned comps = 4u;
+    if (strncmp(fmt, "rgba", 4) == 0)
+        comps = 4u;
+    else if (strncmp(fmt, "rgb", 3) == 0)
+        comps = 3u;
+    else if (strncmp(fmt, "rg", 2) == 0)
+        comps = 2u;
+    else if (fmt[0] == 'r')
+        comps = 1u;
+    else
+        return stored;
+    if (comps >= 4u)
+        return stored;
+    llvm::Type *elemTy = vt->getElementType();
+    llvm::Value *zero =
+        isInt ? (llvm::Value *)cg.b->getInt32(0)
+              : (llvm::Value *)llvm::ConstantFP::get(elemTy, 0.0);
+    llvm::Value *one =
+        isInt ? (llvm::Value *)cg.b->getInt32(1)
+              : (llvm::Value *)llvm::ConstantFP::get(elemTy, 1.0);
+    llvm::Value *r =
+        cg.b->CreateExtractElement(stored, cg.b->getInt32(0));
+    llvm::Value *g =
+        comps >= 2u ? cg.b->CreateExtractElement(stored, cg.b->getInt32(1))
+                    : zero;
+    llvm::Value *b =
+        comps >= 3u ? cg.b->CreateExtractElement(stored, cg.b->getInt32(2))
+                    : zero;
+    llvm::Value *out = llvm::UndefValue::get(stored->getType());
+    out = cg.b->CreateInsertElement(out, r, cg.b->getInt32(0));
+    out = cg.b->CreateInsertElement(out, g, cg.b->getInt32(1));
+    out = cg.b->CreateInsertElement(out, b, cg.b->getInt32(2));
+    out = cg.b->CreateInsertElement(out, one, cg.b->getInt32(3));
+    return out;
+}
+
+static const char *imageLayoutFormat(const MGLIRModule *mod,
+                                     const MGLExpr *ia) {
+    if (!mod || !ia)
+        return nullptr;
+    const char *name = nullptr;
+    if (ia->kind == MGL_EXPR_VAR_REF)
+        name = ia->u.var_ref.name;
+    else if (ia->kind == MGL_EXPR_INDEX && ia->u.index.object &&
+             ia->u.index.object->kind == MGL_EXPR_VAR_REF)
+        name = ia->u.index.object->u.var_ref.name;
+    if (!name)
+        return nullptr;
+    const MGLIRSymbol *sym = findSymbol(mod, name);
+    return sym ? sym->image_format : nullptr;
+}
+
 /* Resolve imageLoad/Store/Atomic/Size first arg: image or image[i]. */
 static llvm::Value *resolveImageTex(
     Codegen &cg, const MGLExpr *ia, const MGLIRModule *mod,
@@ -7231,6 +7294,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 cg.errmsg = "codegen: barrier() takes no arguments";
                 return nullptr;
             }
+            /* Cross-invocation image/shared writes become visible here —
+             * drop same-invocation imageStore forwarding (A3). */
+            cg.imageStoreFwd.clear();
             llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
             llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
             callAirFn(cg, "air.wg.barrier", voidTy,
@@ -7263,6 +7329,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 flags = 4u;
             else
                 flags = 1u | 2u | 4u;
+            /* Invalidate imageStore→imageLoad SSA forwarding across any
+             * memory barrier (incl. FS path that emits no wg.barrier). */
+            cg.imageStoreFwd.clear();
             /* air.wg.barrier is a threadgroup op (CS / TCS / GS kernels).
              * GLSL memoryBarrier in VS/FS is a memory fence, not a workgroup
              * barrier; emitting wg.barrier in raster AIR is illegal on Metal. */
@@ -7284,6 +7353,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             const MGLIRType *imgTy = nullptr;
             llvm::Value *tex = resolveImageTex(cg, ia, mod, locals, &imgTy);
             if (!tex) return nullptr;
+            /* Atomically updated texels must not be satisfied from a prior
+             * imageStore forward entry. */
+            cg.imageStoreFwd.clear();
             const MGLIRTexKind tk = imgTy->tex_kind;
             const bool isUint = imgTy->tex_storage == MGLIR_SCALAR_UINT;
             const bool isCompSwap = strcmp(name, "imageAtomicCompSwap") == 0;
@@ -7759,6 +7831,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 llvm::Type *vecTy = isInt ? v4i32 : v4f32;
                 llvm::Type *retTy = llvm::StructType::get(
                     *cg.ctx, {vecTy, cg.b->getInt8Ty()});
+                const char *imgFmt = imageLayoutFormat(mod, ia);
                 /* Apple texture.read() is (tex, get_read_sampler, coord,
                  * offset, lod, access). */
                 llvm::StructType *smpT = llvm::StructType::getTypeByName(
@@ -7784,7 +7857,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                      it != cg.imageStoreFwd.rend(); ++it) {
                     if (it->bb == bb && it->tex == t &&
                         it->coord == fwdCoord && it->value)
-                        return it->value;
+                        return expandImageLoadFromStore(cg, it->value, imgFmt,
+                                                        isInt);
                 }
                 llvm::Value *r = nullptr;
                 if (tk == MGLIR_TEX_BUFFER) {
