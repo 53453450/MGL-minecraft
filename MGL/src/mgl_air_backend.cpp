@@ -5600,6 +5600,61 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             return cg.b->getInt32(4);
         if (strcmp(e->u.var_ref.name, "gl_MaxViewports") == 0)
             return cg.b->getInt32(MGL_MAX_VIEWPORTS);
+        /* Match glm_params / glGetIntegerv (GLSL 4.60 §7.4). */
+        if (strcmp(e->u.var_ref.name, "gl_MaxDrawBuffers") == 0)
+            return cg.b->getInt32(8);
+        if (strcmp(e->u.var_ref.name, "gl_MaxTextureImageUnits") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_MaxVertexTextureImageUnits") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxTessControlTextureImageUnits") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxTessEvaluationTextureImageUnits") == 0)
+            return cg.b->getInt32(16);
+        if (strcmp(e->u.var_ref.name, "gl_MaxCombinedTextureImageUnits") == 0)
+            return cg.b->getInt32(80);
+        if (strcmp(e->u.var_ref.name, "gl_MaxVertexAttribs") == 0)
+            return cg.b->getInt32(MAX_ATTRIBS);
+        if (strcmp(e->u.var_ref.name, "gl_MaxVaryingComponents") == 0)
+            return cg.b->getInt32(64);
+        if (strcmp(e->u.var_ref.name, "gl_MaxVaryingVectors") == 0)
+            return cg.b->getInt32(32);
+        if (strcmp(e->u.var_ref.name, "gl_MaxVertexUniformComponents") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_MaxFragmentUniformComponents") == 0)
+            return cg.b->getInt32(4096);
+        if (strcmp(e->u.var_ref.name, "gl_MaxVertexUniformVectors") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_MaxFragmentUniformVectors") == 0)
+            return cg.b->getInt32(1024);
+        if (strcmp(e->u.var_ref.name, "gl_MaxAtomicCounterBufferSize") == 0)
+            return cg.b->getInt32(16384);
+        if (strcmp(e->u.var_ref.name, "gl_MaxAtomicCounterBindings") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxCombinedAtomicCounterBuffers") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxVertexAtomicCounterBuffers") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxFragmentAtomicCounterBuffers") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxTessControlAtomicCounterBuffers") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxTessEvaluationAtomicCounterBuffers") == 0)
+            return cg.b->getInt32(MAX_BINDABLE_BUFFERS);
+        if (strcmp(e->u.var_ref.name, "gl_MaxCombinedAtomicCounters") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_MaxVertexAtomicCounters") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_MaxFragmentAtomicCounters") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_MaxTessControlAtomicCounters") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxTessEvaluationAtomicCounters") == 0)
+            return cg.b->getInt32(8);
+        if (strcmp(e->u.var_ref.name,
+                   "gl_MaxTessControlUniformComponents") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxTessEvaluationUniformComponents") == 0)
+            return cg.b->getInt32(1024);
+        if (strcmp(e->u.var_ref.name,
+                   "gl_MaxTessControlTotalOutputComponents") == 0)
+            return cg.b->getInt32(4096);
+        if (strcmp(e->u.var_ref.name, "gl_MaxGeometryVaryingComponents") == 0)
+            return cg.b->getInt32(64);
         if (strcmp(e->u.var_ref.name, "gl_MinProgramTexelOffset") == 0)
             return cg.b->getInt32(-8);
         if (strcmp(e->u.var_ref.name, "gl_MaxProgramTexelOffset") == 0)
