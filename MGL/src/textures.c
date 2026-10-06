@@ -2789,19 +2789,17 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
 
     /* Compressed TexImage* policy:
      * - Sized block formats (RGTC/BPTC/ETC2/EAC/…): no online encoder.
-     *   Non-NULL pixels → INVALID_OPERATION (CTS falls back to CompressedTex*).
-     *   NULL pixels → allocate empty compressed storage (so
-     *   TEXTURE_COMPRESSED_IMAGE_SIZE / INTERNAL_FORMAT stay usable, e.g.
+     *   Non-NULL pixels are discarded and empty compressed storage is
+     *   allocated — GL allows TexImage* with a sized compressed IF (impl
+     *   would compress); error-path CTS only needs a compressed object.
+     *   NULL pixels → same empty compressed storage (e.g.
      *   buffer_storage.map_persistent_texture).
      * - Generic COMPRESSED_* → remap to sized uncompressed for pixel
      *   round-trip / 1D (Metal cannot encode). */
     if (mglTexLevelInternalFormatCompressed(internalformat) &&
         !mglIsGenericCompressedFormat((GLenum)internalformat))
     {
-        if (pixels)
-        {
-            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
-        }
+        pixels = NULL;
         if (!proxy)
         {
             GLuint bw = 0u, bh = 0u, bd = 1u, bs = 0u;
@@ -7077,8 +7075,12 @@ void mglGetCompressedTextureImage(GLMContext ctx, GLuint texture, GLint level, G
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (!pixels && bufSize > 0) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
+
+    /* PIXEL_PACK_BUFFER: pixels is a byte offset, not a client pointer. */
+    Buffer *pack_buffer = NULL;
+    uintptr_t pack_offset = (uintptr_t)pixels;
+    if (!mglResolvePackBufferDst(ctx, "glGetCompressedTextureImage", &pixels,
+                                 &pack_buffer)) {
         return;
     }
 
@@ -7097,6 +7099,10 @@ void mglGetCompressedTextureImage(GLMContext ctx, GLuint texture, GLint level, G
     TextureLevel *lvl = &tex->faces[0].levels[level];
     if (lvl->data_size > (size_t)bufSize) {
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (!mglCheckPackBufferRange(ctx, pack_buffer, pack_offset, lvl->data_size,
+                                 GL_UNSIGNED_BYTE)) {
         return;
     }
     if (lvl->data && lvl->data_size > 0u) {
