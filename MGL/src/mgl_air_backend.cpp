@@ -8898,13 +8898,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (sampleType && sampleType->kind == MGLIR_TYPE_SAMPLER &&
                 sampleType->tex_depth) {
                 /* GLSL coord packing:
+                 *   1D:        vec3(s, unused, ref) — Metal backs 1D as 2D
                  *   2D:        vec3(xy, ref)
+                 *   1DArray:   vec3(s, layer, ref) — backed as 2D array
                  *   2DArray:   vec4(xy, layer, ref)
                  *   Cube:      vec4(dir.xyz, ref)
                  *   CubeArray: texture*(s, vec4(dir, layer), ref [, lod/bias])
                  * AIR has_lod / has_offset flags match Metal sample_compare. */
                 const char *cmpName = nullptr;
-                if (sampleKind == MGLIR_TEX_2D) {
+                if (sampleKind == MGLIR_TEX_2D || sampleKind == MGLIR_TEX_1D) {
                     cmpName = "air.sample_compare_depth_2d.f32";
                 } else if (sampleKind == MGLIR_TEX_2D_ARRAY ||
                            sampleKind == MGLIR_TEX_1D_ARRAY) {
@@ -9076,8 +9078,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     return extractCmp(callAirFn(cg, cmpName, cmpRet, cmpArgs));
                 }
 
-                if (sampleKind == MGLIR_TEX_2D_ARRAY ||
-                    sampleKind == MGLIR_TEX_1D_ARRAY) {
+                if (sampleKind == MGLIR_TEX_2D_ARRAY) {
                     if (ncomp < 4) {
                         return llvm::ConstantFP::get(f32, 0.0);
                     }
@@ -9101,16 +9102,53 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     return extractCmp(callAirFn(cg, cmpName, cmpRet, cmpArgs));
                 }
 
-                /* sampler2DShadow: vec3(xy, ref) */
+                if (sampleKind == MGLIR_TEX_1D_ARRAY) {
+                    /* GLSL: vec3(s, layer, ref); Metal 1D-array → 2D-array. */
+                    if (ncomp < 3) {
+                        return llvm::ConstantFP::get(f32, 0.0);
+                    }
+                    llvm::Value *s =
+                        cg.b->CreateExtractElement(uv, cg.b->getInt32(0));
+                    llvm::Type *v2f32 = llvm::FixedVectorType::get(f32, 2);
+                    llvm::Value *xy = llvm::UndefValue::get(v2f32);
+                    xy = cg.b->CreateInsertElement(xy, s, cg.b->getInt32(0));
+                    xy = cg.b->CreateInsertElement(
+                        xy, llvm::ConstantFP::get(f32, 0.5), cg.b->getInt32(1));
+                    llvm::Value *layerF =
+                        cg.b->CreateExtractElement(uv, cg.b->getInt32(1));
+                    llvm::Value *layer = emitGlArrayLayerIndex(
+                        cg, tex, layerF, sampleKind, true);
+                    llvm::Value *ref =
+                        cg.b->CreateExtractElement(uv, cg.b->getInt32(2));
+                    offsetFlag = cg.b->getInt1(true);
+                    std::vector<llvm::Value *> cmpArgs = {
+                        tex, smp, cg.b->getInt32(1), xy, layer, ref,
+                        offsetFlag, cmpOffset, lodFlag, lodOrBias,
+                        llvm::ConstantFP::get(f32, 0.0), cg.b->getInt32(0)};
+                    return extractCmp(callAirFn(cg, cmpName, cmpRet, cmpArgs));
+                }
+
+                /* sampler1DShadow / sampler2DShadow: vec3(..., ref) */
                 if (ncomp < 3) {
                     return llvm::ConstantFP::get(f32, 0.0);
                 }
                 llvm::Value *ref =
                     cg.b->CreateExtractElement(uv, cg.b->getInt32(2));
-                llvm::Value *xy = cg.b->CreateShuffleVector(
-                    uv, llvm::UndefValue::get(uv->getType()),
-                    llvm::ConstantVector::get(
-                        {cg.b->getInt32(0), cg.b->getInt32(1)}));
+                llvm::Value *xy;
+                if (sampleKind == MGLIR_TEX_1D) {
+                    llvm::Value *s =
+                        cg.b->CreateExtractElement(uv, cg.b->getInt32(0));
+                    llvm::Type *v2f32 = llvm::FixedVectorType::get(f32, 2);
+                    xy = llvm::UndefValue::get(v2f32);
+                    xy = cg.b->CreateInsertElement(xy, s, cg.b->getInt32(0));
+                    xy = cg.b->CreateInsertElement(
+                        xy, llvm::ConstantFP::get(f32, 0.5), cg.b->getInt32(1));
+                } else {
+                    xy = cg.b->CreateShuffleVector(
+                        uv, llvm::UndefValue::get(uv->getType()),
+                        llvm::ConstantVector::get(
+                            {cg.b->getInt32(0), cg.b->getInt32(1)}));
+                }
                 /* Metal's frontend always sets has_offset=true for depth2d. */
                 offsetFlag = cg.b->getInt1(true);
                 std::vector<llvm::Value *> cmpArgs = {
