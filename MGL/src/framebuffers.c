@@ -1183,6 +1183,7 @@ static GLboolean mglRenderbufferInternalFormatRenderable(GLint internalformat)
     case GL_R3_G3_B2:
     case GL_RGB4:
     case GL_RGB5:
+    case GL_RGB8:
     case GL_RGB10:
     case GL_RGB12:
     case GL_RGBA2:

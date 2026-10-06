@@ -1499,6 +1499,23 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         return;
     }
 
+    /* Y-flipped RT storage: sub-rect reads (ReadPixels → GetTexImage) must
+     * start at the Metal origin matching the GL rect — same formula as
+     * mglRenderReadTextureRegionClip / FBO ReadDrawable.  Flipping output
+     * rows alone is only correct for a full-height read; a 1×1 probe at
+     * GL (0,H-1) otherwise samples Metal row H-1. */
+    if (flipRenderTargetRows && readRegion.size.depth == 1u) {
+        uint64_t level_height = mglPdTextureInfo(texture).height;
+        if (level > 0u) {
+            level_height = mglPdMaxU64(1u, level_height >> level);
+        }
+        const uint64_t gl_y = (uint64_t)readRegion.origin.y;
+        const uint64_t gl_h = readRegion.size.height;
+        if (gl_h <= level_height && gl_y <= level_height - gl_h) {
+            readRegion.origin.y = (int64_t)(level_height - (gl_y + gl_h));
+        }
+    }
+
     const uint64_t dstPixelBytes = (uint64_t)sizeForFormatType(format, type);
     const int directR32FloatRead =
         mglRenderDirectR32FloatRead((uint32_t)mglPdTextureInfo(texture).pixel_format,

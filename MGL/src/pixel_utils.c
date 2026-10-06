@@ -2843,8 +2843,11 @@ GLboolean mglIsColorRenderableInternalFormat(GLint internalformat)
         case GL_RGBA16_SNORM:
             return GL_TRUE;
 
-        /* RGB-only sized formats not in the required list. */
+        /* GL 4.6 Table 8.12: RGB8 is color-renderable.  Metal stores it as
+         * RGBA8Unorm; keep it CR so MSAA texture FBOs used by CTS blit
+         * configs are complete.  SRGB8 stays non-CR (only SRGB8_ALPHA8 is). */
         case GL_RGB8:
+            return GL_TRUE;
         case GL_SRGB8:
         case GL_RGB16:
         case GL_RGB16F:
