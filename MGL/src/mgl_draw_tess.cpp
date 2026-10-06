@@ -2816,7 +2816,6 @@ extern "C" bool mglGeometryGatherIndices(const uint8_t *indexBytes,
                                          uint32_t *outPrimitiveCount,
                                          uint32_t *outMaxIndex)
 {
-    (void)baseVertex;
     if (!outGather || !outGatherCount || !outPrimitiveCount || !outMaxIndex) {
         return false;
     }
@@ -2826,6 +2825,25 @@ extern "C" bool mglGeometryGatherIndices(const uint8_t *indexBytes,
             indexBytes, elemBytes, (uint32_t)count, restartEnabled ? 1 : 0,
             restartIndex, inputVertices, &result) != 0) {
         return false;
+    }
+    /* DrawElements*BaseVertex: Metal [[vertex_id]] / capture slots are
+     * index+baseVertex.  Gather must use the same address space so compact /
+     * TCS lookups hit the VS capture records. */
+    if (baseVertex != 0 && result.gather && result.gather_count > 0u) {
+        uint32_t newMax = 0u;
+        for (uint32_t i = 0u; i < result.gather_count; i++) {
+            const int64_t v =
+                (int64_t)result.gather[i] + (int64_t)baseVertex;
+            if (v < 0) {
+                free(result.gather);
+                return false;
+            }
+            result.gather[i] = (uint32_t)v;
+            if ((uint32_t)v > newMax) {
+                newMax = (uint32_t)v;
+            }
+        }
+        result.max_index = newMax;
     }
     *outGather = result.gather;
     *outGatherCount = result.gather_count;

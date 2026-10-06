@@ -1136,6 +1136,27 @@ extern "C" int mglDrawGsRunDraw(GLMContext ctx, GLenum mode, GLint first,
                                      &gatherPrimitives, &gatherMaxIndex)) {
             return 1;
         }
+        /* DrawElements*BaseVertex: VS capture / [[vertex_id]] use index+BV;
+         * retarget gather so GS input fetch hits the same slots. */
+        if (indexedDraw && baseVertex != 0 && gatherArray &&
+            gatherCount > 0u) {
+            uint32_t newMax = 0u;
+            for (uint32_t i = 0u; i < gatherCount; i++) {
+                const int64_t v =
+                    (int64_t)gatherArray[i] + (int64_t)baseVertex;
+                if (v < 0) {
+                    free(gatherArray);
+                    mglDispatchError(ctx, label ? label : "geometryDraw",
+                                     (GLenum)mglRenderErrorInvalidValue());
+                    return 1;
+                }
+                gatherArray[i] = (uint32_t)v;
+                if ((uint32_t)v > newMax) {
+                    newMax = (uint32_t)v;
+                }
+            }
+            gatherMaxIndex = newMax;
+        }
         gatherBuf = ops->create_buffer_with_bytes(
             ops->renderer, gatherArray, (uint64_t)gatherCount * 4u);
         free(gatherArray);
