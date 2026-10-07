@@ -3705,6 +3705,7 @@ void mglTexImage3D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
     ERROR_CHECK_RETURN(depth >= 0, GL_INVALID_VALUE);
     if (target == GL_TEXTURE_CUBE_MAP_ARRAY ||
         target == GL_PROXY_TEXTURE_CUBE_MAP_ARRAY) {
+        ERROR_CHECK_RETURN(width == height, GL_INVALID_VALUE);
         ERROR_CHECK_RETURN((depth % 6) == 0, GL_INVALID_VALUE);
     }
 
@@ -4989,6 +4990,7 @@ void mglTexStorage3D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
     ERROR_CHECK_RETURN(depth > 0, GL_INVALID_VALUE);
     if (target == GL_TEXTURE_CUBE_MAP_ARRAY ||
         target == GL_PROXY_TEXTURE_CUBE_MAP_ARRAY) {
+        ERROR_CHECK_RETURN(width == height, GL_INVALID_VALUE);
         ERROR_CHECK_RETURN((depth % 6) == 0, GL_INVALID_VALUE);
     }
 
@@ -5041,6 +5043,7 @@ void mglTextureStorage3D(GLMContext ctx, GLuint texture, GLsizei levels, GLenum 
             break;
         case GL_TEXTURE_CUBE_MAP_ARRAY:
             is_array = GL_TRUE;
+            ERROR_CHECK_RETURN(width == height, GL_INVALID_VALUE);
             ERROR_CHECK_RETURN((depth % 6) == 0, GL_INVALID_VALUE);
             ERROR_CHECK_RETURN(checkMaxLevels(levels, width, height, 1), GL_INVALID_OPERATION);
             break;
