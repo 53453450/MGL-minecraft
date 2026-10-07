@@ -663,9 +663,22 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
                 ops->end_blit(xfbBlit);
             }
         }
-        queryWritten = mglDrawGsQueryWritten(output_primitive,
-                                             scatterParams.buffers[0].stride,
-                                             bufferWritten[0]);
+        /* GL 4.6 §13.3: a primitive that does not fit in every buffer of
+         * its stream is recorded in none; stream 0 may feed any buffer. */
+        bool queryWrittenSet = false;
+        for (uint32_t b = 0u; b < xfbBufferCount; b++) {
+            if (meta->buffer_stream[b] != 0u ||
+                scatterParams.buffers[b].stride == 0u) {
+                continue;
+            }
+            uint64_t w = mglDrawGsQueryWritten(output_primitive,
+                                               scatterParams.buffers[b].stride,
+                                               bufferWritten[b]);
+            if (!queryWrittenSet || w < queryWritten) {
+                queryWritten = w;
+                queryWrittenSet = true;
+            }
+        }
     }
     if (!queryMeta && xfbMetaBuf && ops->buffer_contents(xfbMetaBuf) &&
         (mglHasActiveIndexedPrimitiveQuery(ctx) ||

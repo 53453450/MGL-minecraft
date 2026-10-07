@@ -116,10 +116,17 @@ kernel void mgl_gs_xfb_scatter(
     /* Stream 0: ascending records, vpp records per primitive.  Ordered
      * truncation: the first non-fitting primitive stops the stream because
      * later primitives need the same bytes. */
-    const uint stride0 = p.buffers[0].stride;
+    uint b0 = MGL_GS_XFB_NO_STREAM;
+    for (uint b = 0; b < p.buffer_count; b++) {
+        if (p.buffer_stream[b] == 0u && p.buffers[b].stride != 0u) {
+            b0 = b;
+            break;
+        }
+    }
     const uint vpp = p.vertices_per_primitive;
-    if (stride0 != 0u && vpp != 0u) {
-        uint prims = (vis[gid * MGL_GS_XFB_MAX_STREAMS] / stride0) / vpp;
+    if (b0 != MGL_GS_XFB_NO_STREAM && vpp != 0u) {
+        uint prims = (vis[gid * MGL_GS_XFB_MAX_STREAMS + b0] /
+                      p.buffers[b0].stride) / vpp;
         for (uint prim = 0; prim < prims; prim++) {
             bool fits = true;
             for (uint b = 0; b < p.buffer_count && fits; b++) {
@@ -141,12 +148,15 @@ kernel void mgl_gs_xfb_scatter(
     /* Streams > 0 (points-only): descending records stamped with the stream
      * id, one record per primitive.  A non-fitting primitive is dropped;
      * other streams keep capturing. */
+    /* A stream feeding several buffers emits each record once. */
     uint totalDown = 0u;
-    for (uint b = 0; b < p.buffer_count; b++) {
-        if (p.buffer_stream[b] > 0u && p.buffer_stream[b] != MGL_GS_XFB_NO_STREAM &&
-            p.buffers[b].stride != 0u) {
-            totalDown += vis[gid * MGL_GS_XFB_MAX_STREAMS + b] /
-                         p.buffers[b].stride;
+    for (uint s = 1u; s < MGL_GS_XFB_MAX_STREAMS; s++) {
+        for (uint b = 0; b < p.buffer_count; b++) {
+            if (p.buffer_stream[b] == s && p.buffers[b].stride != 0u) {
+                totalDown += vis[gid * MGL_GS_XFB_MAX_STREAMS + b] /
+                             p.buffers[b].stride;
+                break;
+            }
         }
     }
     for (uint j = 0; j < totalDown; j++) {

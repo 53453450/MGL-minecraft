@@ -595,6 +595,20 @@ void mglRecordActivePrimitiveQueryDrawIndexed(GLMContext ctx,
 
 	TransformFeedback *xfb = STATE(transform_feedback);
 	if (xfb && xfb->active && !xfb->paused) {
+		/* GL 4.6 §13.3: overflow means some primitive on the stream was
+		 * not written for lack of buffer space. */
+		if (written < generated) {
+			QueryObject *stream_ovf =
+				mgl_find_query(ctx, ctx->active_query_by_target[18][index]);
+			if (stream_ovf && stream_ovf->active &&
+			    stream_ovf->target == GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW)
+				stream_ovf->result = 1u;
+			QueryObject *any_ovf =
+				mgl_find_query(ctx, ctx->active_query_by_target[17][0]);
+			if (any_ovf && any_ovf->active &&
+			    any_ovf->target == GL_TRANSFORM_FEEDBACK_OVERFLOW)
+				any_ovf->result = 1u;
+		}
 		GLuint64 vertices_per_primitive =
 			(index > 0u || xfb->primitive_mode == GL_POINTS) ? 1u :
 			xfb->primitive_mode == GL_LINES ? 2u : 3u;
@@ -607,6 +621,20 @@ void mglRecordActivePrimitiveQueryDraw(GLMContext ctx,
                                        GLuint64 written)
 {
 	mglRecordActivePrimitiveQueryDrawIndexed(ctx, 0u, generated, written);
+}
+
+/* GL 4.6 §13.3: PRIMITIVES_GENERATED counts with or without transform
+ * feedback; for VS-only draws outside active XFB nothing else records it. */
+void mglRecordActivePrimitivesGeneratedVsOnly(GLMContext ctx, GLenum mode,
+                                              GLsizei count,
+                                              GLsizei instanceCount)
+{
+	if (!ctx || count <= 0)
+		return;
+	GLuint64 instances = instanceCount > 0 ? (GLuint64)instanceCount : 1u;
+	GLuint64 prims = mgl_pipeline_primitive_count(mode, (GLuint64)count, 3u) *
+		instances;
+	mglRecordActivePrimitiveQueryDraw(ctx, prims, 0u);
 }
 
 GLboolean mglHasActiveIndexedPrimitiveQuery(GLMContext ctx)
@@ -750,6 +778,9 @@ static void mgl_finish_query_result(GLMContext ctx, QueryObject *q)
 			 * an extremely fast GPU pass) must be preserved. */
 			if (!q->timer_result_known && ctx)
 				q->result = ctx->query_timestamp_counter++;
+			break;
+		case GL_TRANSFORM_FEEDBACK_OVERFLOW:
+		case GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW:
 			break;
 		default:
 			q->result = 0;
@@ -5794,8 +5825,20 @@ void mglGetQueryIndexediv(GLMContext ctx, GLenum target, GLuint index, GLenum pn
 	mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 }
 
+/* GL 4.6 §4.2.3: with a QUERY_BUFFER bound, params is an offset into it. */
+static GLuint mgl_bound_query_buffer(GLMContext ctx)
+{
+	Buffer *buf = STATE(buffers[_QUERY_BUFFER]);
+	return buf ? buf->name : 0u;
+}
+
 void mglGetQueryObjecti64v(GLMContext ctx, GLuint id, GLenum pname, GLint64 *params)
 {
+	GLuint qbo = mgl_bound_query_buffer(ctx);
+	if (qbo) {
+		mglGetQueryBufferObjecti64v(ctx, id, qbo, pname, (GLintptr)params);
+		return;
+	}
 	QueryObject *q = mgl_find_query(ctx, id);
 	if (!params)
 		return;
@@ -5814,6 +5857,11 @@ void mglGetQueryObjecti64v(GLMContext ctx, GLuint id, GLenum pname, GLint64 *par
 void mglGetQueryObjectiv(GLMContext ctx, GLuint id, GLenum pname, GLint *params)
 {
 	GLint64 val = 0;
+	GLuint qbo = mgl_bound_query_buffer(ctx);
+	if (qbo) {
+		mglGetQueryBufferObjectiv(ctx, id, qbo, pname, (GLintptr)params);
+		return;
+	}
 	if (!params)
 		return;
 	mglGetQueryObjecti64v(ctx, id, pname, &val);
@@ -5822,6 +5870,11 @@ void mglGetQueryObjectiv(GLMContext ctx, GLuint id, GLenum pname, GLint *params)
 
 void mglGetQueryObjectui64v(GLMContext ctx, GLuint id, GLenum pname, GLuint64 *params)
 {
+	GLuint qbo = mgl_bound_query_buffer(ctx);
+	if (qbo) {
+		mglGetQueryBufferObjectui64v(ctx, id, qbo, pname, (GLintptr)params);
+		return;
+	}
 	QueryObject *q = mgl_find_query(ctx, id);
 	if (!params)
 		return;
@@ -5840,6 +5893,11 @@ void mglGetQueryObjectui64v(GLMContext ctx, GLuint id, GLenum pname, GLuint64 *p
 void mglGetQueryObjectuiv(GLMContext ctx, GLuint id, GLenum pname, GLuint *params)
 {
 	GLuint64 val = 0;
+	GLuint qbo = mgl_bound_query_buffer(ctx);
+	if (qbo) {
+		mglGetQueryBufferObjectuiv(ctx, id, qbo, pname, (GLintptr)params);
+		return;
+	}
 	if (!params)
 		return;
 	mglGetQueryObjectui64v(ctx, id, pname, &val);

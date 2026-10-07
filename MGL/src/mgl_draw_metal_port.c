@@ -362,11 +362,21 @@ void mglRecordGeometryPrimitiveQueries(
     streamCount = mglDrawGsClampStreamCount(streamCount);
     for (uint32_t s = 1u; s < streamCount; s++) {
         /* Indexed stream s query: generated stays in the meta; written is
-         * the ordered scatter's whole-primitive bytes for buffer s divided
-         * by its per-record stride (streams > 0 are points, vpp = 1). */
-        GLuint64 written = mglDrawGsIndexedStreamWritten(
-            xfbActive ? 1 : 0, (uint64_t)bufferWritten[s],
-            (uint64_t)bufferStride[s]);
+         * the fewest whole records among the buffers stream s feeds
+         * (streams > 0 are points, vpp = 1). */
+        GLuint64 written = 0u;
+        bool writtenSet = false;
+        for (uint32_t b = 0u; b < MGL_AIR_GS_MAX_STREAMS; b++) {
+            if (meta->buffer_stream[b] != s || bufferStride[b] == 0u)
+                continue;
+            GLuint64 w = mglDrawGsIndexedStreamWritten(
+                xfbActive ? 1 : 0, (uint64_t)bufferWritten[b],
+                (uint64_t)bufferStride[b]);
+            if (!writtenSet || w < written) {
+                written = w;
+                writtenSet = true;
+            }
+        }
         mglRecordActivePrimitiveQueryDrawIndexed(
             ctx, s, (GLuint64)meta->stream[s].generated, written);
     }
@@ -1149,9 +1159,7 @@ static void mglGsMetalRecordQueries(GLMContext ctx, uint64_t generated,
 {
     size_t bw[MGL_AIR_GS_MAX_STREAMS] = {0};
     size_t bs[MGL_AIR_GS_MAX_STREAMS] = {0};
-    uint32_t n = stream_count < MGL_AIR_GS_MAX_STREAMS ? stream_count
-                                                       : MGL_AIR_GS_MAX_STREAMS;
-    for (uint32_t i = 0; i < n; i++) {
+    for (uint32_t i = 0; i < MGL_AIR_GS_MAX_STREAMS; i++) {
         if (buffer_written) bw[i] = (size_t)buffer_written[i];
         if (buffer_stride) bs[i] = (size_t)buffer_stride[i];
     }

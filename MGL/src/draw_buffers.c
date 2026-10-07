@@ -865,6 +865,9 @@ static void mglCPUFeedbackWriteValues(uint8_t *dst, GLenum type, GLuint componen
 }
 
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuint64 written);
+extern void mglRecordActivePrimitivesGeneratedVsOnly(GLMContext ctx, GLenum mode,
+                                                     GLsizei count,
+                                                     GLsizei instanceCount);
 
 static bool mglCPUReadIndexValue(const uint8_t *src, GLenum type, GLuint index, GLuint *value)
 {
@@ -1689,27 +1692,29 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
      * with UseProgram(0) inspect pipeline stage slots, not the VS program
      * (a VS-only separable object has no tess slots even when TCS/TES are
      * bound on the pipeline). */
-    if (STATE(transform_feedback) && STATE(transform_feedback)->active &&
-        !STATE(transform_feedback)->paused) {
-        Program *mono = STATE(program);
-        ProgramPipeline *pp = (!mono && STATE(program_name) == 0u)
-            ? STATE(program_pipeline) : NULL;
-        int has_gs = 0, has_tcs = 0, has_tes = 0;
-        Program *vs = NULL;
-        if (mono) {
-            vs = mono;
-            has_gs = mono->shader_slots[_GEOMETRY_SHADER] != NULL;
-            has_tcs = mono->shader_slots[_TESS_CONTROL_SHADER] != NULL;
-            has_tes = mono->shader_slots[_TESS_EVALUATION_SHADER] != NULL;
-        } else if (pp) {
-            Program *gs = pp->stage_programs[_GEOMETRY_SHADER];
-            Program *tcs = pp->stage_programs[_TESS_CONTROL_SHADER];
-            Program *tes = pp->stage_programs[_TESS_EVALUATION_SHADER];
-            vs = pp->stage_programs[_VERTEX_SHADER];
-            has_gs = gs && gs->shader_slots[_GEOMETRY_SHADER];
-            has_tcs = tcs && tcs->shader_slots[_TESS_CONTROL_SHADER];
-            has_tes = tes && tes->shader_slots[_TESS_EVALUATION_SHADER];
-        }
+    Program *mono = STATE(program);
+    ProgramPipeline *pp = (!mono && STATE(program_name) == 0u)
+        ? STATE(program_pipeline) : NULL;
+    int has_gs = 0, has_tcs = 0, has_tes = 0;
+    Program *vs = NULL;
+    if (mono) {
+        vs = mono;
+        has_gs = mono->shader_slots[_GEOMETRY_SHADER] != NULL;
+        has_tcs = mono->shader_slots[_TESS_CONTROL_SHADER] != NULL;
+        has_tes = mono->shader_slots[_TESS_EVALUATION_SHADER] != NULL;
+    } else if (pp) {
+        Program *gs = pp->stage_programs[_GEOMETRY_SHADER];
+        Program *tcs = pp->stage_programs[_TESS_CONTROL_SHADER];
+        Program *tes = pp->stage_programs[_TESS_EVALUATION_SHADER];
+        vs = pp->stage_programs[_VERTEX_SHADER];
+        has_gs = gs && gs->shader_slots[_GEOMETRY_SHADER];
+        has_tcs = tcs && tcs->shader_slots[_TESS_CONTROL_SHADER];
+        has_tes = tes && tes->shader_slots[_TESS_EVALUATION_SHADER];
+    }
+    bool xfb_capturing = STATE(transform_feedback) &&
+        STATE(transform_feedback)->active &&
+        !STATE(transform_feedback)->paused;
+    if (xfb_capturing) {
         if (!has_gs && !has_tcs && !has_tes && vs &&
             !mglXfbPrimitiveModeAccepts(
                 STATE(transform_feedback)->primitive_mode, cmd->mode)) {
@@ -1728,6 +1733,10 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
         ctx, cmd->mode, cmd->count,
         instanced ? cmd->instanceCount : 1,
         indexed ? GL_TRUE : GL_FALSE);
+    if (!xfb_capturing && !has_gs && !has_tcs && !has_tes)
+        mglRecordActivePrimitivesGeneratedVsOnly(
+            ctx, cmd->mode, cmd->count,
+            instanced ? cmd->instanceCount : 1);
 
     /* S9: CPU transform feedback capture */
     if (!indexed) {
