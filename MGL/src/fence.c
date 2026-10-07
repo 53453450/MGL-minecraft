@@ -579,6 +579,26 @@ void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
      * (commit + waitUntilCompleted) already ran here, a conservative path
      * that needs no extra strict branch. */
 
+    /* GL 4.6 §7.13.2: after TEXTURE_FETCH_BARRIER_BIT, texel fetches observe
+     * prior shader writes to the buffer backing a buffer texture.  Those land
+     * only in the Metal store, so refresh the shadow the texel copy is built
+     * from and force a rebuild. */
+    if (barriers == GL_ALL_BARRIER_BITS ||
+        (barriers & GL_TEXTURE_FETCH_BARRIER_BIT)) {
+        for (GLuint i = 0; i < TEXTURE_UNITS; i++) {
+            Texture *tex = STATE(texture_units)[i].textures[_TEXTURE_BUFFER];
+            Buffer *buf = tex ? tex->texture_buffer : NULL;
+            if (!buf || !buf->gpu_write_target || buf->cpu_shadow_pending ||
+                tex->texture_buffer_size <= 0) {
+                continue;
+            }
+            mglRendererReadBackBuffer(ctx, buf,
+                                      (size_t)tex->texture_buffer_offset,
+                                      (size_t)tex->texture_buffer_size);
+            tex->dirty_bits |= DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL;
+        }
+    }
+
     /* Storage image (imageStore) writes go directly to the GPU Metal texture.
      * Without marking the texture/level as metal_data_authoritative, subsequent
      * glGetTexImage calls read stale CPU cached data (lvl->data) instead of
