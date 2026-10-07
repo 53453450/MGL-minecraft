@@ -1780,6 +1780,14 @@ bool mglRenderGenerateVertexDescriptorState(GLMContext ctx,
             mglRenderAttribStepFromDivisor(
                 usesCurrentValue ? 1 : 0, (uint32_t)resolved.divisor,
                 &state->attrib_step_function[i], &state->attrib_step_rate[i]);
+            /* GL 4.6 §10.3.1: a zero binding stride fetches the same element
+             * for every vertex. Metal rejects a zero layout stride even for
+             * the constant step function, which ignores the stride. */
+            if (!usesCurrentValue && stride == 0u) {
+                state->attrib_stride[i] = 4u;
+                state->attrib_step_function[i] = 0u; /* MTLVertexStepFunctionConstant */
+                state->attrib_step_rate[i] = 0u;
+            }
             state->attrib_count =
                 mglRenderAttribCountAfter(state->attrib_count, i);
         }
