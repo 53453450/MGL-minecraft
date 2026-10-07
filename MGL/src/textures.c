@@ -2817,11 +2817,14 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
     }
     else if (mglTexLevelInternalFormatCompressed(internalformat))
     {
-        /* No online compression for sized block formats. Remap only when the
-         * transfer format matches the channel layout (packed_pixels RGTC uses
-         * RED/RG). DSA textures_compressed_subimage probes RGBA+RGTC and
-         * expects INVALID_OPERATION to fall back to static compressed blobs.
-         * Generic COMPRESSED_RGB/RGBA still remaps (1D DSA probe). */
+        /* No online compression for sized block formats. Remap to a sized
+         * uncompressed IF and store transfer pixels (packed_pixels RGTC
+         * GetTexImage round-trip with RED/RG/RGB/BGR/GREEN/BLUE layouts).
+         * Reject RGBA/BGRA so DSA textures_compressed_subimage still sees
+         * INVALID_OPERATION on its TexImage(RGTC, RGBA) probe and falls
+         * back to static CompressedTexImage blobs (GL 4.6 §8.5 Table 8.14
+         * Copyable allows TexImage+RGTC, but success without a compressed
+         * image breaks that test's online-compression path). */
         if (!mglIsGenericCompressedFormat((GLenum)internalformat)) {
             GLboolean format_ok = GL_FALSE;
             switch ((GLenum)internalformat) {
@@ -2829,13 +2832,17 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
                 case GL_COMPRESSED_SIGNED_RED_RGTC1:
                 case GL_COMPRESSED_R11_EAC:
                 case GL_COMPRESSED_SIGNED_R11_EAC:
-                    format_ok = (format == GL_RED || format == GL_RED_INTEGER);
-                    break;
                 case GL_COMPRESSED_RG_RGTC2:
                 case GL_COMPRESSED_SIGNED_RG_RGTC2:
                 case GL_COMPRESSED_RG11_EAC:
                 case GL_COMPRESSED_SIGNED_RG11_EAC:
-                    format_ok = (format == GL_RG || format == GL_RG_INTEGER);
+                    format_ok =
+                        (format == GL_RED || format == GL_RED_INTEGER ||
+                         format == GL_RG || format == GL_RG_INTEGER ||
+                         format == GL_RGB || format == GL_RGB_INTEGER ||
+                         format == GL_BGR || format == GL_BGR_INTEGER ||
+                         format == GL_GREEN || format == GL_GREEN_INTEGER ||
+                         format == GL_BLUE || format == GL_BLUE_INTEGER);
                     break;
                 default:
                     break;
