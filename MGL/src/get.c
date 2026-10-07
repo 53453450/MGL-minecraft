@@ -55,6 +55,7 @@ static const char *kMglExtensions[] = {
     "GL_ARB_buffer_storage",
     "GL_ARB_direct_state_access",
     "GL_ARB_draw_elements_base_vertex",
+    "GL_ARB_shader_draw_parameters", /* gl_BaseVertex/BaseInstance/DrawID in VS */
     "GL_ARB_vertex_attrib_binding",
     "GL_ARB_instanced_arrays",
     "GL_ARB_draw_instanced",

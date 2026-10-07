@@ -71,6 +71,7 @@ typedef struct MGLSavedLinkExecutable {
     GLboolean uses_sample_params;
     uint32_t vertexAttribUsageMask;
     GLboolean uses_point_size_params;
+    GLboolean uses_shader_draw_params;
     GLboolean uses_cull_distance;
     uint32_t cull_distance_count;
     uint32_t clip_distance_count;
@@ -118,6 +119,7 @@ static void mglCaptureLinkExecutable(Program *pptr, MGLSavedLinkExecutable *out)
     out->uses_sample_params = pptr->uses_sample_params;
     out->vertexAttribUsageMask = pptr->vertexAttribUsageMask;
     out->uses_point_size_params = pptr->uses_point_size_params;
+    out->uses_shader_draw_params = pptr->uses_shader_draw_params;
     out->uses_cull_distance = pptr->uses_cull_distance;
     out->cull_distance_count = pptr->cull_distance_count;
     out->clip_distance_count = pptr->clip_distance_count;
@@ -190,6 +192,7 @@ static void mglRestoreSavedLinkExecutable(Program *pptr, MGLSavedLinkExecutable 
     pptr->uses_sample_params = saved->uses_sample_params;
     pptr->vertexAttribUsageMask = saved->vertexAttribUsageMask;
     pptr->uses_point_size_params = saved->uses_point_size_params;
+    pptr->uses_shader_draw_params = saved->uses_shader_draw_params;
     pptr->uses_cull_distance = saved->uses_cull_distance;
     pptr->cull_distance_count = saved->cull_distance_count;
     pptr->clip_distance_count = saved->clip_distance_count;
@@ -2743,6 +2746,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     pptr->uses_sample_params = GL_FALSE;
     pptr->vertexAttribUsageMask = 0u;
     pptr->uses_point_size_params = GL_FALSE;
+    pptr->uses_shader_draw_params = GL_FALSE;
     pptr->uses_cull_distance = GL_FALSE;
     pptr->cull_distance_count = 0u;
     pptr->clip_distance_count = 0u;
@@ -2982,6 +2986,10 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         }
         if (bits & MGL_AIR_BUILTIN_PRIMITIVE_ID) {
             pptr->uses_primitive_id = GL_TRUE;
+        }
+        if (stage == _VERTEX_SHADER &&
+            (bits & (MGL_AIR_BUILTIN_DRAW_ID | MGL_AIR_BUILTIN_BASE_VERTEX))) {
+            pptr->uses_shader_draw_params = GL_TRUE;
         }
     }
 

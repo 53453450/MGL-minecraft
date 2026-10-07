@@ -10,6 +10,7 @@
 
 #include "mgl_draw_issue.h"
 
+#include "mgl_buffer_slots.h"
 #include "mgl_draw_encode.h"
 #include "mgl_draw_mode.h"
 #include "mgl_draw_tess.h"
@@ -27,6 +28,31 @@
 
 extern "C" Program *mglResolveProgramForStageFromState(GLMContext ctx,
                                                        int stage);
+
+/* Stage-encode may skip rebinding when nothing is dirty; MultiDraw still
+ * needs a fresh gl_DrawID / gl_BaseVertex stamp before each draw. */
+static void mglIssueStampShaderDrawParams(GLMContext ctx, void *renderer)
+{
+    if (!ctx || !renderer) {
+        return;
+    }
+    Program *vs = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    if (!vs || !vs->uses_shader_draw_params) {
+        return;
+    }
+    void *owner = mglDrawHostEncoderOwner(renderer);
+    if (!owner) {
+        return;
+    }
+    const int32_t draw_params[2] = {
+        (int32_t)ctx->shader_draw_id,
+        (int32_t)ctx->shader_base_vertex,
+    };
+    (void)mglRenderSetRenderBytesForOwner(
+        static_cast<MGLRenderEncoderOwner *>(owner), draw_params,
+        sizeof(draw_params), MGL_RENDER_BINDING_STAGE_VERTEX,
+        (uint32_t)kMGLShaderDrawParamsBufferIndex);
+}
 
 static uint64_t mglIssueNonNegativeCount(GLsizei count, GLsizei instanceCount)
 {
@@ -85,6 +111,9 @@ extern "C" void mglIssueDrawArrays(GLMContext ctx, void *renderer, GLenum mode,
         return;
     }
 
+    /* DrawArrays*: GLSL gl_BaseVertex is 0 (not Metal vertexStart). */
+    ctx->shader_base_vertex = 0;
+
     /* AGX's compiler dies (XPC_ERROR_CONNECTION_INTERRUPTED) on a Point-class
      * PSO whose VS writes textures.  VS-only + RASTERIZER_DISCARD still runs
      * the VS for imageStore; a triangle strip of the same vertex count is a
@@ -138,6 +167,7 @@ extern "C" void mglIssueDrawArrays(GLMContext ctx, void *renderer, GLenum mode,
         MGL_FRAME_INC(g_mglDrawArraysSkippedSinceSwap);
         return;
     }
+    mglIssueStampShaderDrawParams(ctx, renderer);
     if (!mglDrawHostValidateArrayVertexInputs(renderer, ctx, liveMode, first,
                                               count)) {
         MGL_FRAME_INC(g_mglDrawArraysSkippedSinceSwap);
@@ -175,6 +205,9 @@ extern "C" void mglIssueDrawElements(GLMContext ctx, void *renderer, GLenum mode
     if (!ctx || !renderer || count <= 0 || instanceCount <= 0) {
         return;
     }
+
+    /* Preserve MultiDraw-stamped draw_id; refresh base_vertex for this call. */
+    ctx->shader_base_vertex = baseVertex;
 
     mglDrawHostBindContext(renderer, ctx);
     mglDrawHostSetLastPrimitiveMode(renderer, mode);
@@ -218,6 +251,7 @@ extern "C" void mglIssueDrawElements(GLMContext ctx, void *renderer, GLenum mode
         MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);
         return;
     }
+    mglIssueStampShaderDrawParams(ctx, renderer);
 
     Buffer *glBuffer = NULL;
     void *metalBuffer = NULL;
@@ -260,9 +294,13 @@ extern "C" void mglIssueMultiDrawArrays(GLMContext ctx, void *renderer,
         return;
     }
     for (GLsizei i = 0; i < drawcount; ++i) {
+        ctx->shader_draw_id = (GLint)i;
+        ctx->shader_base_vertex = 0;
         mglIssueDrawArrays(ctx, renderer, mode, first[i], count[i], 1, 0u,
                            label);
     }
+    ctx->shader_draw_id = 0;
+    ctx->shader_base_vertex = 0;
 }
 
 extern "C" void mglIssueMultiDrawElements(GLMContext ctx, void *renderer,
@@ -279,9 +317,13 @@ extern "C" void mglIssueMultiDrawElements(GLMContext ctx, void *renderer,
     for (GLsizei i = 0; i < drawcount; ++i) {
         const void *indexPtr = indices ? indices[i] : NULL;
         const GLint baseVertex = basevertex ? basevertex[i] : 0;
+        ctx->shader_draw_id = (GLint)i;
+        ctx->shader_base_vertex = baseVertex;
         mglIssueDrawElements(ctx, renderer, mode, count[i], type, indexPtr, 1,
                              baseVertex, 0u, label);
     }
+    ctx->shader_draw_id = 0;
+    ctx->shader_base_vertex = 0;
 }
 
 static unsigned mglIssueProgramName(GLMContext ctx)

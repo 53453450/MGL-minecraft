@@ -158,6 +158,8 @@ struct Codegen {
     llvm::Value *vertexId = nullptr;     /* capture variant: vertex_id */
     llvm::Value *instanceId = nullptr;   /* vertex: instance_id */
     llvm::Value *baseInstance = nullptr; /* vertex: base_instance */
+    llvm::Value *baseVertex = nullptr;   /* vertex: base_vertex (gl_BaseVertex) */
+    llvm::Value *drawId = nullptr;       /* vertex: gl_DrawID (host/ICB) */
     llvm::Value *cullBuffer = nullptr;   /* VS cull-distance source buffer */
     llvm::Value *cullParams = nullptr;   /* VS cull-distance emu parameters */
     bool usesCullDistance = false;

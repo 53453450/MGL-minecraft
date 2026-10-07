@@ -185,6 +185,10 @@ GLboolean mglBufferSlotConflictsForProgram(const Program *program,
                 slot == kMGLPointSizeBufferIndex) {
                 return GL_TRUE;
             }
+            if (program->uses_shader_draw_params &&
+                slot == kMGLShaderDrawParamsBufferIndex) {
+                return GL_TRUE;
+            }
             if (program->uses_cull_distance &&
                 mglBufferSlotIsReservedForCullDistance(slot)) {
                 return GL_TRUE;

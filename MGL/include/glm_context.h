@@ -230,6 +230,12 @@ typedef struct GLMContextRec_t {
 
     void (* error_func)(GLMContext ctx, const char *func, GLenum type);
 
+    /* Current gl_DrawID for MultiDraw* (and single draws = 0).  Stamped into
+     * kMGLShaderDrawParamsBufferIndex before each draw when the VS uses it. */
+    GLint shader_draw_id;
+    /* Current GL baseVertex for DrawElements*BaseVertex (0 otherwise). */
+    GLint shader_base_vertex;
+
     /* Trailing replay workspace fallback (R3 / T11-1).  Flush prefers
      * pass->saved as the single workspace; this field remains for callers
      * that activate replay without a flush pass (NULL workspace → copy here).

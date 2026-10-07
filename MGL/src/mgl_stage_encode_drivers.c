@@ -386,6 +386,24 @@ static void mglSeBindPointSizeParams(void *renderer, bool *any_binding_present,
         any_binding_present[kMGLPointSizeBufferIndex] = true;
     }
 
+    {
+        Program *vs_program =
+            mglResolveProgramForStageFromState(areas.ctx, _VERTEX_SHADER);
+        if (vs_program && vs_program->uses_shader_draw_params) {
+            int32_t draw_params[2] = {
+                areas.ctx ? (int32_t)areas.ctx->shader_draw_id : 0,
+                areas.ctx ? (int32_t)areas.ctx->shader_base_vertex : 0,
+            };
+            mglSeEmitVertexBytes(enc_ctx, snap, use_snap, scratch, scratch_used,
+                                 byte_scratch_capacity,
+                                 kMGLShaderDrawParamsBufferIndex, draw_params,
+                                 sizeof(draw_params));
+            mglRendererBindingInvalidateLastBoundVertexBufferAtIndex(
+                renderer, kMGLShaderDrawParamsBufferIndex);
+            any_binding_present[kMGLShaderDrawParamsBufferIndex] = true;
+        }
+    }
+
     if (use_snap) {
         mglSeSnapFlush(snap, 0, scratch_used, enc_ctx);
     }

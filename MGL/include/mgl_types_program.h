@@ -397,6 +397,8 @@ typedef struct Program_t {
     GLboolean uses_sample_params;
     uint32_t vertexAttribUsageMask;
     GLboolean uses_point_size_params;
+    /* VS reads gl_DrawID / gl_BaseVertex from kMGLShaderDrawParamsBufferIndex. */
+    GLboolean uses_shader_draw_params;
     GLboolean uses_cull_distance;
     uint32_t cull_distance_count;
     uint32_t clip_distance_count;

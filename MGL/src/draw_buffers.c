@@ -46,6 +46,7 @@
 #include "vertex_arrays.h"
 
 extern void mglInvalidateColorShadowsForDraw(GLMContext ctx);
+extern Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
 #include "mgl_trace_log.h"
 
 static bool mglSkipOrRecordConditionalDraw(GLMContext ctx)
@@ -1607,6 +1608,14 @@ static Program *mglCurrentExpandedGeometryDrawProgram(GLMContext ctx)
     return mglCurrentGeometryDrawProgram(ctx);
 }
 
+/* MultiDraw* must stamp gl_DrawID per sub-draw; the deferred DRAW_ARRAYS /
+ * DRAW_ELEMENTS expansion loses that index. */
+static int mglCurrentProgramUsesShaderDrawParams(GLMContext ctx)
+{
+    Program *vs = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    return vs && vs->uses_shader_draw_params;
+}
+
 /* The 8-step unified draw frontend (S1-S11 + S14/S15). */
 static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
 {
@@ -2356,7 +2365,8 @@ void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const G
         return;
     }
 
-    if (ctx->draw_defer_enabled && mode != GL_PATCHES) {
+    if (ctx->draw_defer_enabled && mode != GL_PATCHES &&
+        !mglCurrentProgramUsesShaderDrawParams(ctx)) {
         for (GLsizei i = 0; i < drawcount; i++) {
             if (count[i] == 0) {
                 continue;
@@ -2416,7 +2426,8 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
         return;
     }
 
-    if (ctx->draw_defer_enabled && mode != GL_PATCHES) {
+    if (ctx->draw_defer_enabled && mode != GL_PATCHES &&
+        !mglCurrentProgramUsesShaderDrawParams(ctx)) {
         Buffer *elementBuffer = mglCurrentElementBuffer(ctx, __func__);
         for (GLsizei i = 0; i < drawcount; i++) {
             if (count[i] == 0) {

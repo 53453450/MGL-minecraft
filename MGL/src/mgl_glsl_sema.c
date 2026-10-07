@@ -3208,7 +3208,13 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
             }
             if (strcmp(e->u.var_ref.name, "gl_InstanceID") == 0 ||
-                strcmp(e->u.var_ref.name, "gl_BaseInstance") == 0) {
+                strcmp(e->u.var_ref.name, "gl_BaseInstance") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_BaseInstanceARB") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_BaseVertex") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_BaseVertexARB") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_DrawID") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_DrawIDARB") == 0) {
+                /* ARB_shader_draw_parameters / GLSL 4.60 §7.1 — int scalars. */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
             }
             if (strcmp(e->u.var_ref.name, "gl_FragCoord") == 0) {

@@ -729,6 +729,8 @@ GLMContext createGLMContext(GLenum format, GLenum type,
      * (non-zero name) at context creation.  While it remains current,
      * VERTEX_ARRAY_BINDING reports 0 and draws reject it (negative-noVAO). */
     ctx->core_attrib_default_vao = 0u;
+    ctx->shader_draw_id = 0;
+    ctx->shader_base_vertex = 0;
     {
         GLuint default_vao = 0u;
         mglGenVertexArrays(ctx, 1, &default_vao);

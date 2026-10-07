@@ -113,6 +113,13 @@ typedef enum {
      * ABI runtime-array table, but that kernel does not share this encoder. */
     kMGLSamplerWrapBufferIndex = 23,
 
+    /* ARB_shader_draw_parameters host stamp for VS: {draw_id, base_vertex}
+     * as two int32 words.  Bound only when the linked VS uses gl_DrawID /
+     * gl_BaseVertex; Metal has no portable [[draw_id]], and [[base_vertex]]
+     * equals vertexStart on non-indexed draws (≠ GL).  Slot 13 is below the
+     * VAO attribute base (16) and unused by other VS reserved slots. */
+    kMGLShaderDrawParamsBufferIndex = 13,
+
     /* LOD_BIAS_MAX uniform buffer (FS path only).  Holds a single float
      * (MAX_TEXTURE_LOD_BIAS) for GL 4.6 §8.14.1 eq 8.8:
      *   clamp(biastexobj + biasshader, -biasmax, biasmax)

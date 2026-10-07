@@ -1723,9 +1723,21 @@ static llvm::Value *insertSwizzleValue(Codegen &cg, llvm::Value *obj,
                                        const std::vector<uint32_t> &idx,
                                        llvm::Value *val) {
     auto *vt = llvm::cast<llvm::FixedVectorType>(obj->getType());
+    llvm::Type *elemTy = vt->getElementType();
     uint32_t n = (uint32_t)vt->getElementCount().getFixedValue();
     auto cI = [&](uint32_t v) {
         return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), v);
+    };
+    /* GLSL `color.r = 1` assigns an int literal into a float lane.  Without
+     * coercion InsertElement builds `<3 x i32>` into a float3 return slot
+     * and AGX materializeAll fails. */
+    MGLIRScalar elemScalar = elemTy->isFloatingPointTy() ? MGLIR_SCALAR_FLOAT
+                           : elemTy->isIntegerTy(1)     ? MGLIR_SCALAR_BOOL
+                                                        : MGLIR_SCALAR_INT;
+    auto coerceLane = [&](llvm::Value *lane) -> llvm::Value * {
+        if (!lane || lane->getType() == elemTy)
+            return lane;
+        return coerceScalar(cg, lane, elemScalar);
     };
     llvm::Value *out = llvm::UndefValue::get(obj->getType());
     for (uint32_t i = 0; i < n; i++) {
@@ -1735,6 +1747,7 @@ static llvm::Value *insertSwizzleValue(Codegen &cg, llvm::Value *obj,
                 lane = idx.size() == 1
                     ? val
                     : cg.b->CreateExtractElement(val, cI(j));
+                lane = coerceLane(lane);
                 break;
             }
         }
@@ -5749,13 +5762,33 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return cg.b->CreateSub(cg.instanceId, cg.baseInstance);
         }
-        if (strcmp(e->u.var_ref.name, "gl_BaseInstance") == 0) {
+        if (strcmp(e->u.var_ref.name, "gl_BaseInstance") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_BaseInstanceARB") == 0) {
             if (!cg.baseInstance) {
                 cg.err = 1;
                 cg.errmsg = "codegen: gl_BaseInstance requires a vertex stage";
                 return nullptr;
             }
             return cg.baseInstance;
+        }
+        if (strcmp(e->u.var_ref.name, "gl_BaseVertex") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_BaseVertexARB") == 0) {
+            /* Metal [[base_vertex]] equals vertexStart on non-indexed draws,
+             * but GLSL gl_BaseVertex is 0 for DrawArrays*.  Prefer the host-
+             * stamped value when present; otherwise 0 (indexed draws that
+             * need a non-zero base must stamp via setVertexBytes). */
+            if (cg.baseVertex)
+                return cg.baseVertex;
+            return cg.b->getInt32(0);
+        }
+        if (strcmp(e->u.var_ref.name, "gl_DrawID") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_DrawIDARB") == 0) {
+            /* Metal has no portable [[draw_id]] on this SDK; host stamps
+             * the current multi-draw index into cg.drawId (default 0). */
+            if (!cg.drawId) {
+                return cg.b->getInt32(0);
+            }
+            return cg.drawId;
         }
         if (strcmp(e->u.var_ref.name, "gl_FragCoord") == 0) {
             if (!cg.fragPos) {
@@ -12312,6 +12345,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool hasSharedMem = sharedMemoryBytes > 0u;
     const bool usesCullDistance = isVS && !isCapture &&
                                   sourceUsesCullDistance;
+    /* Host-stamped gl_DrawID / gl_BaseVertex (see kMGLShaderDrawParamsBufferIndex). */
+    const bool needsDrawParams =
+        (isVS || isTESVertex) && !isCapture &&
+        (mglFrontendBuiltinUsed(&mod, tu, "gl_DrawID") ||
+         mglFrontendBuiltinUsed(&mod, tu, "gl_DrawIDARB") ||
+         mglFrontendBuiltinUsed(&mod, tu, "gl_BaseVertex") ||
+         mglFrontendBuiltinUsed(&mod, tu, "gl_BaseVertexARB"));
     const bool usesPatchCullDistance =
         isTES && !isTESCompute && !isTESVertex && !isCapture &&
         sourceUsesCullDistance;
@@ -13040,9 +13080,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     }
     if (isVS || isTESVertex) {
-        paramTys.push_back(llvm::Type::getInt32Ty(ctx));
-        paramTys.push_back(llvm::Type::getInt32Ty(ctx));
-        paramTys.push_back(llvm::Type::getInt32Ty(ctx));
+        paramTys.push_back(llvm::Type::getInt32Ty(ctx)); /* instance_id */
+        paramTys.push_back(llvm::Type::getInt32Ty(ctx)); /* base_instance */
+        paramTys.push_back(llvm::Type::getInt32Ty(ctx)); /* vertex_id */
+        if (needsDrawParams)
+            paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     }
     else if (isKernel) {
         if (hasSharedMem)
@@ -13595,6 +13637,18 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         cg.instanceId = fn->getArg(argSlot++);
         cg.baseInstance = fn->getArg(argSlot++);
         cg.vertexId = fn->getArg(argSlot++);
+        cg.baseVertex = cg.b->getInt32(0);
+        cg.drawId = cg.b->getInt32(0);
+        if (needsDrawParams) {
+            llvm::Value *dp = fn->getArg(argSlot++);
+            llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
+            llvm::Value *drawPtr = cg.b->CreateBitCast(
+                dp, i32->getPointerTo(1));
+            cg.drawId = cg.b->CreateAlignedLoad(i32, drawPtr, llvm::Align(4));
+            llvm::Value *bvPtr = cg.b->CreateGEP(i32, drawPtr, cg.b->getInt32(1));
+            cg.baseVertex =
+                cg.b->CreateAlignedLoad(i32, bvPtr, llvm::Align(4));
+        }
         if (sourceUsesCullDistance &&
             !cg.lvalues.count("gl_CullDistance")) {
             cg.lvalues["gl_CullDistance"] = defaultCullDistances(cg);
@@ -16366,10 +16420,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
 
     if (isVS || isTESVertex) {
         const unsigned wrapTail = needsSamplerWrapBuf ? 1u : 0u;
+        const unsigned drawTail = needsDrawParams ? 1u : 0u;
+        const unsigned tail = wrapTail + drawTail;
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                 llvm::Type::getInt32Ty(ctx),
-                (unsigned)paramTys.size() - 3u - wrapTail)),
+                (unsigned)paramTys.size() - 3u - tail)),
             llvm::MDString::get(ctx, "air.instance_id"),
             llvm::MDString::get(ctx, "air.arg_type_name"),
             llvm::MDString::get(ctx, "uint"),
@@ -16378,7 +16434,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                 llvm::Type::getInt32Ty(ctx),
-                (unsigned)paramTys.size() - 2u - wrapTail)),
+                (unsigned)paramTys.size() - 2u - tail)),
             llvm::MDString::get(ctx, "air.base_instance"),
             llvm::MDString::get(ctx, "air.arg_type_name"),
             llvm::MDString::get(ctx, "uint"),
@@ -16388,12 +16444,34 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                 llvm::Type::getInt32Ty(ctx),
-                (unsigned)paramTys.size() - 1u - wrapTail)),
+                (unsigned)paramTys.size() - 1u - tail)),
             llvm::MDString::get(ctx, "air.vertex_id"),
             llvm::MDString::get(ctx, "air.arg_type_name"),
             llvm::MDString::get(ctx, "uint"),
             llvm::MDString::get(ctx, "air.arg_name"),
             llvm::MDString::get(ctx, "vid")}));
+        if (needsDrawParams) {
+            llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    i32, (unsigned)paramTys.size() - 1u - wrapTail)),
+                llvm::MDString::get(ctx, "air.buffer"),
+                llvm::MDString::get(ctx, "air.location_index"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    i32, kMGLShaderDrawParamsBufferIndex)),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 1)),
+                llvm::MDString::get(ctx, "air.read"),
+                llvm::MDString::get(ctx, "air.address_space"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 1)),
+                llvm::MDString::get(ctx, "air.arg_type_size"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 8)),
+                llvm::MDString::get(ctx, "air.arg_type_align_size"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 4)),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "int2"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "mgl_draw_params")}));
+        }
     }
     if (needsSamplerWrapBuf) {
         llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
@@ -16653,6 +16731,15 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
     if (mglFrontendBuiltinUsed(mod, tu, "gl_VertexID") ||
         mglFrontendBuiltinUsed(mod, tu, "gl_VertexIndex"))
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_VERTEX_ID;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_BaseVertex") ||
+        mglFrontendBuiltinUsed(mod, tu, "gl_BaseVertexARB"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_BASE_VERTEX;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_BaseInstance") ||
+        mglFrontendBuiltinUsed(mod, tu, "gl_BaseInstanceARB"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_BASE_INSTANCE;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_DrawID") ||
+        mglFrontendBuiltinUsed(mod, tu, "gl_DrawIDARB"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_DRAW_ID;
     if (mglFrontendBuiltinUsed(mod, tu, "gl_FragCoord"))
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_FRAG_COORD;
     if (mglFrontendBuiltinUsed(mod, tu, "gl_PointCoord"))
