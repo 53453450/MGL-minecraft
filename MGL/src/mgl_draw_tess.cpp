@@ -2965,10 +2965,35 @@ static int mglXfbFinishVsOnlyCapture(GLMContext ctx, GLenum mode, GLsizei count,
             CFRelease(capture);
             return 1;
         }
+        const uint32_t destinationOffset = dests[buffer].destination_offset;
+        /* GL 4.6 §11.1.2.1: gl_SkipComponents leave buffer contents
+         * unmodified, so pack over the existing bytes. */
+        {
+            const uint8_t *existing = NULL;
+            MGLRenderBufferInfo existingInfo = {0};
+            const bool shadowNewer = slot->buf->cpu_shadow_pending ||
+                (slot->buf->data.dirty_bits & DIRTY_BUFFER_DATA);
+            if (!shadowNewer && slot->buf->data.mtl_data &&
+                mglRenderGetBufferInfo(slot->buf->data.mtl_data,
+                                       &existingInfo) == 0 &&
+                destinationOffset + writtenBytes <= existingInfo.length) {
+                existing = (const uint8_t *)buffer_contents(
+                    slot->buf->data.mtl_data);
+            }
+            if (existing) {
+                memcpy(packed, existing + destinationOffset, writtenBytes);
+            } else if (slot->buf->data.buffer_data &&
+                       (size_t)slot->buf->size >=
+                           destinationOffset + writtenBytes) {
+                memcpy(packed,
+                       (const uint8_t *)slot->buf->data.buffer_data +
+                           destinationOffset,
+                       writtenBytes);
+            }
+        }
         mglXfbPackVsRecords(plan, buffer, gathered, 0u, plan->capture_stride,
                             recordsWritten, packed,
                             plan->buffer_stride[buffer]);
-        const uint32_t destinationOffset = dests[buffer].destination_offset;
         mglRendererBufferSubData(ctx, slot->buf, destinationOffset, writtenBytes,
                                  packed);
         if (slot->buf->data.mtl_data) {

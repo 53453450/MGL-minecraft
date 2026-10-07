@@ -514,6 +514,22 @@ extern "C" uint32_t mglDrawGsFillXFBScatterParams(Program *gs,
             out->buffers[fd->buffer_index].stride = end;
         }
     }
+    /* GL 4.6 §11.1.2.1: trailing gl_SkipComponents still occupy the
+     * buffer's interleaved record. */
+    for (GLsizei vi = 0; vi < gs->transform_feedback_varying_count; vi++) {
+        const MGLTransformFeedbackVaryingPlan *plan =
+            &gs->transform_feedback_layout[vi];
+        if (plan->stream >= 0 || plan->component_count == 0u ||
+            plan->buffer_index >= MGL_AIR_GS_MAX_STREAMS ||
+            out->buffers[plan->buffer_index].stride == 0u) {
+            continue;
+        }
+        const uint32_t end =
+            (plan->component_offset + plan->component_count) * 4u;
+        if (end > out->buffers[plan->buffer_index].stride) {
+            out->buffers[plan->buffer_index].stride = end;
+        }
+    }
     return xfbBufferCount;
 }
 

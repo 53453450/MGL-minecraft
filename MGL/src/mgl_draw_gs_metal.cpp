@@ -621,12 +621,54 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
                         return 1;
                     }
                 }
-                ops->blit_copy(xfbBlit, xfbTemporary, bufferPhysBase[b],
-                               bufferDstMTL[b], bufferDstOffset[b], copyBytes);
                 BufferBaseTarget *slot =
                     &ctx->active_state
                          ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER]
                          .buffers[b];
+                if (xfbTempBytes && slot->buf) {
+                    /* GL 4.6 §11.1.2.1: bytes no varying covers
+                     * (gl_SkipComponents) keep the destination contents,
+                     * including writes by an earlier binding of the same
+                     * buffer object in this draw. */
+                    const uint32_t stride = scatterParams.buffers[b].stride;
+                    std::vector<uint8_t> covered(stride, 0u);
+                    for (uint32_t f = 0u; f < scatterParams.field_count; f++) {
+                        const MGLAIRGSXFBFieldDesc &fd = scatterParams.fields[f];
+                        if (fd.buffer_index != b) continue;
+                        for (uint32_t k = 0u; k < fd.byte_count &&
+                                              fd.dst_offset + k < stride; k++) {
+                            covered[fd.dst_offset + k] = 1u;
+                        }
+                    }
+                    const uint8_t *existing = NULL;
+                    const bool shadowNewer = slot->buf->cpu_shadow_pending ||
+                        (slot->buf->data.dirty_bits & DIRTY_BUFFER_DATA);
+                    MGLRenderBufferInfo existingInfo = {0};
+                    if (!shadowNewer &&
+                        mglRenderGetBufferInfo(bufferDstMTL[b],
+                                               &existingInfo) == 0 &&
+                        bufferDstOffset[b] + copyBytes <=
+                            existingInfo.length) {
+                        existing = (const uint8_t *)ops->buffer_contents(
+                            bufferDstMTL[b]);
+                    }
+                    if (!existing &&
+                        mglXfbCPUShadowFits(
+                            slot->buf->data.buffer_data ? 1 : 0,
+                            slot->buf->size, bufferDstOffset[b], copyBytes)) {
+                        existing =
+                            (const uint8_t *)slot->buf->data.buffer_data;
+                    }
+                    if (existing) {
+                        existing += bufferDstOffset[b];
+                        uint8_t *tmp = xfbTempBytes + bufferPhysBase[b];
+                        for (uint64_t i = 0u; i < copyBytes; i++) {
+                            if (!covered[i % stride]) tmp[i] = existing[i];
+                        }
+                    }
+                }
+                ops->blit_copy(xfbBlit, xfbTemporary, bufferPhysBase[b],
+                               bufferDstMTL[b], bufferDstOffset[b], copyBytes);
                 if (slot->buf) {
                     slot->buf->ever_written =
                         (GLboolean)mglRenderGLBoolean(1);
