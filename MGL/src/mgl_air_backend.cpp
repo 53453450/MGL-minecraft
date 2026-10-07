@@ -10093,36 +10093,54 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         if (!localsBeforeCall.count(kv.first))
                             calleeLocalNames.insert(kv.first);
                     }
-                    auto isModuleGlobal = [&](const std::string &n) {
+                    auto isSharedAcrossCall = [&](const std::string &n) {
                         const MGLIRSymbol *s = findSymbol(mod, n.c_str());
-                        return s && !s->is_function;
+                        if (s && !s->is_function) return true;
+                        /* Stage I/O builtins are not IR symbols but must
+                         * keep helper writes (CTS fragdepth.write_in_function). */
+                        return n == "gl_FragDepth" || n == "gl_FragColor" ||
+                               n == "gl_SampleMask" || n == "gl_Position" ||
+                               n == "gl_PointSize" || n == "gl_Layer" ||
+                               n == "gl_ViewportIndex" ||
+                               n == "gl_ClipDistance" ||
+                               n == "gl_CullDistance" ||
+                               n == "gl_TessLevelOuter" ||
+                               n == "gl_TessLevelInner";
                     };
                     for (const auto &kv : callerLvalues) {
                         if (wroteBack.count(kv.first)) continue;
+                        /* Shared stage outs keep the callee write unless a
+                         * same-named callee local shadowed them. */
+                        if (isSharedAcrossCall(kv.first) &&
+                            !calleeLocalNames.count(kv.first))
+                            continue;
                         if (calleeLocalNames.count(kv.first) ||
-                            !isModuleGlobal(kv.first))
+                            !isSharedAcrossCall(kv.first))
                             cg.lvalues[kv.first] = kv.second;
                     }
                     for (auto it = cg.lvalues.begin();
                          it != cg.lvalues.end();) {
                         if (callerLvalues.count(it->first) ||
                             wroteBack.count(it->first) ||
-                            isModuleGlobal(it->first))
+                            isSharedAcrossCall(it->first))
                             ++it;
                         else
                             it = cg.lvalues.erase(it);
                     }
                     for (const auto &kv : callerIR) {
                         if (wroteBack.count(kv.first)) continue;
+                        if (isSharedAcrossCall(kv.first) &&
+                            !calleeLocalNames.count(kv.first))
+                            continue;
                         if (calleeLocalNames.count(kv.first) ||
-                            !isModuleGlobal(kv.first))
+                            !isSharedAcrossCall(kv.first))
                             cg.localIRTypes[kv.first] = kv.second;
                     }
                     for (auto it = cg.localIRTypes.begin();
                          it != cg.localIRTypes.end();) {
                         if (callerIR.count(it->first) ||
                             wroteBack.count(it->first) ||
-                            isModuleGlobal(it->first))
+                            isSharedAcrossCall(it->first))
                             ++it;
                         else
                             it = cg.localIRTypes.erase(it);
