@@ -1860,8 +1860,12 @@ int mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(MGLCommandBuff
         return -1;
     }
 
-    const NS::UInteger slice_count =
+    NS::UInteger slice_count =
         std::min(source->arrayLength(), destination->arrayLength());
+    const auto type = source->textureType();
+    if (type == MTL::TextureTypeCube || type == MTL::TextureTypeCubeArray) {
+        slice_count *= 6u;
+    }
     const NS::UInteger level_count = std::min(
         source->mipmapLevelCount(), destination->mipmapLevelCount());
     if (slice_count == 0 || level_count == 0) return -1;
