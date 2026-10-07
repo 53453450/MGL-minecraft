@@ -2029,7 +2029,9 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
      * locations (passthrough VS).  Remap by name at compile time.
      * TES-compute / TES-vertex (no GS) remap FS inputs to TES outs the same
      * way.  Same for TES←TCS: declaration-order locations diverge when the
-     * TES omits some TCS per-vertex outs (barrier_guarded_read_calls). */
+     * TES omits some TCS per-vertex outs (barrier_guarded_read_calls).
+     * TCS←VS: CTS shaders often declare TCS inputs in a different order
+     * than VS outs (vsColor before vsPosition); pair by name (GL §7.4.1). */
     const MGLShaderResourceList *iface_peers = NULL;
     if (stage == _FRAGMENT_SHADER && pptr->shader_slots[_GEOMETRY_SHADER]) {
         iface_peers =
@@ -2044,6 +2046,10 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
                pptr->shader_slots[_TESS_CONTROL_SHADER]) {
         iface_peers =
             &pptr->shader_resources_list[_TESS_CONTROL_SHADER][_STAGE_OUTPUT_RES];
+    } else if (stage == _TESS_CONTROL_SHADER &&
+               pptr->shader_slots[_VERTEX_SHADER]) {
+        iface_peers =
+            &pptr->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES];
     }
     int air_rc;
     if (mglCompileArtifactCanReuseAtLink(shader->cached_artifact, air_stage,

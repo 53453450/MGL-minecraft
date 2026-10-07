@@ -9478,6 +9478,71 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             load->setAtomic(llvm::AtomicOrdering::Monotonic);
             return load;
         }
+        /* GL_ARB_shader_atomic_counter_ops / GLSL 4.60 §8.11: all return
+         * the value previously stored in the counter. */
+        {
+            const char *acName = name;
+            char acBuf[64];
+            size_t nlen = strlen(name);
+            if (nlen > 3 && nlen - 3 < sizeof(acBuf) &&
+                strcmp(name + nlen - 3, "ARB") == 0) {
+                /* Strip ARB suffix used under #version 450 + extension. */
+                memcpy(acBuf, name, nlen - 3);
+                acBuf[nlen - 3] = '\0';
+                acName = acBuf;
+            }
+            llvm::AtomicRMWInst::BinOp acOp = llvm::AtomicRMWInst::BAD_BINOP;
+            int acCompSwap = 0;
+            if (strcmp(acName, "atomicCounterAdd") == 0)
+                acOp = llvm::AtomicRMWInst::Add;
+            else if (strcmp(acName, "atomicCounterSubtract") == 0)
+                acOp = llvm::AtomicRMWInst::Sub;
+            else if (strcmp(acName, "atomicCounterMin") == 0)
+                acOp = llvm::AtomicRMWInst::UMin;
+            else if (strcmp(acName, "atomicCounterMax") == 0)
+                acOp = llvm::AtomicRMWInst::UMax;
+            else if (strcmp(acName, "atomicCounterAnd") == 0)
+                acOp = llvm::AtomicRMWInst::And;
+            else if (strcmp(acName, "atomicCounterOr") == 0)
+                acOp = llvm::AtomicRMWInst::Or;
+            else if (strcmp(acName, "atomicCounterXor") == 0)
+                acOp = llvm::AtomicRMWInst::Xor;
+            else if (strcmp(acName, "atomicCounterExchange") == 0)
+                acOp = llvm::AtomicRMWInst::Xchg;
+            else if (strcmp(acName, "atomicCounterCompSwap") == 0)
+                acCompSwap = 1;
+
+            if (acCompSwap || acOp != llvm::AtomicRMWInst::BAD_BINOP) {
+                uint32_t want = acCompSwap ? 3u : 2u;
+                if (e->u.call.arg_count != want) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: ") + name +
+                                " argument count mismatch";
+                    return nullptr;
+                }
+                llvm::Value *p = emitAtomicCounterAddress(
+                    cg, e->u.call.args[0], mod, locals);
+                if (!p) return nullptr;
+                llvm::Value *data =
+                    emitExpr(cg, e->u.call.args[1], mod, locals);
+                if (!data) return nullptr;
+                data = coerceScalar(cg, data, MGLIR_SCALAR_UINT);
+                if (acCompSwap) {
+                    llvm::Value *neu =
+                        emitExpr(cg, e->u.call.args[2], mod, locals);
+                    if (!neu) return nullptr;
+                    neu = coerceScalar(cg, neu, MGLIR_SCALAR_UINT);
+                    auto *cx = cg.b->CreateAtomicCmpXchg(
+                        p, data, neu, llvm::MaybeAlign(),
+                        llvm::AtomicOrdering::Monotonic,
+                        llvm::AtomicOrdering::Monotonic);
+                    return cg.b->CreateExtractValue(cx, 0);
+                }
+                return cg.b->CreateAtomicRMW(
+                    acOp, p, data, llvm::MaybeAlign(),
+                    llvm::AtomicOrdering::Monotonic);
+            }
+        }
         /* SSBO atomic* (GLSL 4.60 §8.11): RMW on device memory; every
          * op returns the original contents of mem before the update. */
         {
@@ -12303,7 +12368,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         std::vector<AirIfaceLocationPeer> peers;
         if (iface_location_peers && iface_location_peers->list &&
             ((has_gs && stage == MGL_STAGE_FRAGMENT) ||
-             stage == MGL_STAGE_TESS_EVALUATION)) {
+             stage == MGL_STAGE_TESS_EVALUATION ||
+             stage == MGL_STAGE_TESS_CONTROL)) {
             peers.reserve(iface_location_peers->count);
             for (GLuint i = 0; i < iface_location_peers->count; i++) {
                 const MGLShaderResource *peer =

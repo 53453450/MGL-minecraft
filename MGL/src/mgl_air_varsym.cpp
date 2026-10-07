@@ -266,17 +266,23 @@ void assignStageVarSymLocations(std::vector<VarSym> &syms, int stage,
      * and FS list the same names in different order (CTS utf8_characters
      * gs_fs_tex_coord before/after gs_fs_result).  Remap by name.
      * TES←TCS uses the same peer list: a TES that omits some TCS outs
-     * (e.g. only `test_vector2`) must still read the producer location. */
+     * (e.g. only `test_vector2`) must still read the producer location.
+     * TCS←VS: same when TCS declares inputs in a different order than VS
+     * outs (shader_atomic_counter_ops: vsColor before vsPosition). */
     if (peers && peerCount > 0 &&
         ((has_gs && stage == AIR_STAGE_FRAGMENT) ||
-         stage == AIR_STAGE_TESS_EVALUATION)) {
+         stage == AIR_STAGE_TESS_EVALUATION ||
+         stage == AIR_STAGE_TESS_CONTROL)) {
         for (VarSym &v : syms) {
             const bool fsVarying =
                 stage == AIR_STAGE_FRAGMENT && v.kind == VarSym::VARYING;
             const bool tesCpIn =
                 stage == AIR_STAGE_TESS_EVALUATION &&
                 v.kind == VarSym::CONTROL_POINT_INPUT;
-            if ((!fsVarying && !tesCpIn) || v.locationExplicit)
+            const bool tcsIn =
+                stage == AIR_STAGE_TESS_CONTROL &&
+                v.kind == VarSym::VARYING;
+            if ((!fsVarying && !tesCpIn && !tcsIn) || v.locationExplicit)
                 continue;
             for (uint32_t i = 0; i < peerCount; i++) {
                 const AirIfaceLocationPeer &peer = peers[i];
