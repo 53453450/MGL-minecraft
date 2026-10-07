@@ -82,12 +82,20 @@ static void mglSamplerParameterUnhandled(GLMContext ctx)
  * write into the sampler's dead swizzle fields. */
 static GLboolean mglIsTextureOnlyParameter(GLenum pname)
 {
+    /* Sampler objects accept only the sampler-state pnames in GL 4.6
+     * Table 23.18. Texture-object / immutable / swizzle / level pnames
+     * must generate GL_INVALID_ENUM. */
     switch (pname) {
         case GL_TEXTURE_SWIZZLE_R:
         case GL_TEXTURE_SWIZZLE_G:
         case GL_TEXTURE_SWIZZLE_B:
         case GL_TEXTURE_SWIZZLE_A:
         case GL_TEXTURE_SWIZZLE_RGBA:
+        case GL_TEXTURE_BASE_LEVEL:
+        case GL_TEXTURE_MAX_LEVEL:
+        case GL_TEXTURE_IMMUTABLE_FORMAT:
+        case GL_TEXTURE_IMMUTABLE_LEVELS:
+        case GL_DEPTH_STENCIL_TEXTURE_MODE:
             return GL_TRUE;
         default:
             return GL_FALSE;
@@ -424,7 +432,7 @@ void mglSamplerParameterfv(GLMContext ctx, GLuint sampler, GLenum pname, const G
 
 void mglSamplerParameteri(GLMContext ctx, GLuint sampler, GLenum pname, GLint param)
 {
-    Sampler *ptr = getSampler(ctx, sampler);
+    Sampler *ptr = findSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
     if (mglIsTextureOnlyParameter(pname)) {
@@ -456,7 +464,7 @@ void mglSamplerParameteriv(GLMContext ctx, GLuint sampler, GLenum pname, const G
         return;
     }
 
-    Sampler *ptr = getSampler(ctx, sampler);
+    Sampler *ptr = findSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
     TextureParameter candidate = ptr->params;
 
@@ -489,7 +497,7 @@ void mglSamplerParameterIiv(GLMContext ctx, GLuint sampler, GLenum pname, const 
         return;
     }
 
-    Sampler *ptr = getSampler(ctx, sampler);
+    Sampler *ptr = findSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
     TextureParameter candidate = ptr->params;
 
@@ -528,7 +536,7 @@ void mglSamplerParameterIuiv(GLMContext ctx, GLuint sampler, GLenum pname, const
         return;
     }
 
-    Sampler *ptr = getSampler(ctx, sampler);
+    Sampler *ptr = findSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
     TextureParameter candidate = ptr->params;
 
@@ -569,6 +577,11 @@ void mglGetSamplerParameterIiv(GLMContext ctx, GLuint sampler, GLenum pname, GLi
     Sampler *ptr = findSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
+    if (mglIsTextureOnlyParameter(pname)) {
+        mglSamplerParameterUnhandled(ctx);
+        return;
+    }
+
     if (pname == GL_TEXTURE_BORDER_COLOR)
     {
         for (int i = 0; i < 4; ++i)
@@ -598,6 +611,11 @@ void mglGetSamplerParameterIuiv(GLMContext ctx, GLuint sampler, GLenum pname, GL
     Sampler *ptr = findSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
+    if (mglIsTextureOnlyParameter(pname)) {
+        mglSamplerParameterUnhandled(ctx);
+        return;
+    }
+
     if (pname == GL_TEXTURE_BORDER_COLOR)
     {
         for (int i = 0; i < 4; ++i)
@@ -626,6 +644,11 @@ void mglGetSamplerParameterfv(GLMContext ctx, GLuint sampler, GLenum pname, GLfl
 
     Sampler *ptr = findSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
+
+    if (mglIsTextureOnlyParameter(pname)) {
+        mglSamplerParameterUnhandled(ctx);
+        return;
+    }
 
     if (pname == GL_TEXTURE_BORDER_COLOR)
     {
@@ -659,6 +682,11 @@ void mglGetSamplerParameteriv(GLMContext ctx, GLuint sampler, GLenum pname, GLin
 
     Sampler *ptr = findSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
+
+    if (mglIsTextureOnlyParameter(pname)) {
+        mglSamplerParameterUnhandled(ctx);
+        return;
+    }
 
     if (pname == GL_TEXTURE_BORDER_COLOR)
     {

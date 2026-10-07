@@ -7493,6 +7493,27 @@ void mglGetTextureParameteriv(GLMContext ctx, GLuint texture, GLenum pname, GLin
         ERROR_RETURN(GL_INVALID_ENUM);
 }
 
+static bool mglGetTexParameterITargetValid(GLenum target)
+{
+    /* Same set as TexParameter targets: object targets only — not cube-map
+     * faces and not GL_TEXTURE_BUFFER (GL 4.6 §8.10). */
+    switch (target) {
+        case GL_TEXTURE_1D:
+        case GL_TEXTURE_2D:
+        case GL_TEXTURE_3D:
+        case GL_TEXTURE_1D_ARRAY:
+        case GL_TEXTURE_2D_ARRAY:
+        case GL_TEXTURE_RECTANGLE:
+        case GL_TEXTURE_CUBE_MAP:
+        case GL_TEXTURE_CUBE_MAP_ARRAY:
+        case GL_TEXTURE_2D_MULTISAMPLE:
+        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void mglGetTexParameterIiv(GLMContext ctx, GLenum target, GLenum pname, GLint *params)
 {
     if (!params) {
@@ -7500,8 +7521,20 @@ void mglGetTexParameterIiv(GLMContext ctx, GLenum target, GLenum pname, GLint *p
         return;
     }
 
+    if (!mglGetTexParameterITargetValid(target)) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
     Texture *tex = getTex(ctx, 0, target);
     if (!tex)
+        return;
+
+    if (pname == GL_TEXTURE_IMMUTABLE_FORMAT) {
+        *params = tex->immutable_storage ? GL_TRUE : GL_FALSE;
+        return;
+    }
+    if (mglTextureViewParameter(tex, pname, params))
         return;
 
     if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {
@@ -7523,9 +7556,26 @@ void mglGetTexParameterIuiv(GLMContext ctx, GLenum target, GLenum pname, GLuint 
         return;
     }
 
+    if (!mglGetTexParameterITargetValid(target)) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
     Texture *tex = getTex(ctx, 0, target);
     if (!tex)
         return;
+
+    if (pname == GL_TEXTURE_IMMUTABLE_FORMAT) {
+        *params = (GLuint)(tex->immutable_storage ? GL_TRUE : GL_FALSE);
+        return;
+    }
+    {
+        GLint view_value = 0;
+        if (mglTextureViewParameter(tex, pname, &view_value)) {
+            *params = (GLuint)view_value;
+            return;
+        }
+    }
 
     if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {
         *params = (GLuint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
