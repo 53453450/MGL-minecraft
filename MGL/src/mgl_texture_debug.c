@@ -395,6 +395,13 @@ void mglRequestJavaThreadDumpForZeroCpuUpload(Texture *tex,
     }
 
     s_requested_512_zero_cpu_thread_dump = 1;
+    /* Without a handler (non-JVM host) SIGQUIT terminates the process. */
+    struct sigaction quit_action;
+    if (sigaction(SIGQUIT, NULL, &quit_action) != 0 ||
+        quit_action.sa_handler == SIG_DFL ||
+        quit_action.sa_handler == SIG_IGN) {
+        return;
+    }
     errno = 0;
     int rc = kill(getpid(), SIGQUIT);
 
