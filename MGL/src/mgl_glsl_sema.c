@@ -1168,6 +1168,22 @@ static MGLExpr *rewrite_initializer(Sema *s, SymTab *tab, MGLExpr *e,
                        "expected %u columns or %u scalars",
                        argc, ncols, ncols * nrows);
             return e;
+        } else {
+            /* Flat scalar fill: GLSL 4.20 initializer lists disallow
+             * implicit conversions (e.g. bool/int → float). */
+            for (i = 0; i < argc; i++) {
+                MGLExpr *a = e->u.init_list.args[i];
+                MGLIRType *at;
+                if (!a || a->kind == MGL_EXPR_INIT_LIST) {
+                    continue;
+                }
+                at = check_expr(s, tab, a);
+                if (!at || at->scalar != expected->scalar) {
+                    sema_error(s, e->line,
+                               "initializer list element type mismatch");
+                    return e;
+                }
+            }
         }
         /* argc == ncols * nrows: leave scalars for mat(C*R) constructor. */
         cname = ctor_name_for_type(expected);
@@ -1192,8 +1208,29 @@ static MGLExpr *rewrite_initializer(Sema *s, SymTab *tab, MGLExpr *e,
 
     if (expected->kind == MGLIR_TYPE_VECTOR ||
         expected->kind == MGLIR_TYPE_SCALAR) {
-        /* Nested lists inside a vector/scalar fill are not rewritten
-         * further; constructors accept component streams. */
+        /* GLSL 4.20 §4.1.10 / ARB_shading_language_420pack: curly-brace
+         * initializer lists do not perform implicit conversions.  Desugaring
+         * to T(...) would otherwise accept bool/int in a float vec. */
+        for (i = 0; i < e->u.init_list.arg_count; i++) {
+            MGLExpr *a = e->u.init_list.args[i];
+            MGLIRType *at;
+            if (!a) {
+                continue;
+            }
+            if (a->kind == MGL_EXPR_INIT_LIST) {
+                MGLIRType *leaf = scratch_type(
+                    s, mglIRTypeScalar(expected->scalar));
+                e->u.init_list.args[i] =
+                    rewrite_initializer(s, tab, a, leaf);
+                continue;
+            }
+            at = check_expr(s, tab, a);
+            if (!at || at->scalar != expected->scalar) {
+                sema_error(s, e->line,
+                           "initializer list element type mismatch");
+                return e;
+            }
+        }
         cname = ctor_name_for_type(expected);
         if (!cname) {
             return e;
