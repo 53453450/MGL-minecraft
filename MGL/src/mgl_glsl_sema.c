@@ -1049,6 +1049,33 @@ static char *ctor_name_for_type(const MGLIRType *t)
     }
 }
 
+/* GLSL 4.20 initializer lists reject bool↔numeric mixing (negative CTS),
+ * but still allow the same numeric promotions constructors do (int/uint→float),
+ * which length_of_vector_and_matrix and similar tests rely on. */
+static int init_list_scalar_ok(MGLIRScalar have, MGLIRScalar want)
+{
+    if (have == want) {
+        return 1;
+    }
+    if (have == MGLIR_SCALAR_BOOL || want == MGLIR_SCALAR_BOOL) {
+        return 0;
+    }
+    if (want == MGLIR_SCALAR_FLOAT &&
+        (have == MGLIR_SCALAR_INT || have == MGLIR_SCALAR_UINT)) {
+        return 1;
+    }
+    if (want == MGLIR_SCALAR_DOUBLE &&
+        (have == MGLIR_SCALAR_INT || have == MGLIR_SCALAR_UINT ||
+         have == MGLIR_SCALAR_FLOAT)) {
+        return 1;
+    }
+    if ((want == MGLIR_SCALAR_INT || want == MGLIR_SCALAR_UINT) &&
+        (have == MGLIR_SCALAR_INT || have == MGLIR_SCALAR_UINT)) {
+        return 1;
+    }
+    return 0;
+}
+
 /* Rewrite a curly-brace initializer list into a typed constructor call.
  * Nested lists are rewritten against the expected element/column/member
  * type.  Non-list expressions are returned unchanged. */
@@ -1169,8 +1196,7 @@ static MGLExpr *rewrite_initializer(Sema *s, SymTab *tab, MGLExpr *e,
                        argc, ncols, ncols * nrows);
             return e;
         } else {
-            /* Flat scalar fill: GLSL 4.20 initializer lists disallow
-             * implicit conversions (e.g. bool/int → float). */
+            /* Flat scalar fill: reject bool↔numeric; allow int/uint→float. */
             for (i = 0; i < argc; i++) {
                 MGLExpr *a = e->u.init_list.args[i];
                 MGLIRType *at;
@@ -1178,7 +1204,7 @@ static MGLExpr *rewrite_initializer(Sema *s, SymTab *tab, MGLExpr *e,
                     continue;
                 }
                 at = check_expr(s, tab, a);
-                if (!at || at->scalar != expected->scalar) {
+                if (!at || !init_list_scalar_ok(at->scalar, expected->scalar)) {
                     sema_error(s, e->line,
                                "initializer list element type mismatch");
                     return e;
@@ -1208,9 +1234,8 @@ static MGLExpr *rewrite_initializer(Sema *s, SymTab *tab, MGLExpr *e,
 
     if (expected->kind == MGLIR_TYPE_VECTOR ||
         expected->kind == MGLIR_TYPE_SCALAR) {
-        /* GLSL 4.20 §4.1.10 / ARB_shading_language_420pack: curly-brace
-         * initializer lists do not perform implicit conversions.  Desugaring
-         * to T(...) would otherwise accept bool/int in a float vec. */
+        /* Reject bool in numeric lists (negative CTS); allow int/uint→float
+         * like constructors (length_of_vector_and_matrix). */
         for (i = 0; i < e->u.init_list.arg_count; i++) {
             MGLExpr *a = e->u.init_list.args[i];
             MGLIRType *at;
@@ -1225,7 +1250,7 @@ static MGLExpr *rewrite_initializer(Sema *s, SymTab *tab, MGLExpr *e,
                 continue;
             }
             at = check_expr(s, tab, a);
-            if (!at || at->scalar != expected->scalar) {
+            if (!at || !init_list_scalar_ok(at->scalar, expected->scalar)) {
                 sema_error(s, e->line,
                            "initializer list element type mismatch");
                 return e;
@@ -3869,6 +3894,31 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                         check_constructor(s, e->line, e->u.call.name, t,
                                           (const MGLIRType *const *)ats,
                                           e->u.call.arg_count);
+                    } else if (t->kind == MGLIR_TYPE_STRUCT) {
+                        /* GLSL 4.60 §5.4.3: structure constructor arguments
+                         * must match member types in order.  Also covers
+                         * `{...}` init lists desugared into T(...). */
+                        if (e->u.call.arg_count != t->member_count) {
+                            sema_error(s, e->line,
+                                       "structure constructor '%s' expects "
+                                       "%u argument(s), got %u",
+                                       e->u.call.name, t->member_count,
+                                       e->u.call.arg_count);
+                        } else {
+                            for (uint32_t i = 0; i < e->u.call.arg_count;
+                                 i++) {
+                                MGLIRType *mt = t->members
+                                    ? t->members[i] : NULL;
+                                if (!ats[i] || !mt ||
+                                    !check_assign_op(mt, ats[i])) {
+                                    sema_error(s, e->line,
+                                               "structure constructor '%s' "
+                                               "argument %u type mismatch",
+                                               e->u.call.name, i + 1);
+                                    break;
+                                }
+                            }
+                        }
                     }
                     free(ats);
                 }
