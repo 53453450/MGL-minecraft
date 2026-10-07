@@ -1925,9 +1925,16 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
     bool msImmediate = false;
     {
         Framebuffer *fbo = STATE(framebuffer);
-        if (fbo && (fbo->color_attachment_bitfield & 1u)) {
-            FBOAttachment *att = &fbo->color_attachments[0];
+        FBOAttachment *atts[3] = {
+            fbo && (fbo->color_attachment_bitfield & 1u)
+                ? &fbo->color_attachments[0] : NULL,
+            fbo ? &fbo->depth : NULL,
+            fbo ? &fbo->stencil : NULL};
+        for (int ai = 0; ai < 3 && !msImmediate; ai++) {
+            FBOAttachment *att = atts[ai];
             Texture *tex = NULL;
+            if (!att)
+                continue;
             if (att->textarget == GL_RENDERBUFFER && att->buf.rbo)
                 tex = att->buf.rbo->tex;
             else

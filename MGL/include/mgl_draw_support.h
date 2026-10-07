@@ -59,6 +59,13 @@ int mglDrawShouldOffsetViewportForSampleShading(GLMContext ctx);
  * (used by the per-sample draw loop), else NULL. */
 Texture *mglDrawEmulatedMSColor0Texture(GLMContext ctx);
 
+/* `att`'s texture when it is an emulated-MS texture, else NULL. */
+Texture *mglDrawEmulatedMSAttachmentTexture(GLMContext ctx, FBOAttachment *att);
+
+/* True when SAMPLE_MASK is enabled and clears any of the first `samples`
+ * bits. */
+int mglDrawSampleMaskExcludesSamples(GLMContext ctx, GLint samples);
+
 /* Binds the cull-distance emulation buffers for a draw mode. */
 void mglDrawBindCullDistanceEmulationBuffers(void *renderer, uint32_t mode,
                                              uint32_t firstVertex,

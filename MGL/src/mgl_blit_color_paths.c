@@ -886,21 +886,36 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                                 size_t destination_metal_y =
                                     ds_draw_info.height -
                                     (size_t)(copy_dst_y0 + copy_height);
-                                mglBcCopyTexture(
-                                    depth_blit, depth_read_texture,
-                                    depth_read_subresource.slice,
-                                    depth_read_subresource.level,
-                                    mglBlitOrigin((size_t)copy_src_x,
-                                                  source_metal_y,
-                                                  depth_read_subresource.depthPlane),
-                                    mglBlitSize((size_t)copy_width,
-                                                (size_t)copy_height, 1u),
-                                    depth_draw_texture,
-                                    depth_draw_subresource.slice,
-                                    depth_draw_subresource.level,
-                                    mglBlitOrigin((size_t)copy_dst_x0,
-                                                  destination_metal_y,
-                                                  depth_draw_subresource.depthPlane));
+                                /* Emulated MS sample planes are array slices;
+                                 * an MS->MS blit copies every sample. */
+                                uint32_t planes = 1u;
+                                if (mglRenderIsEmulatedMSColorTexture(
+                                        (uint32_t)depth_read_object->target,
+                                        (int32_t)depth_read_object->samples) &&
+                                    mglRenderIsEmulatedMSColorTexture(
+                                        (uint32_t)depth_draw_object->target,
+                                        (int32_t)depth_draw_object->samples) &&
+                                    depth_read_object->samples ==
+                                        depth_draw_object->samples) {
+                                    planes = (uint32_t)depth_read_object->samples;
+                                }
+                                for (uint32_t p = 0u; p < planes; p++) {
+                                    mglBcCopyTexture(
+                                        depth_blit, depth_read_texture,
+                                        depth_read_subresource.slice + p,
+                                        depth_read_subresource.level,
+                                        mglBlitOrigin((size_t)copy_src_x,
+                                                      source_metal_y,
+                                                      depth_read_subresource.depthPlane),
+                                        mglBlitSize((size_t)copy_width,
+                                                    (size_t)copy_height, 1u),
+                                        depth_draw_texture,
+                                        depth_draw_subresource.slice + p,
+                                        depth_draw_subresource.level,
+                                        mglBlitOrigin((size_t)copy_dst_x0,
+                                                      destination_metal_y,
+                                                      depth_draw_subresource.depthPlane));
+                                }
                                 mglBcEndBlitEncoder(depth_blit);
                                 mglMarkTextureLevelRenderTargetWrittenImpl(
                                     depth_draw_object,

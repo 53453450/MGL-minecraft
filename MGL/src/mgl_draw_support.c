@@ -293,7 +293,24 @@ Texture *mglDrawEmulatedMSColor0Texture(GLMContext ctx)
     if (!fbo || (fbo->color_attachment_bitfield & 1u) == 0u) {
         return NULL;
     }
-    FBOAttachment *att = &fbo->color_attachments[0];
+    return mglDrawEmulatedMSAttachmentTexture(ctx, &fbo->color_attachments[0]);
+}
+
+int mglDrawSampleMaskExcludesSamples(GLMContext ctx, GLint samples)
+{
+    if (!ctx || !ctx->active_state || !ctx->active_state->caps.sample_mask ||
+        samples < 1 || samples > 32) {
+        return 0;
+    }
+    const GLuint all = samples == 32 ? ~0u : ((1u << samples) - 1u);
+    return (ctx->active_state->var.sample_mask_value & all) != all;
+}
+
+Texture *mglDrawEmulatedMSAttachmentTexture(GLMContext ctx, FBOAttachment *att)
+{
+    if (!ctx || !att) {
+        return NULL;
+    }
     Texture *tex = mglRendererAttachmentTextureFor(ctx, att);
     if (!tex) {
         return NULL;

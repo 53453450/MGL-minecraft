@@ -1194,6 +1194,13 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
             }
             MGLMetalAttachmentSubresource subresource =
                 mglMetalAttachmentSubresourceForAttachment(&fbo->depth);
+            const int32_t msOffset =
+                mglPlatformShellMSSamplePlaneOffset(renderer);
+            if (mglRenderMSSamplePlaneAdjust(
+                    mglPlatformShellMSSampleInLoop(renderer) ? 1 : 0,
+                    (uint32_t)tex->target, msOffset)) {
+                subresource.slice += (uint32_t)msOffset;
+            }
             mglPdSetPersistentAttachment(
                 commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                 tex->mtl_data, subresource.level, subresource.slice,
@@ -1217,6 +1224,13 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
             }
             MGLMetalAttachmentSubresource subresource =
                 mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
+            const int32_t msOffset =
+                mglPlatformShellMSSamplePlaneOffset(renderer);
+            if (mglRenderMSSamplePlaneAdjust(
+                    mglPlatformShellMSSampleInLoop(renderer) ? 1 : 0,
+                    (uint32_t)tex->target, msOffset)) {
+                subresource.slice += (uint32_t)msOffset;
+            }
             mglPdSetPersistentAttachment(
                 commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
                 tex->mtl_data, subresource.level, subresource.slice,
