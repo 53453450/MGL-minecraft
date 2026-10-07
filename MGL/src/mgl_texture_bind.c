@@ -197,7 +197,9 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
             mglRenderIsTextureBufferTarget(tex->target),
             tex->texture_buffer ? 1 : 0,
             tex->texture_buffer ? tex->texture_buffer->data.dirty_bits : 0u)) {
-        tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+        /* The in-place upload paths read texture levels, not the buffer
+         * store; rebuild so the texel copy reflects the buffer (§8.9). */
+        tex->dirty_bits |= DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL;
     }
 
     if (tex->mtl_data &&
