@@ -2710,6 +2710,18 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
     mglRendererBackendEnd(&backend_lease);
 }
 
+void mglRendererTextureBarrier(GLMContext glm_ctx)
+{
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
+    if (renderer && glm_ctx) {
+        mglRendererFlushDrawBufferLocked(renderer, glm_ctx);
+        mglRendererEndRenderEncodingLocked(renderer);
+    }
+    mglRendererBackendEnd(&backend_lease);
+}
+
 void mglRendererClearBufferValues(GLMContext glm_ctx, uint32_t mask,
                                   const MGLRendererClearValues *values)
 {

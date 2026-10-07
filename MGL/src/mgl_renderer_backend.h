@@ -292,6 +292,9 @@ void mglRendererFlush(GLMContext context, bool finish);
 void mglRendererSwapBuffers(GLMContext context);
 void mglRendererFlushDrawBuffer(GLMContext context);
 void mglRendererInvalidateRenderPass(GLMContext context);
+/* Replays pending draws and ends the render pass, which refreshes the sampled
+ * copies of its render targets (glTextureBarrier). */
+void mglRendererTextureBarrier(GLMContext context);
 /* Clear through a draw so the write masks apply; scissored clears always do. */
 #define MGL_RENDERER_CLEAR_MASKED 1u
 void mglRendererClearBuffer(GLMContext context, uint32_t flags, uint32_t mask);

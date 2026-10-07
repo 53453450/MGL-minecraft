@@ -725,6 +725,20 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
         goto done;
     }
 
+    /* Match float GetTexImage: map the GL rect onto flipped Metal storage
+     * before the blit (full-height reads keep origin 0). */
+    int64_t metalY = minY;
+    if (flipRows) {
+        uint64_t levelHeight = mglPdTextureInfo(sourceTexture).height;
+        if (mipmapLevel > 0u) {
+            levelHeight = mglPdMaxU64(1u, levelHeight >> mipmapLevel);
+        }
+        if ((uint64_t)copyH <= levelHeight &&
+            (uint64_t)minY <= levelHeight - (uint64_t)copyH) {
+            metalY = (int64_t)(levelHeight - (uint64_t)maxY);
+        }
+    }
+
     const uint64_t srcPixelBytes =
         sourceRGB10A2Uint ? 4u : componentCount * sourceComponentBytes;
     const uint64_t srcBytesPerRow = (uint64_t)copyW * srcPixelBytes;
@@ -749,13 +763,12 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
         goto done;
     }
 
-    /* Integer RT storage is already in GL row order at readback (FragCoord
-     * sampling + sampled-copy).  Applying the float-RT Y unflip here mirrored
-     * GetTexImage / ReadPixels (KHR-GL46.texture_barrier). */
-    (void)flipRows;
+    /* Rendered integer RT storage is Y-flipped like float RTs once
+     * mglBlitFlipRenderTargetStorageForFirstWrite has run; convert unflips
+     * to GL bottom-up. */
     mglPdTextureCopyTextureToBuffer(
         blit, sourceTexture, mtlSlice, mipmapLevel,
-        mglTextureOrigin((uint64_t)minX, (uint64_t)minY, 0u),
+        mglTextureOrigin((uint64_t)minX, (uint64_t)metalY, 0u),
         mglTextureSize((uint64_t)copyW, (uint64_t)copyH, 1u), readBuffer, 0u,
         srcBytesPerRow, stagingSize);
     mglPdTextureEndBlitEncoder(blit);
@@ -803,7 +816,7 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
         .packed_bit_widths = packedBitWidths,
         .packed_shifts = packedShifts,
         .packed_output_bytes = (uint32_t)packedOutputBytes,
-        .flip_y = 0,
+        .flip_y = flipRows ? 1 : 0,
     };
     if (mglRenderConvertIntegerReadback(&convert) != 0) {
         (void)mglRenderPassNewCommandBufferLocked(renderer);

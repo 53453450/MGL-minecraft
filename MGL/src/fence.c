@@ -521,7 +521,10 @@ void mglTextureBarrier(GLMContext ctx)
         return;
     }
 
-    mglFlushCommandBuffer(ctx);
+    /* GL 4.6 §9.3.1: texels written before the barrier must be visible to
+     * later fetches.  Ending the render pass refreshes the sampled RT copies
+     * that feedback draws read; no CPU wait is needed. */
+    mglRendererTextureBarrier(ctx);
 }
 
 void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)

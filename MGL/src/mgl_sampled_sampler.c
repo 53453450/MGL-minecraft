@@ -558,13 +558,26 @@ bool mglSampledBindSeparateSamplersAndArrayTextures(
                     ctx, NULL, metal_slot, array_stage, expected_type);
                 void *metal_texture = NULL;
                 void *metal_sampler = default_sampler;
+                const char *array_stage_tag =
+                    array_stage == _FRAGMENT_SHADER ? "fragment" : "vertex";
                 if (array_texture &&
                     mglRendererBindMTLTexture(renderer, array_texture)) {
                     metal_texture = array_texture->mtl_data;
+                    /* mtl_data may be a bound render target; sample its copy. */
+                    if (!mglSampledRenderTargetCopyPlan(
+                            renderer, array_texture, &metal_texture,
+                            expected_type,
+                            (uint32_t)mglExpectedTextureDataKindForResource(
+                                array_program, array_stage, resource),
+                            0, array_stage_tag, array_program->name,
+                            metal_slot, texture_unit, resource->name, NULL,
+                            NULL, NULL)) {
+                        return false;
+                    }
                     metal_sampler = mglSampledSamplerMaterialize(
                         renderer, array_texture, texture_unit, default_sampler, 0,
                         array_texture->target, array_program->name, metal_slot,
-                        "vertex", metal_texture);
+                        array_stage_tag, metal_texture);
                 }
                 if (!metal_texture) {
                     metal_texture = mglSampledFallbackTextureForExpectedType(

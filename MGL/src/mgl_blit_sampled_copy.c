@@ -650,8 +650,8 @@ int mglBlitFlipRenderTargetStorageForFirstWrite(void *renderer, Texture *tex)
         return 1;
     }
 
-    /* The flipped copy of the store is what the store must hold once it
-     * counts as rendered; the copy then matches the flipped store. */
+    /* Flip the store into Metal row order, then rebuild the sampled copy from
+     * the flipped store so sampling sees GL row order again. */
     tex->mtl_render_target_write_version = 1u;
     tex->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
     MGLRendererStateAreas areas;
@@ -662,6 +662,13 @@ int mglBlitFlipRenderTargetStorageForFirstWrite(void *renderer, Texture *tex)
             areas.command ? areas.command->currentCommandBufferOwner : NULL,
             tex->mtl_gl_sampled_data, tex->mtl_data) != 0) {
         fprintf(stderr, "MGL ERROR: texture %u: render-target storage flip failed\n",
+                tex->name);
+        return 0;
+    }
+    tex->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
+    if (!mglBlitUpdateGLSampledRenderTargetCopy(renderer, tex, tex->mtl_data,
+                                                "rt_first_write_sample_gl")) {
+        fprintf(stderr, "MGL ERROR: texture %u: render-target sampled-copy rebuild failed\n",
                 tex->name);
         return 0;
     }
