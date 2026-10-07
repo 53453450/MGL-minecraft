@@ -6082,7 +6082,9 @@ static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
         target == GL_TEXTURE_1D_ARRAY ||
         target == GL_TEXTURE_2D_ARRAY ||
         target == GL_TEXTURE_CUBE_MAP_ARRAY) {
-        if (render_target_needs_readback) {
+        /* Levels without CPU data (e.g. from GenerateMipmap) live only in
+         * Metal storage. */
+        if (render_target_needs_readback || tex->mtl_data) {
             if (!tex->mtl_data) {
                 ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
