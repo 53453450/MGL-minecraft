@@ -3070,7 +3070,11 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                                  ifmt == GL_RGB10_A2UI);
             }
         }
-        if (fmt_is_int != fb_is_int) {
+        /* GL 4.6 §18.2.2: the check applies only to the read color buffer. */
+        const bool reads_color = format != GL_DEPTH_COMPONENT &&
+                                 format != GL_STENCIL_INDEX &&
+                                 format != GL_DEPTH_STENCIL;
+        if (reads_color && fmt_is_int != fb_is_int) {
             fprintf(stderr, "MGL Error: mglReadPixels: integer/non-integer mismatch (format=0x%x fb_int=%d)\n", format, (int)fb_is_int);
             ERROR_RETURN(GL_INVALID_OPERATION);
             return;
