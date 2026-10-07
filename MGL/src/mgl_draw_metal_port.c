@@ -501,9 +501,12 @@ void mglDrawSupportCaptureBindSlots(void *renderer, void *capture,
     if (!renderer || !capture || !params) return;
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
-    mglTessBindCaptureSlots(
-        areas.command ? areas.command->currentRenderEncoderOwner : NULL, capture,
-        params);
+    MGLRenderEncoderOwner *encoder =
+        areas.command ? areas.command->currentRenderEncoderOwner : NULL;
+    /* Capture draws keep rasterization on (AGX); their fragments must not
+     * count toward an active SAMPLES_PASSED / ANY_SAMPLES_PASSED query. */
+    (void)mglRenderSetVisibilityResultModeForRenderEncoderOwner(encoder, 0u, 0u);
+    mglTessBindCaptureSlots(encoder, capture, params);
 }
 
 void mglDrawSupportCaptureSetActive(void *renderer, int active)
