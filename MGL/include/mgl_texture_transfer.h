@@ -72,6 +72,20 @@ bool mglComputeTextureUnpackLayout(GLMContext ctx,
  * CPU-side texture rect conversion / fill / copy / clear.
  * ------------------------------------------------------------------------- */
 
+GLenum mglEncodeRGTCRectToCPU(GLenum internalformat,
+                              TextureLevel *lvl,
+                              GLint xoffset,
+                              GLint yoffset,
+                              GLint zoffset,
+                              GLsizei width,
+                              GLsizei height,
+                              GLsizei depth,
+                              GLenum format,
+                              GLenum type,
+                              const uint8_t *src_base,
+                              size_t src_pitch,
+                              size_t src_image_size);
+
 bool mglConvertTextureRectToCPU(GLenum internalformat,
                                 TextureLevel *lvl,
                                 GLint xoffset,

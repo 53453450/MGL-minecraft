@@ -28,6 +28,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "mgl_pixel_format.h"
@@ -239,6 +240,134 @@ bool mglComputeTexturePackLayout(GLMContext ctx,
     }
 
     return true;
+}
+
+static void mglEncodeBC4Block(const int v[16], uint8_t out[8])
+{
+    int hi = v[0];
+    int lo = v[0];
+    for (int i = 1; i < 16; i++) {
+        hi = v[i] > hi ? v[i] : hi;
+        lo = v[i] < lo ? v[i] : lo;
+    }
+    int palette[8] = {hi, lo};
+    for (int i = 2; i < 8; i++) {
+        palette[i] = ((8 - i) * hi + (i - 1) * lo) / 7;
+    }
+    uint64_t bits = 0u;
+    if (hi != lo) {
+        for (int i = 0; i < 16; i++) {
+            int best = 0;
+            int best_diff = abs(v[i] - palette[0]);
+            for (int p = 1; p < 8; p++) {
+                int diff = abs(v[i] - palette[p]);
+                if (diff < best_diff) {
+                    best = p;
+                    best_diff = diff;
+                }
+            }
+            bits |= (uint64_t)best << (3 * i);
+        }
+    }
+    out[0] = (uint8_t)hi;
+    out[1] = (uint8_t)lo;
+    for (int i = 0; i < 6; i++) {
+        out[2 + i] = (uint8_t)(bits >> (8 * i));
+    }
+}
+
+/* TexSubImage of uncompressed pixels into RGTC block storage: compress on the
+ * CPU (GL 4.6 §8.7 block-alignment rules apply). */
+GLenum mglEncodeRGTCRectToCPU(GLenum internalformat,
+                              TextureLevel *lvl,
+                              GLint xoffset,
+                              GLint yoffset,
+                              GLint zoffset,
+                              GLsizei width,
+                              GLsizei height,
+                              GLsizei depth,
+                              GLenum format,
+                              GLenum type,
+                              const uint8_t *src_base,
+                              size_t src_pitch,
+                              size_t src_image_size)
+{
+    bool is_signed;
+    bool two_channels;
+    switch (internalformat) {
+        case GL_COMPRESSED_RED_RGTC1: is_signed = false; two_channels = false; break;
+        case GL_COMPRESSED_SIGNED_RED_RGTC1: is_signed = true; two_channels = false; break;
+        case GL_COMPRESSED_RG_RGTC2: is_signed = false; two_channels = true; break;
+        case GL_COMPRESSED_SIGNED_RG_RGTC2: is_signed = true; two_channels = true; break;
+        default: return GL_INVALID_OPERATION;
+    }
+    int components;
+    int red_index;
+    int green_index;
+    switch (format) {
+        case GL_RED: components = 1; red_index = 0; green_index = -1; break;
+        case GL_RG: components = 2; red_index = 0; green_index = 1; break;
+        case GL_RGB: components = 3; red_index = 0; green_index = 1; break;
+        case GL_RGBA: components = 4; red_index = 0; green_index = 1; break;
+        case GL_BGR: components = 3; red_index = 2; green_index = 1; break;
+        case GL_BGRA: components = 4; red_index = 2; green_index = 1; break;
+        default: return GL_INVALID_OPERATION;
+    }
+    if (type != GL_UNSIGNED_BYTE) {
+        return GL_INVALID_OPERATION;
+    }
+    if (!lvl || !lvl->data || !src_base || lvl->pitch == 0u ||
+        xoffset < 0 || yoffset < 0 || zoffset < 0 ||
+        width <= 0 || height <= 0 || depth <= 0 ||
+        (GLuint)width > lvl->width - (GLuint)MIN((GLuint)xoffset, lvl->width) ||
+        (GLuint)height > lvl->height - (GLuint)MIN((GLuint)yoffset, lvl->height) ||
+        (GLuint)depth > lvl->depth - (GLuint)MIN((GLuint)zoffset, lvl->depth)) {
+        return GL_INVALID_VALUE;
+    }
+    if ((xoffset % 4) != 0 || (yoffset % 4) != 0 ||
+        ((width % 4) != 0 && (GLuint)(xoffset + width) != lvl->width) ||
+        ((height % 4) != 0 && (GLuint)(yoffset + height) != lvl->height)) {
+        return GL_INVALID_OPERATION;
+    }
+
+    const size_t block_bytes = two_channels ? 16u : 8u;
+    const size_t level_image_bytes = (size_t)lvl->pitch * ((lvl->height + 3u) / 4u);
+    if (level_image_bytes * (size_t)(zoffset + depth) > lvl->data_size) {
+        return GL_INVALID_OPERATION;
+    }
+    if (src_image_size == 0u) {
+        src_image_size = src_pitch * (size_t)height;
+    }
+    uint8_t *dst_base = (uint8_t *)(uintptr_t)lvl->data;
+    for (GLsizei z = 0; z < depth; z++) {
+        const uint8_t *src_slice = src_base + (size_t)z * src_image_size;
+        for (GLsizei by = 0; by < (height + 3) / 4; by++) {
+            for (GLsizei bx = 0; bx < (width + 3) / 4; bx++) {
+                int red[16];
+                int green[16];
+                for (int i = 0; i < 16; i++) {
+                    GLsizei sx = MIN(bx * 4 + (i % 4), width - 1);
+                    GLsizei sy = MIN(by * 4 + (i / 4), height - 1);
+                    const uint8_t *p = src_slice + (size_t)sy * src_pitch +
+                                       (size_t)sx * (size_t)components;
+                    int r = p[red_index];
+                    int g = green_index >= 0 ? p[green_index] : 0;
+                    /* unorm8 -> float -> snorm8 (§2.3.5) */
+                    red[i] = is_signed ? (r * 254 + 255) / 510 : r;
+                    green[i] = is_signed ? (g * 254 + 255) / 510 : g;
+                }
+                uint8_t *dst = dst_base +
+                    (size_t)(zoffset + z) * level_image_bytes +
+                    (size_t)(yoffset / 4 + by) * lvl->pitch +
+                    (size_t)(xoffset / 4 + bx) * block_bytes;
+                mglEncodeBC4Block(red, dst);
+                if (two_channels) {
+                    mglEncodeBC4Block(green, dst + 8);
+                }
+            }
+        }
+    }
+    return GL_NO_ERROR;
 }
 
 bool mglConvertTextureRectToCPU(GLenum internalformat,

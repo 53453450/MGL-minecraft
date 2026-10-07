@@ -3638,6 +3638,15 @@ void mglTexImage2DMultisample(GLMContext ctx, GLenum target, GLsizei samples, GL
     tex->immutable_storage = GL_FALSE;
 }
 
+/* GL 4.6 Table 8.14: RGTC formats do not support 3D textures. */
+static bool mglInternalFormatIsRGTC(GLenum internalformat)
+{
+    return internalformat == GL_COMPRESSED_RED_RGTC1 ||
+           internalformat == GL_COMPRESSED_SIGNED_RED_RGTC1 ||
+           internalformat == GL_COMPRESSED_RG_RGTC2 ||
+           internalformat == GL_COMPRESSED_SIGNED_RG_RGTC2;
+}
+
 void mglTexImage3D(GLMContext ctx, GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const void *pixels)
 {
     Texture *tex;
@@ -3692,11 +3701,7 @@ void mglTexImage3D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
     /* CTS isFormatValid: 3D textures must not use compressed RGTC formats
      * or depth/stencil internal formats. */
     if (target == GL_TEXTURE_3D) {
-        bool is_rgtc = (internalformat == GL_COMPRESSED_RED_RGTC1 ||
-                        internalformat == GL_COMPRESSED_SIGNED_RED_RGTC1 ||
-                        internalformat == GL_COMPRESSED_RG_RGTC2 ||
-                        internalformat == GL_COMPRESSED_SIGNED_RG_RGTC2);
-        ERROR_CHECK_RETURN(!is_rgtc, GL_INVALID_OPERATION);
+        ERROR_CHECK_RETURN(!mglInternalFormatIsRGTC((GLenum)internalformat), GL_INVALID_OPERATION);
         ERROR_CHECK_RETURN(!mglInternalFormatIsDepthStencil(internalformat), GL_INVALID_OPERATION);
     }
 
@@ -4020,6 +4025,27 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
                 level,
                 tex->target);
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+
+    GLuint block_w = 0u, block_h = 0u, block_d = 1u, block_bytes = 0u;
+    if (lvl->pitch != 0u &&
+        mglCompressedBlockInfoOf((GLenum)tex->internalformat, &block_w, &block_h,
+                                 &block_d, &block_bytes)) {
+        GLenum encode_error = mglEncodeRGTCRectToCPU(
+            tex->internalformat, lvl, xoffset, yoffset, zoffset, width, height,
+            depth, format, type, resolved_src, src_pitch, src_image_size);
+        if (encode_error != GL_NO_ERROR) {
+            ERROR_RETURN_VALUE(encode_error, false);
+        }
+        lvl->has_initialized_data = GL_TRUE;
+        lvl->ever_written = GL_TRUE;
+        lvl->suspicious_zero_upload = GL_FALSE;
+        lvl->metal_data_authoritative = GL_FALSE;
+        lvl->last_init_source = resolved_unpack_buf ? kTexSubImagePBO : kTexSubImageCPU;
+        tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+        mglReleaseGLSampledTextureCopy(ctx, tex, "texSubImage-RGTC");
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
+        return true;
     }
     
     if (!mglConvertTextureRectToCPU(tex->internalformat,
@@ -4988,6 +5014,9 @@ void mglTexStorage3D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
     ERROR_CHECK_RETURN(width > 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(height > 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(depth > 0, GL_INVALID_VALUE);
+    if (target == GL_TEXTURE_3D || target == GL_PROXY_TEXTURE_3D) {
+        ERROR_CHECK_RETURN(!mglInternalFormatIsRGTC(internalformat), GL_INVALID_OPERATION);
+    }
     if (target == GL_TEXTURE_CUBE_MAP_ARRAY ||
         target == GL_PROXY_TEXTURE_CUBE_MAP_ARRAY) {
         ERROR_CHECK_RETURN(width == height, GL_INVALID_VALUE);
@@ -5035,6 +5064,7 @@ void mglTextureStorage3D(GLMContext ctx, GLuint texture, GLsizei levels, GLenum 
     ERROR_CHECK_RETURN(tex != NULL, GL_INVALID_OPERATION);
     switch (tex->target) {
         case GL_TEXTURE_3D:
+            ERROR_CHECK_RETURN(!mglInternalFormatIsRGTC(internalformat), GL_INVALID_OPERATION);
             ERROR_CHECK_RETURN(checkMaxLevels(levels, width, height, depth), GL_INVALID_OPERATION);
             break;
         case GL_TEXTURE_2D_ARRAY:
