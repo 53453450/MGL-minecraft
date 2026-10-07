@@ -56,6 +56,7 @@
 #include "mgl_draw_issue.h"              /* mglDrawHostHandleGeometry */
 #include "mgl_buffer_map.h"              /* mglRendererUpdateDirtyBuffer, map entries */
 #include "mgl_texture_sampler.h"         /* mglTextureCreateSamplerForTexParam */
+#include "mgl_texture_compat.h"          /* mglSampledTextureViewForBaseLevel */
 #include "mgl_metal_ref.h"               /* mglSafeReleaseMetalObj */
 #include "mgl_env_flag.h"                /* MGL_TES_VERTEX_TRACE */
 #include "mgl_size_constants.h"          /* kMGLMaxBufferSlots */
@@ -928,6 +929,9 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         } else {
             ptr = mglTessDispatchState(&areas)->active_textures[bind->gl_unit];
             texture = ptr ? ptr->mtl_data : NULL;
+            /* Match VS/FS: stencil-aspect / base-level view for sampling. */
+            if (ptr && texture)
+                texture = mglSampledTextureViewForBaseLevel(ptr, texture);
         }
         mglTessDispatchSetRenderVertexTexture(owner, texture,
                                               bind->metal_slot);

@@ -301,12 +301,16 @@ static llvm::Value *emitIntegerGather2D(
 
 /* Integer texture() NEAREST with CLAMP_TO_BORDER: Metal only offers three
  * named float borders, so arbitrary GLint/GLuint borders (CTS R32I=255) must
- * be applied from the sampler-wrap pack after an integer texel read. */
+ * be applied from the sampler-wrap pack after an integer texel read.
+ * When no axis is CLAMP_TO_BORDER, returns metalFallback so stencil-aspect
+ * usampler2D views keep using Metal sample. */
 static llvm::Value *emitIntegerSample2D(
     Codegen &cg, llvm::Value *tex, llvm::Value *uv, llvm::Value *layer,
     MGLIRScalar texel, MGLIRTexKind kind, uint32_t metalSlot,
-    llvm::Value *metalSlotDyn)
+    llvm::Value *metalSlotDyn, llvm::Value *metalFallback)
 {
+    if (!cg.samplerWrapPtr || !metalFallback)
+        return metalFallback;
     llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
     llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
     llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
@@ -316,6 +320,32 @@ static llvm::Value *emitIntegerSample2D(
         llvm::StructType::get(*cg.ctx, {v4i32, cg.b->getInt8Ty()});
     const bool is3d = kind == MGLIR_TEX_3D;
     const bool isArr = kind == MGLIR_TEX_2D_ARRAY;
+    llvm::Value *idx = metalSlotDyn
+        ? metalSlotDyn
+        : (llvm::Value *)cg.b->getInt32(metalSlot);
+    llvm::Value *base = cg.b->CreateBitCast(
+        cg.samplerWrapPtr, i32->getPointerTo(1));
+    llvm::Value *off8 = cg.b->CreateMul(idx, cg.b->getInt32(8));
+    llvm::Value *wrapS = cg.b->CreateAlignedLoad(
+        i32, cg.b->CreateGEP(i32, base, off8), llvm::Align(4));
+    llvm::Value *wrapT = cg.b->CreateAlignedLoad(
+        i32,
+        cg.b->CreateGEP(i32, base,
+                        cg.b->CreateAdd(off8, cg.b->getInt32(1))),
+        llvm::Align(4));
+    llvm::Value *wrapR = cg.b->CreateAlignedLoad(
+        i32,
+        cg.b->CreateGEP(i32, base,
+                        cg.b->CreateAdd(off8, cg.b->getInt32(2))),
+        llvm::Align(4));
+    llvm::Value *useBorder = cg.b->CreateOr(
+        cg.b->CreateICmpEQ(wrapS, cg.b->getInt32(GL_CLAMP_TO_BORDER)),
+        cg.b->CreateICmpEQ(wrapT, cg.b->getInt32(GL_CLAMP_TO_BORDER)));
+    if (is3d)
+        useBorder = cg.b->CreateOr(
+            useBorder,
+            cg.b->CreateICmpEQ(wrapR, cg.b->getInt32(GL_CLAMP_TO_BORDER)));
+
     const char *widthFn = is3d ? "air.get_width_texture_3d"
         : (isArr ? "air.get_width_texture_2d_array"
                  : "air.get_width_texture_2d");
@@ -354,55 +384,31 @@ static llvm::Value *emitIntegerSample2D(
         kk = cg.b->CreateFPToSI(cg.b->CreateFMul(uz, df), i32);
     }
 
-    llvm::Value *wrapS = cg.b->getInt32(GL_REPEAT);
-    llvm::Value *wrapT = cg.b->getInt32(GL_REPEAT);
-    llvm::Value *wrapR = cg.b->getInt32(GL_REPEAT);
-    llvm::Value *border = llvm::Constant::getNullValue(v4i32);
-    if (cg.samplerWrapPtr) {
-        llvm::Value *idx = metalSlotDyn
-            ? metalSlotDyn
-            : (llvm::Value *)cg.b->getInt32(metalSlot);
-        llvm::Value *base = cg.b->CreateBitCast(
-            cg.samplerWrapPtr, i32->getPointerTo(1));
-        llvm::Value *off8 = cg.b->CreateMul(idx, cg.b->getInt32(8));
-        wrapS = cg.b->CreateAlignedLoad(
-            i32, cg.b->CreateGEP(i32, base, off8), llvm::Align(4));
-        wrapT = cg.b->CreateAlignedLoad(
-            i32,
-            cg.b->CreateGEP(i32, base,
-                            cg.b->CreateAdd(off8, cg.b->getInt32(1))),
-            llvm::Align(4));
-        wrapR = cg.b->CreateAlignedLoad(
-            i32,
-            cg.b->CreateGEP(i32, base,
-                            cg.b->CreateAdd(off8, cg.b->getInt32(2))),
-            llvm::Align(4));
-        llvm::Value *b0 = cg.b->CreateAlignedLoad(
-            i32,
-            cg.b->CreateGEP(i32, base,
-                            cg.b->CreateAdd(off8, cg.b->getInt32(4))),
-            llvm::Align(4));
-        llvm::Value *b1 = cg.b->CreateAlignedLoad(
-            i32,
-            cg.b->CreateGEP(i32, base,
-                            cg.b->CreateAdd(off8, cg.b->getInt32(5))),
-            llvm::Align(4));
-        llvm::Value *b2 = cg.b->CreateAlignedLoad(
-            i32,
-            cg.b->CreateGEP(i32, base,
-                            cg.b->CreateAdd(off8, cg.b->getInt32(6))),
-            llvm::Align(4));
-        llvm::Value *b3 = cg.b->CreateAlignedLoad(
-            i32,
-            cg.b->CreateGEP(i32, base,
-                            cg.b->CreateAdd(off8, cg.b->getInt32(7))),
-            llvm::Align(4));
-        border = llvm::UndefValue::get(v4i32);
-        border = cg.b->CreateInsertElement(border, b0, cg.b->getInt32(0));
-        border = cg.b->CreateInsertElement(border, b1, cg.b->getInt32(1));
-        border = cg.b->CreateInsertElement(border, b2, cg.b->getInt32(2));
-        border = cg.b->CreateInsertElement(border, b3, cg.b->getInt32(3));
-    }
+    llvm::Value *b0 = cg.b->CreateAlignedLoad(
+        i32,
+        cg.b->CreateGEP(i32, base,
+                        cg.b->CreateAdd(off8, cg.b->getInt32(4))),
+        llvm::Align(4));
+    llvm::Value *b1 = cg.b->CreateAlignedLoad(
+        i32,
+        cg.b->CreateGEP(i32, base,
+                        cg.b->CreateAdd(off8, cg.b->getInt32(5))),
+        llvm::Align(4));
+    llvm::Value *b2 = cg.b->CreateAlignedLoad(
+        i32,
+        cg.b->CreateGEP(i32, base,
+                        cg.b->CreateAdd(off8, cg.b->getInt32(6))),
+        llvm::Align(4));
+    llvm::Value *b3 = cg.b->CreateAlignedLoad(
+        i32,
+        cg.b->CreateGEP(i32, base,
+                        cg.b->CreateAdd(off8, cg.b->getInt32(7))),
+        llvm::Align(4));
+    llvm::Value *border = llvm::UndefValue::get(v4i32);
+    border = cg.b->CreateInsertElement(border, b0, cg.b->getInt32(0));
+    border = cg.b->CreateInsertElement(border, b1, cg.b->getInt32(1));
+    border = cg.b->CreateInsertElement(border, b2, cg.b->getInt32(2));
+    border = cg.b->CreateInsertElement(border, b3, cg.b->getInt32(3));
 
     llvm::Value *oob = cg.b->getInt1(false);
     auto wrapCoord = [&](llvm::Value *t, llvm::Value *n, llvm::Value *mode) {
@@ -453,8 +459,9 @@ static llvm::Value *emitIntegerSample2D(
         rd = callAirFn(cg, readFn, retTy,
                        {tex, xy, lod, cg.b->getInt32(3)});
     }
-    llvm::Value *texel4 = cg.b->CreateExtractValue(rd, 0);
-    return cg.b->CreateSelect(oob, border, texel4);
+    llvm::Value *soft = cg.b->CreateSelect(
+        oob, border, cg.b->CreateExtractValue(rd, 0));
+    return cg.b->CreateSelect(useBorder, soft, metalFallback);
 }
 
 /* Scalar base for an LLVM type, used to coerce call arguments. */
@@ -9697,13 +9704,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                            &arrayLayer)) {
                     return nullptr;
                 }
-                /* Integer CLAMP_TO_BORDER cannot use Metal's named borders. */
-                if ((texel == MGLIR_SCALAR_INT ||
-                     texel == MGLIR_SCALAR_UINT) &&
-                    (sampleKind == MGLIR_TEX_2D ||
-                     sampleKind == MGLIR_TEX_2D_ARRAY ||
-                     sampleKind == MGLIR_TEX_3D) &&
-                    cg.samplerWrapPtr && !isGrad && !explicitLod) {
+                auto maybeIntBorder = [&](llvm::Value *metal) -> llvm::Value * {
+                    if (!metal) return metal;
+                    if ((texel != MGLIR_SCALAR_INT &&
+                         texel != MGLIR_SCALAR_UINT) ||
+                        (sampleKind != MGLIR_TEX_2D &&
+                         sampleKind != MGLIR_TEX_2D_ARRAY &&
+                         sampleKind != MGLIR_TEX_3D) ||
+                        !cg.samplerWrapPtr || isGrad || explicitLod)
+                        return metal;
                     uint32_t slot = 0;
                     llvm::Value *slotDyn = nullptr;
                     auto mi = cg.texMetalIndex.find(samplerName);
@@ -9714,8 +9723,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             cg.b->getInt32(slot), arrayIndex);
                     return emitIntegerSample2D(
                         cg, t, sampleCoord, arrayLayer, texel, sampleKind,
-                        slot, slotDyn);
-                }
+                        slot, slotDyn, metal);
+                };
                 /* Cube sample has no offset in AIR/MSL (texturecube.sample
                  * takes coord + lod/bias only). Passing the 2D offset pair
                  * makes Metal's PSO compiler abort. */
@@ -9784,7 +9793,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     llvm::Value *r = callAirFn(
                         cg, sampledIntrinsic(gradName).c_str(), retTy,
                         gradArgs);
-                    return cg.b->CreateExtractValue(r, 0);
+                    return maybeIntBorder(cg.b->CreateExtractValue(r, 0));
                 }
                 std::vector<llvm::Value *> sampleArgs;
                 if (cubeSample) {
@@ -9809,7 +9818,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 llvm::Value *r = callAirFn(
                     cg, sampledIntrinsic(baseName).c_str(), retTy,
                     sampleArgs);
-                return cg.b->CreateExtractValue(r, 0);
+                return maybeIntBorder(cg.b->CreateExtractValue(r, 0));
             };
             if (dynamicSamplerArray) {
                 std::vector<llvm::Value *> smps =

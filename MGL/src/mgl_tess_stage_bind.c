@@ -44,6 +44,7 @@
 #include "mgl_binding_stage.h"      /* bind plan for a map entry */
 #include "mgl_texture_sampler.h"    /* mglTextureCreateSamplerForTexParam */
 #include "mgl_texture_bind.h"       /* mglRendererBindMTLBuffer */
+#include "mgl_texture_compat.h"     /* mglSampledTextureViewForBaseLevel */
 #include "mgl_metal_ref.h"          /* mglSafeReleaseMetalObj */
 #include "mgl_thread_affinity.h"    /* MGL_ASSERT_GL_THREAD */
 #include "mgl_types_texture.h"      /* Texture, Sampler */
@@ -534,6 +535,10 @@ bool mglTessPlanTextureBinds(void *renderer, const MGLTessTextureBind *binds,
         } else {
             ptr = state->active_textures[bind->gl_unit];
             texture = ptr ? ptr->mtl_data : NULL;
+            /* GL 4.6 §8.23.1: STENCIL_INDEX mode needs an X32/X24_Stencil8
+             * view — same as VS/FS bind. Tess used to bind raw mtl_data. */
+            if (ptr && texture)
+                texture = mglSampledTextureViewForBaseLevel(ptr, texture);
         }
         if (!mglTessStageBindPlanTextureOrBind(plan, temporaries, texture,
                                                bind->metal_slot)) {

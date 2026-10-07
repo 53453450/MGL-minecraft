@@ -617,6 +617,10 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                             (uint32_t)gl_texture_type)) {
                         texture = mglRendererStorageImageTexture(
                             texture, &state->image_units[glUnit]);
+                    } else {
+                        /* Sampled: STENCIL_INDEX / base_level view (VS/FS). */
+                        texture = mglSampledTextureViewForBaseLevel(ptr,
+                                                                   texture);
                     }
 
                     /* Sampler cascade (GL sampler object → texture parameters
@@ -707,7 +711,8 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                     continue;
                 }
 
-                void *texture = ptr->mtl_data;
+                void *texture = mglSampledTextureViewForBaseLevel(
+                    ptr, ptr->mtl_data);
                 /* Same shared port as the loop above.  This path used to
                  * skip the "dirty sampler" release the others do, so a
                  * re-parameterized sampler could keep its old Metal object;
