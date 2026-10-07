@@ -208,6 +208,7 @@ typedef struct MGLShaderResource_t {
     GLuint  set;
     /* GL client binding point. For UBOs, glUniformBlockBinding updates this. */
     GLuint  gl_binding;
+    GLboolean binding_explicit; /* gl_binding came from layout(binding) */
     GLuint  ubo_array_size;
     GLboolean ubo_is_array;
     GLuint  ubo_array_element;

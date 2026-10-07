@@ -2515,8 +2515,23 @@ static bool mglValidateCombinedClipAndCullDistances(GLMContext ctx,
     return false;
 }
 
-/* GLSL 4.60 §4.3.5: the same uniform in multiple stages of one program
- * must use the same layout(binding). */
+static void mglCopyExplicitBinding(MGLShaderResource *dst,
+                                   const MGLShaderResource *src)
+{
+    dst->gl_binding = src->gl_binding;
+    dst->binding_explicit = GL_TRUE;
+    if (src->sampler_unit >= 0)
+        dst->sampler_unit = src->sampler_unit;
+    if (dst->ubo_array_bindings && src->ubo_array_bindings &&
+        dst->ubo_array_size == src->ubo_array_size) {
+        memcpy(dst->ubo_array_bindings, src->ubo_array_bindings,
+               dst->ubo_array_size * sizeof(GLuint));
+    }
+}
+
+/* GLSL 4.60 §4.4.5/§4.4.6: declarations of the same uniform in different
+ * stages must not specify different bindings; a binding given on only some
+ * declarations applies to all of them. */
 static bool mglValidateCrossStageLayoutBindings(Program *pptr)
 {
     static const int types[] = {
@@ -2532,28 +2547,34 @@ static bool mglValidateCrossStageLayoutBindings(Program *pptr)
     for (size_t ti = 0; ti < sizeof(types) / sizeof(types[0]); ti++) {
         int rt = types[ti];
         for (int s1 = 0; s1 < _MAX_SHADER_TYPES; s1++) {
-            const MGLShaderResourceList *a =
+            MGLShaderResourceList *a =
                 &pptr->shader_resources_list[s1][rt];
             for (GLuint i = 0u; i < a->count; i++) {
                 const char *name = a->list[i].name;
                 if (!name || name[0] == '\0') {
                     continue;
                 }
-                GLuint ba = a->list[i].gl_binding;
+                MGLShaderResource *ra = &a->list[i];
                 for (int s2 = s1 + 1; s2 < _MAX_SHADER_TYPES; s2++) {
-                    const MGLShaderResourceList *b =
+                    MGLShaderResourceList *b =
                         &pptr->shader_resources_list[s2][rt];
                     for (GLuint j = 0u; j < b->count; j++) {
-                        if (!b->list[j].name ||
-                            strcmp(name, b->list[j].name) != 0) {
+                        MGLShaderResource *rb = &b->list[j];
+                        if (!rb->name || strcmp(name, rb->name) != 0) {
                             continue;
                         }
-                        if (ba != b->list[j].gl_binding) {
+                        if (ra->binding_explicit && !rb->binding_explicit) {
+                            mglCopyExplicitBinding(rb, ra);
+                        } else if (rb->binding_explicit &&
+                                   !ra->binding_explicit) {
+                            mglCopyExplicitBinding(ra, rb);
+                        } else if (ra->binding_explicit &&
+                                   ra->gl_binding != rb->gl_binding) {
                             fprintf(stderr,
                                     "MGL LINK ERROR: program %u uniform '%s' "
                                     "binding %u vs %u across stages\n",
-                                    pptr->name, name, ba,
-                                    b->list[j].gl_binding);
+                                    pptr->name, name, ra->gl_binding,
+                                    rb->gl_binding);
                             return false;
                         }
                     }

@@ -1023,6 +1023,7 @@ static int air_push_opaque_leaves(MGLShaderResourceList *list,
             sampler_binding ? *sampler_binding : 0u);
         if (owner->binding != UINT32_MAX) {
             last->gl_binding = owner->binding;
+            last->binding_explicit = GL_TRUE;
             last->sampler_unit = (GLint)owner->binding;
         }
         GLuint elements = mglAirGLArraySizeFromIR(t);
@@ -1044,6 +1045,7 @@ static int air_push_opaque_leaves(MGLShaderResourceList *list,
         last->sampler_unit = -1;
         if (owner->binding != UINT32_MAX) {
             last->gl_binding = owner->binding;
+            last->binding_explicit = GL_TRUE;
             last->sampler_unit = (GLint)owner->binding;
         } else {
             last->gl_binding = 0;
@@ -1250,6 +1252,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                              .list[lists[_SAMPLED_IMAGE_RES].count - 1];
                     if (s->binding != UINT32_MAX) {
                         last->gl_binding = s->binding;
+                        last->binding_explicit = GL_TRUE;
                         /* layout(binding=N) sets the sampler uniform's initial
                          * texture-unit value (queried via GetUniformiv).  Array
                          * elements take N, N+1, … from sampler_unit + ordinal. */
@@ -1297,6 +1300,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                     last->sampler_unit = -1;
                     if (s->binding != UINT32_MAX) {
                         last->gl_binding = s->binding;
+                        last->binding_explicit = GL_TRUE;
                         /* Same as samplers: layout(binding=N) is the image-unit
                          * initial value for GetUniformiv / array expansion. */
                         last->sampler_unit = (GLint)s->binding;
@@ -1400,6 +1404,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         lists[_ATOMIC_COUNTER_RES].count - 1];
                 if (s->binding != UINT32_MAX) {
                     last->gl_binding = s->binding;
+                    last->binding_explicit = GL_TRUE;
                 } else {
                     last->gl_binding = 0;
                 }
@@ -1463,6 +1468,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                  * or zero otherwise; only a qualified array advances. */
                 bool has_binding = s->binding != UINT32_MAX;
                 last->gl_binding = has_binding ? s->binding : 0u;
+                last->binding_explicit = has_binding;
                 if (last->ubo_array_bindings && has_binding) {
                     for (GLuint element = 0; element < block_count; element++) {
                         last->ubo_array_bindings[element] =
@@ -1574,6 +1580,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
              * otherwise.  The Metal slot advances independently. */
             bool has_binding = s->binding != UINT32_MAX;
             ssbo_last->gl_binding = has_binding ? s->binding : 0u;
+            ssbo_last->binding_explicit = has_binding;
             if (ssbo_last->ubo_array_bindings && has_binding) {
                 for (GLuint element = 0; element < block_count; element++) {
                     ssbo_last->ubo_array_bindings[element] =
