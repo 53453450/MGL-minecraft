@@ -127,16 +127,18 @@ static void mglFillLodBiasPack(GLMContext ctx, Program *prog, int stage,
             vp_w = 1;
         if (vp_h < 1)
             vp_h = 1;
-        if (!mglFramebufferPrimaryColorSize(ctx, ctx->active_state->framebuffer,
-                                            &fb_w, &fb_h) ||
-            fb_w == 0u || fb_h == 0u) {
-            fb_w = 1u;
-            fb_h = 1u;
+        if (mglFramebufferPrimaryColorSize(ctx, ctx->active_state->framebuffer,
+                                           &fb_w, &fb_h) &&
+            fb_w != 0u && fb_h != 0u) {
+            /* The Metal viewport is clamped to the render target, which
+             * scales Metal dFdx by vp/clamped relative to GL window space. */
+            double cx = ctx->active_state->viewport[0];
+            double cy = ctx->active_state->viewport[1];
+            double cw = vp_w, ch = vp_h;
+            mglRenderClampViewport(&cx, &cy, &cw, &ch, fb_w, fb_h);
+            pack[1] = (float)(cw / (double)vp_w);
+            pack[2] = (float)(ch / (double)vp_h);
         }
-        /* Metal dFdx is in RT pixels; GL dFdx is in window pixels.
-         * scale = fb / viewport maps Metal→GL when viewport ≠ FB size. */
-        pack[1] = (float)fb_w / (float)vp_w;
-        pack[2] = (float)fb_h / (float)vp_h;
     }
     if (!ctx || !prog)
         return;
