@@ -1292,8 +1292,11 @@ static MGLExpr *rewrite_initializer(Sema *s, SymTab *tab, MGLExpr *e,
 }
 
 /* Strict interface matching (GLSL 4.60 §4.3.9.5): structs compare
- * member names, types and order; arrays compare dimensions recursively. */
-static int ir_type_interface_equal(const MGLIRType *a, const MGLIRType *b)
+ * member names, types and order; arrays compare dimensions recursively.
+ * tess_cp_arrays: TCS→TES per-vertex outs are sized to layout(vertices=N)
+ * while TES inputs are unsized or gl_MaxPatchVertices — sizes may differ. */
+static int ir_type_interface_equal(const MGLIRType *a, const MGLIRType *b,
+                                   int tess_cp_arrays)
 {
     if (a == b) {
         return 1;
@@ -1308,9 +1311,28 @@ static int ir_type_interface_equal(const MGLIRType *a, const MGLIRType *b)
         return a->cols == b->cols;
     case MGLIR_TYPE_MATRIX:
         return a->cols == b->cols && a->rows == b->rows;
-    case MGLIR_TYPE_ARRAY:
-        return a->array_size == b->array_size && aoa_shape_equal(a, b) &&
-               ir_type_interface_equal(a->elem_type, b->elem_type);
+    case MGLIR_TYPE_ARRAY: {
+        if (!ir_type_interface_equal(a->elem_type, b->elem_type,
+                                     tess_cp_arrays)) {
+            return 0;
+        }
+        if (a->array_size == b->array_size && aoa_shape_equal(a, b)) {
+            return 1;
+        }
+        if (tess_cp_arrays) {
+            uint32_t sa = a->array_size, sb = b->array_size;
+            /* Unsized (0) TES input matches any legal TCS output count. */
+            if (sa == 0u || sb == 0u) {
+                uint32_t other = sa ? sa : sb;
+                return other > 0u && other <= MGL_SEMA_MAX_PATCH_VERTICES;
+            }
+            uint32_t lo = sa < sb ? sa : sb;
+            uint32_t hi = sa < sb ? sb : sa;
+            return lo >= 1u && lo <= MGL_SEMA_MAX_PATCH_VERTICES &&
+                   hi == MGL_SEMA_MAX_PATCH_VERTICES;
+        }
+        return 0;
+    }
     case MGLIR_TYPE_STRUCT:
         if (a->member_count != b->member_count) {
             return 0;
@@ -1320,7 +1342,8 @@ static int ir_type_interface_equal(const MGLIRType *a, const MGLIRType *b)
                        b->member_names ? b->member_names[i] : "") != 0) {
                 return 0;
             }
-            if (!ir_type_interface_equal(a->members[i], b->members[i])) {
+            if (!ir_type_interface_equal(a->members[i], b->members[i],
+                                         tess_cp_arrays)) {
                 return 0;
             }
         }
@@ -5901,7 +5924,8 @@ static int interface_vars_paired(const MGLIRSymbol *out, const MGLIRSymbol *in)
 }
 
 int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
-                          MGLSemaError **errors, uint32_t *error_count)
+                          int tess_cp_arrays, MGLSemaError **errors,
+                          uint32_t *error_count)
 {
     Sema s;
     memset(&s, 0, sizeof(s));
@@ -5935,7 +5959,7 @@ int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
                 }
                 if (sa->layout != sb->layout ||
                     sa->matrix_major != sb->matrix_major ||
-                    !ir_type_interface_equal(ta, tb)) {
+                    !ir_type_interface_equal(ta, tb, tess_cp_arrays)) {
                     sema_error(&s, 0,
                                "interface block '%s' does not match across stages",
                                ta->name);
@@ -5950,7 +5974,7 @@ int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
                 !interface_vars_paired(sa, sb)) {
                 continue;
             }
-            if (!ir_type_interface_equal(sa->type, sb->type)) {
+            if (!ir_type_interface_equal(sa->type, sb->type, tess_cp_arrays)) {
                 char ta[64], tb[64];
                 sema_error(&s, 0,
                            "interface variable '%s' type mismatch across stages "
@@ -6203,7 +6227,7 @@ static void buffer_block_instances_check(Sema *s, const MGLIRModule *a,
                            bta->name);
             }
             /* Full type of the symbol (includes instance-array size). */
-            if (!ir_type_interface_equal(sa->type, sb->type)) {
+            if (!ir_type_interface_equal(sa->type, sb->type, 0)) {
                 sema_error(s, 0,
                            "matched buffer block '%s' type mismatch across "
                            "stages",
@@ -6251,7 +6275,7 @@ static void uniform_image_link_check(Sema *s, const MGLIRModule *a,
                            sa->name);
                 continue;
             }
-            if (!ir_type_interface_equal(sa->type, sb->type)) {
+            if (!ir_type_interface_equal(sa->type, sb->type, 0)) {
                 sema_error(s, 0,
                            "image uniform '%s' type mismatch across stages",
                            sa->name);

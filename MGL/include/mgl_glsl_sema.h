@@ -115,9 +115,12 @@ MGLIRSymbol *mglIRSymbolNew(const char *name, MGLIRType *type);
  * both declare one, otherwise by name, and matched pairs must have identical
  * types and qualifiers; interface blocks match by block name and require
  * identical member lists and layout.  A statically used input of `b` without
- * a matching output of `a` is an error.  Returns the number of hard errors. */
+ * a matching output of `a` is an error.  Returns the number of hard errors.
+ * tess_cp_arrays: non-zero for TCS→TES — allow TCS out[N] vs TES
+ * in[gl_MaxPatchVertices] (or unsized). */
 int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
-                          MGLSemaError **errors, uint32_t *error_count);
+                          int tess_cp_arrays, MGLSemaError **errors,
+                          uint32_t *error_count);
 
 /* Link-time uniform / UBO name rules (GLSL 4.60 §4.4.5 / §4.3.5): anonymous
  * block members enter the global namespace; matched blocks must agree on

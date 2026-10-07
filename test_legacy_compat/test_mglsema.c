@@ -392,7 +392,7 @@ static void test_interface_ok(void)
             "void main() { frag = color; }\n");
     MGLSemaError *le = NULL;
     uint32_t lec = 0;
-    int r = mglGLSLInterfaceCheck(&vs, &module, &le, &lec);
+    int r = mglGLSLInterfaceCheck(&vs, &module, 0, &le, &lec);
     CHECK(r == 0 && lec == 0, "matching in/out passes");
     mglGLSLSemanticCheckDestroy(le, lec);
 
@@ -419,7 +419,7 @@ static void test_interface_mismatch(void)
             "void main() { vec3 c = color; }\n");
     MGLSemaError *le = NULL;
     uint32_t lec = 0;
-    int r = mglGLSLInterfaceCheck(&vs, &module, &le, &lec);
+    int r = mglGLSLInterfaceCheck(&vs, &module, 0, &le, &lec);
     CHECK(r == 1 && lec == 1, "mismatched in/out rejected");
     CHECK(lec == 1 && le[0].message &&
           strstr(le[0].message, "interface variable 'color'"),
@@ -447,7 +447,7 @@ static void test_interface_abi_qualifiers(void)
             "void main() { vec4 c = color; }\n");
     MGLSemaError *le = NULL;
     uint32_t lec = 0;
-    CHECK(mglGLSLInterfaceCheck(&vs, &module, &le, &lec) == 1 && lec == 1,
+    CHECK(mglGLSLInterfaceCheck(&vs, &module, 0, &le, &lec) == 1 && lec == 1,
           "explicit interface location mismatch rejected");
     mglGLSLSemanticCheckDestroy(le, lec);
     mglIRModuleDestroy(&vs);
@@ -468,7 +468,7 @@ static void test_interface_abi_qualifiers(void)
             "void main() { vec4 c = color; }\n");
     le = NULL;
     lec = 0;
-    CHECK(mglGLSLInterfaceCheck(&vs, &module, &le, &lec) == 1 && lec == 1,
+    CHECK(mglGLSLInterfaceCheck(&vs, &module, 0, &le, &lec) == 1 && lec == 1,
           "interpolation qualifier mismatch rejected");
     mglGLSLSemanticCheckDestroy(le, lec);
     mglIRModuleDestroy(&vs);
@@ -494,7 +494,7 @@ static void test_interface_blocks(void)
             "void main() {}\n");
     MGLSemaError *le = NULL;
     uint32_t lec = 0;
-    CHECK(mglGLSLInterfaceCheck(&vs, &module, &le, &lec) == 0 && lec == 0,
+    CHECK(mglGLSLInterfaceCheck(&vs, &module, 0, &le, &lec) == 0 && lec == 0,
           "block same members ok");
     mglGLSLSemanticCheckDestroy(le, lec);
     mglIRModuleDestroy(&vs);
@@ -517,7 +517,7 @@ static void test_interface_blocks(void)
             "void main() {}\n");
     le = NULL;
     lec = 0;
-    CHECK(mglGLSLInterfaceCheck(&vs, &module, &le, &lec) == 1 && lec == 1,
+    CHECK(mglGLSLInterfaceCheck(&vs, &module, 0, &le, &lec) == 1 && lec == 1,
           "block member mismatch rejected");
     CHECK(lec == 1 && le[0].message &&
           strstr(le[0].message, "interface block 'B'"),

@@ -16963,7 +16963,11 @@ static int airStagePairInterfaceCheck(const MGLTranslationUnit *atu, int astage,
             }
         }
         if (rc == 0 && varying_link &&
-            mglGLSLInterfaceCheck(&a, &b, &le, &lec)) {
+            mglGLSLInterfaceCheck(
+                &a, &b,
+                (astage == MGL_STAGE_TESS_CONTROL &&
+                 bstage == MGL_STAGE_TESS_EVALUATION),
+                &le, &lec)) {
             if (err_buf && err_cap && le && lec)
                 snprintf(err_buf, err_cap, "%s", le[0].message);
             rc = -1;
