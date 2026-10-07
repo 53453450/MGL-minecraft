@@ -3168,6 +3168,43 @@ static int user_param_is_out(const Sema *s, const char *fn, uint32_t argc,
     return 0;
 }
 
+/* True when `e` reads a variable that is not const-qualified, so it cannot
+ * be a constant expression. */
+static int expr_reads_non_const_var(SymTab *tab, const MGLExpr *e)
+{
+    if (!e)
+        return 0;
+    switch (e->kind) {
+    case MGL_EXPR_VAR_REF: {
+        Sym *sym = e->u.var_ref.name ? symtab_lookup(tab, e->u.var_ref.name)
+                                     : NULL;
+        return sym && !(sym->qualifiers & MGL_AST_Q_CONST);
+    }
+    case MGL_EXPR_MEMBER:
+        return expr_reads_non_const_var(tab, e->u.member.object);
+    case MGL_EXPR_INDEX:
+        return expr_reads_non_const_var(tab, e->u.index.object) ||
+               expr_reads_non_const_var(tab, e->u.index.index);
+    case MGL_EXPR_CALL:
+        for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
+            if (expr_reads_non_const_var(tab, e->u.call.args[i]))
+                return 1;
+        }
+        return 0;
+    case MGL_EXPR_UNARY:
+        return expr_reads_non_const_var(tab, e->u.unary.operand);
+    case MGL_EXPR_BINARY:
+        return expr_reads_non_const_var(tab, e->u.binary.lhs) ||
+               expr_reads_non_const_var(tab, e->u.binary.rhs);
+    case MGL_EXPR_TERNARY:
+        return expr_reads_non_const_var(tab, e->u.ternary.cond) ||
+               expr_reads_non_const_var(tab, e->u.ternary.then) ||
+               expr_reads_non_const_var(tab, e->u.ternary.else_);
+    default:
+        return 0;
+    }
+}
+
 static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
 {
     if (!e) {
@@ -3621,6 +3658,19 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                     return NULL;
                 }
             }
+        }
+        /* GLSL 4.60 §7.1: without a sized redeclaration, gl_ClipDistance
+         * may only be indexed with constant integral expressions. */
+        if (e->u.index.object &&
+            e->u.index.object->kind == MGL_EXPR_VAR_REF &&
+            e->u.index.object->u.var_ref.name &&
+            strcmp(e->u.index.object->u.var_ref.name, "gl_ClipDistance") == 0 &&
+            !symtab_lookup(tab, "gl_ClipDistance") &&
+            expr_reads_non_const_var(tab, e->u.index.index)) {
+            sema_error(s, e->line,
+                       "gl_ClipDistance must be redeclared with a size to be "
+                       "indexed with a non-constant expression");
+            return NULL;
         }
         if (obj->kind == MGLIR_TYPE_ARRAY) {
             return check_array_index(s, (MGLExpr *)e, obj);
