@@ -173,6 +173,25 @@ extern "C" bool mglTessNativeBlockedByGeometry(Program *gs)
            gs->shader_slots[_GEOMETRY_SHADER];
 }
 
+/* Image/buffer stores from a long-running render vertex function were observed
+ * to stop partway without a command buffer error; the compute expansion
+ * completes them. */
+static bool mglTessEvalHasStorageWrites(const Program *tes)
+{
+    const MGLShaderResourceList *res =
+        tes->shader_resources_list[_TESS_EVALUATION_SHADER];
+    return res[_STORAGE_IMAGE_RES].count || res[_STORAGE_BUFFER_RES].count ||
+           res[_ATOMIC_COUNTER_RES].count;
+}
+
+static int mglTessEvalUsesRenderVertex(const Program *tes)
+{
+    return tes && tes->tess_eval_render_vertex &&
+                   !mglTessEvalHasStorageWrites(tes)
+               ? 1
+               : 0;
+}
+
 extern "C" bool mglTessPlanDrawPath(GLMContext ctx, GLenum mode, GLsizei count,
                                     GLsizei instanceCount, Program *tcs,
                                     Program *tes, Program *gs, GLenum indexType,
@@ -234,7 +253,7 @@ extern "C" bool mglTessPlanDrawPath(GLMContext ctx, GLenum mode, GLsizei count,
                 ? 1
                 : 0;
         out->exec = (MGLTessExecKind)mglTessSelectAirExec(
-            tes && tes->tess_eval_render_vertex ? 1 : 0,
+            mglTessEvalUsesRenderVertex(tes),
             tes && tes->tess_eval_compute ? 1 : 0, out->indexed ? 1 : 0,
             mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER") ? 1 : 0,
             rasterizer_discard, needs_partner_cull);
@@ -3582,7 +3601,7 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
                 ? 1
                 : 0;
         const int air_exec = mglTessSelectAirExec(
-            tesProgram && tesProgram->tess_eval_render_vertex ? 1 : 0,
+            mglTessEvalUsesRenderVertex(tesProgram),
             tesProgram && tesProgram->tess_eval_compute ? 1 : 0,
             path.indexed ? 1 : 0,
             mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER") ? 1 : 0,
