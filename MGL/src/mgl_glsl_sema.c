@@ -2085,6 +2085,13 @@ static const BiFn kBuiltins[] = {
     /* Shader memory barriers (GLSL 4.60 §8.15 / §8.16).
      * barrier() is TCS + compute control-flow sync (not just a memory fence). */
     { "barrier", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    /* GL_ARB_shader_group_vote / GLSL 4.60 §8.18 (bool → bool). */
+    { "anyInvocation", 1, { BI_ARG_BVEC }, BI_RET_BOOL },
+    { "allInvocations", 1, { BI_ARG_BVEC }, BI_RET_BOOL },
+    { "allInvocationsEqual", 1, { BI_ARG_BVEC }, BI_RET_BOOL },
+    { "anyInvocationARB", 1, { BI_ARG_BVEC }, BI_RET_BOOL },
+    { "allInvocationsARB", 1, { BI_ARG_BVEC }, BI_RET_BOOL },
+    { "allInvocationsEqualARB", 1, { BI_ARG_BVEC }, BI_RET_BOOL },
     { "memoryBarrier", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
     { "memoryBarrierAtomicCounter", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
     { "memoryBarrierBuffer", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },

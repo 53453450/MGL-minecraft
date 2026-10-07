@@ -7359,6 +7359,46 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                        llvm::ConstantInt::get(i32, 1)});
             return cg.b->getInt32(0);
         }
+        /* GL_ARB_shader_group_vote / GLSL 4.60 §8.18 → Metal simd_*. */
+        {
+            const char *voteName = name;
+            char voteBuf[64];
+            size_t nlen = strlen(name);
+            if (nlen > 3 && nlen - 3 < sizeof(voteBuf) &&
+                strcmp(name + nlen - 3, "ARB") == 0) {
+                memcpy(voteBuf, name, nlen - 3);
+                voteBuf[nlen - 3] = '\0';
+                voteName = voteBuf;
+            }
+            int isAny = strcmp(voteName, "anyInvocation") == 0;
+            int isAll = strcmp(voteName, "allInvocations") == 0;
+            int isEq = strcmp(voteName, "allInvocationsEqual") == 0;
+            if (isAny || isAll || isEq) {
+                if (e->u.call.arg_count != 1) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: ") + name +
+                                " expects 1 argument";
+                    return nullptr;
+                }
+                llvm::Value *v =
+                    emitExpr(cg, e->u.call.args[0], mod, locals);
+                if (!v) return nullptr;
+                if (!v->getType()->isIntegerTy(1))
+                    v = cg.b->CreateICmpNE(
+                        v, llvm::Constant::getNullValue(v->getType()));
+                llvm::Type *i1 = cg.b->getInt1Ty();
+                if (isAny)
+                    return callAirFn(cg, "air.simd_any", i1, {v});
+                if (isAll)
+                    return callAirFn(cg, "air.simd_all", i1, {v});
+                /* allInvocationsEqual(v) ⇔ all(v) ∨ all(!v). */
+                llvm::Value *allT =
+                    callAirFn(cg, "air.simd_all", i1, {v});
+                llvm::Value *allF = callAirFn(
+                    cg, "air.simd_all", i1, {cg.b->CreateNot(v)});
+                return cg.b->CreateOr(allT, allF);
+            }
+        }
         if (strcmp(name, "memoryBarrier") == 0 ||
             strcmp(name, "memoryBarrierAtomicCounter") == 0 ||
             strcmp(name, "memoryBarrierBuffer") == 0 ||
