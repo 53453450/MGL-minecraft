@@ -623,6 +623,14 @@ static bool mglEncodeRestartSegmentTarget(void *renderEncoderOwner,
                                      label);
     }
 
+    if (mglRenderEmulateAdjacency((uint32_t)mode)) {
+        return mglEncodeElementAdjacencyTarget(
+            renderEncoderOwner, device, glElementBuffer, metalElementBuffer,
+            mode, glIndexType, segmentGLByteOffset,
+            (GLsizei)segmentIndexCount, instanceCount, baseVertex,
+            baseInstance, label);
+    }
+
     size_t preparedByteOffset = 0u;
     if (!mglComputePreparedIndexByteOffset(glIndexType,
                                            segmentGLByteOffset,
@@ -1014,17 +1022,14 @@ bool mglEncodeDrawElementsForRenderEncoderOwner(
         return false;
     }
 
-    if (mglRenderEmulateAdjacency((uint32_t)mode) &&
-        !mglPolygonModePointForDrawMode(ctx, mode)) {
-        return mglEncodeElementAdjacencyTarget(
-            renderEncoderOwner, device, glElementBuffer, metalElementBuffer,
-            mode, glIndexType, indexOffset, count, instanceCount, baseVertex,
-            baseInstance, label);
-    }
     const bool polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
+    const bool emulateAdjacency =
+        mglRenderEmulateAdjacency((uint32_t)mode) && !polygonModePoint;
     uint32_t primitiveType;
     if (polygonModePoint) {
         primitiveType = MGL_DRAW_PRIMITIVE_POINT;
+    } else if (emulateAdjacency) {
+        primitiveType = mglRenderAdjacencyMetalPrimitiveType((uint32_t)mode);
     } else if (mglRenderEmulateTriangleFan((uint32_t)mode, 0)) {
         primitiveType = MGL_DRAW_PRIMITIVE_TRIANGLE;
     } else if (mglRenderEmulateLineLoop((uint32_t)mode)) {
@@ -1060,6 +1065,12 @@ bool mglEncodeDrawElementsForRenderEncoderOwner(
             renderEncoderOwner, device, glElementBuffer, metalElementBuffer,
             mode, glIndexType, metalIndexType, indexOffset, count,
             instanceCount, baseVertex, baseInstance, label);
+    }
+    if (emulateAdjacency) {
+        return mglEncodeElementAdjacencyTarget(
+            renderEncoderOwner, device, glElementBuffer, metalElementBuffer,
+            mode, glIndexType, indexOffset, count, instanceCount, baseVertex,
+            baseInstance, label);
     }
     if (mglRenderEmulateTriangleFan((uint32_t)mode, 0)) {
         return mglEncodeElementTriangleFanForRenderEncoderOwner(

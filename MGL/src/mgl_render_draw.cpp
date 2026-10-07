@@ -619,6 +619,12 @@ int mglRenderPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
             return index_count >= 3u ? 1 : 0;
         case GL_QUADS:
             return index_count >= 4u ? 1 : 0;
+        case GL_LINES_ADJACENCY:
+        case GL_LINE_STRIP_ADJACENCY:
+            return index_count >= 4u ? 1 : 0;
+        case GL_TRIANGLES_ADJACENCY:
+        case GL_TRIANGLE_STRIP_ADJACENCY:
+            return index_count >= 6u ? 1 : 0;
         default:
             return index_count > 0u ? 1 : 0;
     }

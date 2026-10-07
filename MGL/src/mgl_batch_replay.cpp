@@ -311,6 +311,8 @@ extern "C" void mgl_batch_replay_direct_prim_plan(
     out->emulate_line_loop = mglRenderEmulateLineLoop(mode) ? 1u : 0u;
     out->emulate_quads =
         mglRenderEmulateQuads(mode, polygon_mode_point) ? 1u : 0u;
+    const int emulate_adjacency =
+        (!polygon_mode_point && mglRenderEmulateAdjacency(mode)) ? 1 : 0;
     if (out->polygon_mode_point) {
         out->prim_type = MGL_DRAW_PRIMITIVE_POINT;
     } else if (out->emulate_triangle_fan) {
@@ -319,6 +321,10 @@ extern "C" void mgl_batch_replay_direct_prim_plan(
         out->prim_type = MGL_DRAW_PRIMITIVE_LINE_STRIP;
     } else if (out->emulate_quads) {
         out->prim_type = MGL_DRAW_PRIMITIVE_TRIANGLE;
+    } else if (emulate_adjacency) {
+        /* No-GS adjacency drops adjacent verts on the encode path
+         * (mglEncode*Adjacency*).  Batch key still stores 0xFF; do not skip. */
+        out->prim_type = mglRenderAdjacencyMetalPrimitiveType(mode);
     } else {
         out->prim_type = batch_primitive_type;
         if (batch_primitive_type == 0xFFu) {
