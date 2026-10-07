@@ -89,6 +89,7 @@ static const char *kMglExtensions[] = {
      * (isQuerySupported checks compatibility(4,0) OR the extension). */
     "GL_ARB_tessellation_shader",
     "GL_ARB_pipeline_statistics_query",    /* BeginQuery targets + draw/compute counters */
+    "GL_ARB_texture_barrier",              /* core in 4.5: glTextureBarrier */
 };
 static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
               "MGL_NUM_EXTENSIONS must match kMglExtensions");
