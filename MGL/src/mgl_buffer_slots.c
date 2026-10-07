@@ -255,7 +255,7 @@ const char *mglBufferSlotReservedName(GLuint slot)
         case 23:
             return "MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX (GS/compute-TES runtime-sized SSBO sizing)";
         case 14:
-            return "kMGLLodBiasMaxBufferIndex (FS LOD_BIAS clamp max)";
+            return "kMGLLodBiasMaxBufferIndex (VS/FS packed LOD_BIAS table)";
         case 15:
             return "kMGLPointSizeBufferIndex (VS point size) / kMGLLodBiasBufferIndex (FS LOD_BIAS)";
         case 24:

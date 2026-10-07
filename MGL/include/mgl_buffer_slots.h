@@ -120,21 +120,17 @@ typedef enum {
      * VAO attribute base (16) and unused by other VS reserved slots. */
     kMGLShaderDrawParamsBufferIndex = 13,
 
-    /* LOD_BIAS_MAX uniform buffer (FS path only).  Holds a single float
-     * (MAX_TEXTURE_LOD_BIAS) for GL 4.6 §8.14.1 eq 8.8:
-     *   clamp(biastexobj + biasshader, -biasmax, biasmax)
-     * The value is injected as `constant float& _mglLodBiasMax [[buffer(14)]]`
-     * and referenced by clamp() in mglRewriteMSLBiasExpr.
-     * Slot 14 is in the user UBO range; mglInjectMSLLodBiasParam checks
-     * availability via strstr before injecting. */
+    /* Packed LOD bias table for VS and FS (AIR).  Layout:
+     *   float biasmax;               // MAX_TEXTURE_LOD_BIAS
+     *   float bias[TEXTURE_UNITS];   // TEXTURE_LOD_BIAS per Metal tex slot
+     * GL 4.6 §8.14.1 eq 8.8: clamp(biastexobj + biasshader, ±biasmax).
+     * Slot 14 is below the VAO attribute base and unused by VS point-size
+     * (slot 15), so both stages can share this pack. */
     kMGLLodBiasMaxBufferIndex = 14,
 
-    /* LOD_BIAS uniform buffer (FS path only).  Same numeric slot as
-     * kMGLPointSizeBufferIndex (VS-only), disjoint stages, no conflict.
-     * Holds an array of TEXTURE_UNITS floats for GL_TEXTURE_LOD_BIAS
-     * emulation via MSL bias() injection.  Occupied only when the FS has
-     * .sample() calls; mglPatchInjectLodBias checks slot availability
-     * before injecting. */
+    /* Legacy alias: older MSL injection used a separate bias array at 15.
+     * AIR uses the packed table at kMGLLodBiasMaxBufferIndex instead.
+     * Slot 15 remains VS point-size (kMGLPointSizeBufferIndex). */
     kMGLLodBiasBufferIndex = 15,
 
     /* ---- Vertex attribute slots ---- */

@@ -74,6 +74,87 @@ extern void *mglPlatformShellDrawable(void *renderer);
 extern int mglPlatformShellGuardedCall(void *renderer, const char *what,
                                        int (*body)(void *));
 
+static int mglProgramStageHasSamplers(Program *prog, int stage)
+{
+    static const int kSamplerRes[] = {
+        _SAMPLED_IMAGE_RES, _SEPARATE_IMAGE_RES, _SEPARATE_SAMPLERS_RES};
+    int t;
+    GLuint i;
+    if (!prog || stage < 0 || stage >= _MAX_SHADER_TYPES)
+        return 0;
+    for (t = 0; t < (int)(sizeof(kSamplerRes) / sizeof(kSamplerRes[0])); t++) {
+        MGLShaderResourceList *list =
+            &prog->shader_resources_list[stage][kSamplerRes[t]];
+        if (list && list->count > 0u)
+            return 1;
+    }
+    /* Combined samplers may also appear under UNIFORM_CONSTANT. */
+    {
+        MGLShaderResourceList *list =
+            &prog->shader_resources_list[stage][_UNIFORM_CONSTANT_RES];
+        if (list) {
+            for (i = 0; i < list->count; i++) {
+                if (list->list[i].has_combined_sampler)
+                    return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+enum { kMGLLodBiasPackHeaderFloats = 4 };
+
+static void mglFillLodBiasPack(GLMContext ctx, Program *prog, int stage,
+                               float *pack /* [4 + TEXTURE_UNITS] */)
+{
+    GLuint slot;
+    const GLfloat biasmax =
+        (ctx && ctx->active_state)
+            ? ctx->active_state->var.max_texture_lod_bias
+            : 0.0f;
+    GLint vp_w = 1, vp_h = 1;
+    GLuint fb_w = 1u, fb_h = 1u;
+    memset(pack, 0,
+           (size_t)(kMGLLodBiasPackHeaderFloats + TEXTURE_UNITS) *
+               sizeof(float));
+    pack[0] = biasmax > 0.0f ? biasmax : 14.0f;
+    pack[1] = 1.0f;
+    pack[2] = 1.0f;
+    if (ctx && ctx->active_state) {
+        vp_w = ctx->active_state->viewport[2];
+        vp_h = ctx->active_state->viewport[3];
+        if (vp_w < 1)
+            vp_w = 1;
+        if (vp_h < 1)
+            vp_h = 1;
+        if (!mglFramebufferPrimaryColorSize(ctx, ctx->active_state->framebuffer,
+                                            &fb_w, &fb_h) ||
+            fb_w == 0u || fb_h == 0u) {
+            fb_w = 1u;
+            fb_h = 1u;
+        }
+        /* Metal dFdx is in RT pixels; GL dFdx is in window pixels.
+         * scale = fb / viewport maps Metal→GL when viewport ≠ FB size. */
+        pack[1] = (float)fb_w / (float)vp_w;
+        pack[2] = (float)fb_h / (float)vp_h;
+    }
+    if (!ctx || !prog)
+        return;
+    for (slot = 0; slot < TEXTURE_UNITS; slot++) {
+        GLint unit = prog->sampler_units_by_stage[stage][slot];
+        Texture *tex;
+        Sampler *smp;
+        if (unit < 0)
+            unit = (GLint)slot;
+        if (unit >= TEXTURE_UNITS)
+            continue;
+        smp = ctx->active_state->texture_samplers[unit];
+        tex = ctx->active_state->active_textures[unit];
+        pack[kMGLLodBiasPackHeaderFloats + slot] =
+            smp ? smp->params.lod_bias : (tex ? tex->params.lod_bias : 0.0f);
+    }
+}
+
 static void mglFillSamplerWrapTable(GLMContext ctx, Program *prog, int stage,
                                     MGLSamplerWrapSlot *slots)
 {
@@ -4390,8 +4471,8 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
             ? 1u
             : 0u;
     afterIn.frag_needs_lod_bias =
-        fragmentProgram && mglRenderSamplerUnitExplicit(
-                               (uint32_t)fragmentProgram->uses_lod_bias)
+        fragmentProgram && mglProgramStageHasSamplers(fragmentProgram,
+                                                     _FRAGMENT_SHADER)
             ? 1u
             : 0u;
     afterIn.fragment_trace_uses_rt_sampled_copy =
@@ -4602,29 +4683,35 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
             renderer, kMGLFragCoordParamsBufferIndex);
     }
 
-    if (after.bind_lod_bias_slot) {
-        const GLfloat biasmax = ctx->active_state->var.max_texture_lod_bias;
-        float lodBiasArr[TEXTURE_UNITS];
-        for (GLuint unit = 0; unit < TEXTURE_UNITS; unit++) {
-            Texture *tex = glState->active_textures[unit];
-            Sampler *smp = glState->texture_samplers[unit];
-
-            lodBiasArr[unit] = smp ? smp->params.lod_bias
-                                   : (tex ? tex->params.lod_bias : 0.0f);
+    {
+        Program *vertexProgram =
+            mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+        const int bind_fs_lod = after.bind_lod_bias_slot != 0u;
+        const int bind_vs_lod =
+            vertexProgram &&
+            mglProgramStageHasSamplers(vertexProgram, _VERTEX_SHADER);
+        if (bind_fs_lod || bind_vs_lod) {
+            float pack[kMGLLodBiasPackHeaderFloats + TEXTURE_UNITS];
+            if (bind_fs_lod) {
+                mglFillLodBiasPack(ctx, fragmentProgram, _FRAGMENT_SHADER,
+                                   pack);
+                mglRenderSetRenderBytesForOwner(
+                    commandState->currentRenderEncoderOwner, pack, sizeof(pack),
+                    MGL_RENDER_BINDING_STAGE_FRAGMENT,
+                    kMGLLodBiasMaxBufferIndex);
+                mglRendererBindingInvalidateLastBoundFragmentBufferAtIndex(
+                    renderer, kMGLLodBiasMaxBufferIndex);
+            }
+            if (bind_vs_lod) {
+                mglFillLodBiasPack(ctx, vertexProgram, _VERTEX_SHADER, pack);
+                mglRenderSetRenderBytesForOwner(
+                    commandState->currentRenderEncoderOwner, pack, sizeof(pack),
+                    MGL_RENDER_BINDING_STAGE_VERTEX,
+                    kMGLLodBiasMaxBufferIndex);
+                mglRendererBindingInvalidateLastBoundVertexBufferAtIndex(
+                    renderer, kMGLLodBiasMaxBufferIndex);
+            }
         }
-        mglRenderClampLodBiasArray(lodBiasArr, TEXTURE_UNITS, biasmax);
-        mglRenderSetRenderBytesForOwner(
-            commandState->currentRenderEncoderOwner, lodBiasArr,
-            sizeof(lodBiasArr), MGL_RENDER_BINDING_STAGE_FRAGMENT,
-            kMGLLodBiasBufferIndex);
-        mglRendererBindingInvalidateLastBoundFragmentBufferAtIndex(
-            renderer, kMGLLodBiasBufferIndex);
-
-        mglRenderSetRenderBytesForOwner(
-            commandState->currentRenderEncoderOwner, &biasmax, sizeof(biasmax),
-            MGL_RENDER_BINDING_STAGE_FRAGMENT, kMGLLodBiasMaxBufferIndex);
-        mglRendererBindingInvalidateLastBoundFragmentBufferAtIndex(
-            renderer, kMGLLodBiasMaxBufferIndex);
     }
 
     if (after.bind_sampler_wrap_slot) {

@@ -2143,41 +2143,29 @@ bool checkTexLevelParams(GLMContext ctx, Texture *tex, GLint level, GLuint inter
         return false;
     }
 
-    /* GL 4.6 §8.5: TexImage* may redefine a non-base level at any size.
-     * A mismatched mip chain is incomplete (§8.17), not INVALID_OPERATION. */
+    /* GL 4.6 §8.5 / §8.17: TexImage* may redefine a non-base level at any
+     * size / internalformat. A mismatched mip chain is incomplete, not an
+     * INVALID_OPERATION. Unsized requests (e.g. GL_RGB) that resolve to the
+     * existing sized format (GL_RGB8) are treated as matching. */
 
-    if (internalformat)
+    if (internalformat && internalformat != tex->internalformat)
     {
-        // internal formats don't jive
-        if (internalformat != tex->internalformat)
+        GLuint derived = internalFormatForGLFormatType(format, type);
+        if (derived != tex->internalformat)
         {
-            fprintf(stderr,
-                    "MGL ERROR: checkTexLevelParams internalformat mismatch tex=%u level=%d got=0x%x expected=0x%x\n",
-                    tex->name,
-                    level,
-                    internalformat,
-                    tex->internalformat);
-            return false;
-        }
-    }
-    else
-    {
-        GLuint temp_internalformat;
-
-        // check if we are expected to convert data
-        temp_internalformat = internalFormatForGLFormatType(format, type);
-
-        if (temp_internalformat != tex->internalformat)
-        {
-            fprintf(stderr,
-                    "MGL ERROR: checkTexLevelParams format/type mismatch tex=%u level=%d derived=0x%x expected=0x%x format=0x%x type=0x%x\n",
-                    tex->name,
-                    level,
-                    temp_internalformat,
-                    tex->internalformat,
-                    format,
-                    type);
-            return false;
+            static uint64_t s_mip_iformat_mismatch_logs = 0;
+            uint64_t hit = ++s_mip_iformat_mismatch_logs;
+            if (hit <= 8ull || (hit % 2048ull) == 0ull)
+            {
+                fprintf(stderr,
+                        "MGL TRACE checkTexLevelParams internalformat mismatch (incomplete, not error) tex=%u level=%d got=0x%x expected=0x%x derived=0x%x hit=%llu\n",
+                        tex->name,
+                        level,
+                        internalformat,
+                        tex->internalformat,
+                        derived,
+                        (unsigned long long)hit);
+            }
         }
     }
 
@@ -2968,9 +2956,39 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         tex->depth = depth;
         tex->complete = false;
     }
-    else if (checkTexLevelParams(ctx, tex, level, internalformat, width, height, depth, format, type) == false)
+    else
     {
-        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        /* Same unsized→sized resolution as level 0 so GL_RGB after GL_RGB8
+         * does not keep a divergent token for storage sizing. */
+        if (internalformat == 0)
+        {
+            internalformat = internalFormatForGLFormatType(format, type);
+            if (internalformat == 0)
+            {
+                ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+            }
+        }
+        else if (internalformat == format)
+        {
+            GLuint temp_format = internalFormatForGLFormatType(format, type);
+            if (temp_format != 0)
+            {
+                internalformat = temp_format;
+            }
+        }
+        if (internalformat != tex->internalformat)
+        {
+            GLuint derived = internalFormatForGLFormatType(format, type);
+            if (derived == tex->internalformat)
+            {
+                internalformat = tex->internalformat;
+            }
+        }
+
+        if (checkTexLevelParams(ctx, tex, level, internalformat, width, height, depth, format, type) == false)
+        {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
     }
 
     if (!ensureTextureLevelCapacity(ctx, tex, (GLuint)level + 1u))

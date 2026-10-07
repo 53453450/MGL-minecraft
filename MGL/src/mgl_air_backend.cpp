@@ -1152,6 +1152,60 @@ static llvm::Value *emitAirSampleOffset(Codegen &cg, llvm::Value *off)
     return llvm::Constant::getNullValue(v2i32);
 }
 
+/* Lod-bias pack: biasmax@0, deriv_scale_x@1, deriv_scale_y@2, pad@3,
+ * bias[slot]@4+slot. */
+enum { kMGLLodBiasPackHeaderFloats = 4 };
+
+/* GL 4.6 §8.14.1 eq 8.8: clamp(bias_texobj + bias_shader, ±biasmax).
+ * When the pack is absent, returns shaderBias (or 0). */
+static llvm::Value *emitCombinedLodBias(Codegen &cg, const char *samplerName,
+                                        llvm::Value *shaderBias) {
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Value *shader =
+        shaderBias ? shaderBias : llvm::ConstantFP::get(f32, 0.0);
+    if (!cg.lodBiasPtr)
+        return shader;
+    uint32_t slot = 0u;
+    if (samplerName) {
+        auto it = cg.texMetalIndex.find(samplerName);
+        if (it != cg.texMetalIndex.end())
+            slot = it->second;
+    }
+    llvm::Value *base =
+        cg.b->CreateBitCast(cg.lodBiasPtr, f32->getPointerTo(1));
+    llvm::Value *maxV =
+        cg.b->CreateAlignedLoad(f32, base, llvm::Align(4), "lod_bias_max");
+    llvm::Value *texBias = cg.b->CreateAlignedLoad(
+        f32,
+        cg.b->CreateGEP(
+            f32, base,
+            cg.b->getInt32((int)(kMGLLodBiasPackHeaderFloats + slot))),
+        llvm::Align(4), "lod_bias_tex");
+    llvm::Value *sum = cg.b->CreateFAdd(texBias, shader, "lod_bias_sum");
+    llvm::Value *hi =
+        cg.b->CreateSelect(cg.b->CreateFCmpOGT(sum, maxV), maxV, sum);
+    llvm::Value *negMax = cg.b->CreateFNeg(maxV);
+    return cg.b->CreateSelect(cg.b->CreateFCmpOLT(hi, negMax), negMax, hi);
+}
+
+static void loadLodDerivScales(Codegen &cg, llvm::Value **outSx,
+                               llvm::Value **outSy) {
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    if (!cg.lodBiasPtr || !outSx || !outSy) {
+        if (outSx)
+            *outSx = llvm::ConstantFP::get(f32, 1.0);
+        if (outSy)
+            *outSy = llvm::ConstantFP::get(f32, 1.0);
+        return;
+    }
+    llvm::Value *base =
+        cg.b->CreateBitCast(cg.lodBiasPtr, f32->getPointerTo(1));
+    *outSx = cg.b->CreateAlignedLoad(
+        f32, cg.b->CreateGEP(f32, base, cg.b->getInt32(1)), llvm::Align(4));
+    *outSy = cg.b->CreateAlignedLoad(
+        f32, cg.b->CreateGEP(f32, base, cg.b->getInt32(2)), llvm::Align(4));
+}
+
 /* AIR sample_texture_2d_array* passes spatial coords and array layer as
  * separate arguments; GLSL bundles them into vec3(vec2(P), layer) or
  * vec2(s, layer) for 1D arrays. */
@@ -9357,6 +9411,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 lod = emitExpr(cg, e->u.call.args[argIdx++], mod, locals);
                 if (!lod) return nullptr;
                 lod = coerceScalar(cg, lod, MGLIR_SCALAR_FLOAT);
+                /* textureLod: λ = lod + clamp(TEXTURE_LOD_BIAS, ±max). */
+                lod = cg.b->CreateFAdd(
+                    lod, emitCombinedLodBias(cg, samplerName, nullptr));
                 explicitLod = true;
                 if (hasOffset) {
                     llvm::Value *off =
@@ -9371,11 +9428,31 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 if (!off) return nullptr;
                 off = coerceScalar(cg, off, MGLIR_SCALAR_INT);
                 sampleOffset = emitAirSampleOffset(cg, off);
+                if (e->u.call.arg_count >= 4) {
+                    llvm::Value *shaderBias =
+                        emitExpr(cg, e->u.call.args[argIdx], mod, locals);
+                    if (!shaderBias) return nullptr;
+                    shaderBias =
+                        coerceScalar(cg, shaderBias, MGLIR_SCALAR_FLOAT);
+                    lod = emitCombinedLodBias(cg, samplerName, shaderBias);
+                    explicitLod = false;
+                } else {
+                    lod = emitCombinedLodBias(cg, samplerName, nullptr);
+                    explicitLod = false;
+                }
             } else if (e->u.call.arg_count == 3) {
-                lod = emitExpr(cg, e->u.call.args[2], mod, locals);
-                if (!lod) return nullptr;
-                lod = coerceScalar(cg, lod, MGLIR_SCALAR_FLOAT);
-                explicitLod = true;
+                /* texture(s, P, bias): Metal bias(), not level(). */
+                llvm::Value *shaderBias =
+                    emitExpr(cg, e->u.call.args[2], mod, locals);
+                if (!shaderBias) return nullptr;
+                shaderBias =
+                    coerceScalar(cg, shaderBias, MGLIR_SCALAR_FLOAT);
+                lod = emitCombinedLodBias(cg, samplerName, shaderBias);
+                explicitLod = false;
+            } else {
+                /* texture(s, P): still apply TEXTURE_LOD_BIAS. */
+                lod = emitCombinedLodBias(cg, samplerName, nullptr);
+                explicitLod = false;
             }
             llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
             llvm::Type *vecTy = texel == MGLIR_SCALAR_FLOAT
@@ -9468,6 +9545,70 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 const bool cubeSample =
                     sampleKind == MGLIR_TEX_CUBE ||
                     sampleKind == MGLIR_TEX_CUBE_ARRAY;
+                /* FS implicit LOD: scale Metal dFdx/dFdy by fb/viewport so
+                 * λ matches GL window-space derivatives when the viewport
+                 * is larger than the framebuffer (CTS lod_bias 1x1 FBO). */
+                const bool useScaledGrad =
+                    !explicitLod && !cg.isVS && !cg.isCompute &&
+                    !cg.isTessControl && !cg.isTessEval && !cg.isGeometry &&
+                    cg.lodBiasPtr && !cubeSample &&
+                    (sampleKind == MGLIR_TEX_2D ||
+                     sampleKind == MGLIR_TEX_2D_ARRAY ||
+                     sampleKind == MGLIR_TEX_1D ||
+                     sampleKind == MGLIR_TEX_1D_ARRAY);
+                if (useScaledGrad) {
+                    llvm::Value *sx = nullptr, *sy = nullptr;
+                    loadLodDerivScales(cg, &sx, &sy);
+                    llvm::Value *dPdx = nullptr, *dPdy = nullptr;
+                    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(
+                            sampleCoord->getType())) {
+                        unsigned n = vt->getNumElements();
+                        std::string dxn =
+                            std::string("air.dfdx.v") + std::to_string(n) +
+                            "f32";
+                        std::string dyn =
+                            std::string("air.dfdy.v") + std::to_string(n) +
+                            "f32";
+                        llvm::Value *rawDx = callAirFn(
+                            cg, dxn.c_str(), sampleCoord->getType(),
+                            {sampleCoord});
+                        llvm::Value *rawDy = callAirFn(
+                            cg, dyn.c_str(), sampleCoord->getType(),
+                            {sampleCoord});
+                        llvm::Value *sxv = llvm::UndefValue::get(vt);
+                        llvm::Value *syv = llvm::UndefValue::get(vt);
+                        for (unsigned i = 0; i < n; i++) {
+                            sxv = cg.b->CreateInsertElement(
+                                sxv, sx, cg.b->getInt32(i));
+                            syv = cg.b->CreateInsertElement(
+                                syv, sy, cg.b->getInt32(i));
+                        }
+                        dPdx = cg.b->CreateFMul(rawDx, sxv);
+                        dPdy = cg.b->CreateFMul(rawDy, syv);
+                    } else {
+                        dPdx = cg.b->CreateFMul(
+                            callAirFn(cg, "air.dfdx.f32", f32, {sampleCoord}),
+                            sx);
+                        dPdy = cg.b->CreateFMul(
+                            callAirFn(cg, "air.dfdy.f32", f32, {sampleCoord}),
+                            sy);
+                    }
+                    const char *gradName = "air.sample_texture_2d_grad.v4f32";
+                    if (sampleKind == MGLIR_TEX_2D_ARRAY ||
+                        sampleKind == MGLIR_TEX_1D_ARRAY)
+                        gradName = "air.sample_texture_2d_array_grad.v4f32";
+                    std::vector<llvm::Value *> gradArgs = {
+                        t, sp, sampleCoord, dPdx, dPdy,
+                        lod ? lod : llvm::ConstantFP::get(f32, 0.0),
+                        cg.b->getInt1(false), sampleOffset,
+                        cg.b->getInt32(0)};
+                    if (arrayLayer)
+                        gradArgs.insert(gradArgs.begin() + 3, arrayLayer);
+                    llvm::Value *r = callAirFn(
+                        cg, sampledIntrinsic(gradName).c_str(), retTy,
+                        gradArgs);
+                    return cg.b->CreateExtractValue(r, 0);
+                }
                 std::vector<llvm::Value *> sampleArgs;
                 if (cubeSample) {
                     sampleArgs = {
@@ -12504,6 +12645,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
         (void)texLocAssign;
     }
+    /* TEXTURE_LOD_BIAS pack for ordinary VS / FS with sampled textures. */
+    const bool needsLodBias =
+        texCount > 0u && !isCapture && !isKernel &&
+        ((isVS && !isTESVertex) || stage == MGL_STAGE_FRAGMENT);
     const uint32_t stageInputStride = (isTCS || isGS)
         ? stageRecordStride(syms, VarSym::VARYING, false,
                             MGL_AIR_PER_VERTEX_STRIDE)
@@ -13141,6 +13286,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         paramTys.push_back(llvm::FixedVectorType::get(
             llvm::Type::getInt32Ty(ctx), 3));
     if (needsSamplerWrapBuf)
+        paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+    if (needsLodBias)
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     if (!retTy && mgl_env_flag_enabled("MGL_GS_TRACE")) {
         fprintf(stderr, "MGLGSTRACE site1 NULL retTy isGS=%d isTCS=%d isCompute=%d isTES=%d\n",
@@ -13907,6 +14054,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         cg.patchPos = fn->getArg(argSlot++);
     if (needsSamplerWrapBuf)
         cg.samplerWrapPtr = fn->getArg(argSlot++);
+    if (needsLodBias)
+        cg.lodBiasPtr = fn->getArg(argSlot++);
     if (isGS) {
         cg.geometryWorkItemId = cg.threadPos
             ? cg.b->CreateExtractElement(cg.threadPos, cg.b->getInt32(0))
@@ -16393,7 +16542,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     } else if (isCullCapture || isTessCapture) {
         llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
         uint32_t cullParamsArg = (uint32_t)paramTys.size() - 4u -
-            (needsSamplerWrapBuf ? 1u : 0u);
+            (needsSamplerWrapBuf ? 1u : 0u) -
+            (needsLodBias ? 1u : 0u);
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(
                 llvm::ConstantInt::get(i32, cullParamsArg)),
@@ -16419,9 +16569,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
 
     if (isVS || isTESVertex) {
+        const unsigned lodBiasTail = needsLodBias ? 1u : 0u;
         const unsigned wrapTail = needsSamplerWrapBuf ? 1u : 0u;
         const unsigned drawTail = needsDrawParams ? 1u : 0u;
-        const unsigned tail = wrapTail + drawTail;
+        const unsigned tail = wrapTail + drawTail + lodBiasTail;
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                 llvm::Type::getInt32Ty(ctx),
@@ -16454,7 +16605,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    i32, (unsigned)paramTys.size() - 1u - wrapTail)),
+                    i32, (unsigned)paramTys.size() - 1u - wrapTail -
+                             lodBiasTail)),
                 llvm::MDString::get(ctx, "air.buffer"),
                 llvm::MDString::get(ctx, "air.location_index"),
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
@@ -16475,9 +16627,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     if (needsSamplerWrapBuf) {
         llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
+        const unsigned lodBiasTail = needsLodBias ? 1u : 0u;
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                i32, (unsigned)paramTys.size() - 1u)),
+                i32, (unsigned)paramTys.size() - 1u - lodBiasTail)),
             llvm::MDString::get(ctx, "air.buffer"),
             llvm::MDString::get(ctx, "air.location_index"),
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
@@ -16490,6 +16643,32 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::MDString::get(ctx, "device uchar*"),
             llvm::MDString::get(ctx, "air.arg_name"),
             llvm::MDString::get(ctx, "mgl_sampler_wrap")}));
+    }
+    if (needsLodBias) {
+        llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
+        const uint32_t packBytes =
+            (uint32_t)((kMGLLodBiasPackHeaderFloats + (uint32_t)TEXTURE_UNITS) *
+                       sizeof(float));
+        argNodes.push_back(llvm::MDNode::get(ctx, {
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                i32, (unsigned)paramTys.size() - 1u)),
+            llvm::MDString::get(ctx, "air.buffer"),
+            llvm::MDString::get(ctx, "air.location_index"),
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                i32, kMGLLodBiasMaxBufferIndex)),
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 1)),
+            llvm::MDString::get(ctx, "air.read"),
+            llvm::MDString::get(ctx, "air.address_space"),
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 1)),
+            llvm::MDString::get(ctx, "air.arg_type_size"),
+            llvm::ConstantAsMetadata::get(
+                llvm::ConstantInt::get(i32, packBytes)),
+            llvm::MDString::get(ctx, "air.arg_type_align_size"),
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 4)),
+            llvm::MDString::get(ctx, "air.arg_type_name"),
+            llvm::MDString::get(ctx, "float"),
+            llvm::MDString::get(ctx, "air.arg_name"),
+            llvm::MDString::get(ctx, "mgl_lod_bias")}));
     }
     /* Metal expects the argument list ordered by parameter index; the
      * emission order above mixes buffers and value args (e.g. a fragment

@@ -194,6 +194,13 @@ struct Codegen {
     std::map<std::string, llvm::Value *> smpValues;  /* sampler name -> sampler */
     std::map<std::string, uint32_t> texMetalIndex; /* sampler -> Metal tex slot */
     llvm::Value *samplerWrapPtr = nullptr; /* integer gather wrap/border table */
+    /* GL 4.6 §8.14.1 packed table at kMGLLodBiasMaxBufferIndex:
+     *   float biasmax;
+     *   float deriv_scale_x;  // fb_w / viewport_w (Metal→GL dFdx)
+     *   float deriv_scale_y;
+     *   float _pad;
+     *   float bias[TEXTURE_UNITS];  // TEXTURE_LOD_BIAS per Metal tex slot */
+    llvm::Value *lodBiasPtr = nullptr;
     std::map<std::string, std::vector<llvm::Value *>> texArrayValues;
     std::map<std::string, std::vector<llvm::Value *>> smpArrayValues;
     /* Same-invocation imageStore→imageLoad forwarding (GLSL 4.60 §8.12 /
