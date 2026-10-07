@@ -4683,7 +4683,7 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
             (uint32_t)areas.mssample_forced_id,
             glState->var.point_sprite_coord_origin == GL_LOWER_LEFT,
             fragCoordParams);
-        mglRenderSetRenderBytesForOwner(
+        (void)mglRenderSetRenderBytesForOwner(
             commandState->currentRenderEncoderOwner, fragCoordParams,
             sizeof(fragCoordParams), MGL_RENDER_BINDING_STAGE_FRAGMENT,
             kMGLFragCoordParamsBufferIndex);

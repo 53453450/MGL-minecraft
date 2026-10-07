@@ -749,19 +749,13 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
         goto done;
     }
 
-    /* Calculate the texture height at the specified mipmap level. */
-    uint64_t levelHeight = mglPdTextureInfo(sourceTexture).height;
-    if (mipmapLevel > 0u) {
-        levelHeight = mglPdMaxU64(
-            1u, mglPdTextureInfo(sourceTexture).height >> mipmapLevel);
-    }
-    /* Flipped storage keeps GL row y at Metal row levelHeight-1-y: remap the
-     * source window here and reverse the rows in the CPU convert. */
-    const uint64_t blitSrcY =
-        flipRows ? (levelHeight - (uint64_t)maxY) : (uint64_t)minY;
+    /* Integer RT storage is already in GL row order at readback (FragCoord
+     * sampling + sampled-copy).  Applying the float-RT Y unflip here mirrored
+     * GetTexImage / ReadPixels (KHR-GL46.texture_barrier). */
+    (void)flipRows;
     mglPdTextureCopyTextureToBuffer(
         blit, sourceTexture, mtlSlice, mipmapLevel,
-        mglTextureOrigin((uint64_t)minX, blitSrcY, 0u),
+        mglTextureOrigin((uint64_t)minX, (uint64_t)minY, 0u),
         mglTextureSize((uint64_t)copyW, (uint64_t)copyH, 1u), readBuffer, 0u,
         srcBytesPerRow, stagingSize);
     mglPdTextureEndBlitEncoder(blit);
@@ -809,7 +803,7 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
         .packed_bit_widths = packedBitWidths,
         .packed_shifts = packedShifts,
         .packed_output_bytes = (uint32_t)packedOutputBytes,
-        .flip_y = flipRows,
+        .flip_y = 0,
     };
     if (mglRenderConvertIntegerReadback(&convert) != 0) {
         (void)mglRenderPassNewCommandBufferLocked(renderer);
@@ -1466,11 +1460,10 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         readSlice = 0u;
     }
     /* Multisample RTs already land in GL row order after resolve. */
-    const int flipRenderTargetRows =
+    int flipRenderTargetRows =
         tex->samples <= 1u &&
         mglRenderTargetStorageYFlipped(tex->is_render_target ? 1 : 0,
                                        tex->mtl_render_target_write_version);
-
     if (mglRenderPixelFormatIsDepthOrStencil(
             (uint32_t)mglPdTextureInfo(texture).pixel_format)) {
         mglPdGetDepthStencilImage(&areas, glm_ctx, tex, texture, pixelBytes,
@@ -1488,9 +1481,8 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         (uint32_t)type, &classify);
 
     if (classify.source_is_integer_texture && classify.output_is_integer_format) {
-        /* Pass the original (non-Y-flipped) region.  The integer readback does
-         * its own Y-flip on the blit source origin AND Y-flips the output rows,
-         * so passing a pre-Y-flipped readRegion here would double-flip. */
+        /* Pass the original (non-Y-flipped) region.  Integer readback remaps
+         * blit origin.y itself; a pre-flipped readRegion would double-flip. */
         (void)mglTextureReadIntegerAsRGBA32(
             renderer, texture, pixelBytes, bytesPerRow, bytesPerImage,
             readRegion, (uint64_t)classify.output_components,
