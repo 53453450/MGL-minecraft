@@ -332,11 +332,19 @@ static unsigned mglIssueProgramName(GLMContext ctx)
                                       : 0u;
 }
 
+static bool mglIssueUsesShaderDrawParams(GLMContext ctx)
+{
+    Program *vs = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    return vs && vs->uses_shader_draw_params;
+}
+
 static bool mglIssueIndirectNeedsCPUExpand(GLMContext ctx, GLenum mode)
 {
+    /* Native multi-draw cannot refresh gl_DrawID between sub-draws. */
     return mode == GL_PATCHES || mode == GL_QUADS || mode == GL_LINE_LOOP ||
            mode == GL_TRIANGLE_FAN || mglRenderEmulateAdjacency((uint32_t)mode) ||
-           mglDrawHostHasGeometry(ctx) || mglDrawHostUsesCullDistance(ctx);
+           mglDrawHostHasGeometry(ctx) || mglDrawHostUsesCullDistance(ctx) ||
+           mglIssueUsesShaderDrawParams(ctx);
 }
 
 static bool mglIssueIndirectElementsNeedCPUExpand(GLMContext ctx, GLenum mode,
@@ -484,6 +492,9 @@ static const char *mglIssueMultiArraysIndirectPrepLabel(GLMContext ctx,
     if (mglDrawHostHasGeometry(ctx)) {
         return "multiDrawArraysIndirect.geometry";
     }
+    if (mglIssueUsesShaderDrawParams(ctx)) {
+        return "multiDrawArraysIndirect.drawParams";
+    }
     return "multiDrawArraysIndirect.cullDistance";
 }
 
@@ -507,6 +518,9 @@ static const char *mglIssueMultiElementsIndirectPrepLabel(GLMContext ctx,
     }
     if (mglDrawHostHasGeometry(ctx)) {
         return "multiDrawElementsIndirect.geometry";
+    }
+    if (mglIssueUsesShaderDrawParams(ctx)) {
+        return "multiDrawElementsIndirect.drawParams";
     }
     return "multiDrawElementsIndirect.cullDistance";
 }
@@ -692,8 +706,12 @@ extern "C" void mglIssueMultiDrawArraysIndirect(GLMContext ctx, void *renderer,
                     mglIssueMultiArraysIndirectPrepLabel(ctx, mode))) {
                 break;
             }
+            ctx->shader_draw_id = (GLint)i;
+            ctx->shader_base_vertex = 0;
             mglIssueOneArraysIndirectCommand(ctx, renderer, mode, &cmd, tag);
         }
+        ctx->shader_draw_id = 0;
+        ctx->shader_base_vertex = 0;
         return;
     }
     if (drawcount <= 0) {
@@ -777,9 +795,13 @@ extern "C" void mglIssueMultiDrawElementsIndirect(
                     mglIssueMultiElementsIndirectPrepLabel(ctx, mode))) {
                 break;
             }
+            ctx->shader_draw_id = (GLint)i;
+            ctx->shader_base_vertex = (GLint)cmd.baseVertex;
             mglIssueOneElementsIndirectCommand(ctx, renderer, mode, type, &cmd,
                                                tag);
         }
+        ctx->shader_draw_id = 0;
+        ctx->shader_base_vertex = 0;
         return;
     }
     if (drawcount <= 0) {
