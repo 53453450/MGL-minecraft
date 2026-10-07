@@ -2086,6 +2086,10 @@ int mglRenderCopySnorm8TextureBytesToGL(
         pf != MTL::PixelFormatRGBA8Snorm) {
         return 0;
     }
+    /* Packed outputs need the BGRA8→pack path; this helper is scalar-only. */
+    if (mglPixelTypeIsPacked(type)) {
+        return 0;
+    }
 
     int slots = 0;
     int src_idx[4] = {0, 0, 0, 0};
@@ -2095,9 +2099,7 @@ int mglRenderCopySnorm8TextureBytesToGL(
 
     uint64_t src_bpp = mglRenderReadbackBytesPerPixel(pixel_format);
     uint32_t comp_bytes = mglSizeForType(type);
-    uint64_t dst_pixel_bytes = mglPixelTypeIsPacked(type)
-        ? (uint64_t)comp_bytes
-        : (uint64_t)comp_bytes * (uint64_t)slots;
+    uint64_t dst_pixel_bytes = (uint64_t)comp_bytes * (uint64_t)slots;
     if (dst_pixel_bytes == 0u || dst_bytes_per_row < width * dst_pixel_bytes) {
         return 0;
     }

@@ -132,8 +132,10 @@ bool mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
         return false;
     }
 
-    /* SNORM8 direct path in C++ (bypass lossy BGRA8). */
-    if (mglRenderReadbackPixelFormatIsSnorm8((uint32_t)pixelFormat)) {
+    /* SNORM8 direct path in C++ (bypass lossy BGRA8).  Packed GL types are
+     * not implemented there — fall through to SNORM→BGRA8→packed instead. */
+    if (mglRenderReadbackPixelFormatIsSnorm8((uint32_t)pixelFormat) &&
+        !mglRenderReadbackTypeIsPacked((uint32_t)type)) {
         return mglRenderCopySnorm8TextureBytesToGL(
                    src, (uint64_t)srcBytesPerRow,
                    dst, (uint64_t)dstBytesPerRow,
