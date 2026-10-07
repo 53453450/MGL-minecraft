@@ -272,6 +272,17 @@ static llvm::Value *emitIntegerGather2D(
     llvm::Value *c3 = cg.b->CreateICmpSGT(c, cg.b->getInt32(3));
     c = cg.b->CreateSelect(c0, cg.b->getInt32(0), c);
     c = cg.b->CreateSelect(c3, cg.b->getInt32(3), c);
+    /* Must match texelFetch / imageLoad arity: (tex, read_sampler,
+     * coord[, layer], offset, lod, access).  A 4-arg overload of the
+     * same air.read_texture_* name bitcasts against the 6-arg form and
+     * crashes the AGX Metal compiler (multi_bind.dispatch_bind_textures). */
+    llvm::StructType *gatherSmpT = llvm::StructType::getTypeByName(
+        *cg.ctx, "struct._sampler_t");
+    if (!gatherSmpT)
+        gatherSmpT = llvm::StructType::create(*cg.ctx, "struct._sampler_t");
+    llvm::Value *gatherRdSmp = callAirFn(
+        cg, "air.get_read_sampler", gatherSmpT->getPointerTo(2), {});
+    llvm::Value *gatherOff2 = llvm::Constant::getNullValue(v2i32);
     for (int k = 0; k < 4; k++) {
         llvm::Value *oob = cg.b->getInt1(false);
         llvm::Value *ii = cg.b->CreateAdd(i0, cg.b->getInt32(oxk[k]));
@@ -285,10 +296,12 @@ static llvm::Value *emitIntegerGather2D(
         if (kind == MGLIR_TEX_2D_ARRAY) {
             llvm::Value *lay = layer ? layer : cg.b->getInt32(0);
             rd = callAirFn(cg, readFn, retTy,
-                           {tex, xy, lay, lod, cg.b->getInt32(3)});
+                           {tex, gatherRdSmp, xy, lay, gatherOff2, lod,
+                            cg.b->getInt32(3)});
         } else {
             rd = callAirFn(cg, readFn, retTy,
-                           {tex, xy, lod, cg.b->getInt32(3)});
+                           {tex, gatherRdSmp, xy, gatherOff2, lod,
+                            cg.b->getInt32(3)});
         }
         llvm::Value *texel4 = cg.b->CreateExtractValue(rd, 0);
         llvm::Value *lane = cg.b->CreateExtractElement(texel4, c);
@@ -437,6 +450,17 @@ static llvm::Value *emitIntegerSample2D(
     jj = wrapCoord(jj, h, wrapT);
     if (is3d)
         kk = wrapCoord(kk, d, wrapR);
+    /* Same 6/7-arg air.read_texture_* form as texelFetch (see comment in
+     * emitIntegerGather2D); mixing arities crashes AGX. */
+    llvm::StructType *rdSmpT = llvm::StructType::getTypeByName(
+        *cg.ctx, "struct._sampler_t");
+    if (!rdSmpT)
+        rdSmpT = llvm::StructType::create(*cg.ctx, "struct._sampler_t");
+    llvm::Value *rdSmp = callAirFn(
+        cg, "air.get_read_sampler", rdSmpT->getPointerTo(2), {});
+    llvm::Value *off2 = llvm::Constant::getNullValue(v2i32);
+    llvm::Value *off3 = llvm::ConstantVector::get(
+        {cg.b->getInt32(0), cg.b->getInt32(0), cg.b->getInt32(0)});
     llvm::Value *rd;
     if (is3d) {
         llvm::Value *xyz = llvm::UndefValue::get(v3i32);
@@ -444,20 +468,20 @@ static llvm::Value *emitIntegerSample2D(
         xyz = cg.b->CreateInsertElement(xyz, jj, cg.b->getInt32(1));
         xyz = cg.b->CreateInsertElement(xyz, kk, cg.b->getInt32(2));
         rd = callAirFn(cg, readFn, retTy,
-                       {tex, xyz, lod, cg.b->getInt32(3)});
+                       {tex, rdSmp, xyz, off3, lod, cg.b->getInt32(3)});
     } else if (isArr) {
         llvm::Value *xy = llvm::UndefValue::get(v2i32);
         xy = cg.b->CreateInsertElement(xy, ii, cg.b->getInt32(0));
         xy = cg.b->CreateInsertElement(xy, jj, cg.b->getInt32(1));
         llvm::Value *lay = layer ? layer : cg.b->getInt32(0);
         rd = callAirFn(cg, readFn, retTy,
-                       {tex, xy, lay, lod, cg.b->getInt32(3)});
+                       {tex, rdSmp, xy, lay, off2, lod, cg.b->getInt32(3)});
     } else {
         llvm::Value *xy = llvm::UndefValue::get(v2i32);
         xy = cg.b->CreateInsertElement(xy, ii, cg.b->getInt32(0));
         xy = cg.b->CreateInsertElement(xy, jj, cg.b->getInt32(1));
         rd = callAirFn(cg, readFn, retTy,
-                       {tex, xy, lod, cg.b->getInt32(3)});
+                       {tex, rdSmp, xy, off2, lod, cg.b->getInt32(3)});
     }
     llvm::Value *soft = cg.b->CreateSelect(
         oob, border, cg.b->CreateExtractValue(rd, 0));
