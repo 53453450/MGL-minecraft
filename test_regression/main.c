@@ -7457,6 +7457,7 @@ static int test_compute_dispatch_ssbo(unsigned char *pixels,
 
     static const char *cs_odd =
         "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
         "layout(std430, binding = 0) buffer Out { int data[8]; };\n"
         "void main() {\n"
         "    uint i = gl_GlobalInvocationID.x;\n"
@@ -7464,6 +7465,7 @@ static int test_compute_dispatch_ssbo(unsigned char *pixels,
         "}\n";
     static const char *cs_shift =
         "#version 430 core\n"
+        "layout(local_size_x = 1) in;\n"
         "layout(std430, binding = 0) buffer Out { int data[8]; };\n"
         "void main() {\n"
         "    uint i = gl_GlobalInvocationID.x;\n"
