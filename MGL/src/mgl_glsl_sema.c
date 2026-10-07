@@ -4166,16 +4166,22 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                     return NULL;
                 }
                 Sym *ls = symtab_lookup(tab, ln);
-                if (ls && (ls->qualifiers & (MGL_AST_Q_READONLY |
-                                             MGL_AST_Q_CONST |
-                                             MGL_AST_Q_IN))) {
-                    sema_error(s, e->line,
-                               "cannot write to %s variable '%s'",
-                               (ls->qualifiers & MGL_AST_Q_CONST) ? "const"
-                               : (ls->qualifiers & MGL_AST_Q_IN) ? "in"
-                                                                 : "readonly",
-                               ln);
-                    return NULL;
+                /* inout params carry both IN and OUT; only pure `in`
+                 * (no OUT) is immutable. */
+                if (ls) {
+                    int in_only = (ls->qualifiers & MGL_AST_Q_IN) &&
+                                  !(ls->qualifiers & MGL_AST_Q_OUT);
+                    if ((ls->qualifiers & (MGL_AST_Q_READONLY |
+                                           MGL_AST_Q_CONST)) ||
+                        in_only) {
+                        sema_error(s, e->line,
+                                   "cannot write to %s variable '%s'",
+                                   (ls->qualifiers & MGL_AST_Q_CONST)
+                                       ? "const"
+                                       : in_only ? "in" : "readonly",
+                                   ln);
+                        return NULL;
+                    }
                 }
             }
             const MGLExpr *rhs = e->u.assign.rhs;
