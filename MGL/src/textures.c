@@ -2828,6 +2828,33 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
     }
     else if (mglTexLevelInternalFormatCompressed(internalformat))
     {
+        /* No online compression for sized block formats. Remap only when the
+         * transfer format matches the channel layout (packed_pixels RGTC uses
+         * RED/RG). DSA textures_compressed_subimage probes RGBA+RGTC and
+         * expects INVALID_OPERATION to fall back to static compressed blobs.
+         * Generic COMPRESSED_RGB/RGBA still remaps (1D DSA probe). */
+        if (!mglIsGenericCompressedFormat((GLenum)internalformat)) {
+            GLboolean format_ok = GL_FALSE;
+            switch ((GLenum)internalformat) {
+                case GL_COMPRESSED_RED_RGTC1:
+                case GL_COMPRESSED_SIGNED_RED_RGTC1:
+                case GL_COMPRESSED_R11_EAC:
+                case GL_COMPRESSED_SIGNED_R11_EAC:
+                    format_ok = (format == GL_RED || format == GL_RED_INTEGER);
+                    break;
+                case GL_COMPRESSED_RG_RGTC2:
+                case GL_COMPRESSED_SIGNED_RG_RGTC2:
+                case GL_COMPRESSED_RG11_EAC:
+                case GL_COMPRESSED_SIGNED_RG11_EAC:
+                    format_ok = (format == GL_RG || format == GL_RG_INTEGER);
+                    break;
+                default:
+                    break;
+            }
+            if (!format_ok) {
+                ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+            }
+        }
         tex->compressed_internalformat = internalformat;
         internalformat = mglCompressedInternalFormatToSizedUncompressed(internalformat);
     }
