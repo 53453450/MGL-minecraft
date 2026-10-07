@@ -8763,9 +8763,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             const bool isGatherOffsets =
                 strcmp(name, "textureGatherOffsets") == 0;
             if (strcmp(name, "textureSize") == 0) {
-                if (e->u.call.arg_count != 2) {
+                if (e->u.call.arg_count != 1 && e->u.call.arg_count != 2) {
                     cg.err = 1;
-                    cg.errmsg = "codegen: textureSize expects 2 arguments";
+                    cg.errmsg = "codegen: textureSize expects 1 or 2 arguments";
                     return nullptr;
                 }
             } else if (isGather) {
@@ -8876,6 +8876,17 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (strcmp(name, "textureSize") == 0) {
                 if (dynamicSamplerArray)
                     tex = selectArrayElement(cg, arrayIndex, *texArray);
+                if (sampleKind == MGLIR_TEX_BUFFER) {
+                    /* Buffer textures back onto texture2d; texelFetch
+                     * addresses row 0, so its width is the texel count. */
+                    return callAirFn(cg, "air.get_width_texture_2d", i32,
+                                     {tex, cg.b->getInt32(0)});
+                }
+                if (e->u.call.arg_count != 2) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: textureSize expects 2 arguments";
+                    return nullptr;
+                }
                 llvm::Value *lod = emitExpr(cg, e->u.call.args[1], mod,
                                             locals);
                 if (!lod) return nullptr;

@@ -1931,6 +1931,7 @@ static const BiFn kBuiltins[] = {
     { "texelFetchOffset", 4, { BI_ARG_SRECT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_SBUF, BI_ARG_INT, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 2, { BI_ARG_SBUF, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureSize", 1, { BI_ARG_SBUF }, BI_RET_INT },
     { "imageLoad", 2, { BI_ARG_I2D, BI_ARG_GENI }, BI_RET_SAMP },
     { "imageLoad", 2, { BI_ARG_IMAGE, BI_ARG_INT }, BI_RET_SAMP },
     { "imageLoad", 2, { BI_ARG_IMAGE, BI_ARG_IVEC2 }, BI_RET_SAMP },
