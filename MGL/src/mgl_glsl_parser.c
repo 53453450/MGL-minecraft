@@ -2931,16 +2931,32 @@ more_qualifiers:
 
     /* GLSL 4.60 grammar: single_declaration may be only a fully specified
      * type (`int;`) or a type followed by a leading comma (`int ,a;`).
-     * Nameless `uniform atomic_uint;` is the same production. */
+     * Nameless `uniform atomic_uint;` is the same production.  Struct and
+     * interface-block members still require a name (CTS
+     * shaders.declarations.struct_*_attribute_*). */
     if (at_any_ident(p)) {
         d->name = dup_current(p);
         advance(p);
         parse_array_specifier_list(p, d);
         order_type_prefix_dims(d, type_prefix_dims);
     } else if (ops_at(p, ";")) {
+        if (p->in_struct) {
+            parse_error(p, "struct member missing name at line %u",
+                        tk_line(p));
+            free_decl(d);
+            return NULL;
+        }
         expect_punct(p, ";");
         return d;
-    } else if (!ops_at(p, ",")) {
+    } else if (ops_at(p, ",")) {
+        if (p->in_struct) {
+            parse_error(p, "struct member missing name before comma at "
+                        "line %u", tk_line(p));
+            free_decl(d);
+            return NULL;
+        }
+        /* Top-level `int ,a;` — fall through to the comma-declarator loop. */
+    } else {
         parse_error(p, "expected identifier at line %u", tk_line(p));
         free_decl(d);
         return NULL;
@@ -3461,6 +3477,7 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
             if (n >= 10 && memcmp(d, "#extension", 10) == 0) {
                 size_t i = 10;
                 static const char kImgSize[] = "GL_ARB_shader_image_size";
+                static const char kIntMix[] = "GL_EXT_shader_integer_mix";
                 while (i < n && (d[i] == ' ' || d[i] == '\t')) {
                     i++;
                 }
@@ -3478,6 +3495,21 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
                     } else if (i + 7 <= n &&
                                memcmp(d + i, "disable", 7) == 0) {
                         tu->ext_shader_image_size = 0;
+                    }
+                } else if (i + sizeof(kIntMix) - 1 <= n &&
+                           memcmp(d + i, kIntMix, sizeof(kIntMix) - 1) == 0) {
+                    i += sizeof(kIntMix) - 1;
+                    while (i < n &&
+                           (d[i] == ' ' || d[i] == '\t' || d[i] == ':')) {
+                        i++;
+                    }
+                    if ((i + 7 <= n && memcmp(d + i, "require", 7) == 0) ||
+                        (i + 6 <= n && memcmp(d + i, "enable", 6) == 0) ||
+                        (i + 4 <= n && memcmp(d + i, "warn", 4) == 0)) {
+                        tu->ext_shader_integer_mix = 1;
+                    } else if (i + 7 <= n &&
+                               memcmp(d + i, "disable", 7) == 0) {
+                        tu->ext_shader_integer_mix = 0;
                     }
                 }
             }

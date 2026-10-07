@@ -363,6 +363,8 @@ typedef struct MGLTranslationUnit {
     char *version_profile;     /* "core"/"compatibility"/"es"/NULL (owned) */
     /* 1 if #extension GL_ARB_shader_image_size : enable/require/warn. */
     uint32_t ext_shader_image_size;
+    /* 1 if #extension GL_EXT_shader_integer_mix : enable/require/warn. */
+    uint32_t ext_shader_integer_mix;
     MGLDecl **decls;
     uint32_t decl_count;
     char *error;               /* first parse error message or NULL (owned) */

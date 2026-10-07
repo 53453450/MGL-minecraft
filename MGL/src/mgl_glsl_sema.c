@@ -3805,6 +3805,27 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                     return NULL;
                 }
             }
+            /* Integer/bool mix(a,b,bvec) is EXT_shader_integer_mix; core
+             * from GLSL 4.50 / ES 3.10. */
+            if (bknown && bt && strcmp(e->u.call.name, "mix") == 0 &&
+                e->u.call.arg_count == 3 && atb[0] &&
+                (atb[0]->scalar == MGLIR_SCALAR_INT ||
+                 atb[0]->scalar == MGLIR_SCALAR_UINT ||
+                 atb[0]->scalar == MGLIR_SCALAR_BOOL)) {
+                uint32_t ver = s->tu ? s->tu->version : 0;
+                int is_es = s->tu && s->tu->version_profile &&
+                            strcmp(s->tu->version_profile, "es") == 0;
+                int ext = s->tu && s->tu->ext_shader_integer_mix;
+                uint32_t min_ver = is_es ? 310u : 450u;
+                if (ver > 0 && ver < min_ver && !ext) {
+                    free(atb);
+                    sema_error(s, e->line,
+                               "integer mix requires #version %u%s or "
+                               "GL_EXT_shader_integer_mix",
+                               min_ver, is_es ? " es" : "");
+                    return NULL;
+                }
+            }
             if (bknown && bt && e->u.call.arg_count > 0) {
                 const char *an = e->u.call.name;
                 /* GLSL 4.60 §8.11: atomicAdd and family operate only on
