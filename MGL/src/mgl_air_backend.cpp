@@ -9917,6 +9917,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     std::map<std::string, MType> ilocals = locals;
                     std::map<std::string, llvm::Value *> saved;
                     std::map<std::string, const MGLIRType *> savedIR;
+                    /* Caller array allocas (arrayMem) outrank lvalues in
+                     * varValue.  Hide them while a same-named param is
+                     * bound so isOk(vec3 a,…) is not read as main's
+                     * float[3] a (CTS arrays.unnamed_parameter.*_fragment). */
+                    std::map<std::string, llvm::Value *> savedArrMem;
+                    std::map<std::string, llvm::Type *> savedArrMemTypes;
                     /* Inner decls (CTS `bool result` vs caller `vec4 result`)
                      * must not clobber the caller's SSA map. */
                     std::map<std::string, llvm::Value *> callerLvalues =
@@ -9943,13 +9949,25 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             pt.cols = pd->type->mat_cols;
                             pt.rows = pd->type->mat_rows;
                         }
+                        if (pd->array_count > 0 && pd->array_dims)
+                            pt.arr = pd->array_dims[0];
                         if (pd->type &&
-                            pd->type->base != MGL_AST_TYPE_STRUCT)
+                            pd->type->base != MGL_AST_TYPE_STRUCT &&
+                            !pt.isArray())
                             av = coerceScalar(cg, av, pt.scalar);
                         if (cg.lvalues.count(pd->name))
                             saved[pd->name] = cg.lvalues[pd->name];
                         cg.lvalues[pd->name] = av;
                         ilocals[pd->name] = pt;
+                        if (cg.arrayMem.count(pd->name)) {
+                            savedArrMem[pd->name] = cg.arrayMem[pd->name];
+                            cg.arrayMem.erase(pd->name);
+                        }
+                        if (cg.arrayMemTypes.count(pd->name)) {
+                            savedArrMemTypes[pd->name] =
+                                cg.arrayMemTypes[pd->name];
+                            cg.arrayMemTypes.erase(pd->name);
+                        }
                         if (pd->type &&
                             pd->type->base == MGL_AST_TYPE_STRUCT &&
                             pd->type->name) {
@@ -10060,6 +10078,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                  pd->type->base == MGL_AST_TYPE_STRUCT)
                             cg.localIRTypes.erase(pd->name);
                     }
+                    for (const auto &kv : savedArrMem)
+                        cg.arrayMem[kv.first] = kv.second;
+                    for (const auto &kv : savedArrMemTypes)
+                        cg.arrayMemTypes[kv.first] = kv.second;
                     /* Callee locals that shadow a name (e.g. bool result vs
                      * out vec4 result) must restore the caller SSA.  Shader
                      * globals — including freestanding temps like Ambient
@@ -10117,6 +10139,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         rt.cols = fd->type->mat_cols;
                         rt.rows = fd->type->mat_rows;
                     }
+                    if (fd->array_count > 0 && fd->array_dims)
+                        rt.arr = fd->array_dims[0];
                     if (ret) {
                         if (!rt.isMatrix() && !rt.isArray() &&
                             !(fd->type &&
