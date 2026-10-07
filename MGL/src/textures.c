@@ -250,6 +250,7 @@ Texture *newTexObj(GLMContext ctx, GLenum target)
     ptr->params.depth_stencil_mode = GL_DEPTH_COMPONENT;
     ptr->params.base_level = 0;
     memcpy(ptr->params.border_color, black_color, 4 * sizeof(float));
+    ptr->params.border_color_type = GL_FLOAT;
     ptr->params.compare_func = GL_LEQUAL;
     ptr->params.compare_mode = GL_NONE;
     ptr->params.lod_bias = 0.0;

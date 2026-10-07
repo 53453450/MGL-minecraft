@@ -55,6 +55,10 @@ typedef struct TextureParameter_t {
     GLfloat border_color[4];
     GLint   border_color_i[4];
     GLuint   border_color_ui[4];
+    /* Which gl*Parameter* last wrote BORDER_COLOR: GL_FLOAT / GL_INT /
+     * GL_UNSIGNED_INT.  Metal only has three named float borders; integer
+     * borders ride the AIR sampler-wrap pack (CTS texture_border_clamp R32I). */
+    GLenum  border_color_type;
     GLenum  compare_func;
     GLenum  compare_mode;
     GLfloat lod_bias;

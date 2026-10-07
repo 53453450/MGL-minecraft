@@ -299,6 +299,164 @@ static llvm::Value *emitIntegerGather2D(
     return result;
 }
 
+/* Integer texture() NEAREST with CLAMP_TO_BORDER: Metal only offers three
+ * named float borders, so arbitrary GLint/GLuint borders (CTS R32I=255) must
+ * be applied from the sampler-wrap pack after an integer texel read. */
+static llvm::Value *emitIntegerSample2D(
+    Codegen &cg, llvm::Value *tex, llvm::Value *uv, llvm::Value *layer,
+    MGLIRScalar texel, MGLIRTexKind kind, uint32_t metalSlot,
+    llvm::Value *metalSlotDyn)
+{
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
+    llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
+    llvm::Type *v4i32 = llvm::FixedVectorType::get(i32, 4);
+    llvm::Type *retTy =
+        llvm::StructType::get(*cg.ctx, {v4i32, cg.b->getInt8Ty()});
+    const bool is3d = kind == MGLIR_TEX_3D;
+    const bool isArr = kind == MGLIR_TEX_2D_ARRAY;
+    const char *widthFn = is3d ? "air.get_width_texture_3d"
+        : (isArr ? "air.get_width_texture_2d_array"
+                 : "air.get_width_texture_2d");
+    const char *heightFn = is3d ? "air.get_height_texture_3d"
+        : (isArr ? "air.get_height_texture_2d_array"
+                 : "air.get_height_texture_2d");
+    const char *readFn = texel == MGLIR_SCALAR_UINT
+        ? (is3d ? "air.read_texture_3d.u.v4i32"
+                : (isArr ? "air.read_texture_2d_array.u.v4i32"
+                         : "air.read_texture_2d.u.v4i32"))
+        : (is3d ? "air.read_texture_3d.s.v4i32"
+                : (isArr ? "air.read_texture_2d_array.s.v4i32"
+                         : "air.read_texture_2d.s.v4i32"));
+    llvm::Value *lod = cg.b->getInt32(0);
+    llvm::Value *w = callAirFn(cg, widthFn, i32, {tex, lod});
+    llvm::Value *h = callAirFn(cg, heightFn, i32, {tex, lod});
+    llvm::Value *d = is3d
+        ? callAirFn(cg, "air.get_depth_texture_3d", i32, {tex, lod})
+        : nullptr;
+    llvm::Value *wf = cg.b->CreateSIToFP(w, f32);
+    llvm::Value *hf = cg.b->CreateSIToFP(h, f32);
+    llvm::Value *ux = cg.b->CreateExtractElement(uv, cg.b->getInt32(0));
+    llvm::Value *uy = cg.b->CreateExtractElement(uv, cg.b->getInt32(1));
+    if (!ux->getType()->isFloatingPointTy())
+        ux = cg.b->CreateSIToFP(ux, f32);
+    if (!uy->getType()->isFloatingPointTy())
+        uy = cg.b->CreateSIToFP(uy, f32);
+    llvm::Value *ii = cg.b->CreateFPToSI(cg.b->CreateFMul(ux, wf), i32);
+    llvm::Value *jj = cg.b->CreateFPToSI(cg.b->CreateFMul(uy, hf), i32);
+    llvm::Value *kk = nullptr;
+    if (is3d) {
+        llvm::Value *uz = cg.b->CreateExtractElement(uv, cg.b->getInt32(2));
+        if (!uz->getType()->isFloatingPointTy())
+            uz = cg.b->CreateSIToFP(uz, f32);
+        llvm::Value *df = cg.b->CreateSIToFP(d, f32);
+        kk = cg.b->CreateFPToSI(cg.b->CreateFMul(uz, df), i32);
+    }
+
+    llvm::Value *wrapS = cg.b->getInt32(GL_REPEAT);
+    llvm::Value *wrapT = cg.b->getInt32(GL_REPEAT);
+    llvm::Value *wrapR = cg.b->getInt32(GL_REPEAT);
+    llvm::Value *border = llvm::Constant::getNullValue(v4i32);
+    if (cg.samplerWrapPtr) {
+        llvm::Value *idx = metalSlotDyn
+            ? metalSlotDyn
+            : (llvm::Value *)cg.b->getInt32(metalSlot);
+        llvm::Value *base = cg.b->CreateBitCast(
+            cg.samplerWrapPtr, i32->getPointerTo(1));
+        llvm::Value *off8 = cg.b->CreateMul(idx, cg.b->getInt32(8));
+        wrapS = cg.b->CreateAlignedLoad(
+            i32, cg.b->CreateGEP(i32, base, off8), llvm::Align(4));
+        wrapT = cg.b->CreateAlignedLoad(
+            i32,
+            cg.b->CreateGEP(i32, base,
+                            cg.b->CreateAdd(off8, cg.b->getInt32(1))),
+            llvm::Align(4));
+        wrapR = cg.b->CreateAlignedLoad(
+            i32,
+            cg.b->CreateGEP(i32, base,
+                            cg.b->CreateAdd(off8, cg.b->getInt32(2))),
+            llvm::Align(4));
+        llvm::Value *b0 = cg.b->CreateAlignedLoad(
+            i32,
+            cg.b->CreateGEP(i32, base,
+                            cg.b->CreateAdd(off8, cg.b->getInt32(4))),
+            llvm::Align(4));
+        llvm::Value *b1 = cg.b->CreateAlignedLoad(
+            i32,
+            cg.b->CreateGEP(i32, base,
+                            cg.b->CreateAdd(off8, cg.b->getInt32(5))),
+            llvm::Align(4));
+        llvm::Value *b2 = cg.b->CreateAlignedLoad(
+            i32,
+            cg.b->CreateGEP(i32, base,
+                            cg.b->CreateAdd(off8, cg.b->getInt32(6))),
+            llvm::Align(4));
+        llvm::Value *b3 = cg.b->CreateAlignedLoad(
+            i32,
+            cg.b->CreateGEP(i32, base,
+                            cg.b->CreateAdd(off8, cg.b->getInt32(7))),
+            llvm::Align(4));
+        border = llvm::UndefValue::get(v4i32);
+        border = cg.b->CreateInsertElement(border, b0, cg.b->getInt32(0));
+        border = cg.b->CreateInsertElement(border, b1, cg.b->getInt32(1));
+        border = cg.b->CreateInsertElement(border, b2, cg.b->getInt32(2));
+        border = cg.b->CreateInsertElement(border, b3, cg.b->getInt32(3));
+    }
+
+    llvm::Value *oob = cg.b->getInt1(false);
+    auto wrapCoord = [&](llvm::Value *t, llvm::Value *n, llvm::Value *mode) {
+        llvm::Value *isRepeat =
+            cg.b->CreateICmpEQ(mode, cg.b->getInt32(GL_REPEAT));
+        llvm::Value *isBorder =
+            cg.b->CreateICmpEQ(mode, cg.b->getInt32(GL_CLAMP_TO_BORDER));
+        llvm::Value *n1 = cg.b->CreateSub(n, cg.b->getInt32(1));
+        llvm::Value *nPos = cg.b->CreateICmpSGT(n, cg.b->getInt32(0));
+        llvm::Value *nSafe = cg.b->CreateSelect(nPos, n, cg.b->getInt32(1));
+        llvm::Value *rem = cg.b->CreateSRem(t, nSafe);
+        llvm::Value *neg = cg.b->CreateICmpSLT(rem, cg.b->getInt32(0));
+        llvm::Value *rep = cg.b->CreateSelect(
+            neg, cg.b->CreateAdd(rem, nSafe), rem);
+        llvm::Value *edge = cg.b->CreateSelect(
+            cg.b->CreateICmpSLT(t, cg.b->getInt32(0)), cg.b->getInt32(0), t);
+        edge = cg.b->CreateSelect(cg.b->CreateICmpSGT(edge, n1), n1, edge);
+        llvm::Value *axisOob = cg.b->CreateOr(
+            cg.b->CreateICmpSLT(t, cg.b->getInt32(0)),
+            cg.b->CreateICmpSGE(t, n));
+        oob = cg.b->CreateOr(oob, cg.b->CreateAnd(isBorder, axisOob));
+        llvm::Value *r = cg.b->CreateSelect(isRepeat, rep, edge);
+        return cg.b->CreateSelect(isBorder, t, r);
+    };
+    ii = wrapCoord(ii, w, wrapS);
+    jj = wrapCoord(jj, h, wrapT);
+    if (is3d)
+        kk = wrapCoord(kk, d, wrapR);
+    llvm::Value *rd;
+    if (is3d) {
+        llvm::Value *xyz = llvm::UndefValue::get(v3i32);
+        xyz = cg.b->CreateInsertElement(xyz, ii, cg.b->getInt32(0));
+        xyz = cg.b->CreateInsertElement(xyz, jj, cg.b->getInt32(1));
+        xyz = cg.b->CreateInsertElement(xyz, kk, cg.b->getInt32(2));
+        rd = callAirFn(cg, readFn, retTy,
+                       {tex, xyz, lod, cg.b->getInt32(3)});
+    } else if (isArr) {
+        llvm::Value *xy = llvm::UndefValue::get(v2i32);
+        xy = cg.b->CreateInsertElement(xy, ii, cg.b->getInt32(0));
+        xy = cg.b->CreateInsertElement(xy, jj, cg.b->getInt32(1));
+        llvm::Value *lay = layer ? layer : cg.b->getInt32(0);
+        rd = callAirFn(cg, readFn, retTy,
+                       {tex, xy, lay, lod, cg.b->getInt32(3)});
+    } else {
+        llvm::Value *xy = llvm::UndefValue::get(v2i32);
+        xy = cg.b->CreateInsertElement(xy, ii, cg.b->getInt32(0));
+        xy = cg.b->CreateInsertElement(xy, jj, cg.b->getInt32(1));
+        rd = callAirFn(cg, readFn, retTy,
+                       {tex, xy, lod, cg.b->getInt32(3)});
+    }
+    llvm::Value *texel4 = cg.b->CreateExtractValue(rd, 0);
+    return cg.b->CreateSelect(oob, border, texel4);
+}
+
 /* Scalar base for an LLVM type, used to coerce call arguments. */
 static MGLIRScalar scalarFromType(llvm::Type *t) {
     if (auto *fv = llvm::dyn_cast<llvm::FixedVectorType>(t))
@@ -9539,6 +9697,25 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                            &arrayLayer)) {
                     return nullptr;
                 }
+                /* Integer CLAMP_TO_BORDER cannot use Metal's named borders. */
+                if ((texel == MGLIR_SCALAR_INT ||
+                     texel == MGLIR_SCALAR_UINT) &&
+                    (sampleKind == MGLIR_TEX_2D ||
+                     sampleKind == MGLIR_TEX_2D_ARRAY ||
+                     sampleKind == MGLIR_TEX_3D) &&
+                    cg.samplerWrapPtr && !isGrad && !explicitLod) {
+                    uint32_t slot = 0;
+                    llvm::Value *slotDyn = nullptr;
+                    auto mi = cg.texMetalIndex.find(samplerName);
+                    if (mi != cg.texMetalIndex.end())
+                        slot = mi->second;
+                    if (dynamicSamplerArray && arrayIndex)
+                        slotDyn = cg.b->CreateAdd(
+                            cg.b->getInt32(slot), arrayIndex);
+                    return emitIntegerSample2D(
+                        cg, t, sampleCoord, arrayLayer, texel, sampleKind,
+                        slot, slotDyn);
+                }
                 /* Cube sample has no offset in AIR/MSL (texturecube.sample
                  * takes coord + lod/bias only). Passing the 2D offset pair
                  * makes Metal's PSO compiler abort. */
@@ -12681,7 +12858,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 (st->tex_storage == MGLIR_SCALAR_INT ||
                  st->tex_storage == MGLIR_SCALAR_UINT) &&
                 (st->tex_kind == MGLIR_TEX_2D ||
-                 st->tex_kind == MGLIR_TEX_2D_ARRAY))
+                 st->tex_kind == MGLIR_TEX_2D_ARRAY ||
+                 st->tex_kind == MGLIR_TEX_3D))
                 needsSamplerWrapBuf = true;
             texLocAssign += v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         }

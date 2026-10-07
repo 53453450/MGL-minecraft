@@ -946,6 +946,7 @@ bool setTexParamsi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, c
         case GL_TEXTURE_BORDER_COLOR:
             for(int i=0; i<4; i++)
                 tex_params->border_color[i] = (GLint)params[i];
+            tex_params->border_color_type = GL_FLOAT;
             break;
 
         case GL_TEXTURE_SWIZZLE_RGBA:
@@ -977,6 +978,7 @@ bool setTexParamsIiv(GLMContext ctx, TextureParameter *tex_params, GLenum pname,
         case GL_TEXTURE_BORDER_COLOR:
             for(int i=0; i<4; i++)
                 tex_params->border_color_i[i] = params[i];
+            tex_params->border_color_type = GL_INT;
             break;
 
         default:
@@ -994,6 +996,7 @@ bool setTexParamsIuiv(GLMContext ctx, TextureParameter *tex_params, GLenum pname
         case GL_TEXTURE_BORDER_COLOR:
             for(int i=0; i<4; i++)
                 tex_params->border_color_ui[i] = params[i];
+            tex_params->border_color_type = GL_UNSIGNED_INT;
             break;
 
         default:
@@ -1050,6 +1053,7 @@ bool setTexParamsf(GLMContext ctx, TextureParameter *tex_params, GLenum pname, c
         case GL_TEXTURE_BORDER_COLOR:
             for(int i=0; i<4; i++)
                 tex_params->border_color[i] = params[i];
+            tex_params->border_color_type = GL_FLOAT;
             break;
 
         case GL_TEXTURE_SWIZZLE_RGBA:

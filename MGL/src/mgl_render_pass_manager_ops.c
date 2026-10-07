@@ -182,6 +182,8 @@ static void mglFillSamplerWrapTable(GLMContext ctx, Program *prog, int stage,
             tex = ctx->active_state->texture_units[unit]
                       .textures[_TEXTURE_2D_ARRAY];
         if (!tex)
+            tex = ctx->active_state->texture_units[unit].textures[_TEXTURE_3D];
+        if (!tex)
             tex = ctx->active_state->active_textures[unit];
         p = smp ? &smp->params : (tex ? &tex->params : NULL);
         if (!p)
@@ -189,8 +191,14 @@ static void mglFillSamplerWrapTable(GLMContext ctx, Program *prog, int stage,
         slots[i].wrap_s = (int32_t)p->wrap_s;
         slots[i].wrap_t = (int32_t)p->wrap_t;
         slots[i].wrap_r = (int32_t)p->wrap_r;
-        for (c = 0; c < 4; c++)
-            slots[i].border[c] = (int32_t)lrintf(p->border_color[c]);
+        for (c = 0; c < 4; c++) {
+            if (p->border_color_type == GL_INT)
+                slots[i].border[c] = p->border_color_i[c];
+            else if (p->border_color_type == GL_UNSIGNED_INT)
+                slots[i].border[c] = (int32_t)p->border_color_ui[c];
+            else
+                slots[i].border[c] = (int32_t)lrintf(p->border_color[c]);
+        }
     }
 }
 
