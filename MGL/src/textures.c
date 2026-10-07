@@ -7117,7 +7117,12 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
     tex->texture_buffer_size = attach_size;
     tex->texture_buffer_whole = whole_buffer ? GL_TRUE : GL_FALSE;
     tex->internalformat = internalformat;
-    tex->width = (GLuint)((size_t)attach_size / bytes_per_texel);
+    /* GL 4.6 §8.9: the texel count is clamped to MAX_TEXTURE_BUFFER_SIZE. */
+    size_t texel_count = (size_t)attach_size / bytes_per_texel;
+    if (STATE(var).max_texture_buffer_size &&
+        texel_count > STATE(var).max_texture_buffer_size)
+        texel_count = STATE(var).max_texture_buffer_size;
+    tex->width = (GLuint)texel_count;
     tex->height = 1;
     tex->depth = 1;
     tex->is_array = GL_FALSE;
