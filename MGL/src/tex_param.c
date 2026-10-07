@@ -1229,8 +1229,6 @@ void mglTexParameterf(GLMContext ctx, GLenum target, GLenum pname, GLfloat param
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
         return;
-    if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, (GLint)param))
-        return;
 
     TextureParameter candidate = tex->params;
     if (setParam(ctx, &candidate, pname, 0, param))
@@ -1252,8 +1250,6 @@ void mglTexParameterfv(GLMContext ctx, GLenum target, GLenum pname, const GLfloa
 
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
-        return;
-    if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, (GLint)*params))
         return;
     TextureParameter candidate = tex->params;
 
@@ -1280,8 +1276,6 @@ void mglTexParameteri(GLMContext ctx, GLenum target, GLenum pname, GLint param)
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
         return;
-    if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, param))
-        return;
 
     TextureParameter candidate = tex->params;
     if (setParam(ctx, &candidate, pname, param, fparam))
@@ -1305,8 +1299,6 @@ void mglTexParameteriv(GLMContext ctx, GLenum target, GLenum pname, const GLint 
 
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
-        return;
-    if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, *params))
         return;
     TextureParameter candidate = tex->params;
 

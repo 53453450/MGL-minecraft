@@ -111,7 +111,7 @@ static_assert(TEXTURE_UNITS == 128, "active_texture_mask relies on this");
 
 /* Query objects and active slots are context-local (GL 4.6 §2.1 / §4.2).
  * Do not place them in shareable GLMState / ShareGroup tables (A02). */
-#define MGL_QUERY_TARGET_SLOT_COUNT 18u
+#define MGL_QUERY_TARGET_SLOT_COUNT 20u
 #define MGL_QUERY_MAX_INDEX 4u
 
 typedef struct GLMContextRec_t *GLMContext;

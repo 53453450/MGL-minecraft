@@ -313,6 +313,8 @@ static int mgl_query_target_slot(GLenum target)
 		case GL_COMPUTE_SHADER_INVOCATIONS: return 14;
 		case GL_CLIPPING_INPUT_PRIMITIVES: return 15;
 		case GL_CLIPPING_OUTPUT_PRIMITIVES: return 16;
+		case GL_TRANSFORM_FEEDBACK_OVERFLOW: return 17;
+		case GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW: return 18;
 		default: return -1;
 	}
 }
@@ -322,7 +324,8 @@ static GLboolean mgl_query_index_is_valid(GLenum target, GLuint index)
 	if (index == 0u)
 		return GL_TRUE;
 	return (target == GL_PRIMITIVES_GENERATED ||
-		target == GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN) &&
+		target == GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN ||
+		target == GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW) &&
 		index < MGL_QUERY_MAX_INDEX;
 }
 
@@ -345,7 +348,9 @@ static GLboolean mgl_is_query_create_target(GLenum target)
 	       target == GL_FRAGMENT_SHADER_INVOCATIONS ||
 	       target == GL_COMPUTE_SHADER_INVOCATIONS ||
 	       target == GL_CLIPPING_INPUT_PRIMITIVES ||
-	       target == GL_CLIPPING_OUTPUT_PRIMITIVES;
+	       target == GL_CLIPPING_OUTPUT_PRIMITIVES ||
+	       target == GL_TRANSFORM_FEEDBACK_OVERFLOW ||
+	       target == GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW;
 }
 
 static GLboolean mgl_query_target_is_sample(GLenum target)
