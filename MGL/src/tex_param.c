@@ -635,9 +635,9 @@ GLint mglTexLevelComponentType(GLint internalformat, GLenum pname)
         return GL_INT;
     if (mglTexLevelInternalFormatUnsignedInteger(canonical))
         return GL_UNSIGNED_INT;
+    /* GL 4.6 Table 8.18: TEXTURE_*_TYPE is FLOAT for all floating-point
+     * formats, including 16-bit (R16F etc.). HALF_FLOAT is a transfer type. */
     if (mglTexLevelInternalFormatFloat(canonical)) {
-        GLint bits = mglTexLevelComponentBits(canonical, sizePname);
-        if (bits == 16) return GL_HALF_FLOAT;
         return GL_FLOAT;
     }
     if (mglTexLevelInternalFormatSignedNormalized(canonical))

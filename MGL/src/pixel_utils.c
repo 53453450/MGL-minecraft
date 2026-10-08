@@ -1864,7 +1864,14 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
             break;
 
         case GL_RGBA8_SNORM:
-            return 8;
+            switch (component) {
+                case GL_RED:
+                case GL_GREEN:
+                case GL_BLUE:
+                case GL_ALPHA:
+                    return 8;
+            }
+            break;
 
         case GL_R16_SNORM:
             switch(component)
@@ -1897,7 +1904,14 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
             break;
 
         case GL_RGBA16_SNORM:
-            return 16;
+            switch (component) {
+                case GL_RED:
+                case GL_GREEN:
+                case GL_BLUE:
+                case GL_ALPHA:
+                    return 16;
+            }
+            break;
 
         case GL_RGB10_A2UI:
             switch(component)

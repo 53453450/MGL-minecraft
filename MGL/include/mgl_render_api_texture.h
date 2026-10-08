@@ -258,6 +258,8 @@ int mglRenderSamplerUnitExplicit(uint32_t flag);
 
 int mglRenderPrefer1DSampler(uint32_t image_dim, int arrayed);
 
+int mglRenderPrefer1DArraySampler(uint32_t image_dim, int arrayed);
+
 int mglRenderTextureTargetIs1D(uint32_t target);
 
 int mglRenderTextureTargetIsMSOr2DArray(uint32_t target);

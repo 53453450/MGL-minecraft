@@ -302,6 +302,11 @@ bool mglBuildCPUPixelLayout(GLenum internalformat,
 
         MGLCPUPixelComponent *dst = &layout->components[layout->component_count++];
         dst->type = (GLenum)mglTexLevelComponentType((GLint)internalformat, type_pname);
+        /* TEXTURE_*_TYPE is FLOAT for all float formats (incl. R16F); CPU
+         * storage for 16-bit float texels is still IEEE half. */
+        if (dst->type == GL_FLOAT && bits == 16) {
+            dst->type = GL_HALF_FLOAT;
+        }
         dst->bits = (GLuint)bits;
         dst->offset = offset;
         dst->bit_offset = 0u;
@@ -493,6 +498,19 @@ bool mglInternalFormatIsCombinedDepthStencil(GLint internalformat)
             return true;
         default:
             return false;
+    }
+}
+
+int mglInternalFormatPadsMetalAlpha(GLenum internalformat)
+{
+    switch (internalformat) {
+        case GL_RGB10:
+        case GL_RGB4:
+        case GL_RGB5:
+        case GL_R3_G3_B2:
+            return 1;
+        default:
+            return 0;
     }
 }
 
@@ -1363,7 +1381,9 @@ bool mglIsIdentityUncompressedFormat(GLenum internalformat, GLenum format, GLenu
             if (component_bits == 16u) expected_type = GL_HALF_FLOAT;
             break;
         case GL_FLOAT:
-            if (component_bits == 32u) expected_type = GL_FLOAT;
+            /* 16-bit float internals report TYPE=FLOAT but store half. */
+            if (component_bits == 16u) expected_type = GL_HALF_FLOAT;
+            else if (component_bits == 32u) expected_type = GL_FLOAT;
             break;
         default:
             break;

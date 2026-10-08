@@ -2021,6 +2021,38 @@ bool ensureTextureLevelCapacity(GLMContext ctx, Texture *tex, GLuint required_le
     return true;
 }
 
+/* GL 4.6 §8.8: samples is a desired minimum; the actual count may be larger.
+ * Round up to the next value in GetInternalformativ(GL_SAMPLES)
+ * ({1,2,4,...,max_samples}) so texelFetch(sample = request) stays in range
+ * when CTS requests max_samples-1 (see gl3cTextureSizePromotion). */
+static GLuint mglPromoteMultisampleCount(GLMContext ctx, GLsizei samples)
+{
+    static const GLuint candidates[] = {1u, 2u, 4u, 8u, 16u, 32u};
+    GLuint max_samples = 4u;
+    if (ctx) {
+        GLuint m = STATE(var).max_samples;
+        if (m == 0u) {
+            m = STATE(var).max_framebuffer_samples;
+        }
+        if (m != 0u) {
+            max_samples = m;
+        }
+    }
+    if (samples <= 1) {
+        return 1u;
+    }
+    GLuint req = (GLuint)samples;
+    if (req > max_samples) {
+        return max_samples;
+    }
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        if (candidates[i] >= req && candidates[i] <= max_samples) {
+            return candidates[i];
+        }
+    }
+    return max_samples;
+}
+
 static bool mglTextureStorageMultisampleMetadata(GLMContext ctx,
                                                  Texture *tex,
                                                  GLenum target,
@@ -2056,6 +2088,7 @@ static bool mglTextureStorageMultisampleMetadata(GLMContext ctx,
     {
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
     }
+    samples = (GLsizei)mglPromoteMultisampleCount(ctx, samples);
 
     if (!checkInternalFormatForMetal(ctx, internalformat))
     {
@@ -3660,7 +3693,7 @@ void mglTexImage2DMultisample(GLMContext ctx, GLenum target, GLsizei samples, GL
             tex->width = 0u;
             tex->height = 0u;
             tex->depth = 1u;
-            tex->samples = (GLuint)samples;
+            tex->samples = mglPromoteMultisampleCount(ctx, samples);
             tex->fixed_sample_locations = fixedsamplelocations ? GL_TRUE : GL_FALSE;
             tex->complete = GL_FALSE;
             tex->num_levels = 0u;
@@ -3800,7 +3833,7 @@ void mglTexImage3DMultisample(GLMContext ctx, GLenum target, GLsizei samples, GL
             tex->width = 0u;
             tex->height = 0u;
             tex->depth = 0u;
-            tex->samples = (GLuint)samples;
+            tex->samples = mglPromoteMultisampleCount(ctx, samples);
             tex->fixed_sample_locations = fixedsamplelocations ? GL_TRUE : GL_FALSE;
             tex->complete = GL_FALSE;
             tex->num_levels = 0u;

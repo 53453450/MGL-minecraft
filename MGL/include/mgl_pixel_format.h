@@ -61,6 +61,9 @@ bool mglInternalFormatIsUnsignedInteger(GLint internalformat);
 bool mglInternalFormatIsDepthStencil(GLint internalformat);
 bool mglInternalFormatIsCombinedDepthStencil(GLint internalformat);
 int mglExternalSourceIndexForComponent(GLenum format, GLuint component);
+/* GL RGB-only formats whose Metal storage pads an alpha channel (e.g.
+ * GL_RGB10 → RGB10A2).  External alpha must not be copied; store 1.0. */
+int mglInternalFormatPadsMetalAlpha(GLenum internalformat);
 double mglClampDouble(double v, double lo, double hi);
 double mglUnsignedMaxForBits(GLuint bits);
 uint64_t mglReadUnsignedLE(const uint8_t *src, size_t bytes);

@@ -55,6 +55,25 @@ Texture *mglTextureForSampledResource(GLMContext ctx, MGLShaderResource *sampled
             return activeTexture;
         }
     }
+    /* AIR lowers sampler1DArray to texture2d_array (expectedType =
+     * MGLTextureType2DArray). Prefer the GL _TEXTURE_1D_ARRAY slot over a
+     * leftover _TEXTURE_2D_ARRAY binding from a prior test case. */
+    if (sampledResource &&
+        mglRenderPrefer1DArraySampler(sampledResource->image_dim,
+                                      sampledResource->image_arrayed ? 1 : 0)) {
+        Texture *tex1DA =
+            ctx->active_state->texture_units[textureUnit]
+                .textures[_TEXTURE_1D_ARRAY];
+        if (tex1DA && !mglRenderTextureNameIsDefault(tex1DA->name)) {
+            return tex1DA;
+        }
+        Texture *activeTexture = ctx->active_state->active_textures[textureUnit];
+        if (activeTexture &&
+            mglRenderTextureTargetIs1DArray((uint32_t)activeTexture->target) &&
+            !mglRenderTextureNameIsDefault(activeTexture->name)) {
+            return activeTexture;
+        }
+    }
     if (sampledResource &&
         mglRenderImageDimIsBuffer(sampledResource->image_dim)) {
         Texture *bufferTexture =

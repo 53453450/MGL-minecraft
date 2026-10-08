@@ -1232,6 +1232,10 @@ int mglRenderPrefer1DSampler(uint32_t image_dim, int arrayed) {
     return image_dim == MGL_IMAGE_DIM_1D && !arrayed ? 1 : 0;
 }
 
+int mglRenderPrefer1DArraySampler(uint32_t image_dim, int arrayed) {
+    return image_dim == MGL_IMAGE_DIM_1D && arrayed ? 1 : 0;
+}
+
 int mglRenderTextureTargetIs1D(uint32_t target) {
     return target == GL_TEXTURE_1D ? 1 : 0;
 }

@@ -3408,10 +3408,20 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                                       type,
                                       level,
                                       slice);
-        if (STATE(var.clamp_read_color) == GL_TRUE &&
-            mglInternalFormatIsFloat(readColorTexture->internalformat)) {
-            mglClampReadColorFloat((uint8_t *)pixels, pack_layout.dst_pitch,
-                                   width, height, pixel_size, type);
+        /* GL 4.6 §18.2.8: FIXED_ONLY (default) clamps fixed-point color
+         * buffers — including SNORM — when packing float types. TRUE clamps
+         * float buffers as well. Integer attachments use the path above. */
+        {
+            const GLenum clamp_mode = STATE(var.clamp_read_color);
+            const GLboolean is_float_buf =
+                mglInternalFormatIsFloat(readColorTexture->internalformat);
+            const GLboolean should_clamp =
+                (clamp_mode == GL_TRUE) ||
+                (clamp_mode == GL_FIXED_ONLY && !is_float_buf);
+            if (should_clamp) {
+                mglClampReadColorFloat((uint8_t *)pixels, pack_layout.dst_pitch,
+                                       width, height, pixel_size, type);
+            }
         }
         if (STATE(pack.swap_bytes) == GL_TRUE) {
             size_t elem_size = mglPixelTypeDatumBytes(type);

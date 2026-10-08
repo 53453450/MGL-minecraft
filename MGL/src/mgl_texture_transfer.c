@@ -886,6 +886,12 @@ bool mglConvertTextureRectToCPU(GLenum internalformat,
                 memset(dst_pixel, 0, storage_pixel_size);
                 for (GLuint component = 0; component < cpu_layout.component_count; component++) {
                     int src_index = mglExternalSourceIndexForComponent(format, component);
+                    /* RGB-only internals stored as RGB*A* must keep padded A=1
+                     * (GL 4.6 §8.5); do not copy external alpha (e.g. 0.75→2/3). */
+                    if (component == 3u &&
+                        mglInternalFormatPadsMetalAlpha(internalformat)) {
+                        src_index = -1;
+                    }
                     GLuint read_component = (src_index >= 0) ? (GLuint)src_index : component;
                     double value = mglReadExternalComponent(read_pixel, type, src_index, integer_format, read_component);
                     mglStoreInternalComponent(dst_pixel, &cpu_layout.components[component], value);
@@ -1092,6 +1098,9 @@ bool mglFillTextureRectCPU(GLenum internalformat,
     memset(clear_pixel, 0, storage_pixel_size);
     for (GLuint component = 0; component < cpu_layout.component_count; component++) {
         int src_index = mglExternalSourceIndexForComponent(format, component);
+        if (component == 3u && mglInternalFormatPadsMetalAlpha(internalformat)) {
+            src_index = -1;
+        }
         double value = mglReadExternalComponent(src, type, src_index, integer_format, component);
         mglStoreInternalComponent(clear_pixel, &cpu_layout.components[component], value);
     }
