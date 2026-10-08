@@ -8966,15 +8966,26 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     return callAirFn(cg, "air.get_width_texture_buffer_1d",
                                      i32, {tex});
                 }
-                if (e->u.call.arg_count != 2) {
+                /* GLSL: MS / Rect omit lod; use level 0. */
+                llvm::Value *lod = nullptr;
+                if (e->u.call.arg_count == 1) {
+                    if (sampleKind != MGLIR_TEX_2D_MS &&
+                        sampleKind != MGLIR_TEX_2D_MS_ARRAY &&
+                        sampleKind != MGLIR_TEX_2D_RECT) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: textureSize expects 2 arguments";
+                        return nullptr;
+                    }
+                    lod = cg.b->getInt32(0);
+                } else if (e->u.call.arg_count == 2) {
+                    lod = emitExpr(cg, e->u.call.args[1], mod, locals);
+                    if (!lod) return nullptr;
+                    lod = coerceScalar(cg, lod, MGLIR_SCALAR_INT);
+                } else {
                     cg.err = 1;
-                    cg.errmsg = "codegen: textureSize expects 2 arguments";
+                    cg.errmsg = "codegen: textureSize expects 1 or 2 arguments";
                     return nullptr;
                 }
-                llvm::Value *lod = emitExpr(cg, e->u.call.args[1], mod,
-                                            locals);
-                if (!lod) return nullptr;
-                lod = coerceScalar(cg, lod, MGLIR_SCALAR_INT);
                 llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
                 llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
                 auto pack2 = [&](llvm::Value *x, llvm::Value *y) {
@@ -8998,14 +9009,28 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         cg, "air.get_depth_texture_3d", i32, {tex, lod});
                     return pack3(w, h, d);
                 }
+                if (sampleKind == MGLIR_TEX_1D_ARRAY) {
+                    /* Backed as texture2d_array; GLSL returns ivec2(w, layers). */
+                    llvm::Value *w = callAirFn(
+                        cg, "air.get_width_texture_2d_array", i32,
+                        {tex, lod});
+                    llvm::Value *n = callAirFn(
+                        cg, "air.get_array_size_texture_2d_array", i32,
+                        {tex});
+                    return pack2(w, n);
+                }
                 if (sampleKind == MGLIR_TEX_2D_ARRAY ||
+                    sampleKind == MGLIR_TEX_2D_MS ||
                     sampleKind == MGLIR_TEX_2D_MS_ARRAY) {
+                    /* MS* also backed as texture2d_array sample planes. */
                     llvm::Value *w = callAirFn(
                         cg, "air.get_width_texture_2d_array", i32,
                         {tex, lod});
                     llvm::Value *h = callAirFn(
                         cg, "air.get_height_texture_2d_array", i32,
                         {tex, lod});
+                    if (sampleKind == MGLIR_TEX_2D_MS)
+                        return pack2(w, h);
                     llvm::Value *n = callAirFn(
                         cg, "air.get_array_size_texture_2d_array", i32,
                         {tex});
@@ -9641,6 +9666,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                                &arrayLayer)) {
                         return nullptr;
                     }
+                    if (arrayLayer &&
+                        (sampleKind == MGLIR_TEX_2D_ARRAY ||
+                         sampleKind == MGLIR_TEX_1D_ARRAY ||
+                         sampleKind == MGLIR_TEX_2D_MS_ARRAY ||
+                         sampleKind == MGLIR_TEX_CUBE_ARRAY)) {
+                        arrayLayer = emitGlArrayLayerIndex(
+                            cg, t, arrayLayer, sampleKind, false);
+                    }
                     /* AIR cube[_array]_grad has no offset pair:
                      *   cube:      tex, smp, coord3, dPdx, dPdy, float, i32
                      *   cube_array: tex, smp, coord3, i32 layer, dPdx, dPdy,
@@ -9822,6 +9855,16 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 if (!splitSampleArrayCoord(cg, sampleKind, uv, &sampleCoord,
                                            &arrayLayer)) {
                     return nullptr;
+                }
+                /* GLSL §8.9.2: layer = clamp(floor(P.z+0.5), 0, N-1).
+                 * AIR expects i32; passing float bits only works for 0.0. */
+                if (arrayLayer &&
+                    (sampleKind == MGLIR_TEX_2D_ARRAY ||
+                     sampleKind == MGLIR_TEX_1D_ARRAY ||
+                     sampleKind == MGLIR_TEX_2D_MS_ARRAY ||
+                     sampleKind == MGLIR_TEX_CUBE_ARRAY)) {
+                    arrayLayer = emitGlArrayLayerIndex(
+                        cg, t, arrayLayer, sampleKind, false);
                 }
                 auto maybeIntBorder = [&](llvm::Value *metal) -> llvm::Value * {
                     if (!metal) return metal;
@@ -11366,6 +11409,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     cg.lvalues[name] = defaultCullDistances(cg);
                     cg.usesCullDistance = true;
                     aggTy = cg.lvalues[name]->getType();
+                } else if (!aggTy && name &&
+                           strcmp(name, "gl_Position") == 0) {
+                    /* Implicit VS/TES/GS output — CTS often writes via
+                     * gl_Position.xy = ... before a whole-vector assign. */
+                    aggTy = llvm::FixedVectorType::get(
+                        llvm::Type::getFloatTy(*cg.ctx), 4);
+                } else if (!aggTy && name &&
+                           strcmp(name, "gl_PointSize") == 0) {
+                    aggTy = llvm::Type::getFloatTy(*cg.ctx);
                 }
                 if (!aggTy) {
                     cg.err = 1;
@@ -11418,6 +11470,16 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
              * assembly; indexed writes must update that alloca too. */
             if (cg.outPtrs.count(name))
                 storeStageOut(cg, name, nv);
+            if (strcmp(name, "gl_Position") == 0) {
+                if (!cg.position.written) {
+                    cg.position.name = name;
+                    cg.position.type.scalar = MGLIR_SCALAR_FLOAT;
+                    cg.position.type.vec = 4;
+                    cg.position.kind = VarSym::OUTPUT;
+                }
+                cg.position.written = true;
+                storeStageOut(cg, name, nv);
+            }
             if (cg.isTessControl &&
                 (!strcmp(name, "gl_TessLevelOuter") ||
                  !strcmp(name, "gl_TessLevelInner")))

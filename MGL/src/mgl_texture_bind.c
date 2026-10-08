@@ -151,16 +151,50 @@ static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
         info.texture_type != view_type) {
         view_type = info.texture_type;
     }
+    /* GL view_{min,num}_layer count array layers.  Emulated MS storage packs
+     * sample planes into Metal array slices (non-array: one plane per sample;
+     * MS array: 8 planes per GL layer — see mglRenderEmulateMSAsArray /
+     * AIR texelFetch).  Expand the Metal slice range accordingly. */
+    uint64_t slice_loc = tex->view_min_layer;
+    uint64_t slice_len = tex->view_num_layers;
+    const GLenum root_target = root->target;
+    const int root_ms =
+        root_target == GL_TEXTURE_2D_MULTISAMPLE ||
+        root_target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+    const int view_ms =
+        tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+        tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+    if ((root_ms || view_ms) &&
+        info.texture_type == MGLTextureType2DArray && slice_len > 0u) {
+        if (root_target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+            const uint64_t stride = 8u;
+            slice_loc = (uint64_t)tex->view_min_layer * stride;
+            slice_len = (uint64_t)tex->view_num_layers * stride;
+        } else if (root_target == GL_TEXTURE_2D_MULTISAMPLE) {
+            /* Parent planes == sample count; GL layer is always a single
+             * logical layer covering every sample plane. */
+            slice_loc = 0u;
+            slice_len = info.array_length ? info.array_length : 1u;
+        }
+        if (slice_loc >= info.array_length) {
+            slice_loc = 0u;
+            slice_len = 0u;
+        } else if (slice_loc + slice_len > info.array_length) {
+            slice_len = info.array_length - slice_loc;
+        }
+    }
     void *view = NULL;
     if (mglRenderCreateTextureViewRange(source, pixelFormat, view_type,
                                         tex->view_min_level, tex->view_num_levels,
-                                        tex->view_min_layer, tex->view_num_layers,
+                                        slice_loc, slice_len,
                                         0, 0u, 0u, 0u, 0u, &view) != 0) {
         fprintf(stderr,
                 "MGL ERROR: TextureView %u: Metal view creation failed "
-                "(format=%u type=%u levels=%u+%u layers=%u+%u)\n",
+                "(format=%u type=%u levels=%u+%u layers=%u+%u "
+                "metalSlices=%llu+%llu)\n",
                 tex->name, pixelFormat, view_type, tex->view_min_level,
-                tex->view_num_levels, tex->view_min_layer, tex->view_num_layers);
+                tex->view_num_levels, tex->view_min_layer, tex->view_num_layers,
+                (unsigned long long)slice_loc, (unsigned long long)slice_len);
         return false;
     }
     mglSafeReleaseMetalObj((void **)&tex->mtl_data);
