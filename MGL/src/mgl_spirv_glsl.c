@@ -90,6 +90,58 @@ static void mgl_spirv_set_err(char *err, size_t err_len, const char *msg)
     snprintf(err, err_len, "%s", msg);
 }
 
+/* Remove "readonly writeonly" / "writeonly readonly" (any whitespace between
+ * the two tokens). Allocates a fresh string; returns NULL on OOM. */
+static char *mgl_spirv_strip_readonly_writeonly(const char *src)
+{
+    size_t n, i, o;
+    char *dst;
+
+    if (!src)
+        return NULL;
+    n = strlen(src);
+    dst = (char *)malloc(n + 1u);
+    if (!dst)
+        return NULL;
+    i = 0u;
+    o = 0u;
+    while (i < n) {
+        int order = 0; /* 1 = readonly writeonly, 2 = writeonly readonly */
+        size_t j;
+
+        if (i + 8u <= n && memcmp(src + i, "readonly", 8) == 0)
+            order = 1;
+        else if (i + 9u <= n && memcmp(src + i, "writeonly", 9) == 0)
+            order = 2;
+        if (order) {
+            size_t first_len = (order == 1) ? 8u : 9u;
+            const char *second = (order == 1) ? "writeonly" : "readonly";
+            size_t second_len = (order == 1) ? 9u : 8u;
+            j = i + first_len;
+            while (j < n && (src[j] == ' ' || src[j] == '\t' || src[j] == '\n' ||
+                             src[j] == '\r'))
+                j++;
+            if (j + second_len <= n &&
+                memcmp(src + j, second, second_len) == 0) {
+                size_t after = j + second_len;
+                /* Require a non-identifier boundary so we don't eat
+                 * "readonly writeonlyfoo". */
+                if (after >= n ||
+                    !((src[after] >= 'a' && src[after] <= 'z') ||
+                      (src[after] >= 'A' && src[after] <= 'Z') ||
+                      (src[after] >= '0' && src[after] <= '9') ||
+                      src[after] == '_')) {
+                    i = after;
+                    continue;
+                }
+            }
+        }
+        dst[o++] = src[i++];
+    }
+    dst[o] = '\0';
+    return dst;
+}
+
 int mglSpirvToGLSL(const uint32_t *words, size_t word_count,
                    unsigned gl_shader_type, const char *entry_point,
                    const unsigned *spec_ids, const unsigned *spec_values,
@@ -235,7 +287,10 @@ int mglSpirvToGLSL(const uint32_t *words, size_t word_count,
         return MGL_SPIRV_ERR_COMPILE;
     }
 
-    out = strdup(source);
+    /* spirv-cross emits "readonly writeonly" for SPIR-V NonReadable+
+     * NonWritable (query-only) images; desktop GLSL forbids that pair.
+     * Drop both orders so the frontend stays strict on native GLSL. */
+    out = mgl_spirv_strip_readonly_writeonly(source);
     spvc_context_destroy(context);
     if (!out) {
         mgl_spirv_set_err(err, err_len, "out of memory duplicating GLSL");

@@ -2817,28 +2817,63 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
     }
     else if (mglTexLevelInternalFormatCompressed(internalformat))
     {
-        /* No online compression for sized block formats. Remap to a sized
-         * uncompressed IF and store transfer pixels (packed_pixels RGTC
-         * GetTexImage round-trip with RED/RG/RGB/BGR/GREEN/BLUE layouts).
-         * RGBA/BGRA: allow when size is not RGTC 4×4-block aligned so the
-         * packed_pixels 7×3 gradient path can round-trip; reject block-
-         * aligned sizes so DSA textures_compressed_subimage still sees
-         * INVALID_OPERATION on its 4×4 TexImage(RGTC, RGBA) probe and
-         * falls back to static CompressedTexImage blobs (success without
-         * a compressed image breaks that test's online-compression path). */
+        /* Sized block formats + uncompressed transfer pixels:
+         * - RGTC + formats/types mglEncodeRGTCRectToCPU supports: real online
+         *   compression (GL 4.6 §8.5 Table 8.14). Keeps TEXTURE_COMPRESSED
+         *   true so DSA textures_compressed_subimage's probe can download
+         *   via GetCompressedTexImage.
+         * - Other Copyable layouts (GREEN/BLUE, integer, EAC, …): remap to a
+         *   sized uncompressed IF for GetTexImage round-trip (packed_pixels).
+         *   No size-based accept/reject. */
         if (!mglIsGenericCompressedFormat((GLenum)internalformat)) {
-            GLboolean format_ok = GL_FALSE;
-            GLboolean rgba_ok =
-                ((width % 4) != 0 || (height % 4) != 0);
+            GLboolean rgtc_encode = GL_FALSE;
             switch ((GLenum)internalformat) {
                 case GL_COMPRESSED_RED_RGTC1:
                 case GL_COMPRESSED_SIGNED_RED_RGTC1:
-                case GL_COMPRESSED_R11_EAC:
-                case GL_COMPRESSED_SIGNED_R11_EAC:
                 case GL_COMPRESSED_RG_RGTC2:
                 case GL_COMPRESSED_SIGNED_RG_RGTC2:
-                case GL_COMPRESSED_RG11_EAC:
-                case GL_COMPRESSED_SIGNED_RG11_EAC:
+                    rgtc_encode =
+                        (type == GL_UNSIGNED_BYTE &&
+                         (format == GL_RED || format == GL_RG ||
+                          format == GL_RGB || format == GL_RGBA ||
+                          format == GL_BGR || format == GL_BGRA));
+                    break;
+                default:
+                    break;
+            }
+            if (rgtc_encode && !proxy) {
+                GLuint bw = 0u, bh = 0u, bd = 1u, bs = 0u;
+                GLsizei store_depth = depth > 0 ? depth : 1;
+                GLsizei image_size;
+                GLenum store_target = tex->target;
+                if (!mglCompressedBlockInfoOf((GLenum)internalformat, &bw, &bh,
+                                              &bd, &bs) ||
+                    bw == 0u || bh == 0u || bd == 0u || bs == 0u) {
+                    ERROR_RETURN_VALUE(GL_INVALID_ENUM, false);
+                }
+                image_size = (GLsizei)((((GLuint)width + bw - 1u) / bw) *
+                                       (((GLuint)height + bh - 1u) / bh) *
+                                       (((GLuint)store_depth + bd - 1u) / bd) *
+                                       bs);
+                if (store_target == GL_TEXTURE_CUBE_MAP) {
+                    store_target =
+                        (GLenum)(GL_TEXTURE_CUBE_MAP_POSITIVE_X + (GLint)face);
+                }
+                if (!mglStoreCompressedTextureImage(
+                        ctx, store_target, level, (GLenum)internalformat, width,
+                        height, store_depth, 0, image_size, NULL)) {
+                    return false;
+                }
+                return texSubImage(ctx, tex, face, level, 0, 0, 0, width, height,
+                                   store_depth, format, type, pixels);
+            }
+
+            GLboolean format_ok = GL_FALSE;
+            switch ((GLenum)internalformat) {
+                case GL_COMPRESSED_RED_RGTC1:
+                case GL_COMPRESSED_SIGNED_RED_RGTC1:
+                case GL_COMPRESSED_RG_RGTC2:
+                case GL_COMPRESSED_SIGNED_RG_RGTC2:
                     format_ok =
                         (format == GL_RED || format == GL_RED_INTEGER ||
                          format == GL_RG || format == GL_RG_INTEGER ||
@@ -2846,12 +2881,13 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
                          format == GL_BGR || format == GL_BGR_INTEGER ||
                          format == GL_GREEN || format == GL_GREEN_INTEGER ||
                          format == GL_BLUE || format == GL_BLUE_INTEGER ||
-                         (rgba_ok && (format == GL_RGBA ||
-                                      format == GL_RGBA_INTEGER ||
-                                      format == GL_BGRA ||
-                                      format == GL_BGRA_INTEGER)));
+                         format == GL_RGBA || format == GL_RGBA_INTEGER ||
+                         format == GL_BGRA || format == GL_BGRA_INTEGER);
                     break;
                 default:
+                    /* EAC and other sized block formats: no online compression
+                     * and no remap — INVALID_OPERATION (DSA falls back to
+                     * CompressedTexImage static blobs). */
                     break;
             }
             if (!format_ok) {

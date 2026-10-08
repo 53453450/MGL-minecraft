@@ -640,6 +640,22 @@ test-state-snapshot-share: $(build_dir)/test_state_snapshot_share
 	@echo "--- non-arena path (MGL_ARENA_SNAPSHOT=0) ---"
 	MGL_ARENA_SNAPSHOT=0 DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_state_snapshot_share
 
+$(build_dir)/test_image_units_16: test_legacy_compat/test_image_units_16.c $(build_dir)/libmgl.dylib
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-DMGL_GL_CORE \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_image_units_16.c \
+		-L$(build_dir) -lmgl \
+		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
+		-framework IOKit -framework Foundation -framework QuartzCore \
+		-framework Metal -framework OpenGL \
+		-o $@
+
+test-image-units-16: $(build_dir)/test_image_units_16
+	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_image_units_16
+
 $(build_dir)/test_arch_correctness: test_legacy_compat/test_arch_correctness.c MGL/src/mgl_fake_draw_executor.c $(build_dir)/libmgl.dylib
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \

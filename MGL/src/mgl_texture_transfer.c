@@ -276,6 +276,131 @@ static void mglEncodeBC4Block(const int v[16], uint8_t out[8])
     }
 }
 
+/* Decode one BC4/RGTC1 block into 16 byte codes (same domain as encoder). */
+static void mglDecodeBC4Block(const uint8_t block[8], int out[16])
+{
+    int c0 = (int)block[0];
+    int c1 = (int)block[1];
+    int palette[8];
+    palette[0] = c0;
+    palette[1] = c1;
+    if (c0 > c1) {
+        for (int i = 2; i < 8; i++)
+            palette[i] = ((8 - i) * c0 + (i - 1) * c1) / 7;
+    } else {
+        for (int i = 2; i < 6; i++)
+            palette[i] = ((6 - i) * c0 + (i - 1) * c1) / 5;
+        palette[6] = 0;
+        palette[7] = 255;
+    }
+    uint64_t bits = 0u;
+    for (int i = 0; i < 6; i++)
+        bits |= (uint64_t)block[2 + i] << (8 * i);
+    for (int i = 0; i < 16; i++) {
+        int idx = (int)((bits >> (3 * i)) & 7u);
+        out[i] = palette[idx];
+    }
+}
+
+/* GetTexImage from true RGTC block storage: decode to a temporary
+ * uncompressed level, then reuse the normal pack converters (RGB9_E5 etc). */
+static bool mglCopyRGTCRectFromCPU(GLenum internalformat,
+                                  TextureLevel *lvl,
+                                  GLint xoffset,
+                                  GLint yoffset,
+                                  GLint zoffset,
+                                  GLsizei width,
+                                  GLsizei height,
+                                  GLsizei depth,
+                                  GLenum format,
+                                  GLenum type,
+                                  const MGLTexturePackLayout *pack_layout,
+                                  void *pixels,
+                                  bool swap_bytes)
+{
+    bool two_channels;
+    GLenum unpack_if;
+    switch (internalformat) {
+        case GL_COMPRESSED_RED_RGTC1:
+            two_channels = false; unpack_if = GL_R8; break;
+        case GL_COMPRESSED_SIGNED_RED_RGTC1:
+            two_channels = false; unpack_if = GL_R8_SNORM; break;
+        case GL_COMPRESSED_RG_RGTC2:
+            two_channels = true; unpack_if = GL_RG8; break;
+        case GL_COMPRESSED_SIGNED_RG_RGTC2:
+            two_channels = true; unpack_if = GL_RG8_SNORM; break;
+        default: return false;
+    }
+    if (!lvl || !pack_layout || !pixels || !lvl->data || lvl->pitch == 0u ||
+        xoffset < 0 || yoffset < 0 || zoffset < 0 ||
+        width <= 0 || height <= 0 || depth <= 0 ||
+        (GLuint)xoffset > lvl->width ||
+        (GLuint)yoffset > lvl->height ||
+        (GLuint)zoffset > lvl->depth ||
+        (GLuint)width > lvl->width - (GLuint)xoffset ||
+        (GLuint)height > lvl->height - (GLuint)yoffset ||
+        (GLuint)depth > lvl->depth - (GLuint)zoffset) {
+        return false;
+    }
+
+    const size_t block_bytes = two_channels ? 16u : 8u;
+    const size_t bpp = two_channels ? 2u : 1u;
+    const size_t level_image_bytes =
+        (size_t)lvl->pitch * ((lvl->height + 3u) / 4u);
+    if (level_image_bytes * (size_t)(zoffset + depth) > lvl->data_size)
+        return false;
+
+    size_t tmp_pitch = (size_t)width * bpp;
+    size_t tmp_bytes = tmp_pitch * (size_t)height * (size_t)depth;
+    uint8_t *tmp = (uint8_t *)malloc(tmp_bytes);
+    if (!tmp)
+        return false;
+
+    const uint8_t *src_base = (const uint8_t *)(uintptr_t)lvl->data;
+    for (GLsizei z = 0; z < depth; z++) {
+        const uint8_t *src_slice =
+            src_base + (size_t)(zoffset + z) * level_image_bytes;
+        uint8_t *dst_slice = tmp + (size_t)z * tmp_pitch * (size_t)height;
+        for (GLsizei y = 0; y < height; y++) {
+            GLsizei sy = yoffset + y;
+            uint8_t *dst_row = dst_slice + (size_t)y * tmp_pitch;
+            for (GLsizei x = 0; x < width; x++) {
+                GLsizei sx = xoffset + x;
+                GLsizei bx = sx / 4;
+                GLsizei by = sy / 4;
+                int pi = (sy % 4) * 4 + (sx % 4);
+                const uint8_t *blk =
+                    src_slice + (size_t)by * lvl->pitch +
+                    (size_t)bx * block_bytes;
+                int red[16], green[16];
+                mglDecodeBC4Block(blk, red);
+                if (two_channels)
+                    mglDecodeBC4Block(blk + 8, green);
+                dst_row[(size_t)x * bpp] = (uint8_t)red[pi];
+                if (two_channels)
+                    dst_row[(size_t)x * bpp + 1u] = (uint8_t)green[pi];
+            }
+        }
+    }
+
+    TextureLevel tmp_lvl;
+    memset(&tmp_lvl, 0, sizeof(tmp_lvl));
+    tmp_lvl.width = (GLuint)width;
+    tmp_lvl.height = (GLuint)height;
+    tmp_lvl.depth = (GLuint)depth;
+    tmp_lvl.pitch = tmp_pitch;
+    tmp_lvl.data = (vm_address_t)(uintptr_t)tmp;
+    tmp_lvl.data_size = tmp_bytes;
+    tmp_lvl.complete = GL_TRUE;
+    tmp_lvl.has_initialized_data = GL_TRUE;
+
+    bool ok = mglCopyTextureRectFromCPU(unpack_if, &tmp_lvl, 0, 0, 0, width,
+                                        height, depth, format, type,
+                                        pack_layout, pixels, swap_bytes);
+    free(tmp);
+    return ok;
+}
+
 /* TexSubImage of uncompressed pixels into RGTC block storage: compress on the
  * CPU (GL 4.6 §8.7 block-alignment rules apply). */
 GLenum mglEncodeRGTCRectToCPU(GLenum internalformat,
@@ -1021,6 +1146,16 @@ bool mglCopyTextureRectFromCPU(GLenum internalformat,
         pack_layout->row_copy_bytes == 0u ||
         lvl->width == 0u || lvl->height == 0u || lvl->pitch == 0u) {
         return false;
+    }
+
+    /* True RGTC block storage (TexImage/TexSubImage online encode). */
+    if (internalformat == GL_COMPRESSED_RED_RGTC1 ||
+        internalformat == GL_COMPRESSED_SIGNED_RED_RGTC1 ||
+        internalformat == GL_COMPRESSED_RG_RGTC2 ||
+        internalformat == GL_COMPRESSED_SIGNED_RG_RGTC2) {
+        return mglCopyRGTCRectFromCPU(internalformat, lvl, xoffset, yoffset,
+                                      zoffset, width, height, depth, format,
+                                      type, pack_layout, pixels, swap_bytes);
     }
 
     size_t storage_pixel_size = lvl->pitch / (size_t)lvl->width;
