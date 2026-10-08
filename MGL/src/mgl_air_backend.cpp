@@ -3000,6 +3000,12 @@ llvm::Value *varValue(Codegen &cg, const VarSym &v, const MGLIRModule *mod) {
         /* Uniform: single value read. */
         uint32_t off = cg.bufferOffsets.count(v.name) ? cg.bufferOffsets[v.name] : 0;
         const MGLIRSymbol *us = findSymbol(mod, v.name.c_str());
+        if (!cg.bufferPtr) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: plain uniform '") + v.name +
+                        "' has no packed buffer";
+            return nullptr;
+        }
         if (v.type.isMatrix() && v.type.isArray() && us && us->type &&
             us->type->kind == MGLIR_TYPE_ARRAY)
             return emitSSBOAggregateLoad(
@@ -6315,6 +6321,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 cg.errmsg = std::string("codegen: atomic_uint '") +
                             s->name + "' cannot be loaded directly";
                 return nullptr;
+            }
+            /* Opaque uniforms are Metal texture/image handles, not UBO
+             * leaves.  Evaluating them as BUFFER hits emitUBOLeafLoad with
+             * a null cg.bufferPtr when the shader has no plain uniforms
+             * (Minecraft lightmap helper: f(sampler2D s, …)). */
+            if (ut && (ut->kind == MGLIR_TYPE_SAMPLER ||
+                       ut->kind == MGLIR_TYPE_IMAGE)) {
+                llvm::Value *handle = samplerTexValue(cg, s->name);
+                if (!handle) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: opaque uniform '") +
+                                s->name + "' has no bound handle";
+                    return nullptr;
+                }
+                return handle;
             }
             v.kind = VarSym::BUFFER;
         } else if ((s->qualifiers & MGL_AST_Q_IN) && cg.isVS) {
@@ -10255,6 +10276,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             pt.arr = pd->array_dims[0];
                         if (pd->type &&
                             pd->type->base != MGL_AST_TYPE_STRUCT &&
+                            pd->type->base != MGL_AST_TYPE_SAMPLER &&
+                            pd->type->base != MGL_AST_TYPE_IMAGE &&
                             !pt.isArray())
                             av = coerceScalar(cg, av, pt.scalar);
                         if (cg.lvalues.count(pd->name))
