@@ -13067,7 +13067,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             peers.empty() ? nullptr : peers.data(),
             (uint32_t)peers.size());
     }
-    uint32_t ssboCount = 0, uboCount = 0, acCount = 0, texCount = 0, imageCount = 0;
+    uint32_t ssboCount = 0, uboCount = 0, acCount = 0, texCount = 0,
+             imageCount = 0, texArgSlots = 0;
     for (VarSym &v : syms) {
         if (v.kind == VarSym::SSBO) {
             const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
@@ -13078,7 +13079,20 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         } else if (v.kind == VarSym::ATOMIC_COUNTER) {
             acCount++;
         } else if (v.kind == VarSym::TEXTURE) {
-            texCount += v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
+            /* texture_buffer has no companion sampler arg; other samplers
+             * occupy texture+sampler (2) ABI slots. */
+            uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
+            texCount += elements;
+            const MGLIRType *st = v.opaqueType;
+            if (!st) {
+                const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
+                st = ts ? ts->type : nullptr;
+            }
+            while (st && st->kind == MGLIR_TYPE_ARRAY)
+                st = st->elem_type;
+            const bool isBuf = st && st->kind == MGLIR_TYPE_SAMPLER &&
+                               st->tex_kind == MGLIR_TEX_BUFFER;
+            texArgSlots += elements * (isBuf ? 1u : 2u);
         } else if (v.kind == VarSym::IMAGE) {
             imageCount += v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         }
@@ -13806,7 +13820,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             /* fragment: buffer sits after varyings, before the optional
              * fragCoord position arg */
             bufIdx = (isCapture ? 1 : 0) + ssboCount + uboCount + acCount +
-                     (needsBufferSizeBuffer ? 1 : 0) + 2 * texCount +
+                     (needsBufferSizeBuffer ? 1 : 0) + texArgSlots +
                      imageCount;
             for (VarSym &v : syms)
                 if (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING)
@@ -16190,7 +16204,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * value args directly after a buffer with "Unsupported attribute
          * type"). */
         uint32_t mArgSlot = 1 + (hasBuffer ? 1 : 0) + ssboCount + uboCount + acCount +
-                            (needsBufferSizeBuffer ? 1 : 0) + 2 * texCount +
+                            (needsBufferSizeBuffer ? 1 : 0) + texArgSlots +
                             imageCount;
         uint32_t attrLoc = 0;
         uint32_t nextFreeAttrLoc = 0;
@@ -16242,7 +16256,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * output record.  The cull-record buffer param(28) reuses the seed
          * stream and is only declared when the shader uses gl_CullDistance. */
         uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount + acCount +
-                       (needsBufferSizeBuffer ? 1u : 0u) + 2u * texCount +
+                       (needsBufferSizeBuffer ? 1u : 0u) + texArgSlots +
                        imageCount;
         const uint32_t locs[5] = {30u, 28u, 26u, 27u, 29u};
         const char *names[5] = {"tes_gl_in", "tes_seed_records",
@@ -16289,7 +16303,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     if (isTCS) {
         uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount + acCount +
-                       (needsBufferSizeBuffer ? 1u : 0u) + 2u * texCount +
+                       (needsBufferSizeBuffer ? 1u : 0u) + texArgSlots +
                        imageCount;
         const uint32_t locs[5] = {24u, 26u, 27u, 28u, 29u};
         const char *names[5] = {"tcs_stage_in", "tess_factors",
@@ -16322,7 +16336,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * stream(30)/params(25), and the optional transform-feedback
          * stream(22). */
         uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount + acCount +
-                       (needsBufferSizeBuffer ? 1u : 0u) + 2u * texCount +
+                       (needsBufferSizeBuffer ? 1u : 0u) + texArgSlots +
                        imageCount;
         const uint32_t locs[8] = {24u, 26u, 27u, 28u, 29u, 30u, 25u,
                                   (uint32_t)MGL_AIR_TESS_SLOT_XFB_OUT};
@@ -16354,7 +16368,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
     } else if (isGS) {
         uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount + acCount +
-                       (needsBufferSizeBuffer ? 1u : 0u) + 2u * texCount +
+                       (needsBufferSizeBuffer ? 1u : 0u) + texArgSlots +
                        imageCount;
         /* Fixed ABI slots (mgl_air_gs_abi.h §1/§5b/§7): input, output,
          * counts, indexed gather stream, gather params, XFB stream, XFB
@@ -16390,7 +16404,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     uint32_t mArgSlot =
         (isCapture ? 1 : 0) +
         ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) + ssboCount +
-        uboCount + acCount + (needsBufferSizeBuffer ? 1 : 0) + 2 * texCount +
+        uboCount + acCount + (needsBufferSizeBuffer ? 1 : 0) + texArgSlots +
         imageCount;
     if (isTCS) mArgSlot += 5;
     else if (isGS) mArgSlot += 8;  /* input/output/counts/gather/params/xfb/xfb-meta/xfb-vis */
