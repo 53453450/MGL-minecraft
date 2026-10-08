@@ -6996,11 +6996,7 @@ void mglSecondaryColorP3uiv(GLMContext ctx, GLenum type, const GLuint *color)
 	(void)ctx;
 }
 
-void mglShaderBinary(GLMContext ctx, GLsizei count, const GLuint *shaders, GLenum binaryFormat, const void *binary, GLsizei length)
-{
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
-}
+/* mglShaderBinary is implemented in shaders.c */
 
 void mglShaderStorageBlockBinding(GLMContext ctx, GLuint program, GLuint storageBlockIndex, GLuint storageBlockBinding)
 {
@@ -7071,11 +7067,7 @@ void mglShaderStorageBlockBinding(GLMContext ctx, GLuint program, GLuint storage
 	mglBufferBindingPlanInvalidate(pptr);
 }
 
-void mglSpecializeShader(GLMContext ctx, GLuint shader, const GLchar *pEntryPoint, GLuint numSpecializationConstants, const GLuint *pConstantIndex, const GLuint *pConstantValue)
-{
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
-}
+/* mglSpecializeShader is implemented in shaders.c */
 
 void mglTexBuffer(GLMContext ctx, GLenum target, GLenum internalformat, GLuint buffer)
 {

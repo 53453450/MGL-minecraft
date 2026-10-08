@@ -2022,6 +2022,12 @@ static const BiFn kBuiltins[] = {
     { "sin",  1, { BI_ARG_GENF }, BI_RET_GENF },
     { "cos",  1, { BI_ARG_GENF }, BI_RET_GENF },
     { "tan",  1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "sinh",  1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "cosh",  1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "tanh",  1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "asinh", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "acosh", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "atanh", 1, { BI_ARG_GENF }, BI_RET_GENF },
     /* exponential */
     { "exp",  1, { BI_ARG_GENF }, BI_RET_GENF },
     { "exp2", 1, { BI_ARG_GENF }, BI_RET_GENF },
@@ -4660,12 +4666,10 @@ static void check_image_decl(Sema *s, const MGLDecl *d, const MGLIRType *t)
     if (!t || t->kind != MGLIR_TYPE_IMAGE) {
         return;
     }
-    const int ro = (d->qualifiers & MGL_AST_Q_READONLY) != 0;
     const int wo = (d->qualifiers & MGL_AST_Q_WRITEONLY) != 0;
-    if (ro && wo) {
-        sema_error(s, d->line,
-                   "image cannot be both readonly and writeonly");
-    }
+    /* Desktop GLSL forbids readonly+writeonly on images, but SPIR-V
+     * NonReadable+NonWritable (query-only) is valid and spirv-cross emits
+     * both qualifiers. Accept the pair; load/store checks still deny use. */
     if (!d->layout_image_format && !wo) {
         sema_error(s, d->line,
                    "image declaration requires a format layout qualifier");

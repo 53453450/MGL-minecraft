@@ -232,6 +232,51 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
                                      : llvm::Intrinsic::cos,
             a0);
     }
+    if (strcmp(name, "sinh") == 0 || strcmp(name, "cosh") == 0 ||
+        strcmp(name, "tanh") == 0 || strcmp(name, "asinh") == 0 ||
+        strcmp(name, "acosh") == 0 || strcmp(name, "atanh") == 0) {
+        /* GLSL §8.1 hyperbolic family via exp/log (LLVM 15 has no sinh*). */
+        if (!need(1)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        llvm::Type *t = a0->getType();
+        llvm::Value *one = fpConstOf(cg, t, 1.0);
+        llvm::Value *half = fpConstOf(cg, t, 0.5);
+        if (strcmp(name, "sinh") == 0 || strcmp(name, "cosh") == 0 ||
+            strcmp(name, "tanh") == 0) {
+            llvm::Value *ep =
+                callFloatIntrinsic(cg, llvm::Intrinsic::exp, a0);
+            llvm::Value *en = callFloatIntrinsic(
+                cg, llvm::Intrinsic::exp, cg.b->CreateFNeg(a0));
+            if (strcmp(name, "sinh") == 0)
+                return cg.b->CreateFMul(cg.b->CreateFSub(ep, en), half);
+            if (strcmp(name, "cosh") == 0)
+                return cg.b->CreateFMul(cg.b->CreateFAdd(ep, en), half);
+            /* tanh = sinh/cosh */
+            return cg.b->CreateFDiv(cg.b->CreateFSub(ep, en),
+                                    cg.b->CreateFAdd(ep, en));
+        }
+        if (strcmp(name, "asinh") == 0) {
+            llvm::Value *xx = cg.b->CreateFMul(a0, a0);
+            llvm::Value *root = callFloatIntrinsic(
+                cg, llvm::Intrinsic::sqrt, cg.b->CreateFAdd(xx, one));
+            return callFloatIntrinsic(cg, llvm::Intrinsic::log,
+                                      cg.b->CreateFAdd(a0, root));
+        }
+        if (strcmp(name, "acosh") == 0) {
+            llvm::Value *xx = cg.b->CreateFMul(a0, a0);
+            llvm::Value *root = callFloatIntrinsic(
+                cg, llvm::Intrinsic::sqrt, cg.b->CreateFSub(xx, one));
+            return callFloatIntrinsic(cg, llvm::Intrinsic::log,
+                                      cg.b->CreateFAdd(a0, root));
+        }
+        /* atanh(x) = 0.5 * log((1+x)/(1-x)) */
+        llvm::Value *num = cg.b->CreateFAdd(one, a0);
+        llvm::Value *den = cg.b->CreateFSub(one, a0);
+        llvm::Value *lg = callFloatIntrinsic(cg, llvm::Intrinsic::log,
+                                             cg.b->CreateFDiv(num, den));
+        return cg.b->CreateFMul(lg, half);
+    }
     if (strcmp(name, "exp") == 0 || strcmp(name, "exp2") == 0 ||
         strcmp(name, "log") == 0 || strcmp(name, "log2") == 0 ||
         strcmp(name, "floor") == 0 || strcmp(name, "ceil") == 0 ||

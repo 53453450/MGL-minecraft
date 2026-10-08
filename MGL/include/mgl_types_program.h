@@ -145,6 +145,12 @@ typedef struct Shader_t {
     struct MGLCompileArtifact *cached_artifact;
     /* TU from the compile FrontendSession; SeedUniformInitializers reuses it. */
     struct MGLTranslationUnit *frontend_tu;
+    /* ARB_gl_spirv / GL 4.6 SPIR-V binary state. */
+    GLboolean spir_v_binary;
+    GLboolean spir_v_specialized;
+    GLboolean spir_v_nameless; /* module had no OpName/OpMemberName */
+    uint32_t *spirv_words;
+    size_t spirv_word_count;
     char *debug_label;  /* ObjectLabel, GL 4.6 §20.7; NULL = empty */
 } Shader;
 
@@ -325,6 +331,8 @@ typedef struct Program_t {
     GLuint attached_shader_counts[_MAX_SHADER_TYPES];
     GLbitfield attached_shader_mask;
     GLboolean link_success;
+    /* Linked from SPIR-V modules without OpName: ACTIVE_*_MAX_LENGTH is 1. */
+    GLboolean spirv_nameless;
     MGLProgramLinkState link_state;
     /* Per-stage MGL_AIR_BUILTIN_* usage mask (exact, from the IR/TU) — the
      * replacement for scanning shader->src for "gl_X" builtins. */

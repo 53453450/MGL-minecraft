@@ -2734,6 +2734,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     }
 
     pptr->link_success = GL_FALSE;
+    pptr->spirv_nameless = GL_FALSE;
     pptr->link_state = MGL_PROGRAM_LINK_FAILED;
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
         Shader *old_slot = pptr->shader_slots[stage];
@@ -2822,24 +2823,49 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
      * reuse objects from the previous linked executable. */
     pptr->pipeline_cache_generation++;
 
-    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-        if ((pptr->attached_shader_mask & (1u << stage)) == 0u) {
-            continue;
-        }
+    {
+        GLboolean saw_spirv = GL_FALSE;
+        GLboolean saw_glsl = GL_FALSE;
+        GLboolean spirv_nameless = GL_TRUE;
+        GLboolean saw_any = GL_FALSE;
 
-        GLuint attached_count = mglProgramAttachedShaderCount(pptr, (GLuint)stage);
-        for (GLuint attached = 0u; attached < attached_count; attached++) {
-            Shader *shader = (pptr->attached_shader_counts[stage] > 0u)
-                ? pptr->attached_shader_slots[stage][attached]
-                : pptr->shader_slots[stage];
-            if (!shader || !shader->compile_success) {
-                fprintf(stderr,
-                        "MGL WARNING: mglLinkProgram failed program %u: shader stage %d is not compiled\n",
-                        pptr->name,
-                        stage);
-                goto link_fail;
+        for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+            if ((pptr->attached_shader_mask & (1u << stage)) == 0u) {
+                continue;
+            }
+
+            GLuint attached_count = mglProgramAttachedShaderCount(pptr, (GLuint)stage);
+            for (GLuint attached = 0u; attached < attached_count; attached++) {
+                Shader *shader = (pptr->attached_shader_counts[stage] > 0u)
+                    ? pptr->attached_shader_slots[stage][attached]
+                    : pptr->shader_slots[stage];
+                if (!shader || !shader->compile_success) {
+                    fprintf(stderr,
+                            "MGL WARNING: mglLinkProgram failed program %u: shader stage %d is not compiled\n",
+                            pptr->name,
+                            stage);
+                    goto link_fail;
+                }
+                saw_any = GL_TRUE;
+                if (shader->spir_v_binary) {
+                    saw_spirv = GL_TRUE;
+                    if (!shader->spir_v_nameless)
+                        spirv_nameless = GL_FALSE;
+                } else {
+                    saw_glsl = GL_TRUE;
+                }
             }
         }
+
+        /* ARB_gl_spirv: all attached shaders must share SPIR_V_BINARY state. */
+        if (saw_spirv && saw_glsl) {
+            fprintf(stderr,
+                    "MGL WARNING: mglLinkProgram failed program %u: mixed SPIR-V and GLSL shaders\n",
+                    pptr->name);
+            goto link_fail;
+        }
+        pptr->spirv_nameless = (saw_any && saw_spirv && spirv_nameless)
+            ? GL_TRUE : GL_FALSE;
     }
 
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
@@ -3960,19 +3986,25 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
             *params = mglProgramActiveAttribCount(pptr);
             break;
         case GL_ACTIVE_ATTRIBUTE_MAX_LENGTH:
-            *params = mglProgramActiveAttribMaxNameLength(pptr);
+            *params = pptr->spirv_nameless
+                ? 1
+                : mglProgramActiveAttribMaxNameLength(pptr);
             break;
         case GL_ACTIVE_UNIFORMS:
             *params = mglProgramActiveUniformCount(pptr);
             break;
         case GL_ACTIVE_UNIFORM_MAX_LENGTH:
-            *params = mglProgramActiveUniformMaxNameLength(pptr);
+            *params = pptr->spirv_nameless
+                ? 1
+                : mglProgramActiveUniformMaxNameLength(pptr);
             break;
         case GL_ACTIVE_UNIFORM_BLOCKS:
             *params = mglActiveUniformBlockCount(pptr);
             break;
         case GL_ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH:
-            *params = mglActiveUniformBlockMaxNameLength(pptr);
+            *params = pptr->spirv_nameless
+                ? 1
+                : mglActiveUniformBlockMaxNameLength(pptr);
             break;
         case GL_COMPUTE_WORK_GROUP_SIZE:
             /* GL 4.6 §7.14: INVALID_OPERATION unless linked with a compute
@@ -4061,6 +4093,8 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
                 *params = pptr->transform_feedback_buffer_mode != 0
                     ? (GLint)pptr->transform_feedback_buffer_mode
                     : (GLint)GL_INTERLEAVED_ATTRIBS;
+            } else if (pptr->spirv_nameless) {
+                *params = 1;
             } else {
                 GLint maxLen = 0;
                 for (GLsizei vi = 0;

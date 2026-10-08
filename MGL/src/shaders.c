@@ -41,6 +41,25 @@
 #include "mgl_shader_abi.h"
 #include "mgl_glsl_ast.h"
 #include "mgl_frontend_session.h"
+#include "mgl_spirv_glsl.h"
+
+GLboolean mglIsProgram(GLMContext ctx, GLuint program);
+
+static void mglShaderClearSpirV(Shader *ptr)
+{
+    if (!ptr)
+        return;
+    free(ptr->spirv_words);
+    ptr->spirv_words = NULL;
+    ptr->spirv_word_count = 0;
+    ptr->spir_v_binary = GL_FALSE;
+    ptr->spir_v_specialized = GL_FALSE;
+    ptr->spir_v_nameless = GL_FALSE;
+    free((void *)ptr->entry_point);
+    ptr->entry_point = NULL;
+}
+
+static void mglCompileShaderObject(GLMContext ctx, Shader *ptr);
 
  const char *getShaderTypeStr(GLuint type)
 {
@@ -177,6 +196,7 @@ void mglShaderReplaceFrontendTU(Shader *ptr, struct MGLTranslationUnit *tu)
 
 void mglFreeShader(GLMContext ctx, Shader *ptr)
 {
+    (void)ctx;
     free((void *)ptr->mtl_shader_type_name);
     free((void *)ptr->src);
     if (ptr->log) free(ptr->log);
@@ -187,6 +207,7 @@ void mglFreeShader(GLMContext ctx, Shader *ptr)
     ptr->cached_artifact = NULL;
     mglGLSLTranslationUnitDestroy(ptr->frontend_tu);
     ptr->frontend_tu = NULL;
+    mglShaderClearSpirV(ptr);
 
     free(ptr->debug_label);
     free(ptr);
@@ -331,6 +352,9 @@ void mglShaderSource(GLMContext ctx, GLuint shader, GLsizei count, const GLchar 
         return;
     }
 
+    /* ShaderSource replaces any prior SPIR-V binary (ARB_gl_spirv). */
+    mglShaderClearSpirV(ptr);
+    free((void *)ptr->src);
     ptr->src_len = len;
     ptr->src = src;
     ptr->dirty_bits |= DIRTY_SHADER;
@@ -341,13 +365,8 @@ void mglShaderSource(GLMContext ctx, GLuint shader, GLsizei count, const GLchar 
     mglShaderReplaceFrontendTU(ptr, NULL);
 }
 
-void mglCompileShader(GLMContext ctx, GLuint shader)
+static void mglCompileShaderObject(GLMContext ctx, Shader *ptr)
 {
-    ERROR_CHECK_RETURN(shader != 0, GL_INVALID_VALUE);
-
-    Shader *ptr = findShader(ctx, shader);
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
-
     ptr->compile_success = GL_FALSE;
     ptr->frontend_valid = GL_FALSE;
     free(ptr->frontend_diagnostics);
@@ -428,6 +447,177 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
     ptr->dirty_bits |= DIRTY_SHADER;
 }
 
+void mglCompileShader(GLMContext ctx, GLuint shader)
+{
+    ERROR_CHECK_RETURN(shader != 0, GL_INVALID_VALUE);
+
+    Shader *ptr = findShader(ctx, shader);
+    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
+
+    /* ARB_gl_spirv: CompileShader on a SPIR-V binary shader is invalid. */
+    if (ptr->spir_v_binary) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    mglCompileShaderObject(ctx, ptr);
+}
+
+void mglShaderBinary(GLMContext ctx, GLsizei count, const GLuint *shaders,
+                     GLenum binaryFormat, const void *binary, GLsizei length)
+{
+    GLsizei i;
+    const uint32_t *words;
+    size_t word_count;
+    GLboolean nameless;
+
+    ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(length >= 0, GL_INVALID_VALUE);
+    if (count == 0)
+        return;
+    ERROR_CHECK_RETURN(shaders != NULL, GL_INVALID_VALUE);
+
+    if (binaryFormat != GL_SHADER_BINARY_FORMAT_SPIR_V &&
+        binaryFormat != GL_SHADER_BINARY_FORMAT_SPIR_V_ARB) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    if (STATE(var).num_shader_binary_formats == 0) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    if (length == 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if ((length & 3) != 0 || !binary) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    for (i = 0; i < count; i++) {
+        ERROR_CHECK_RETURN(shaders[i] != 0, GL_INVALID_VALUE);
+        ERROR_CHECK_RETURN(findShader(ctx, shaders[i]) != NULL, GL_INVALID_VALUE);
+    }
+
+    words = (const uint32_t *)binary;
+    word_count = (size_t)length / sizeof(uint32_t);
+    if (word_count < 5u || words[0] != 0x07230203u) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    nameless = mglSpirvModuleHasNames(words, word_count) ? GL_FALSE : GL_TRUE;
+
+    for (i = 0; i < count; i++) {
+        Shader *ptr = findShader(ctx, shaders[i]);
+        uint32_t *copy;
+
+        copy = (uint32_t *)malloc(word_count * sizeof(uint32_t));
+        if (!copy) {
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+            return;
+        }
+        memcpy(copy, words, word_count * sizeof(uint32_t));
+
+        free((void *)ptr->src);
+        ptr->src = NULL;
+        ptr->src_len = 0;
+        mglShaderClearSpirV(ptr);
+        if (ptr->log) {
+            free(ptr->log);
+            ptr->log = NULL;
+        }
+        free(ptr->frontend_diagnostics);
+        ptr->frontend_diagnostics = NULL;
+        mglCompileArtifactFree(ptr->cached_artifact);
+        ptr->cached_artifact = NULL;
+        mglShaderReplaceFrontendTU(ptr, NULL);
+
+        ptr->spirv_words = copy;
+        ptr->spirv_word_count = word_count;
+        ptr->spir_v_binary = GL_TRUE;
+        ptr->spir_v_specialized = GL_FALSE;
+        ptr->spir_v_nameless = nameless;
+        ptr->compile_success = GL_FALSE;
+        ptr->frontend_valid = GL_FALSE;
+        ptr->dirty_bits |= DIRTY_SHADER;
+    }
+}
+
+void mglSpecializeShader(GLMContext ctx, GLuint shader, const GLchar *pEntryPoint,
+                         GLuint numSpecializationConstants,
+                         const GLuint *pConstantIndex,
+                         const GLuint *pConstantValue)
+{
+    Shader *ptr;
+    char *glsl = NULL;
+    char err[1024] = {0};
+    int rc;
+
+    if (shader == 0 || findShader(ctx, shader) == NULL) {
+        /* Not a shader name: program names are INVALID_OPERATION. */
+        if (shader != 0 && mglIsProgram(ctx, shader)) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    ptr = findShader(ctx, shader);
+    if (!ptr->spir_v_binary) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (ptr->spir_v_specialized) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (!pEntryPoint) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (numSpecializationConstants > 0u &&
+        (!pConstantIndex || !pConstantValue)) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    rc = mglSpirvToGLSL(ptr->spirv_words, ptr->spirv_word_count, ptr->type,
+                        pEntryPoint, pConstantIndex, pConstantValue,
+                        numSpecializationConstants, &glsl, err, sizeof(err));
+    if (rc == MGL_SPIRV_ERR_ENTRY || rc == MGL_SPIRV_ERR_SPEC) {
+        free(glsl);
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (rc == MGL_SPIRV_ERR_OOM) {
+        free(glsl);
+        mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        return;
+    }
+    if (rc != MGL_SPIRV_OK || !glsl) {
+        free(glsl);
+        if (ptr->log)
+            free(ptr->log);
+        ptr->log = strdup(err[0] ? err : "SpecializeShader failed");
+        ptr->compile_success = GL_FALSE;
+        return;
+    }
+
+    free((void *)ptr->src);
+    ptr->src = glsl;
+    ptr->src_len = strlen(glsl);
+    free((void *)ptr->entry_point);
+    ptr->entry_point = strdup(pEntryPoint);
+
+    mglCompileShaderObject(ctx, ptr);
+    if (ptr->compile_success)
+        ptr->spir_v_specialized = GL_TRUE;
+}
+
 void mglGetShaderiv(GLMContext ctx, GLuint shader, GLenum pname, GLint *params)
 {
     Shader *ptr;
@@ -459,14 +649,7 @@ void mglGetShaderiv(GLMContext ctx, GLuint shader, GLenum pname, GLint *params)
             break;
 
         case GL_COMPILE_STATUS:
-            if (ptr->log)
-            {
-                *params = GL_FALSE;
-            }
-            else
-            {
-                *params = GL_TRUE;
-            }
+            *params = ptr->compile_success ? GL_TRUE : GL_FALSE;
             break;
 
         case GL_INFO_LOG_LENGTH:
@@ -475,6 +658,10 @@ void mglGetShaderiv(GLMContext ctx, GLuint shader, GLenum pname, GLint *params)
 
         case GL_SHADER_SOURCE_LENGTH:
             *params = (GLint)ptr->src_len;
+            break;
+
+        case GL_SPIR_V_BINARY: /* == GL_SPIR_V_BINARY_ARB */
+            *params = ptr->spir_v_binary ? GL_TRUE : GL_FALSE;
             break;
 
         case GL_COMPLETION_STATUS_KHR: /* GL_ARB/KHR_parallel_shader_compile */

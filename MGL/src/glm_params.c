@@ -418,6 +418,14 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_SHADER_COMPILER,&glm_ctx->active_state->var.shader_compiler);
     glGetIntegerv(GL_SHADER_BINARY_FORMATS,&glm_ctx->active_state->var.shader_binary_formats);
     glGetIntegerv(GL_NUM_SHADER_BINARY_FORMATS,&glm_ctx->active_state->var.num_shader_binary_formats);
+#if defined(MGL_HAVE_SPIRV_CROSS)
+    /* GL 4.6 core SPIR-V binary format (do not inherit host CGL zeros). */
+    glm_ctx->active_state->var.num_shader_binary_formats = 1u;
+    glm_ctx->active_state->var.shader_binary_formats = GL_SHADER_BINARY_FORMAT_SPIR_V;
+#else
+    glm_ctx->active_state->var.num_shader_binary_formats = 0u;
+    glm_ctx->active_state->var.shader_binary_formats = 0u;
+#endif
     glGetIntegerv(GL_MAX_VERTEX_UNIFORM_VECTORS,&glm_ctx->active_state->var.max_vertex_uniform_vectors);
     glGetIntegerv(GL_MAX_VARYING_VECTORS,&glm_ctx->active_state->var.max_varying_vectors);
     glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_VECTORS,&glm_ctx->active_state->var.max_fragment_uniform_vectors);
