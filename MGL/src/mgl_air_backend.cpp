@@ -7906,7 +7906,11 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     eb.CreateAlloca(v4i32, nullptr, "cmpxchg.expected");
                 cg.b->CreateStore(packV4(compare), exp);
                 llvm::Type *i1 = cg.b->getInt1Ty();
-                if (tk == MGLIR_TEX_3D) {
+                if (tk == MGLIR_TEX_BUFFER) {
+                    (void)callAirFn(
+                        cg, airName("texture_buffer_1d").c_str(), i1,
+                        {tex, coord, exp, dataV4, order, order, access});
+                } else if (tk == MGLIR_TEX_3D) {
                     (void)callAirFn(cg, airName("texture_3d").c_str(), i1,
                                     {tex, coord3, zero3, exp, dataV4, order,
                                      order, access});
@@ -7924,7 +7928,11 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return cg.b->CreateExtractElement(oldV4, cg.b->getInt32(0));
             }
             llvm::Value *oldV4 = nullptr;
-            if (tk == MGLIR_TEX_3D) {
+            if (tk == MGLIR_TEX_BUFFER) {
+                oldV4 = callAirFn(cg, airName("texture_buffer_1d").c_str(),
+                                  v4i32,
+                                  {tex, coord, dataV4, order, access});
+            } else if (tk == MGLIR_TEX_3D) {
                 oldV4 = callAirFn(cg, airName("texture_3d").c_str(), v4i32,
                                   {tex, coord3, zero3, dataV4, order,
                                    access});
@@ -7934,7 +7942,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     {tex, coord2, arrLayer, zero2, dataV4, order,
                      access});
             } else {
-                /* 1D / buffer / 2D / rect — Metal 2D backing. */
+                /* 1D / 2D / rect — Metal 2D backing. */
                 oldV4 = callAirFn(cg, airName("texture_2d").c_str(), v4i32,
                                   {tex, coord2, zero2, dataV4, order,
                                    access});
@@ -8042,9 +8050,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             n = cg.b->CreateUDiv(n, cg.b->getInt32(8));
                         return pack3(w, h, n);
                     }
+                    if (tk == MGLIR_TEX_BUFFER)
+                        return callAirFn(
+                            cg, "air.get_width_texture_buffer_1d", i32, {t});
                     llvm::Value *w = callAirFn(
                         cg, "air.get_width_texture_2d", i32, {t, lod});
-                    if (tk == MGLIR_TEX_1D || tk == MGLIR_TEX_BUFFER)
+                    if (tk == MGLIR_TEX_1D)
                         return w;
                     llvm::Value *h = callAirFn(
                         cg, "air.get_height_texture_2d", i32, {t, lod});
@@ -8233,8 +8244,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 }
                 llvm::Value *r = nullptr;
                 if (tk == MGLIR_TEX_BUFFER) {
-                    r = callAirFn(cg, readName("air.read_texture_2d").c_str(),
-                                  retTy, {t, rdSmp, coord2, off2, lod0, acc3});
+                    r = callAirFn(
+                        cg, readName("air.read_texture_buffer_1d").c_str(),
+                        retTy, {t, rdSmp, coord, acc3});
                 } else if (tk == MGLIR_TEX_3D) {
                     r = callAirFn(cg, readName("air.read_texture_3d").c_str(),
                                   retTy, {t, rdSmp, coord3, off3, lod0, acc3});
@@ -8315,6 +8327,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                  * basic-glsl-misc / image atomics). */
                 const char *fn = "air.fence_texture_2d";
                 switch (kind) {
+                case MGLIR_TEX_BUFFER:
+                    fn = "air.fence_texture_buffer_1d";
+                    break;
                 case MGLIR_TEX_3D:
                     fn = "air.fence_texture_3d";
                     break;
@@ -8333,7 +8348,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             };
             llvm::Value *fwdCoordStore = coord;
             auto emitWrite = [&](llvm::Value *t) {
-                if (tk == MGLIR_TEX_3D) {
+                if (tk == MGLIR_TEX_BUFFER) {
+                    callAirFn(
+                        cg, writeName("air.write_texture_buffer_1d").c_str(),
+                        voidTy, {t, coord, value, cg.b->getInt32(3)});
+                    fenceAfterImageWrite(t, tk);
+                } else if (tk == MGLIR_TEX_3D) {
                     callAirFn(cg, writeName("air.write_texture_3d").c_str(),
                               voidTy,
                               {t, coord3, value, cg.b->getInt32(0),
@@ -8520,16 +8540,6 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                               locals);
                 if (!coord) return nullptr;
                 coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
-                /* TEXTURE_BUFFER is backed as texture2d (same packing as
-                 * imageBuffer imageStore/Load).  Keep texelFetch on that
-                 * path so imageLoad == texelFetch after COMMAND/FETCH
-                 * barriers (CTS advanced-sync-imageAccess).  Integer
-                 * usamplerBuffer/isamplerBuffer must use .u/.s reads —
-                 * always-float was returning 0 for integer formats. */
-                llvm::Value *xy = llvm::Constant::getNullValue(v2i32);
-                xy = cg.b->CreateInsertElement(xy, coord, cg.b->getInt32(0));
-                xy = cg.b->CreateInsertElement(xy, cg.b->getInt32(0),
-                                               cg.b->getInt32(1));
                 llvm::StructType *smpT = llvm::StructType::getTypeByName(
                     *cg.ctx, "struct._sampler_t");
                 if (!smpT)
@@ -8537,14 +8547,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                                    "struct._sampler_t");
                 llvm::Value *rdSmp = callAirFn(
                     cg, "air.get_read_sampler", smpT->getPointerTo(2), {});
-                llvm::Value *off2 = llvm::Constant::getNullValue(v2i32);
+                /* access::read = 1 for samplerBuffer. */
+                llvm::Value *accRead = cg.b->getInt32(1);
                 auto doBufFetch =
                     [&](llvm::Value *t, llvm::Value *) -> llvm::Value * {
                     llvm::Value *r = callAirFn(
-                        cg, readIntrinsic("air.read_texture_2d.v4f32").c_str(),
-                        retTy,
-                        {t, rdSmp, xy, off2, cg.b->getInt32(0),
-                         cg.b->getInt32(3)});
+                        cg,
+                        readIntrinsic("air.read_texture_buffer_1d.v4f32")
+                            .c_str(),
+                        retTy, {t, rdSmp, coord, accRead});
                     return cg.b->CreateExtractValue(r, 0);
                 };
                 if (dynamicSamplerArray) {
@@ -8877,10 +8888,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 if (dynamicSamplerArray)
                     tex = selectArrayElement(cg, arrayIndex, *texArray);
                 if (sampleKind == MGLIR_TEX_BUFFER) {
-                    /* Buffer textures back onto texture2d; texelFetch
-                     * addresses row 0, so its width is the texel count. */
-                    return callAirFn(cg, "air.get_width_texture_2d", i32,
-                                     {tex, cg.b->getInt32(0)});
+                    return callAirFn(cg, "air.get_width_texture_buffer_1d",
+                                     i32, {tex});
                 }
                 if (e->u.call.arg_count != 2) {
                     cg.err = 1;
@@ -13343,8 +13352,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             st = st->elem_type;
         MGLIRTexKind tk = st && st->kind == MGLIR_TYPE_SAMPLER
             ? st->tex_kind : MGLIR_TEX_2D;
-        llvm::StructType *tt = texTy2d; /* TEX_BUFFER / 1D use texture2d */
-        if (tk == MGLIR_TEX_3D) tt = texTy3d;
+        llvm::StructType *tt = texTy2d; /* 1D uses texture2d */
+        if (tk == MGLIR_TEX_BUFFER) tt = texTyBuf;
+        else if (tk == MGLIR_TEX_3D) tt = texTy3d;
         else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY ||
                  tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY)
             tt = texTy2dArray;
@@ -13353,7 +13363,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         for (uint32_t k = 0; k < elements; k++) {
             paramTys.push_back(tt->getPointerTo(1));
-            paramTys.push_back(smpTy->getPointerTo(2));
+            /* texture_buffer has no companion sampler argument. */
+            if (tk != MGLIR_TEX_BUFFER)
+                paramTys.push_back(smpTy->getPointerTo(2));
         }
     }
     for (VarSym &v : syms) {
@@ -13362,12 +13374,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             imageElementType(findSymbol(&mod, v.name.c_str()));
         MGLIRTexKind tk = imgTy ? imgTy->tex_kind : MGLIR_TEX_2D;
         llvm::StructType *tt = texTy2d;
-        if (tk == MGLIR_TEX_3D) tt = texTy3d;
+        if (tk == MGLIR_TEX_BUFFER) tt = texTyBuf;
+        else if (tk == MGLIR_TEX_3D) tt = texTy3d;
         else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY ||
                  tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY ||
                  tk == MGLIR_TEX_CUBE || tk == MGLIR_TEX_CUBE_ARRAY)
             tt = texTy2dArray;
-        else if (tk == MGLIR_TEX_BUFFER) tt = texTy2d;
         uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         for (uint32_t k = 0; k < elements; k++)
             paramTys.push_back(tt->getPointerTo(1));
@@ -13818,21 +13830,34 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
             if (ts) cg.samplerIRTypes[v.name] = ts->type;
         }
+        const MGLIRType *stBind = v.opaqueType;
+        if (!stBind) {
+            const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
+            stBind = ts ? ts->type : nullptr;
+        }
+        while (stBind && stBind->kind == MGLIR_TYPE_ARRAY)
+            stBind = stBind->elem_type;
+        const bool isBufTex =
+            stBind && stBind->kind == MGLIR_TYPE_SAMPLER &&
+            stBind->tex_kind == MGLIR_TEX_BUFFER;
         if (v.type.arr == 0) {
             cg.texMetalIndex[v.name] = texLocRun;
             cg.texValues[v.name] = fn->getArg(argSlot++);
-            cg.smpValues[v.name] = fn->getArg(argSlot++);
+            if (!isBufTex)
+                cg.smpValues[v.name] = fn->getArg(argSlot++);
             texLocRun++;
         } else {
             cg.texMetalIndex[v.name] = texLocRun;
             std::vector<llvm::Value *> texes, samplers;
             for (uint32_t k = 0; k < elements; k++) {
                 texes.push_back(fn->getArg(argSlot++));
-                samplers.push_back(fn->getArg(argSlot++));
+                if (!isBufTex)
+                    samplers.push_back(fn->getArg(argSlot++));
                 texLocRun++;
             }
             cg.texArrayValues[v.name] = std::move(texes);
-            cg.smpArrayValues[v.name] = std::move(samplers);
+            if (!isBufTex)
+                cg.smpArrayValues[v.name] = std::move(samplers);
         }
     }
     for (VarSym &v : syms) {
@@ -15824,6 +15849,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             bool isCubeArray = samplerType &&
                                samplerType->kind == MGLIR_TYPE_SAMPLER &&
                                samplerType->tex_kind == MGLIR_TEX_CUBE_ARRAY;
+            bool isBuf = samplerType &&
+                         samplerType->kind == MGLIR_TYPE_SAMPLER &&
+                         samplerType->tex_kind == MGLIR_TEX_BUFFER;
             const char *texelName = "float";
             if (samplerType && samplerType->kind == MGLIR_TYPE_SAMPLER) {
                 if (samplerType->tex_storage == MGLIR_SCALAR_INT)
@@ -15845,7 +15873,16 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             const bool isDepthSampler =
                 samplerType && samplerType->kind == MGLIR_TYPE_SAMPLER &&
                 samplerType->tex_depth != 0;
-            std::string sampledType = isDepthSampler
+            std::string sampledType;
+            const char *accessAttr = "air.sample";
+            if (isBuf) {
+                /* texture_buffer has no access::sample; AIR uses air.read. */
+                sampledType = "texture_buffer<";
+                sampledType += texelName;
+                sampledType += ", read>";
+                accessAttr = "air.read";
+            } else {
+                sampledType = isDepthSampler
                                   ? (isCubeArray ? "depthcube_array<"
                                      : is2dArray ? "depth2d_array<"
                                      : isCube ? "depthcube<"
@@ -15855,8 +15892,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                                   : isCubeArray ? "texturecube_array<"
                                   : isCube ? "texturecube<"
                                               : "texture2d<";
-            sampledType += texelName;
-            sampledType += ", sample>";
+                sampledType += texelName;
+                sampledType += ", sample>";
+            }
             uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
             for (uint32_t element = 0; element < elements; element++) {
             std::string elementName = v.name;
@@ -15871,24 +15909,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::Type::getInt32Ty(ctx), texLoc++)),
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), 1)),
-                llvm::MDString::get(ctx, "air.sample"),
+                llvm::MDString::get(ctx, accessAttr),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
                 llvm::MDString::get(ctx, sampledType.c_str()),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, elementName.c_str())}));
-            argNodes.push_back(llvm::MDNode::get(ctx, {
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), texArg++)),
-                llvm::MDString::get(ctx, "air.sampler"),
-                llvm::MDString::get(ctx, "air.location_index"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), smpLoc++)),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 1)),
-                llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, "sampler"),
-                llvm::MDString::get(ctx, "air.arg_name"),
-                llvm::MDString::get(ctx, elementName.c_str())}));
+            if (!isBuf) {
+                argNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), texArg++)),
+                    llvm::MDString::get(ctx, "air.sampler"),
+                    llvm::MDString::get(ctx, "air.location_index"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), smpLoc++)),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), 1)),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, "sampler"),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, elementName.c_str())}));
+            }
             }
         }
         for (VarSym &v : syms) {
@@ -15913,8 +15953,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 dimTy = "texture2d_array";
                 break;
             case MGLIR_TEX_BUFFER:
-                /* Matches TEXBUFFER CREATE fallback (packed as texture2d). */
-                dimTy = "texture2d";
+                dimTy = "texture_buffer";
                 break;
             case MGLIR_TEX_1D:
             case MGLIR_TEX_2D:

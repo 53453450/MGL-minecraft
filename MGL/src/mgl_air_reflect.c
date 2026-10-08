@@ -1014,10 +1014,12 @@ static int air_push_opaque_leaves(MGLShaderResourceList *list,
     free((void *)last->name);
     last->name = resource_name;
     if (!want_image) {
+        /* samplerBuffer has no Metal companion sampler (texture_buffer). */
+        const int is_buf = base->tex_kind == MGLIR_TEX_BUFFER;
         last->resource_active = GL_TRUE;
-        last->has_combined_sampler = GL_TRUE;
+        last->has_combined_sampler = is_buf ? GL_FALSE : GL_TRUE;
         last->combined_sampler_binding =
-            sampler_binding ? *sampler_binding : 0u;
+            (!is_buf && sampler_binding) ? *sampler_binding : 0u;
         last->uniform_location = mglSyntheticSamplerUniformLocation(
             stage, _SAMPLED_IMAGE_RES,
             sampler_binding ? *sampler_binding : 0u);
@@ -1033,14 +1035,14 @@ static int air_push_opaque_leaves(MGLShaderResourceList *list,
         if (air_u32_add(*texture_binding, elements, &next_texture) != 0) {
             return 0;
         }
-        uint32_t next_sampler = 0;
-        if (sampler_binding &&
-            air_u32_add(*sampler_binding, elements, &next_sampler) != 0) {
-            return 0;
-        }
         *texture_binding = next_texture;
-        if (sampler_binding)
+        if (!is_buf && sampler_binding) {
+            uint32_t next_sampler = 0;
+            if (air_u32_add(*sampler_binding, elements, &next_sampler) != 0) {
+                return 0;
+            }
             *sampler_binding = next_sampler;
+        }
     } else {
         last->sampler_unit = -1;
         if (owner->binding != UINT32_MAX) {
@@ -1259,17 +1261,29 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         last->sampler_unit = (GLint)s->binding;
                     }
                     last->resource_active = GL_TRUE;
-                    last->has_combined_sampler = GL_TRUE;
-                    last->combined_sampler_binding = sampler_binding;
-                    last->uniform_location =
-                        (s->location != UINT32_MAX)
-                            ? (GLint)s->location
-                            : mglSyntheticSamplerUniformLocation(
-                                  stage, _SAMPLED_IMAGE_RES, sampler_binding);
-                    GLuint elements = mglAirGLArraySizeFromIR(t);
-                    if (elements < 1u) elements = 1u;
-                    texture_binding += elements;
-                    sampler_binding += elements;
+                    {
+                        const MGLIRType *leaf = base_t;
+                        while (leaf && leaf->kind == MGLIR_TYPE_ARRAY)
+                            leaf = leaf->elem_type;
+                        const int is_buf =
+                            leaf && leaf->kind == MGLIR_TYPE_SAMPLER &&
+                            leaf->tex_kind == MGLIR_TEX_BUFFER;
+                        last->has_combined_sampler =
+                            is_buf ? GL_FALSE : GL_TRUE;
+                        last->combined_sampler_binding =
+                            is_buf ? 0u : sampler_binding;
+                        last->uniform_location =
+                            (s->location != UINT32_MAX)
+                                ? (GLint)s->location
+                                : mglSyntheticSamplerUniformLocation(
+                                      stage, _SAMPLED_IMAGE_RES,
+                                      sampler_binding);
+                        GLuint elements = mglAirGLArraySizeFromIR(t);
+                        if (elements < 1u) elements = 1u;
+                        texture_binding += elements;
+                        if (!is_buf)
+                            sampler_binding += elements;
+                    }
                 } else if (base_t && base_t->kind == MGLIR_TYPE_STRUCT &&
                            !s->is_interface_block && !s->block_name) {
                     if (!air_push_opaque_leaves(&lists[_SAMPLED_IMAGE_RES], s, t,

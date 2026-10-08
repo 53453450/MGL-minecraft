@@ -43,20 +43,6 @@ enum {
  * MGLRenderer+RenderPass_Private.h. */
 extern uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 
-static uint64_t mglPdMinU64(uint64_t a, uint64_t b) { return a < b ? a : b; }
-
-/* Twin of the .m's mglTextureCreateTexture (returns the +1 handle). */
-static void *mglPdTextureCreateTexture(
-    const MGLRenderTextureDescriptorState *descriptor)
-{
-    void *texture = NULL;
-    if (mglRenderCreateTextureFromState(descriptor, NULL, &texture) == 0 &&
-        texture) {
-        return texture;
-    }
-    return NULL;
-}
-
 /* Twin of the .m's mglTextureReplaceRegion, exposed to the other C hosts
  * (log 183).  The .m raised NSException on failure so the caller's @try/@catch
  * could report it; this twin reports the failure instead and every caller maps
@@ -70,21 +56,6 @@ int mglTextureReplaceRegionValue(void *texture, MGLRegionValue region,
                texture, region.origin.x, region.origin.y, region.origin.z,
                region.size.width, region.size.height, region.size.depth, level,
                slice, bytes, bytesPerRow, bytesPerImage,
-               useSlice ? 1 : 0) == 0
-               ? 1
-               : 0;
-}
-
-/* Twin of the .m's mglTextureGetBytes (same no-raise convention). */
-static int mglPdTextureGetBytes(void *texture, void *bytes,
-                                uint64_t bytesPerRow, uint64_t bytesPerImage,
-                                MGLRegionValue region, uint64_t level,
-                                uint64_t slice, int useSlice)
-{
-    return mglRenderTextureGetBytes(
-               texture, bytes, bytesPerRow, bytesPerImage, region.origin.x,
-               region.origin.y, region.origin.z, region.size.width,
-               region.size.height, region.size.depth, level, slice,
                useSlice ? 1 : 0) == 0
                ? 1
                : 0;
@@ -243,42 +214,29 @@ int mglTextureCheckCompleteness(void *tex, uint32_t tex_type,
 /* -createMTLTexelBufferTexture:. */
 typedef struct MglPdTexelBufferCtx_t {
     MGLRenderTextureDescriptorState descriptor;
-    void *upload_bytes;
+    void *metal_buffer;
+    uint64_t offset;
     uint64_t bytes_per_row;
-    uint64_t tex_width;
-    uint64_t tex_height;
     void *created;
-    int result;
 } MglPdTexelBufferCtx;
 
-/* @try of the create+upload; the catch logs and the caller returns nil. */
+/* @try of MTLBuffer→TextureBuffer; the catch logs and the caller returns nil. */
 static int mglPdTexelBufferTryBody(void *renderer, void *rawCtx)
 {
     MglPdTexelBufferCtx *ctx = (MglPdTexelBufferCtx *)rawCtx;
     (void)renderer;
-    ctx->created = mglPdTextureCreateTexture(&ctx->descriptor);
-    if (ctx->created) {
-        if (!mglTextureReplaceRegionValue(
-                ctx->created,
-                mglTextureRegion2D(0, 0, ctx->tex_width, ctx->tex_height), 0, 0,
-                ctx->upload_bytes, ctx->bytes_per_row, 0, 0)) {
-            return 0;
-        }
+    if (mglRenderCreateBufferTextureFromState(
+            ctx->metal_buffer, &ctx->descriptor, ctx->offset,
+            ctx->bytes_per_row, &ctx->created) != 0) {
+        ctx->created = NULL;
+        return 0;
     }
-    ctx->result = 1;
-    return 1;
+    return ctx->created != NULL ? 1 : 0;
 }
 
 void *mglTextureCreateMTLTexelBufferTexture(void *renderer, void *tex)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
-    GLMContext ctx = areas.ctx;
     Texture *texture = (Texture *)tex;
-    GLMState *glState = ctx ? (areas.core && areas.core->activeState
-                                   ? areas.core->activeState
-                                   : ctx->active_state)
-                            : NULL;
 
     Buffer *sourceBuffer = texture->texture_buffer;
     if (!sourceBuffer || texture->texture_buffer_size <= 0) {
@@ -340,140 +298,117 @@ void *mglTextureCreateMTLTexelBufferTexture(void *renderer, void *tex)
         return NULL;
     }
 
-    const uint8_t *sourceBytes = NULL;
-    if (sourceBuffer->data.buffer_data) {
-        sourceBytes = ((const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data) +
-                      (size_t)texture->texture_buffer_offset;
-    } else if (sourceBuffer->data.mtl_data) {
-        void *contents = mglPdTextureBufferContents(sourceBuffer->data.mtl_data);
-        if (contents) {
-            sourceBytes = ((const uint8_t *)contents) +
-                          (size_t)texture->texture_buffer_offset;
-        }
-    }
-
-    if (!sourceBytes) {
+    if (!sourceBuffer->data.mtl_data) {
         fprintf(stderr,
-                "MGL TEXBUFFER ERROR: no readable backing for tex=%u buffer=%u cpu=%p mtl=%p\n",
-                texture->name, sourceBuffer->name,
-                (void *)(uintptr_t)sourceBuffer->data.buffer_data,
-                sourceBuffer->data.mtl_data);
+                "MGL TEXBUFFER ERROR: no Metal buffer for tex=%u buffer=%u\n",
+                texture->name, sourceBuffer->name);
         return NULL;
     }
 
-    /* The AIR backend emits Minecraft's CloudFaces texel buffer as a
-     * texture2d<int>. Keep GL lookup semantics as GL_TEXTURE_BUFFER, but create
-     * a Metal 2D backing so the generated MSL argument type matches.  A texel
-     * buffer can be much wider than Metal's max 2D texture width, so pack it
-     * into rows instead of creating texelCount x 1.
-     *
-     * The AIR backend lowers GL texture buffers to 2D Metal textures and emits
-     * spvTexelBufferCoord(tc) using its MSL texel_buffer_texture_width option.
-     * Keep this packing width in lockstep with program.c. */
-    uint32_t packedW = 0u;
-    uint32_t packedH = 0u;
-    if (!mglRenderPlanTexelBuffer2DSize(
-            texelCount,
-            glState ? glState->var.max_texture_size : 4096u, &packedW,
-            &packedH)) {
-        fprintf(stderr,
-                "MGL TEXBUFFER ERROR: texel buffer too large for 2D fallback tex=%u buffer=%u texels=%lu max=%u\n",
-                texture->name, sourceBuffer->name, (unsigned long)texelCount,
-                glState ? glState->var.max_texture_size : 4096u);
-        return NULL;
-    }
-    const uint64_t texWidth = packedW;
-    const uint64_t texHeight = packedH;
-
-    uint64_t bytesPerRow = texWidth * bytesPerTexel;
-    uint64_t packedBytes = bytesPerRow * texHeight;
-    void *packedData = NULL;
-    const uint8_t *uploadBytes = sourceBytes;
-
-    /* Channel expansion for 3-channel RGB -> 4-channel RGBA Metal formats.
-     * GL_RGB32* (12 bytes/texel) maps to Metal RGBA32* (16 bytes/texel).  Expand
-     * each texel by inserting a default alpha before uploading. */
+    /* Metal texture_buffer shares storage with the attached MTLBuffer.
+     * RGB formats that Metal lacks need a temporary expanded RGBA buffer. */
+    void *metalBuffer = sourceBuffer->data.mtl_data;
+    uint64_t metalOffset = (uint64_t)texture->texture_buffer_offset;
+    uint64_t bytesPerRow = texelCount * bytesPerTexel;
     void *expandedData = NULL;
-    if (mglTextureNeedsChannelExpansion(texture->internalformat,
-                                        bufferPixelFormat)) {
-        uint32_t srcCompU = 0u, dstCompU = 0u;
-        uint64_t alphaDefault = 0;
-        if (mglRenderRGBExpandParams(bufferPixelFormat, &srcCompU, &dstCompU,
-                                     &alphaDefault)) {
-            const uint64_t srcCompBytes = srcCompU;
-            const uint64_t dstCompBytes = dstCompU;
-            const uint64_t dstPixelBytes = dstCompBytes * 4;
-            const uint64_t expandedBytesPerRow = texWidth * dstPixelBytes;
-            const uint64_t expandedPackedBytes = expandedBytesPerRow * texHeight;
-            expandedData = calloc(1u, expandedPackedBytes);
-            if (expandedData) {
-                if (mglRenderTextureExpandRGBToRGBA(
-                        sourceBytes, expandedData, texelCount, texWidth,
-                        texHeight, srcCompBytes, dstCompBytes,
-                        alphaDefault) != 0) {
-                    fprintf(stderr,
-                            "MGL TEXBUFFER ERROR: channel expansion failed tex=%u buffer=%u\n",
-                            texture->name, sourceBuffer->name);
-                    free(expandedData);
-                    return NULL;
-                }
-                uploadBytes = (const uint8_t *)expandedData;
-                bytesPerRow = expandedBytesPerRow;
-                packedBytes = expandedPackedBytes;
+    void *expandedMetalBuffer = NULL;
+    const int needsExpand = mglTextureNeedsChannelExpansion(
+        texture->internalformat, bufferPixelFormat);
+
+    if (needsExpand) {
+        const uint8_t *sourceBytes = NULL;
+        if (sourceBuffer->data.buffer_data) {
+            sourceBytes =
+                ((const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data) +
+                (size_t)texture->texture_buffer_offset;
+        } else {
+            void *contents =
+                mglPdTextureBufferContents(sourceBuffer->data.mtl_data);
+            if (contents) {
+                sourceBytes = ((const uint8_t *)contents) +
+                              (size_t)texture->texture_buffer_offset;
             }
         }
-    }
-
-    if (texHeight > 1 && !expandedData) {
-        packedData = calloc(1u, packedBytes);
-        if (!packedData) {
+        if (!sourceBytes) {
             fprintf(stderr,
-                    "MGL TEXBUFFER ERROR: failed allocating packed data tex=%u buffer=%u bytes=%lu\n",
-                    texture->name, sourceBuffer->name,
-                    (unsigned long)packedBytes);
+                    "MGL TEXBUFFER ERROR: no readable backing for RGB expand "
+                    "tex=%u buffer=%u\n",
+                    texture->name, sourceBuffer->name);
             return NULL;
         }
-
-        memcpy(packedData, sourceBytes, (size_t)texture->texture_buffer_size);
-        uploadBytes = (const uint8_t *)packedData;
+        uint32_t srcCompU = 0u, dstCompU = 0u;
+        uint64_t alphaDefault = 0;
+        if (!mglRenderRGBExpandParams(bufferPixelFormat, &srcCompU, &dstCompU,
+                                      &alphaDefault)) {
+            fprintf(stderr,
+                    "MGL TEXBUFFER ERROR: RGB expand params missing tex=%u "
+                    "format=%lu\n",
+                    texture->name, (unsigned long)bufferPixelFormat);
+            return NULL;
+        }
+        const uint64_t dstPixelBytes = (uint64_t)dstCompU * 4u;
+        const uint64_t expandedBytes = texelCount * dstPixelBytes;
+        expandedData = calloc(1u, (size_t)expandedBytes);
+        if (!expandedData ||
+            mglRenderTextureExpandRGBToRGBA(
+                sourceBytes, expandedData, texelCount, texelCount, 1u,
+                (uint64_t)srcCompU, (uint64_t)dstCompU, alphaDefault) != 0) {
+            fprintf(stderr,
+                    "MGL TEXBUFFER ERROR: channel expansion failed tex=%u "
+                    "buffer=%u\n",
+                    texture->name, sourceBuffer->name);
+            free(expandedData);
+            return NULL;
+        }
+        /* Shared staging buffer so TextureBuffer can view the expanded texels. */
+        enum { MGL_PD_STORAGE_SHARED = 0u };
+        if (mglRenderCreateBuffer(expandedBytes, MGL_PD_STORAGE_SHARED, NULL,
+                                  &expandedMetalBuffer) != 0 ||
+            !expandedMetalBuffer) {
+            fprintf(stderr,
+                    "MGL TEXBUFFER ERROR: failed creating expand buffer tex=%u "
+                    "bytes=%llu\n",
+                    texture->name, (unsigned long long)expandedBytes);
+            free(expandedData);
+            return NULL;
+        }
+        void *dstContents = mglPdTextureBufferContents(expandedMetalBuffer);
+        if (!dstContents) {
+            fprintf(stderr,
+                    "MGL TEXBUFFER ERROR: expand buffer not CPU-mappable "
+                    "tex=%u\n",
+                    texture->name);
+            mglReleaseMetalObjNoNull(expandedMetalBuffer);
+            free(expandedData);
+            return NULL;
+        }
+        memcpy(dstContents, expandedData, (size_t)expandedBytes);
+        metalBuffer = expandedMetalBuffer;
+        metalOffset = 0u;
+        bytesPerRow = expandedBytes;
+        free(expandedData);
+        expandedData = NULL;
     }
-
-    const uint64_t sourceHash =
-        mglTraceHashBytes(sourceBytes, (size_t)texture->texture_buffer_size);
-    const uint64_t uploadHash = mglTraceHashBytes(uploadBytes, packedBytes);
-    char sourceHead[64];
-    char uploadHead[64];
-    sourceHead[0] = '\0';
-    uploadHead[0] = '\0';
-    mglTraceFormatBytes(sourceBytes,
-                        (size_t)mglPdMinU64(
-                            (uint64_t)texture->texture_buffer_size, 64u),
-                        sourceHead, sizeof(sourceHead));
-    mglTraceFormatBytes(uploadBytes, (size_t)mglPdMinU64(packedBytes, 64u),
-                        uploadHead, sizeof(uploadHead));
 
     uint64_t bufferUsage =
         MGL_PD_TEXTURE_USAGE_SHADER_READ | MGL_PD_TEXTURE_USAGE_SHADER_WRITE;
-    /* imageAtomic* on iimageBuffer needs ShaderAtomic (R32I/R32UI). */
     if (mglRenderPixelFormatNeedsShaderAtomic(bufferPixelFormat)) {
         bufferUsage |= MGL_PD_TEXTURE_USAGE_SHADER_ATOMIC;
     }
     MGLRenderTextureDescriptorState bufferDesc = {
-        .texture_type = MGLTextureType2D,
+        .texture_type = MGLTextureTypeTextureBuffer,
         .pixel_format = bufferPixelFormat,
-        .width = texWidth,
-        .height = texHeight,
+        .width = texelCount,
+        .height = 1u,
         .depth = 1u,
         .mipmap_level_count = 1u,
         .sample_count = 1u,
         .array_length = 1u,
-        /* imageStore requires ShaderWrite; sampling still needs ShaderRead. */
         .usage = bufferUsage,
     };
 
-    MglPdTexelBufferCtx tryCtx = {bufferDesc, (void *)uploadBytes, bytesPerRow,
-                                  texWidth,     texHeight,        NULL,
-                                  0};
+    MglPdTexelBufferCtx tryCtx = {bufferDesc, metalBuffer, metalOffset,
+                                  bytesPerRow, NULL};
     void *bufferTexture = NULL;
     if (mglPlatformShellGuardedCallCtx(renderer, "texel buffer texture creation",
                                        mglPdTexelBufferTryBody, &tryCtx,
@@ -481,64 +416,45 @@ void *mglTextureCreateMTLTexelBufferTexture(void *renderer, void *tex)
         bufferTexture = tryCtx.created;
     } else {
         fprintf(stderr,
-                "MGL TEXBUFFER ERROR: failed creating/uploading tex=%u buffer=%u\n",
-                texture->name, sourceBuffer->name);
+                "MGL TEXBUFFER ERROR: failed creating TextureBuffer tex=%u "
+                "buffer=%u texels=%lu\n",
+                texture->name, sourceBuffer->name, (unsigned long)texelCount);
         if (tryCtx.created) mglReleaseMetalObjNoNull(tryCtx.created);
-        free(expandedData);
-        free(packedData);
+        if (expandedMetalBuffer) mglReleaseMetalObjNoNull(expandedMetalBuffer);
         return NULL;
     }
 
+    /* TextureBuffer retains the MTLBuffer; drop the staging +1. */
+    if (expandedMetalBuffer) mglReleaseMetalObjNoNull(expandedMetalBuffer);
+
     if (!bufferTexture) {
         fprintf(stderr,
-                "MGL TEXBUFFER ERROR: Metal texture creation returned nil tex=%u buffer=%u format=%lu texels=%lu\n",
+                "MGL TEXBUFFER ERROR: Metal TextureBuffer nil tex=%u buffer=%u "
+                "format=%lu texels=%lu\n",
                 texture->name, sourceBuffer->name,
                 (unsigned long)bufferPixelFormat, (unsigned long)texelCount);
-        free(expandedData);
-        free(packedData);
         return NULL;
     }
 
     texture->dirty_bits = 0;
     sourceBuffer->data.dirty_bits = 0;
 
-    void *readbackData = calloc(1u, packedBytes);
-    uint64_t readbackHash = 0ull;
-    char readbackHead[64];
-    readbackHead[0] = '\0';
-    if (readbackData) {
-        if (mglPdTextureGetBytes(bufferTexture, readbackData, bytesPerRow, 0,
-                                 mglTextureRegion2D(0, 0, texWidth, texHeight),
-                                 0, 0, 0)) {
-            readbackHash = mglTraceHashBytes(readbackData, packedBytes);
-            mglTraceFormatBytes(readbackData,
-                                (size_t)mglPdMinU64(packedBytes, 64u),
-                                readbackHead, sizeof(readbackHead));
-        }
-    }
-
     {
         static uint64_t s_texBufferCreateLogs = 0;
         const uint64_t hit = ++s_texBufferCreateLogs;
         if (hit <= 2ull || (hit % 4096ull) == 0ull) {
             fprintf(stderr,
-                    "MGL TEXBUFFER CREATE tex=%u buffer=%u internal=0x%x mtlFormat=%lu texels=%lu packed=%lux%lu rowBytes=%lu bytes=%lld offset=%lld as=texture2d sourceHash=0x%016llx uploadHash=0x%016llx readbackHash=0x%016llx sourceHead=%s uploadHead=%s readbackHead=%s\n",
+                    "MGL TEXBUFFER CREATE tex=%u buffer=%u internal=0x%x "
+                    "mtlFormat=%lu texels=%lu rowBytes=%lu bytes=%lld "
+                    "offset=%lld as=texture_buffer expand=%d\n",
                     texture->name, sourceBuffer->name, texture->internalformat,
                     (unsigned long)bufferPixelFormat, (unsigned long)texelCount,
-                    (unsigned long)texWidth, (unsigned long)texHeight,
                     (unsigned long)bytesPerRow,
                     (long long)texture->texture_buffer_size,
-                    (long long)texture->texture_buffer_offset,
-                    (unsigned long long)sourceHash,
-                    (unsigned long long)uploadHash,
-                    (unsigned long long)readbackHash, sourceHead, uploadHead,
-                    readbackHead);
+                    (long long)texture->texture_buffer_offset, needsExpand);
         }
     }
 
-    free(readbackData);
-    free(expandedData);
-    free(packedData);
     mglRendererRecordGPUSuccess(renderer);
     return bufferTexture;
 }

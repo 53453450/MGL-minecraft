@@ -432,6 +432,11 @@ void mglTextureSyncBufferFromImage(void *renderer, GLMContext glm_ctx,
     if (info.width == 0u || info.height == 0u) {
         return;
     }
+    /* MTLTextureTypeTextureBuffer shares the attached buffer's storage, so
+     * imageStore already landed in the GL buffer. */
+    if (info.texture_type == MGLTextureTypeTextureBuffer) {
+        return;
+    }
 
     uint64_t bytesPerTexel = mglTextureBytesPerPixelForFormat(tex->internalformat);
     if (bytesPerTexel == 0u) {

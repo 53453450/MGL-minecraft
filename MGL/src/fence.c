@@ -579,27 +579,11 @@ void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
      * (commit + waitUntilCompleted) already ran here, a conservative path
      * that needs no extra strict branch. */
 
-    /* GL 4.6 §7.13.2: after TEXTURE_FETCH_BARRIER_BIT, texel fetches observe
-     * prior shader writes to the buffer backing a buffer texture.  Those land
-     * only in the Metal store, so refresh the shadow the texel copy is built
-     * from and force a rebuild. */
-    if (barriers == GL_ALL_BARRIER_BITS ||
-        (barriers & GL_TEXTURE_FETCH_BARRIER_BIT)) {
-        for (GLuint i = 0; i < TEXTURE_UNITS; i++) {
-            Texture *tex = STATE(texture_units)[i].textures[_TEXTURE_BUFFER];
-            Buffer *buf = tex ? tex->texture_buffer : NULL;
-            if (!buf || !buf->gpu_write_target || buf->cpu_shadow_pending ||
-                tex->texture_buffer_size <= 0) {
-                continue;
-            }
-            mglRendererReadBackBuffer(ctx, buf,
-                                      (size_t)tex->texture_buffer_offset,
-                                      (size_t)tex->texture_buffer_size);
-            tex->dirty_bits |= DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL;
-        }
-    }
+    /* GL 4.6 §7.13.2 TEXTURE_FETCH_BARRIER_BIT: Metal TextureBuffer shares the
+     * attached MTLBuffer, so the GPU flush above is sufficient — no packed-2D
+     * rebuild.
 
-    /* Storage image (imageStore) writes go directly to the GPU Metal texture.
+     * Storage image (imageStore) writes go directly to the GPU Metal texture.
      * Without marking the texture/level as metal_data_authoritative, subsequent
      * glGetTexImage calls read stale CPU cached data (lvl->data) instead of
      * the GPU-written pixels.  Per the GL 4.6 spec, GL_SHADER_IMAGE_ACCESS_BARRIER_BIT
@@ -608,10 +592,9 @@ void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
      * every currently-bound image unit's texture here.  The flag is cleared
      * again by any subsequent CPU-side texture upload (glTexSubImage/glTexImage).
      *
-     * TEXTURE_BUFFER has no mip faces; imageStores write a texture2d copy of the
-     * buffer. Barriers that later consume that buffer as draw-indirect commands,
-     * vertex/element arrays, or client/GPU buffer reads therefore also require
-     * copying those texels back into the attached Buffer. */
+     * TEXTURE_BUFFER has no mip faces; imageStores write a TextureBuffer that
+     * aliases the attached Buffer, so SyncTextureBufferFromImage is a no-op
+     * for that path. */
     GLbitfield image_relevant_bits =
         GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
         GL_TEXTURE_UPDATE_BARRIER_BIT |
