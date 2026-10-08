@@ -90,6 +90,9 @@ static const char *kMglExtensions[] = {
     "GL_ARB_tessellation_shader",
     "GL_ARB_pipeline_statistics_query",    /* BeginQuery targets + draw/compute counters */
     "GL_ARB_texture_barrier",              /* core in 4.5: glTextureBarrier */
+    /* Integer/bool mix(a,b,genBType): sema + AIR CreateSelect already present;
+     * CTS shader_integer_mix.* gates on this string (desktop always). */
+    "GL_EXT_shader_integer_mix",
 };
 static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
               "MGL_NUM_EXTENSIONS must match kMglExtensions");
