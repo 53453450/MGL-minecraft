@@ -5778,12 +5778,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (strcmp(e->u.var_ref.name, "gl_MaxGeometryAtomicCounterBuffers") == 0)
             return cg.b->getInt32(8);
         if (strcmp(e->u.var_ref.name, "gl_MaxGeometryImageUniforms") == 0)
-            return cg.b->getInt32(8);
+            return cg.b->getInt32(16);
         if (strcmp(e->u.var_ref.name, "gl_MaxGeometryShaderInvocations") == 0)
             return cg.b->getInt32(32);
         /* Image limits must match glm_params / glGet (GLSL 4.60 §7.3). */
         if (strcmp(e->u.var_ref.name, "gl_MaxImageUnits") == 0)
-            return cg.b->getInt32(8);
+            return cg.b->getInt32(16);
         if (strcmp(e->u.var_ref.name, "gl_MaxImageSamples") == 0)
             return cg.b->getInt32(4);
         if (strcmp(e->u.var_ref.name, "gl_MaxVertexImageUniforms") == 0 ||
@@ -5792,7 +5792,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                    "gl_MaxTessEvaluationImageUniforms") == 0 ||
             strcmp(e->u.var_ref.name, "gl_MaxFragmentImageUniforms") == 0 ||
             strcmp(e->u.var_ref.name, "gl_MaxComputeImageUniforms") == 0)
-            return cg.b->getInt32(8);
+            return cg.b->getInt32(16);
         if (strcmp(e->u.var_ref.name, "gl_MaxComputeUniformComponents") == 0)
             return cg.b->getInt32(1024);
         if (strcmp(e->u.var_ref.name, "gl_MaxComputeTextureImageUnits") == 0)
@@ -5816,7 +5816,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                  llvm::ConstantInt::get(i32, 256)});
         }
         if (strcmp(e->u.var_ref.name, "gl_MaxCombinedImageUniforms") == 0)
-            return cg.b->getInt32(40);
+            return cg.b->getInt32(80);
         if (strcmp(e->u.var_ref.name,
                    "gl_MaxCombinedShaderOutputResources") == 0 ||
             strcmp(e->u.var_ref.name,

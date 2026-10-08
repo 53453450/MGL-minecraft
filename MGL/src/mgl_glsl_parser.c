@@ -852,19 +852,20 @@ static int lookup_builtin_const_int(const char *name, int64_t *value)
         const char *name;
         int64_t value;
     } builtins[] = {
-        { "gl_MaxImageUnits", 8 },
+        /* Image limits must match glm_params / glGet (GLSL 4.60 §7.3). */
+        { "gl_MaxImageUnits", 16 },
         { "gl_MaxImageSamples", 4 },
-        { "gl_MaxVertexImageUniforms", 8 },
-        { "gl_MaxTessControlImageUniforms", 8 },
-        { "gl_MaxTessEvaluationImageUniforms", 8 },
-        { "gl_MaxGeometryImageUniforms", 8 },
-        { "gl_MaxFragmentImageUniforms", 8 },
-        { "gl_MaxComputeImageUniforms", 8 },
+        { "gl_MaxVertexImageUniforms", 16 },
+        { "gl_MaxTessControlImageUniforms", 16 },
+        { "gl_MaxTessEvaluationImageUniforms", 16 },
+        { "gl_MaxGeometryImageUniforms", 16 },
+        { "gl_MaxFragmentImageUniforms", 16 },
+        { "gl_MaxComputeImageUniforms", 16 },
         { "gl_MaxComputeUniformComponents", 1024 },
         { "gl_MaxComputeTextureImageUnits", 16 },
         { "gl_MaxComputeAtomicCounters", 8 },
         { "gl_MaxComputeAtomicCounterBuffers", 8 },
-        { "gl_MaxCombinedImageUniforms", 40 },
+        { "gl_MaxCombinedImageUniforms", 80 },
         { "gl_MaxCombinedShaderOutputResources", 8 },
         { "gl_MaxCombinedImageUnitsAndFragmentOutputs", 8 },
         /* GLSL 4.60 §7.3 — claimed missing from core table (SPEC audit §3).
