@@ -68,6 +68,33 @@
 
 **仍开放（非本轮能收口）**：GLSL 子例程（`MAX_SUBROUTINES=0` + 无 keyword）；`DrawTransformFeedback*` Metal 捕获。
 
+### 3.1 缺口根因（2026-09-21 探查）
+
+#### A. GLSL `subroutine` / `MAX_SUBROUTINES=0`
+
+| 层 | 现状 | 根因 |
+|---|---|---|
+| 广告 | `glGetString(GL_VERSION)="4.6.0"` | 产品选择广告 Core 4.6 |
+| 能力查询 | `max_subroutines = max_subroutine_uniform_locations = 0`（`glm_params.c`） | **有意承认未实现**，避免伪报非零上限 |
+| 前端 | lexer 把 `subroutine` 当普通 IDENT；parser 无类型/函数/uniform 路径 | 自研 GLSL→AIR **从未做** `ARB_shader_subroutine`（GL 4.0 已核心） |
+| API | ≥8 个入口走 `mgl_unimplemented`（`GetSubroutine*` / `UniformSubroutinesuiv` / `GetProgramStageiv` / `GetActiveSubroutine*`） | 与前端缺口配套 stub |
+| 后端 | AIR/Metal **无** subroutine 原语 | 即使 parse 通过，也要做函数表 / specialization / 间接调用仿真 |
+
+**CTS 杠杆**（`SILENT_GAP_AUDIT` F15）：53 个 must-pass 全是 `glCompileShader` 死在 `subroutine` 行；另 27 例在 `shader_subroutine` 族被 `ARB_shader_subroutine` 扩展门挡住（not_supported）。核心家族因无扩展门而硬失败。
+
+**修法栈（不可只抬 max）**：① 词法/语法 ② 反射/链接 §7.10 ③ 去 stub API ④ AIR 降级策略。只把 `MAX_SUBROUTINES` 改成非零会让查询与实现更不一致。
+
+#### B. `DrawTransformFeedback*`
+
+| 层 | 现状 | 根因 |
+|---|---|---|
+| 入口 | 四函数恒 `INVALID_OPERATION` | F01 **fail-closed**（禁静默成功）；`ARCHITECTURE_REVIEW` 已 landed |
+| 捕获 | **部分有**：CPU passthrough（`mglTryCPUTransformFeedbackCapture*`）与 GS/tess 路径写 `primitives_written` | 捕获 ≠ Draw-from-capture |
+| 缺口 | DrawTF **从不读** `primitives_written`、不发 `DrawArrays*` | 注释写「Metal capture not wired」偏窄——真正缺的是 **按已捕获计数重放 draw** 的接线；CPU 路径已有计数却未消费 |
+| 难度分层 | passthrough CPU 计数 → DrawArrays 相对短；GS/tess/多 stream / GPU XFB buffer 再画更重 | 未做是优先级：MC 主路径不依赖 DrawTF |
+
+**与「未实现」的差别**：不是零基础设施，是 **capture 半通、replay 入口故意封死**。
+
 ## 4. Unspecified（SPEC 留空 / UB）
 
 - `compute/dispatch_indirect_over_max_reports_error` — When an indirect dispatch reads group counts exceeding MAX_COMPUTE_WORK_GROUP_COUNT, MGL generates GL_INVALID_VALUE.
