@@ -143,15 +143,23 @@ static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
         pixelFormat = mglRenderAGXCompatiblePixelFormat(
             mtlPixelFormatForGLTex(tex), &converted);
     }
+    /* MS GL targets are often backed as Texture2DArray sample planes. Metal
+     * rejects viewing a 2DArray as Texture2DMultisample* — match the source. */
+    uint32_t view_type = plan.texture_type;
+    if ((view_type == MGLTextureType2DMultisample ||
+         view_type == MGLTextureType2DMultisampleArray) &&
+        info.texture_type != view_type) {
+        view_type = info.texture_type;
+    }
     void *view = NULL;
-    if (mglRenderCreateTextureViewRange(source, pixelFormat, plan.texture_type,
+    if (mglRenderCreateTextureViewRange(source, pixelFormat, view_type,
                                         tex->view_min_level, tex->view_num_levels,
                                         tex->view_min_layer, tex->view_num_layers,
                                         0, 0u, 0u, 0u, 0u, &view) != 0) {
         fprintf(stderr,
                 "MGL ERROR: TextureView %u: Metal view creation failed "
                 "(format=%u type=%u levels=%u+%u layers=%u+%u)\n",
-                tex->name, pixelFormat, plan.texture_type, tex->view_min_level,
+                tex->name, pixelFormat, view_type, tex->view_min_level,
                 tex->view_num_levels, tex->view_min_layer, tex->view_num_layers);
         return false;
     }
