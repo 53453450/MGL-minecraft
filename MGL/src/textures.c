@@ -2815,12 +2815,14 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
      *   GetTexImage round-trip).
      * - NULL pixels → empty compressed storage (error-path / persistent
      *   map CTS that only needs a compressed object).
+     * - Texture views (view_root): never allocate storage — fall through so
+     *   mglRendererBindTexture builds a Metal view of the parent (§8.18).
      * - Generic COMPRESSED_* → same remap path. */
     if (mglTexLevelInternalFormatCompressed(internalformat) &&
         !mglIsGenericCompressedFormat((GLenum)internalformat) &&
         pixels == NULL)
     {
-        if (!proxy)
+        if (!proxy && !tex->view_root)
         {
             GLuint bw = 0u, bh = 0u, bd = 1u, bs = 0u;
             GLsizei store_depth = depth > 0 ? depth : 1;
@@ -2845,7 +2847,7 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
                 ctx, store_target, level, (GLenum)internalformat, width, height,
                 store_depth, 0, image_size, NULL);
         }
-        /* Proxy: keep compressed IF; fall through for metadata-only path. */
+        /* Proxy / view: keep compressed IF; fall through for metadata-only. */
         tex->compressed_internalformat = internalformat;
     }
     else if (mglTexLevelInternalFormatCompressed(internalformat))
