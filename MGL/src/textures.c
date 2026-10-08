@@ -819,7 +819,7 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
 
     /* Per the GL 4.6 spec, glBindImageTexture generates GL_INVALID_VALUE if
      * <unit> is greater than or equal to GL_MAX_IMAGE_UNITS.  MGL reports
-     * GL_MAX_IMAGE_UNITS == 8 (independent of TEXTURE_UNITS == 128). */
+     * GL_MAX_IMAGE_UNITS == 16 (independent of TEXTURE_UNITS == 128). */
     if (unit >= STATE(var).max_image_units) {
         fprintf(stderr, "MGL Error: mglBindImageTexture: unit >= max_image_units (%d)\n", unit);
         ERROR_RETURN(GL_INVALID_VALUE);

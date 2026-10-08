@@ -32,6 +32,7 @@ clone_if_missing() {
 bash "$SCRIPT_DIR/../scripts/fetch_opengl_registry.sh"
 clone_if_missing ezxml https://github.com/lxfontes/ezxml.git dcb17484da2591e42c739598729fe5bdf687cca6
 clone_if_missing metal-cpp https://github.com/apple/metal-cpp.git
+clone_if_missing SPIRV-Cross https://github.com/53453450/SPIRV-Cross.git
 
 if [[ ! -d glfw ]]; then
     printf 'error: external/glfw is missing; it is a required local modified checkout and is not cloned from upstream\n' >&2

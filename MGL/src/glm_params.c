@@ -674,15 +674,17 @@ apply_gl46_defaults:
     glm_ctx->active_state->var.max_combined_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
     glm_ctx->active_state->var.max_atomic_counter_buffer_bindings = MAX_BINDABLE_BUFFERS;
     glm_ctx->active_state->var.max_atomic_counter_buffer_size = 16384;
-    glm_ctx->active_state->var.max_image_units = 8;
+    /* image_units[] is TEXTURE_UNITS-sized; raise past the GL minimum (8) so
+     * capability probes that declare ~10 images (KHR-GL46.gl_spirv) can link. */
+    glm_ctx->active_state->var.max_image_units = 16;
     glm_ctx->active_state->var.max_image_samples = 4;
-    glm_ctx->active_state->var.max_vertex_image_uniforms = 8;
-    glm_ctx->active_state->var.max_tess_control_image_uniforms = 8;
-    glm_ctx->active_state->var.max_tess_evaluation_image_uniforms = 8;
-    glm_ctx->active_state->var.max_geometry_image_uniforms = 8;
-    glm_ctx->active_state->var.max_fragment_image_uniforms = 8;
-    glm_ctx->active_state->var.max_combined_image_uniforms = 40;
-    glm_ctx->active_state->var.max_compute_image_uniforms = 8;
+    glm_ctx->active_state->var.max_vertex_image_uniforms = 16;
+    glm_ctx->active_state->var.max_tess_control_image_uniforms = 16;
+    glm_ctx->active_state->var.max_tess_evaluation_image_uniforms = 16;
+    glm_ctx->active_state->var.max_geometry_image_uniforms = 16;
+    glm_ctx->active_state->var.max_fragment_image_uniforms = 16;
+    glm_ctx->active_state->var.max_combined_image_uniforms = 80;
+    glm_ctx->active_state->var.max_compute_image_uniforms = 16;
     /* Interleaved capture must be able to hold a whole TES/GS output set:
      * GL_MAX_TESS_EVALUATION_OUTPUT_COMPONENTS is 128 (the spec minimum), and
      * a configuration may only name as many varyings as the component budget

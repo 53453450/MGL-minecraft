@@ -6,6 +6,7 @@ libmgl.dylib
 libmgl_es.dylib
 external/OpenGL-Registry/
 external/ezxml/
+external/SPIRV-Cross/
 *.DS_Store
 /MGL.gputrace
 /Info.plist

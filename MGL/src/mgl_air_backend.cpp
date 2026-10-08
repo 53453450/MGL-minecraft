@@ -7241,9 +7241,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return res;
         }
-        /* Scalar constructors / conversions. */
-        if (strcmp(name, "float") == 0 || strcmp(name, "int") == 0 ||
-            strcmp(name, "uint") == 0 || strcmp(name, "bool") == 0) {
+        /* Scalar constructors / conversions.
+         * `double` maps to float (AGX has no FP64; capability probes often
+         * leave unused `double` temps). */
+        if (strcmp(name, "float") == 0 || strcmp(name, "double") == 0 ||
+            strcmp(name, "int") == 0 || strcmp(name, "uint") == 0 ||
+            strcmp(name, "bool") == 0) {
             if (e->u.call.arg_count != 1) {
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: constructor '") + name +
@@ -7273,7 +7276,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     arg = col0;
                 (void)arrTy;
             }
-            MGLIRScalar want = name[0] == 'f' ? MGLIR_SCALAR_FLOAT
+            MGLIRScalar want = (name[0] == 'f' || name[0] == 'd')
+                             ? MGLIR_SCALAR_FLOAT
                              : name[0] == 'u' ? MGLIR_SCALAR_UINT
                              : name[0] == 'b' ? MGLIR_SCALAR_BOOL
                                               : MGLIR_SCALAR_INT;
@@ -7544,7 +7548,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         /* Math builtins (sema-typed subset).  All float args are coerced;
          * integer variants (abs/min/max/clamp) use icmp selects. */
         {
-            if (strcmp(name, "dFdx") == 0 || strcmp(name, "dFdy") == 0) {
+            if (strcmp(name, "dFdx") == 0 || strcmp(name, "dFdy") == 0 ||
+                strcmp(name, "dFdxFine") == 0 || strcmp(name, "dFdyFine") == 0 ||
+                strcmp(name, "dFdxCoarse") == 0 ||
+                strcmp(name, "dFdyCoarse") == 0 ||
+                strcmp(name, "fwidth") == 0 || strcmp(name, "fwidthFine") == 0 ||
+                strcmp(name, "fwidthCoarse") == 0) {
                 if (e->u.call.arg_count != 1) {
                     cg.err = 1;
                     cg.errmsg = std::string("codegen: '") + name +
@@ -7554,16 +7563,38 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 llvm::Value *v = emitExpr(cg, e->u.call.args[0], mod, locals);
                 if (!v) return nullptr;
                 llvm::Type *et = v->getType();
+                const int is_y = (strstr(name, "dFdy") != nullptr);
+                const int is_fwidth = (strncmp(name, "fwidth", 6) == 0);
+                if (is_fwidth) {
+                    llvm::Value *dx;
+                    llvm::Value *dy;
+                    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(et)) {
+                        uint32_t n = (uint32_t)vt->getNumElements();
+                        std::string fnx =
+                            std::string("air.dfdx.v") + std::to_string(n) + "f32";
+                        std::string fny =
+                            std::string("air.dfdy.v") + std::to_string(n) + "f32";
+                        dx = callAirFn(cg, fnx.c_str(), et, {v});
+                        dy = callAirFn(cg, fny.c_str(), et, {v});
+                    } else {
+                        dx = callAirFn(cg, "air.dfdx.f32", et, {v});
+                        dy = callAirFn(cg, "air.dfdy.f32", et, {v});
+                    }
+                    if (!dx || !dy) return nullptr;
+                    llvm::Value *adx = cg.b->CreateIntrinsic(
+                        llvm::Intrinsic::fabs, {et}, {dx});
+                    llvm::Value *ady = cg.b->CreateIntrinsic(
+                        llvm::Intrinsic::fabs, {et}, {dy});
+                    return cg.b->CreateFAdd(adx, ady);
+                }
                 if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(et)) {
                     uint32_t n = (uint32_t)vt->getNumElements();
-                    std::string fn = (strcmp(name, "dFdx") == 0)
-                        ? std::string("air.dfdx.v") + std::to_string(n) + "f32"
-                        : std::string("air.dfdy.v") + std::to_string(n) + "f32";
+                    std::string fn = is_y
+                        ? std::string("air.dfdy.v") + std::to_string(n) + "f32"
+                        : std::string("air.dfdx.v") + std::to_string(n) + "f32";
                     return callAirFn(cg, fn.c_str(), et, {v});
                 }
-                return callAirFn(cg, strcmp(name, "dFdx") == 0
-                                         ? "air.dfdx.f32"
-                                         : "air.dfdy.f32",
+                return callAirFn(cg, is_y ? "air.dfdy.f32" : "air.dfdx.f32",
                                  et, {v});
             }
             if (strcmp(name, "interpolateAtCentroid") == 0 ||
@@ -8761,6 +8792,29 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     cg, arrayIndex, *texArray, empty, vecTy, doFetchVec);
             }
             return doFetchVec(tex, nullptr);
+        }
+        /* textureQuery*: compile-side stubs (CTS SPIR-V builtin probe only
+         * needs linkage; results are unused). */
+        if (strcmp(name, "textureQueryLod") == 0) {
+            if (e->u.call.arg_count != 2) {
+                cg.err = 1;
+                cg.errmsg = "codegen: textureQueryLod expects 2 arguments";
+                return nullptr;
+            }
+            llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+            return llvm::Constant::getNullValue(
+                llvm::FixedVectorType::get(f32, 2));
+        }
+        if (strcmp(name, "textureQueryLevels") == 0 ||
+            strcmp(name, "textureSamples") == 0 ||
+            strcmp(name, "imageSamples") == 0) {
+            if (e->u.call.arg_count != 1) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: '") + name +
+                            "' expects 1 argument";
+                return nullptr;
+            }
+            return cg.b->getInt32(1);
         }
         /* texture / textureLod / textureGather / textureSize: the sampler
          * argument maps to paired AIR texture + sampler parameters. */
@@ -9987,6 +10041,24 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     llvm::AtomicOrdering::Monotonic);
             }
         }
+        /* SPIRV-Cross may lower OpAtomicLoad(atomic_uint) to
+         * atomicAdd(counter, 0); route that through the counter address. */
+        if (strcmp(name, "atomicAdd") == 0 && e->u.call.arg_count == 2) {
+            const MGLIRType *acTy =
+                exprIRType(cg, e->u.call.args[0], mod, locals);
+            if (acTy && acTy->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
+                llvm::Value *acPtr = emitAtomicCounterAddress(
+                    cg, e->u.call.args[0], mod, locals);
+                if (!acPtr) return nullptr;
+                llvm::Value *data =
+                    emitExpr(cg, e->u.call.args[1], mod, locals);
+                if (!data) return nullptr;
+                data = coerceScalar(cg, data, MGLIR_SCALAR_UINT);
+                return cg.b->CreateAtomicRMW(
+                    llvm::AtomicRMWInst::Add, acPtr, data, llvm::MaybeAlign(),
+                    llvm::AtomicOrdering::Monotonic);
+            }
+        }
         /* SSBO atomic* (GLSL 4.60 §8.11): RMW on device memory; every
          * op returns the original contents of mem before the update. */
         {
@@ -10717,6 +10789,50 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         llvm::Value *rhsV = v;
         const MGLExpr *lhs = e->u.assign.lhs;
 
+        /* TCS per-vertex out component write: `outColor[inv].r = v`.
+         * Whole-element stores use the INDEX path below; swizzled lvalues
+         * must RMW through the stage-out record (lvalues[] holds no array). */
+        if (cg.isTessControl && lhs && lhs->kind == MGL_EXPR_MEMBER &&
+            lhs->u.member.object &&
+            lhs->u.member.object->kind == MGL_EXPR_INDEX) {
+            const MGLExpr *idxE = lhs->u.member.object;
+            std::vector<uint32_t> swz;
+            const char *outName = nullptr;
+            const MGLExpr *invE = nullptr, *elemE = nullptr;
+            if (swizzleIndices(lhs->u.member.field, &swz) &&
+                tessStageIndexPath(idxE, &outName, &invE, &elemE)) {
+                VarSym *outSym =
+                    codegenStageSymbol(cg, outName, VarSym::OUTPUT);
+                if (outSym && !outSym->isPatch &&
+                    outSym->location != UINT32_MAX) {
+                    if (e->u.assign.op != MGL_OP_ASSIGN) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: compound TCS per-vertex "
+                                    "swizzle assignment is not implemented";
+                        return nullptr;
+                    }
+                    llvm::Value *old =
+                        emitTessStageArrayLoad(cg, idxE, mod, locals);
+                    if (!old || !old->getType()->isVectorTy()) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: unavailable TCS per-vertex "
+                                    "output load for swizzle store";
+                        return nullptr;
+                    }
+                    llvm::Value *updated =
+                        insertSwizzleValue(cg, old, swz, v);
+                    if (!emitTessStageArrayStore(cg, idxE, updated, mod,
+                                                 locals)) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: unavailable TCS per-vertex "
+                                    "output store for swizzle";
+                        return nullptr;
+                    }
+                    return v;
+                }
+            }
+        }
+
         if (cg.isTessControl && lhs && lhs->kind == MGL_EXPR_INDEX &&
             lhs->u.index.object &&
             (lhs->u.index.object->kind == MGL_EXPR_VAR_REF ||
@@ -11214,13 +11330,28 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     if (sym)
                         aggTy = llvmType(typeFromIR(sym->type), *cg.ctx);
                 }
+                /* Builtins may be absent from IR symbols (implicit
+                 * declaration) yet still be written — mirror the read-side
+                 * lazy seed for clip/cull distance arrays. */
+                if (!aggTy && name &&
+                    strcmp(name, "gl_ClipDistance") == 0) {
+                    cg.lvalues[name] = defaultClipDistances(cg);
+                    cg.usesClipDistance = true;
+                    aggTy = cg.lvalues[name]->getType();
+                } else if (!aggTy && name &&
+                           strcmp(name, "gl_CullDistance") == 0) {
+                    cg.lvalues[name] = defaultCullDistances(cg);
+                    cg.usesCullDistance = true;
+                    aggTy = cg.lvalues[name]->getType();
+                }
                 if (!aggTy) {
                     cg.err = 1;
                     cg.errmsg = std::string("codegen: unknown lvalue '") +
                                 name + "'";
                     return nullptr;
                 }
-                cg.lvalues[name] = llvm::UndefValue::get(aggTy);
+                if (!cg.lvalues.count(name))
+                    cg.lvalues[name] = llvm::UndefValue::get(aggTy);
             }
             llvm::Value *agg = cg.lvalues[name];
             if (e->u.assign.op != MGL_OP_ASSIGN) {
@@ -11563,9 +11694,10 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             t.scalar = MGLIR_SCALAR_INT;
             break;
         }
-        if (strcmp(name, "float") == 0 || strcmp(name, "int") == 0 ||
-            strcmp(name, "uint") == 0 || strcmp(name, "bool") == 0) {
-            t.scalar = name[0] == 'f' ? MGLIR_SCALAR_FLOAT
+        if (strcmp(name, "float") == 0 || strcmp(name, "double") == 0 ||
+            strcmp(name, "int") == 0 || strcmp(name, "uint") == 0 ||
+            strcmp(name, "bool") == 0) {
+            t.scalar = (name[0] == 'f' || name[0] == 'd') ? MGLIR_SCALAR_FLOAT
                      : name[0] == 'u' ? MGLIR_SCALAR_UINT
                      : name[0] == 'b' ? MGLIR_SCALAR_BOOL
                                       : MGLIR_SCALAR_INT;
@@ -13103,9 +13235,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          (isTESVertex && tu->layout_point_mode != 0) ||
          ((isVS || (isTES && !isTESVertex)) &&
           mglFrontendBuiltinUsed(&mod, tu, "gl_PointSize")));
+    /* Capture variants still execute `gl_ClipDistance[i] = …` and must keep
+     * the aggregate lvalue; only the interpolable retElems mirrors stay
+     * off for capture (tess capture writes the array into the record). */
     const bool usesClipDistance =
-        (isVS || (isTES && !isTESCompute)) && !isCapture && !isKernel &&
+        (isVS || (isTES && !isTESCompute)) && !isKernel &&
         irClipCount > 0;
+    const bool emitClipDistanceOutputs =
+        usesClipDistance && !isCapture;
     /* TES-vertex keeps the isoline partner-endpoint cull rule (a line is
      * culled when both endpoints' distance < 0 for the same axis; a point
      * when any distance < 0) that the passthrough VS used to apply, so the
@@ -13125,7 +13262,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         } else if (usesPointSize) {
             retElems.push_back(llvm::Type::getFloatTy(ctx));
         }
-        if (usesClipDistance) {
+        if (emitClipDistanceOutputs) {
             /* Interpolable mirrors only.  AGX [[clip_distance]] drops a
              * line when either endpoint is negative; FS selects cleared
              * color when the interpolated distance is negative. */
@@ -14323,10 +14460,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         cg.lvalues["gl_SampleMask"] = arr;
     }
     if (usesClipDistance) {
-        cg.usesClipDistance = true;
         /* Indexed writes (gl_ClipDistance[i] = v) need the aggregate
-         * lvalue pre-registered (see the array-varying fix). */
+         * lvalue pre-registered — including capture variants that store
+         * the array into the tess record rather than retElems mirrors. */
         cg.lvalues["gl_ClipDistance"] = defaultClipDistances(cg);
+        if (emitClipDistanceOutputs)
+            cg.usesClipDistance = true;
     }
     if (!isVS && !isTES && !isKernel) {
         /* Fragment output arrays: indexed writes need an aggregate lvalue
@@ -16633,7 +16772,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "psize")}));
         }
-        if (usesClipDistance) {
+        if (emitClipDistanceOutputs) {
             MType floatTy;
             floatTy.scalar = MGLIR_SCALAR_FLOAT;
             for (uint32_t i = 0; i < MGL_MAX_CLIP_DISTANCES; i++) {

@@ -87,22 +87,11 @@ CXXFLAGS += -I./external/glfw/include -I./external/glfw/src
 CFLAGS += -D_COCOA -D_GLFW_COCOA
 CXXFLAGS += -D_COCOA -D_GLFW_COCOA
 
-# SPIRV-Cross (Homebrew) for glShaderBinary / glSpecializeShader → GLSL.
+# SPIRV-Cross (external/SPIRV-Cross) for glShaderBinary / glSpecializeShader.
 # Must land on CFLAGS before CFLAGS_GL_CORE/ES capture below.
-SPIRV_CROSS_ROOT ?= /opt/homebrew/opt/spirv-cross
-ifeq ($(wildcard $(SPIRV_CROSS_ROOT)/lib/libspirv-cross-c.a),)
-SPIRV_CROSS_ROOT := $(shell brew --prefix spirv-cross 2>/dev/null)
-endif
-ifneq ($(wildcard $(SPIRV_CROSS_ROOT)/lib/libspirv-cross-c.a),)
-CFLAGS += -I$(SPIRV_CROSS_ROOT)/include/spirv_cross -DMGL_HAVE_SPIRV_CROSS=1
-CXXFLAGS += -I$(SPIRV_CROSS_ROOT)/include/spirv_cross -DMGL_HAVE_SPIRV_CROSS=1
-LIBS += -L$(SPIRV_CROSS_ROOT)/lib \
-	-lspirv-cross-c -lspirv-cross-glsl -lspirv-cross-hlsl \
-	-lspirv-cross-msl -lspirv-cross-reflect -lspirv-cross-cpp \
-	-lspirv-cross-core
-else
-$(warning spirv-cross not found; GL SPIR-V ShaderBinary stays unsupported)
-endif
+SPIRV_CROSS_DIR := external/SPIRV-Cross
+CFLAGS += -I$(SPIRV_CROSS_DIR) -DMGL_HAVE_SPIRV_CROSS=1
+CXXFLAGS += -I$(SPIRV_CROSS_DIR) -DMGL_HAVE_SPIRV_CROSS=1
 
 # GL_CORE SPECIFIC FLAGS
 CFLAGS_GL_CORE := $(CFLAGS) -DMGL_GL_CORE
@@ -298,8 +287,31 @@ deps += $(mgl_es_arc_objs:.o=.d)
 mgl_lib := $(build_dir)/libmgl.dylib
 mgl_es_lib := $(build_dir)/libmgl_es.dylib
 
-mgl_core_link_objs := $(mgl_core_objs) $(mgl_core_arc_objs) $(mgl_core_obj)
-mgl_es_link_objs := $(mgl_es_objs) $(mgl_es_arc_objs) $(mgl_es_obj)
+# GLSL C API only (HLSL/MSL/reflect stay out of libmgl).
+SPIRV_CROSS_SRCS := \
+	$(SPIRV_CROSS_DIR)/spirv_cfg.cpp \
+	$(SPIRV_CROSS_DIR)/spirv_cross.cpp \
+	$(SPIRV_CROSS_DIR)/spirv_cross_parsed_ir.cpp \
+	$(SPIRV_CROSS_DIR)/spirv_parser.cpp \
+	$(SPIRV_CROSS_DIR)/spirv_glsl.cpp \
+	$(SPIRV_CROSS_DIR)/spirv_cross_c.cpp
+spirv_cross_objs := $(patsubst $(SPIRV_CROSS_DIR)/%.cpp,$(build_dir)/spirv-cross/%.o,$(SPIRV_CROSS_SRCS))
+
+$(SPIRV_CROSS_DIR)/spirv_cross_c.h:
+	@bash external/clone_external.sh
+
+$(spirv_cross_objs) $(mgl_core_objs) $(mgl_es_objs): $(SPIRV_CROSS_DIR)/spirv_cross_c.h
+deps += $(spirv_cross_objs:.o=.d)
+
+$(build_dir)/spirv-cross/%.o: $(SPIRV_CROSS_DIR)/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) -MMD -std=c++17 -fexceptions \
+		-gfull -O2 -arch $(HOST_ARCH) -isysroot $(SDK_ROOT) \
+		-I$(SPIRV_CROSS_DIR) -DSPIRV_CROSS_C_API_GLSL=1 \
+		-c $< -o $@
+
+mgl_core_link_objs := $(mgl_core_objs) $(mgl_core_arc_objs) $(mgl_core_obj) $(spirv_cross_objs)
+mgl_es_link_objs := $(mgl_es_objs) $(mgl_es_arc_objs) $(mgl_es_obj) $(spirv_cross_objs)
 
 # M1 AIR backend: GLSL -> metallib -> PSO gate (C++20 + LLVM, Metal runtime).
 # Define these before the compile/link configuration hashes below so changes

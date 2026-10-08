@@ -48,7 +48,7 @@
 #define MGL_SEMA_MAX_PATCH_VERTICES 32u
 /* Must match glm_params.c advertised GL_MAX_* for layout(binding) range. */
 #define MGL_SEMA_MAX_COMBINED_TEXTURE_IMAGE_UNITS 80u
-#define MGL_SEMA_MAX_IMAGE_UNITS 8u
+#define MGL_SEMA_MAX_IMAGE_UNITS 16u
 /* Must match glm_context.c GL_MAX_COMPUTE_WORK_GROUP_SIZE. */
 #define MGL_SEMA_MAX_COMPUTE_WORK_GROUP_SIZE_X 1024
 #define MGL_SEMA_MAX_COMPUTE_WORK_GROUP_SIZE_Y 1024
@@ -1721,10 +1721,13 @@ typedef enum {
     BI_ARG_IVEC3,     /* ivec3 */
     BI_ARG_IVEC4,     /* ivec4 */
     BI_ARG_IVEC2_ARR4, /* ivec2[4] (textureGatherOffsets) */
+    BI_ARG_UVEC2,     /* uvec2 */
     BI_ARG_UVEC4,     /* uvec4 */
+    BI_ARG_DOUBLE,    /* scalar double (i64 bit payload on AGX) */
     BI_ARG_ATOMIC,    /* atomic_uint */
     BI_ARG_BVEC,      /* bool/bvec2/3/4 */
     BI_ARG_OUT_GENI,  /* out int/uint genType (lvalue; same match as GENI) */
+    BI_ARG_OUT_GENF,  /* out float genType (lvalue; same match as GENF) */
 } BiArgKind;
 
 typedef enum {
@@ -1742,6 +1745,8 @@ typedef enum {
     BI_RET_VEC4,    /* vec4 */
     BI_RET_IVEC2,   /* ivec2 */
     BI_RET_IVEC3,   /* ivec3 */
+    BI_RET_UVEC2,   /* uvec2 */
+    BI_RET_DOUBLE,  /* scalar double (i64 bit payload on AGX) */
     BI_RET_SAMP,    /* texture fetch: vec4/ivec4/uvec4 per sampler storage */
     BI_RET_MAT2,    /* mat2 */
     BI_RET_MAT3,    /* mat3 */
@@ -1799,6 +1804,13 @@ static const BiFn kBuiltins[] = {
     { "textureGrad", 4, { BI_ARG_SCUBEA, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_SAMP },
     { "dFdx", 1, { BI_ARG_GENF }, BI_RET_GENF },
     { "dFdy", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "fwidth", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "dFdxFine", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "dFdyFine", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "dFdxCoarse", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "dFdyCoarse", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "fwidthFine", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "fwidthCoarse", 1, { BI_ARG_GENF }, BI_RET_GENF },
     /* ARB_gpu_shader5 / GL 4.0 multisample interpolation. */
     { "interpolateAtCentroid", 1, { BI_ARG_GENF }, BI_RET_GENF },
     { "interpolateAtSample", 2, { BI_ARG_GENF, BI_ARG_INT }, BI_RET_GENF },
@@ -1893,22 +1905,41 @@ static const BiFn kBuiltins[] = {
     { "textureProjOffset", 3, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_IVEC3 }, BI_RET_SAMP },
     { "textureProjOffset", 3, { BI_ARG_SRECT, BI_ARG_VEC3, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureProjOffset", 3, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureProjLod", 3, { BI_ARG_S1D, BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureProjLod", 3, { BI_ARG_S1D, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureProjLod", 3, { BI_ARG_S2D, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureProjLod", 3, { BI_ARG_S2D, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureProjLod", 3, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureProjLod", 3, { BI_ARG_SRECT, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureProjLod", 3, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureProjLodOffset", 4, { BI_ARG_S1D, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
     { "textureProjLodOffset", 4, { BI_ARG_S1D, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureProjLodOffset", 4, { BI_ARG_S2D, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureProjLodOffset", 4, { BI_ARG_S2D, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureProjLodOffset", 4, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "textureProjLodOffset", 4, { BI_ARG_SRECT, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureProjLodOffset", 4, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureProjGrad", 4, { BI_ARG_S1D, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureProjGrad", 4, { BI_ARG_S1D, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureProjGrad", 4, { BI_ARG_S2D, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
     { "textureProjGrad", 4, { BI_ARG_S2D, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
     { "textureProjGrad", 4, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "textureProjGrad", 4, { BI_ARG_SRECT, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
     { "textureProjGrad", 4, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureProjGradOffset", 5, { BI_ARG_S1D, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
     { "textureProjGradOffset", 5, { BI_ARG_S1D, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureProjGradOffset", 5, { BI_ARG_S2D, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureProjGradOffset", 5, { BI_ARG_S2D, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureProjGradOffset", 5, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "textureProjGradOffset", 5, { BI_ARG_SRECT, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureProjGradOffset", 5, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    /* GLSL 4.60 §8.9.1 — texture query (SPIR-V builtin probe). */
+    { "textureQueryLod", 2, { BI_ARG_S2D, BI_ARG_VEC2 }, BI_RET_VEC2 },
+    { "textureQueryLod", 2, { BI_ARG_S2D_SHADOW, BI_ARG_VEC2 }, BI_RET_VEC2 },
+    { "textureQueryLevels", 1, { BI_ARG_S2D }, BI_RET_INT },
+    { "textureQueryLevels", 1, { BI_ARG_S2D_SHADOW }, BI_RET_INT },
+    { "textureSamples", 1, { BI_ARG_S2DMS }, BI_RET_INT },
+    { "textureSamples", 1, { BI_ARG_S2DMSA }, BI_RET_INT },
     { "textureSize", 2, { BI_ARG_S2D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "textureSize", 2, { BI_ARG_S2D_SHADOW, BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "textureSize", 2, { BI_ARG_S2DA_SHADOW, BI_ARG_FLOAT }, BI_RET_IVEC3 },
@@ -1973,6 +2004,10 @@ static const BiFn kBuiltins[] = {
     { "imageSize", 1, { BI_ARG_IMAGE }, BI_RET_IMAGESIZE },
     { "imageSize", 1, { BI_ARG_IMAGE_INT }, BI_RET_IMAGESIZE },
     { "imageSize", 1, { BI_ARG_IMAGE_UINT }, BI_RET_IMAGESIZE },
+    /* GLSL 4.60 §8.9.2 — MS image sample count (SPIR-V builtin probe). */
+    { "imageSamples", 1, { BI_ARG_IMAGE }, BI_RET_INT },
+    { "imageSamples", 1, { BI_ARG_IMAGE_INT }, BI_RET_INT },
+    { "imageSamples", 1, { BI_ARG_IMAGE_UINT }, BI_RET_INT },
     { "textureSize", 2, { BI_ARG_S3D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "textureSize", 2, { BI_ARG_SCUBE, BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "normalize", 1, { BI_ARG_GENF }, BI_RET_GENF },
@@ -2089,6 +2124,9 @@ static const BiFn kBuiltins[] = {
     { "unpackSnorm2x16", 1, { BI_ARG_INT }, BI_RET_VEC2 },
     { "packHalf2x16",    1, { BI_ARG_VEC2 }, BI_RET_UINT },
     { "unpackHalf2x16", 1, { BI_ARG_INT }, BI_RET_VEC2 },
+    /* GLSL 4.60 §8.4 — double bit pack (AGX: i64 payload, no f64 ALU). */
+    { "packDouble2x32",   1, { BI_ARG_UVEC2 }, BI_RET_DOUBLE },
+    { "unpackDouble2x32", 1, { BI_ARG_DOUBLE }, BI_RET_UVEC2 },
     { "packUnorm4x8",    1, { BI_ARG_VEC4 }, BI_RET_UINT },
     { "packSnorm4x8",    1, { BI_ARG_VEC4 }, BI_RET_UINT },
     { "unpackUnorm4x8",  1, { BI_ARG_INT }, BI_RET_VEC4 },
@@ -2106,8 +2144,14 @@ static const BiFn kBuiltins[] = {
     { "imulExtended", 4, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_OUT_GENI, BI_ARG_OUT_GENI }, BI_RET_VOID },
     { "frexp", 2, { BI_ARG_GENF, BI_ARG_OUT_GENI }, BI_RET_GENF },
     { "ldexp", 2, { BI_ARG_GENF, BI_ARG_GENI }, BI_RET_GENF },
+    /* GLSL 4.60 §8.3 — modf / isnan / isinf (SPIR-V builtin probe). */
+    { "modf", 2, { BI_ARG_GENF, BI_ARG_OUT_GENF }, BI_RET_GENF },
+    { "isnan", 1, { BI_ARG_GENF }, BI_RET_BVEC },
+    { "isinf", 1, { BI_ARG_GENF }, BI_RET_BVEC },
     /* atomic memory (GLSL 4.60 §8.11) — first arg is an lvalue int/uint */
     { "atomicAdd", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    /* SPIRV-Cross may emit atomicAdd(atomic_uint, 0) for OpAtomicLoad. */
+    { "atomicAdd", 2, { BI_ARG_ATOMIC, BI_ARG_INT }, BI_RET_UINT },
     { "atomicMin", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
     { "atomicMax", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
     { "atomicAnd", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
@@ -2254,6 +2298,8 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
         return bif_geni_matches(t, gen_dim, &bif_geni_unsigned);
     case BI_ARG_OUT_GENI:
         return bif_geni_matches(t, gen_dim, &bif_geni_unsigned);
+    case BI_ARG_OUT_GENF:
+        return bif_gen_matches(t, gen_dim);
     case BI_ARG_FLOAT:
         return t->kind == MGLIR_TYPE_SCALAR &&
                (t->scalar == MGLIR_SCALAR_FLOAT || t->scalar == MGLIR_SCALAR_INT ||
@@ -2376,9 +2422,15 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
                t->elem_type && t->elem_type->kind == MGLIR_TYPE_VECTOR &&
                t->elem_type->cols == 2 &&
                t->elem_type->scalar == MGLIR_SCALAR_INT;
+    case BI_ARG_UVEC2:
+        return t->kind == MGLIR_TYPE_VECTOR && t->cols == 2 &&
+               t->scalar == MGLIR_SCALAR_UINT;
     case BI_ARG_UVEC4:
         return t->kind == MGLIR_TYPE_VECTOR && t->cols == 4 &&
                t->scalar == MGLIR_SCALAR_UINT;
+    case BI_ARG_DOUBLE:
+        return t->kind == MGLIR_TYPE_SCALAR &&
+               t->scalar == MGLIR_SCALAR_DOUBLE;
     case BI_ARG_ATOMIC:
         return t->kind == MGLIR_TYPE_ATOMIC_COUNTER;
     case BI_ARG_BVEC:
@@ -2464,7 +2516,8 @@ static MGLIRType *builtin_call_type(const char *name,
                 break;
             }
             if (f->args[j] == BI_ARG_GENF || f->args[j] == BI_ARG_GENI ||
-                f->args[j] == BI_ARG_OUT_GENI || f->args[j] == BI_ARG_BVEC) {
+                f->args[j] == BI_ARG_OUT_GENI ||
+                f->args[j] == BI_ARG_OUT_GENF || f->args[j] == BI_ARG_BVEC) {
                 if (gen_dim == 0) {
                     gen_dim = d;
                 } else if (gen_dim != d) {
@@ -2524,6 +2577,10 @@ static MGLIRType *builtin_call_type(const char *name,
             return mglIRTypeVector(MGLIR_SCALAR_INT, 2);
         case BI_RET_IVEC3:
             return mglIRTypeVector(MGLIR_SCALAR_INT, 3);
+        case BI_RET_UVEC2:
+            return mglIRTypeVector(MGLIR_SCALAR_UINT, 2);
+        case BI_RET_DOUBLE:
+            return mglIRTypeScalar(MGLIR_SCALAR_DOUBLE);
         case BI_RET_SAMP: {
             MGLIRScalar st = MGLIR_SCALAR_FLOAT;
             for (uint32_t j = 0; j < f->argc; j++) {
@@ -4028,7 +4085,9 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             if (bknown && bt && e->u.call.arg_count > 0) {
                 const char *an = e->u.call.name;
                 /* GLSL 4.60 §8.11: atomicAdd and family operate only on
-                 * shader storage block members or shared variables. */
+                 * shader storage block members or shared variables.
+                 * SPIRV-Cross may also emit atomicAdd(atomic_uint, 0) for
+                 * OpAtomicLoad — accept atomic_uint there. */
                 if (an && strncmp(an, "atomic", 6) == 0 &&
                     strncmp(an, "atomicCounter", 13) != 0) {
                     const MGLExpr *mem = e->u.call.args[0];
@@ -4043,6 +4102,9 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                         Sym *sy = symtab_lookup(tab, mem->u.var_ref.name);
                         if (sy && (sy->qualifiers &
                                    (MGL_AST_Q_BUFFER | MGL_AST_Q_SHARED)))
+                            mem_ok = 1;
+                        if (!mem_ok && sy && sy->type &&
+                            sy->type->kind == MGLIR_TYPE_ATOMIC_COUNTER)
                             mem_ok = 1;
                     }
                     if (!mem_ok) {

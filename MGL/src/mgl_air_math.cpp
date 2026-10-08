@@ -364,6 +364,22 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         llvm::Value *fl = callFloatIntrinsic(cg, llvm::Intrinsic::floor, a0);
         return cg.b->CreateFSub(a0, fl);
     }
+    if (strcmp(name, "isnan") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        /* GLSL 4.60 §8.3: true iff x is a NaN. */
+        return cg.b->CreateFCmpUNO(a0, a0);
+    }
+    if (strcmp(name, "isinf") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        llvm::Value *ax =
+            callFloatIntrinsic(cg, llvm::Intrinsic::fabs, a0);
+        return cg.b->CreateFCmpOEQ(ax, fpConstOf(cg, ax->getType(),
+                                                 (double)INFINITY));
+    }
     if (strcmp(name, "sign") == 0) {
         if (!need(1)) return nullptr;
         a0 = farg(0);
@@ -720,6 +736,20 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         llvm::Value *h = cg.b->CreateBitCast(av, v2f16);
         return deps.callAirFn(cg, "air.convert.f.v2f32.f.v2f16", v2f32, {h});
     }
+    if (strcmp(name, "packDouble2x32") == 0 ||
+        strcmp(name, "unpackDouble2x32") == 0) {
+        /* GLSL 4.60 §8.4: bit-identical pack between uvec2 and double.
+         * AGX has no f64 ALU — double is an i64 payload (see llvmScalar). */
+        if (!need(1)) return nullptr;
+        llvm::Value *av = arg(0);
+        if (!av) return nullptr;
+        llvm::Type *i64 = llvm::Type::getInt64Ty(*cg.ctx);
+        llvm::Type *v2i32 = llvm::FixedVectorType::get(
+            llvm::Type::getInt32Ty(*cg.ctx), 2);
+        if (strcmp(name, "packDouble2x32") == 0)
+            return cg.b->CreateBitCast(av, i64);
+        return cg.b->CreateBitCast(av, v2i32);
+    }
 
     /* ---- integer / bitfield builtins (GLSL 4.60 §8.8 / §8.3) ---- */
     auto storeOut = [&](uint32_t argIndex, llvm::Value *val) -> bool {
@@ -1015,6 +1045,17 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         llvm::Value *scale =
             callFloatIntrinsic(cg, llvm::Intrinsic::exp2, ef);
         return cg.b->CreateFMul(a0, scale);
+    }
+    if (strcmp(name, "modf") == 0) {
+        /* GLSL 4.60 §8.3: fractional part = return; integer part → out i.
+         * Both keep the sign of x (trunc toward zero). */
+        if (!need(2)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        llvm::Value *ip =
+            callFloatIntrinsic(cg, llvm::Intrinsic::trunc, a0);
+        if (!storeOut(1, ip)) return nullptr;
+        return cg.b->CreateFSub(a0, ip);
     }
     if (strcmp(name, "frexp") == 0) {
         if (!need(2)) return nullptr;
