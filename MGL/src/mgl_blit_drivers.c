@@ -256,23 +256,72 @@ bool mglBlitResolveMsaaSource(void *renderer, void **read_texid_ptr,
                     read_subresource.level, read_subresource.slice,
                     read_subresource.depthPlane, resolve_tex, 0, 0, 0, 0) == 0;
         } else {
-            /* Emulated MS: GL NEAREST resolve picks one sample; use plane 0. */
-            void *copy_blit =
-                mglRenderCreateBlitEncoderBorrowed(mglBdCommandBufferOwner(&areas));
-            if (copy_blit) {
+            /* Emulated MS: GL 4.6 §18.3.1 averages floating-point samples
+             * (filter is ignored). Planes are texture2d_array slices. */
+            void *pipeline = mglBlitEmulatedMsResolvePipeline(renderer);
+            if (pipeline &&
+                mglRenderPassEnsureWritableCommandBufferLocked(
+                    renderer, "blitFramebuffer.emulatedMsResolve")) {
                 if (read_texture_object->is_render_target) {
-                    mglBdSynchronizeTexture(copy_blit, read_texid,
-                                              read_subresource.slice,
-                                              read_subresource.level);
+                    void *sync_src = mglRenderCreateBlitEncoderBorrowed(
+                        mglBdCommandBufferOwner(&areas));
+                    if (sync_src) {
+                        mglBdSynchronizeTexture(sync_src, read_texid,
+                                                read_subresource.slice,
+                                                read_subresource.level);
+                        mglBdEndBlitEncoder(sync_src);
+                    }
                 }
-                mglBdCopyTexture(copy_blit, read_texid, read_subresource.slice,
-                                   read_subresource.level,
-                                   mglBlitOrigin(0u, 0u, 0u),
-                                   mglBlitSize(src_tex_w, src_tex_h, 1u),
-                                   resolve_tex, 0u, 0u,
-                                   mglBlitOrigin(0u, 0u, 0u));
-                mglBdEndBlitEncoder(copy_blit);
-                resolve_encoded = 1;
+                void *encoder = mglRenderCreateComputeEncoderBorrowed(
+                    mglBdCommandBufferOwner(&areas));
+                if (encoder) {
+                    typedef struct {
+                        uint32_t sampleCount;
+                        uint32_t baseSlice;
+                        uint32_t sizeX;
+                        uint32_t sizeY;
+                    } MGLEmulatedMSResolveParams;
+                    MGLEmulatedMSResolveParams params = {
+                        .sampleCount =
+                            (uint32_t)read_texture_object->samples,
+                        .baseSlice = (uint32_t)read_subresource.slice,
+                        .sizeX = (uint32_t)src_tex_w,
+                        .sizeY = (uint32_t)src_tex_h,
+                    };
+                    (void)mglRenderSetComputePipelineState(encoder, pipeline);
+                    (void)mglRenderSetComputeTexture(encoder, read_texid, 0u);
+                    (void)mglRenderSetComputeTexture(encoder, resolve_tex, 1u);
+                    (void)mglRenderSetComputeBytes(encoder, &params,
+                                                   sizeof(params), 0u);
+                    const uint32_t tgW = 16u;
+                    const uint32_t tgH = 16u;
+                    (void)mglRenderDispatchComputeThreads(
+                        encoder, (uint32_t)src_tex_w, (uint32_t)src_tex_h, 1u,
+                        tgW, tgH, 1u);
+                    (void)mglRenderEndComputeEncoder(encoder);
+                    resolve_encoded = 1;
+                }
+            }
+            if (!resolve_encoded) {
+                /* Fallback: copy plane 0 (previous behaviour). */
+                void *copy_blit = mglRenderCreateBlitEncoderBorrowed(
+                    mglBdCommandBufferOwner(&areas));
+                if (copy_blit) {
+                    if (read_texture_object->is_render_target) {
+                        mglBdSynchronizeTexture(copy_blit, read_texid,
+                                                read_subresource.slice,
+                                                read_subresource.level);
+                    }
+                    mglBdCopyTexture(copy_blit, read_texid,
+                                     read_subresource.slice,
+                                     read_subresource.level,
+                                     mglBlitOrigin(0u, 0u, 0u),
+                                     mglBlitSize(src_tex_w, src_tex_h, 1u),
+                                     resolve_tex, 0u, 0u,
+                                     mglBlitOrigin(0u, 0u, 0u));
+                    mglBdEndBlitEncoder(copy_blit);
+                    resolve_encoded = 1;
+                }
             }
         }
         if (!resolve_encoded) {

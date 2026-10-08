@@ -11944,10 +11944,12 @@ static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
  * fallback PSO that does not run imageStore. */
 /* GL 4.6 §13.5: clip against clip_distance[i] >= 0.  AGX [[clip_distance]]
  * drops a whole line when either endpoint is negative; interpolate the
- * distances as ordinary varyings and suppress the fragment color here.
+ * distances as ordinary varyings and kill coverage here.
  * air.discard_fragment in this CFG crashes the AGX metallib compiler
- * (XPC_ERROR_CONNECTION_INTERRUPTED), so return a cleared color instead
- * (CTS clears to 0 before drawing). */
+ * (XPC_ERROR_CONNECTION_INTERRUPTED).  Writing a cleared color was wrong
+ * when the clear is opaque (e.g. (0,0,0,1)): clipped fragments must leave
+ * the framebuffer unchanged.  Force [[sample_mask]] = 0 instead (Metal
+ * honours it even on non-MSAA targets). */
 static llvm::Value *finishFragReturn(Codegen &cg, llvm::Value *ret)
 {
     if (!cg.emulateClipDiscard || !ret)
@@ -11968,8 +11970,30 @@ static llvm::Value *finishFragReturn(Codegen &cg, llvm::Value *ret)
         llvm::Value *d = cg.b->CreateExtractValue(clip, i);
         anyNeg = cg.b->CreateOr(anyNeg, cg.b->CreateFCmpOLT(d, zero));
     }
+    if (cg.hasSampleMask && ret->getType()->isStructTy()) {
+        const unsigned nFields = ret->getType()->getStructNumElements();
+        if (nFields > 0 &&
+            ret->getType()->getStructElementType(nFields - 1)->isIntegerTy(32)) {
+            llvm::Value *curMask =
+                cg.b->CreateExtractValue(ret, nFields - 1);
+            llvm::Value *newMask = cg.b->CreateSelect(
+                anyNeg, cg.b->getInt32(0), curMask);
+            return cg.b->CreateInsertValue(ret, newMask, nFields - 1);
+        }
+    }
+    /* Fallback when the FS has no sample_mask output: opaque black keeps
+     * alpha for clears to (0,0,0,1); RGB still wrong if clear ≠ black. */
     if (ret->getType()->isFloatingPointTy() || ret->getType()->isVectorTy()) {
         llvm::Value *cleared = llvm::Constant::getNullValue(ret->getType());
+        if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(ret->getType())) {
+            if (vt->getNumElements() >= 4 &&
+                vt->getElementType()->isFloatingPointTy()) {
+                cleared = cg.b->CreateInsertElement(
+                    cleared,
+                    llvm::ConstantFP::get(vt->getElementType(), 1.0),
+                    (uint64_t)3);
+            }
+        }
         return cg.b->CreateSelect(anyNeg, cleared, ret);
     }
     if (ret->getType()->isStructTy() &&
@@ -11977,6 +12001,15 @@ static llvm::Value *finishFragReturn(Codegen &cg, llvm::Value *ret)
         llvm::Type *f0 = ret->getType()->getStructElementType(0);
         llvm::Value *c0 = cg.b->CreateExtractValue(ret, 0);
         llvm::Value *cleared0 = llvm::Constant::getNullValue(f0);
+        if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(f0)) {
+            if (vt->getNumElements() >= 4 &&
+                vt->getElementType()->isFloatingPointTy()) {
+                cleared0 = cg.b->CreateInsertElement(
+                    cleared0,
+                    llvm::ConstantFP::get(vt->getElementType(), 1.0),
+                    (uint64_t)3);
+            }
+        }
         llvm::Value *new0 = cg.b->CreateSelect(anyNeg, cleared0, c0);
         return cg.b->CreateInsertValue(ret, new0, 0);
     }
@@ -13190,9 +13223,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool usesSampleMaskIn =
         !isVS && !isTES && !isKernel &&
         mglFrontendBuiltinUsed(&mod, tu, "gl_SampleMaskIn");
+    /* Also emit [[sample_mask]] when FS clip-distance emulation needs to
+     * kill coverage without air.discard_fragment (see finishFragReturn). */
     const bool usesSampleMask =
         !isVS && !isTES && !isKernel &&
-        mglFrontendBuiltinUsed(&mod, tu, "gl_SampleMask");
+        (mglFrontendBuiltinUsed(&mod, tu, "gl_SampleMask") ||
+         (fs_clip_emulate && usesFragmentClipDistance));
     const bool usesNumSamples =
         !isVS && !isTES && !isKernel &&
         mglFrontendBuiltinUsed(&mod, tu, "gl_NumSamples");

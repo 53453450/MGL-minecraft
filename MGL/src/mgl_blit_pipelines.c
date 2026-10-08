@@ -326,6 +326,31 @@ void *mglBlitMsaaIntegerResolvePipeline(void *renderer, int signedInteger)
     return pipeline;
 }
 
+void *mglBlitEmulatedMsResolvePipeline(void *renderer)
+{
+    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    void *cached = mglBlitLookupAuxComputePipeline(
+        MGL_RENDER_AUX_COMPUTE_EMULATED_MS_RESOLVE, 0u);
+    if (cached) return cached;
+
+    char error[512] = {0};
+    void *pipeline = mglBlitCreateAuxComputePipelineFromAsset(
+        "emulated_ms_resolve", "mgl_emulated_ms_resolve_float",
+        MGL_RENDER_AUX_COMPUTE_EMULATED_MS_RESOLVE, 0u, error,
+        sizeof(error));
+    if (!pipeline) {
+        fprintf(stderr,
+                "MGL ERROR: emulated MS resolve asset pipeline create failed "
+                "error=%s\n",
+                error[0] ? error : "(none)");
+        if (areas.ctx)
+            mglDispatchError(areas.ctx, __func__,
+                             (GLenum)mglRenderErrorInvalidOperation());
+        return NULL;
+    }
+    return pipeline;
+}
+
 void *mglBlitClearRectPipeline(void *renderer, uint32_t colorFormat,
                               uint32_t depthFormat, uint32_t stencilFormat,
                               uint32_t colorWriteMask, int writesDepth)

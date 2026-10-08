@@ -66,6 +66,9 @@ void *mglBlitScaledComputePipelineForPixelFormat(void *renderer, uint32_t pixel_
 /* MSAA integer resolve compute pipeline. */
 void *mglBlitMsaaIntegerResolvePipeline(void *renderer, int signed_integer);
 
+/* Emulated MS (texture2d_array planes) float average-resolve pipeline. */
+void *mglBlitEmulatedMsResolvePipeline(void *renderer);
+
 /* Clear-rect pipeline for the given colour/depth/stencil formats and write
  * masks (color_write_mask in MGLColorWriteMask bits, None = no colour); a
  * valid stencil format means the clear writes stencil. */
