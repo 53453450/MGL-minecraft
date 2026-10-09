@@ -2184,6 +2184,44 @@ static MGLStmt *parse_decl_stmt(MGLParser *p, uint32_t line)
     return s;
 }
 
+/* GLSL 4.60 §6.4: a case label is a *constant expression*, not necessarily a
+ * literal token.  Real shaders rely on that — Sodium 0.5.3/0.5.13's
+ * `assets/sodium/shaders/include/fog.glsl` labels its switch with `const int`
+ * identifiers (FOG_SHAPE_SPHERICAL / FOG_SHAPE_CYLINDRICAL).  The AST keeps
+ * such a label as MGL_EXPR_VAR_REF, and every consumer downstream (sema, the
+ * AIR statement codegen) only understands MGL_EXPR_LITERAL, so the program
+ * was rejected with "codegen: case value must be a constant integer".
+ *
+ * Fold the label into a literal while the compile-time constant table is still
+ * available.  A label that is not a constant expression is left untouched so
+ * it keeps failing with the existing diagnostic instead of silently becoming
+ * an arbitrary value. */
+static void fold_case_label(MGLParser *p, MGLExpr **value)
+{
+    if (!p || !value || !*value) {
+        return;
+    }
+    MGLExpr *e = *value;
+    if (e->kind == MGL_EXPR_LITERAL) {
+        return;
+    }
+    MGLConstVal cv;
+    if (!eval_const_val(p, e, &cv) || cv.size != 1) {
+        return;
+    }
+    if (cv.base != MGL_AST_TYPE_INT && cv.base != MGL_AST_TYPE_UINT) {
+        return;
+    }
+    MGLExpr *lit = expr_alloc(p, MGL_EXPR_LITERAL, e->line);
+    if (!lit) {
+        return;
+    }
+    lit->u.literal.base = cv.base;
+    lit->u.literal.value = (double)const_val_to_int(&cv);
+    free_expr(e);
+    *value = lit;
+}
+
 static MGLStmt *parse_statement(MGLParser *p)
 {
     uint32_t line = tk_line(p);
@@ -2282,6 +2320,7 @@ static MGLStmt *parse_statement(MGLParser *p)
             return NULL;
         }
         s->u.casex.value = parse_expression(p);
+        fold_case_label(p, &s->u.casex.value);
         expect_punct(p, ":");
         return s;
     }
