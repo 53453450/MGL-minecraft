@@ -39,6 +39,30 @@ typedef struct GLMContextRec_t *GLMContext;
 
 #include "mgl_types_program.h"
 
+/* ---------------------------------------------------------------------------
+ * AIR codegen epoch
+ *
+ * Bump MGL_AIR_CODEGEN_EPOCH whenever the AIR backend changes what it emits
+ * for a given GLSL input: argument order, the flat-uint split-float carrier
+ * expansion, air.* metadata argument indices, buffer/attribute layout, ...
+ *
+ * The value is part of the on-disk pipeline binary archive's file name, so a
+ * bump turns every archive written by an older build into a clean miss
+ * instead of a silent reuse of PSOs that were compiled from different AIR.
+ * Without it, rebuilding MGL after a shader-compiler change still loads the
+ * previous run's archive and can put pre-change pipelines back on screen.
+ *
+ * History:
+ *   1 - fragment buffer argument index was "one slot per varying symbol", so a
+ *       flat uint expanded into two float carriers left the ubo metadata one
+ *       slot too low, colliding with the last varying's argument index.
+ *   2 - argument indices derived from the real parameter slots, plus a
+ *       structural verification guard over the emitted argument metadata.
+ */
+/* Plain integer (no u suffix): the pipeline archive key stringizes this macro,
+ * and a suffix would end up inside the file name. */
+#define MGL_AIR_CODEGEN_EPOCH 2
+
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -42,6 +42,7 @@
 #include "mgl_pipeline_cache_path.h" /* archive path (log 203) */
 #include "mgl_pipeline_cache_state.h"
 #include "mgl_render.h"
+#include "mgl_shader_abi.h" /* MGL_AIR_CODEGEN_EPOCH (archive invalidation) */
 #include "mgl_types_state.h"
 
 #ifndef MGL_PLATFORM_SHELL_SMOKE
@@ -112,13 +113,24 @@ static void mglPcSetArchiveRequested(id self, MGLPcBool value)
 /* v5 excludes either kind of incomplete render pipeline and isolates both
  * sanitizer builds and archive producers. The producer boundary prevents the
  * temporary A/B implementations from sharing mutable state; the archive-aware
- * PSO creation path below separately prevents repeated adds on cache hits. */
+ * PSO creation path below separately prevents repeated adds on cache hits.
+ *
+ * The AIR codegen epoch is appended so that a shader-compiler change (see
+ * MGL_AIR_CODEGEN_EPOCH in mgl_shader_abi.h) cannot reuse PSOs that were
+ * compiled from different AIR: the file name changes, the old archive is a
+ * clean miss, and the pipeline is rebuilt. */
+#define MGL_PC_SCHEMA_CAT2(a, b) a "-air" #b
+#define MGL_PC_SCHEMA_CAT(a, b) MGL_PC_SCHEMA_CAT2(a, b)
+
 #if __has_feature(address_sanitizer)
-static const char *const kMGLPipelineArchiveBuildSchema = "v5-asan";
+static const char *const kMGLPipelineArchiveBuildSchema =
+    MGL_PC_SCHEMA_CAT("v5-asan", MGL_AIR_CODEGEN_EPOCH);
 #elif __has_feature(thread_sanitizer)
-static const char *const kMGLPipelineArchiveBuildSchema = "v5-tsan";
+static const char *const kMGLPipelineArchiveBuildSchema =
+    MGL_PC_SCHEMA_CAT("v5-tsan", MGL_AIR_CODEGEN_EPOCH);
 #else
-static const char *const kMGLPipelineArchiveBuildSchema = "v5";
+static const char *const kMGLPipelineArchiveBuildSchema =
+    MGL_PC_SCHEMA_CAT("v5", MGL_AIR_CODEGEN_EPOCH);
 #endif
 
 static id mglPcInit(id self, SEL _cmd, MGLPcBool psoDedupEnabled,
