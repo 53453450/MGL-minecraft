@@ -58,6 +58,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
@@ -13597,8 +13598,19 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
         }
     }
-    if ((isVS || isTES || isKernel) && hasBuffer)
+    /* Remember where the plain (non-SSBO/UBO) buffer argument actually landed.
+     * Recomputing that index later is wrong whenever a fragment varying expands
+     * to more than one ABI slot -- a split `flat uint` occupies two float
+     * arguments, an array one slot per element, a matrix one per column --
+     * because the arithmetic below used to count a single slot per varying
+     * symbol.  The resulting off-by-N attached `noalias`/`readonly`, which are
+     * pointer-only attributes, to a scalar varying.  That is invalid AIR and
+     * crashes Apple's metallib compiler (XPC_ERROR_CONNECTION_INTERRUPTED). */
+    uint32_t hasBufferArgIdx = UINT32_MAX;
+    if ((isVS || isTES || isKernel) && hasBuffer) {
+        hasBufferArgIdx = (uint32_t)paramTys.size();
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+    }
     for (VarSym &v : syms)
         if (v.kind == VarSym::SSBO || v.kind == VarSym::UBO ||
             v.kind == VarSym::ATOMIC_COUNTER) {
@@ -13804,8 +13816,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::Type::getFloatTy(ctx), 3));
         paramTys.push_back(llvm::Type::getInt32Ty(ctx));
     } else {
-        if (hasBuffer)
+        if (hasBuffer) {
+            hasBufferArgIdx = (uint32_t)paramTys.size();
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+        }
         if (usesFragCoord)
             paramTys.push_back(llvm::FixedVectorType::get(
                 llvm::Type::getFloatTy(ctx), 4));
@@ -13876,25 +13890,41 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     if (hasBuffer) {
         unsigned bufIdx;
-        if (isVS || isTES || isKernel)
+        if (hasBufferArgIdx != UINT32_MAX) {
+            /* Exact slot recorded when the argument was pushed. */
+            bufIdx = hasBufferArgIdx;
+        } else if (isVS || isTES || isKernel)
             bufIdx = (isCapture ? 1 : 0) + (isCapture ? 0 : attrCount);
         else {
             /* fragment: buffer sits after varyings, before the optional
-             * fragCoord position arg */
+             * fragCoord position arg.  Count the slots the varying ABI really
+             * occupies instead of one per varying symbol. */
             bufIdx = (isCapture ? 1 : 0) + ssboCount + uboCount + acCount +
                      (needsBufferSizeBuffer ? 1 : 0) + texArgSlots +
                      imageCount;
             for (VarSym &v : syms)
-                if (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING)
-                    bufIdx++;
+                if (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING) {
+                    if (uintUsesSplitFloatCarrier(v.type, has_gs))
+                        bufIdx += 2;
+                    else if (v.type.isArray() && v.type.arr > 0)
+                        bufIdx += (uint32_t)v.type.arr;
+                    else if (v.type.isMatrix() && v.type.cols > 0)
+                        bufIdx += (uint32_t)v.type.cols;
+                    else
+                        bufIdx += 1;
+                }
             if (usesFragmentClipDistance)
                 bufIdx += activeClipCount;
             if (usesFragmentCullDistance)
                 bufIdx += activeCullCount;
         }
-        fn->addParamAttr(bufIdx, llvm::Attribute::AttrKind::NoAlias);
-        if (!isKernel)
-            fn->addParamAttr(bufIdx, llvm::Attribute::AttrKind::ReadOnly);
+        /* noalias/readonly only carry meaning on a pointer; attaching them to a
+         * scalar argument is invalid AIR and crashes the GPU compiler. */
+        if (bufIdx < paramTys.size() && paramTys[bufIdx]->isPointerTy()) {
+            fn->addParamAttr(bufIdx, llvm::Attribute::AttrKind::NoAlias);
+            if (!isKernel)
+                fn->addParamAttr(bufIdx, llvm::Attribute::AttrKind::ReadOnly);
+        }
     }
     if (isCapture)
         fn->addParamAttr(0, llvm::Attribute::AttrKind::NoAlias);
@@ -15888,7 +15918,23 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             for (VarSym &v : syms) {
                 if (isVS || isTES || isKernel || v.kind != VarSym::VARYING)
                     continue;
-                idx += v.type.isArray() ? (uint32_t)v.type.arr : 1u;
+                /* Count the argument slots the varying ABI really occupies:
+                 * a split `flat uint` is carried by two floats, an array one
+                 * slot per element, a matrix one per column.  Counting a
+                 * single slot per varying symbol short-changes the buffer by
+                 * one slot per such varying, so the `air.buffer` metadata
+                 * index lands on -- and collides with -- the last varying
+                 * argument.  Two arguments sharing one index is invalid AIR
+                 * and crashes Apple's metallib compiler (XPC
+                 * ERROR_CONNECTION_INTERRUPTED). */
+                if (uintUsesSplitFloatCarrier(v.type, has_gs))
+                    idx += 2u;
+                else if (v.type.isArray() && v.type.arr > 0)
+                    idx += (uint32_t)v.type.arr;
+                else if (v.type.isMatrix() && v.type.cols > 0)
+                    idx += (uint32_t)v.type.cols;
+                else
+                    idx += 1u;
             }
         }
         std::vector<llvm::Metadata *> structFields;
@@ -17267,6 +17313,109 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                          };
                          return idx(a) < idx(b);
                      });
+    /* --- R3 regression guard -------------------------------------------
+     * Validate the emitted argument-index metadata against the real parameter
+     * list before it is serialized.  An off-by-N in the buffer index is what
+     * produced the malformed metallibs that crashed Apple's metallib compiler:
+     * two arguments ended up sharing one index, and an `air.buffer` node
+     * pointed at a scalar varying.  Both are fatal for the GPU compiler but
+     * invisible to a `rc == 0` only test, which is why this class of bug sat
+     * undetected.  Always warn; fail the compile when MGL_AIR_VERIFY_FAIL is
+     * set so the regression suite cannot let it come back. */
+    {
+        auto nodeIdx = [](const llvm::Metadata *m, bool *ok) -> long {
+            auto *n = llvm::dyn_cast<llvm::MDNode>(m);
+            if (!n || n->getNumOperands() == 0) { if (ok) *ok = false; return -1; }
+            auto *c = llvm::dyn_cast<llvm::ConstantAsMetadata>(
+                n->getOperand(0).get());
+            if (!c) { if (ok) *ok = false; return -1; }
+            auto *ci = llvm::dyn_cast<llvm::ConstantInt>(c->getValue());
+            if (!ci) { if (ok) *ok = false; return -1; }
+            return (long)ci->getZExtValue();
+        };
+        auto isBufferNode = [](const llvm::Metadata *m) -> bool {
+            auto *n = llvm::dyn_cast<llvm::MDNode>(m);
+            if (!n) return false;
+            for (unsigned i = 1; i < n->getNumOperands(); i++) {
+                auto *s = llvm::dyn_cast<llvm::MDString>(n->getOperand(i).get());
+                if (s && s->getString() == "air.buffer") return true;
+            }
+            return false;
+        };
+        const char *stageName = isKernel ? "kernel"
+                                         : (isVS ? "vertex"
+                                                 : (isTES ? "tess-eval"
+                                                          : "fragment"));
+        const bool fatal = mgl_env_flag_enabled("MGL_AIR_VERIFY_FAIL");
+        int problems = 0;
+        for (size_t i = 0; i < argNodes.size(); i++) {
+            bool ok = true;
+            const long ix = nodeIdx(argNodes[i], &ok);
+            if (!ok || ix < 0) continue;
+            if ((size_t)ix >= paramTys.size()) {
+                fprintf(stderr,
+                        "MGL AIR VERIFY (%s): argument metadata index %ld is "
+                        "out of range (function has %zu parameters)\n",
+                        stageName, ix, paramTys.size());
+                problems++;
+                continue;
+            }
+            /* Sorted by index: a neighbour with the same index means two
+             * arguments claim the same ABI slot. */
+            if (i + 1 < argNodes.size()) {
+                bool ok2 = true;
+                const long ix2 = nodeIdx(argNodes[i + 1], &ok2);
+                if (ok2 && ix2 == ix) {
+                    fprintf(stderr,
+                            "MGL AIR VERIFY (%s): duplicate argument index "
+                            "%ld -- two arguments claim one ABI slot\n",
+                            stageName, ix);
+                    problems++;
+                }
+            }
+            if (isBufferNode(argNodes[i]) &&
+                !paramTys[(size_t)ix]->isPointerTy()) {
+                fprintf(stderr,
+                        "MGL AIR VERIFY (%s): 'air.buffer' metadata at index "
+                        "%ld names a non-pointer argument\n",
+                        stageName, ix);
+                problems++;
+            }
+        }
+        /* noalias/readonly are pointer-only parameter attributes. */
+        for (unsigned a = 0; a < fn->getFunctionType()->getNumParams(); a++) {
+            if (paramTys[a]->isPointerTy()) continue;
+            if (fn->hasParamAttribute(a, llvm::Attribute::AttrKind::NoAlias) ||
+                fn->hasParamAttribute(a, llvm::Attribute::AttrKind::ReadOnly)) {
+                fprintf(stderr,
+                        "MGL AIR VERIFY (%s): pointer-only attribute "
+                        "(noalias/readonly) on scalar argument %u\n",
+                        stageName, a);
+                problems++;
+            }
+        }
+        /* Diagnostic only -- deliberately NOT counted in `problems`.
+         * AIR relies on opaque struct argument types and custom intrinsics
+         * that stock llvm::verifyModule flags even for metallibs Metal
+         * accepts (e.g. GS kernels' stored-value/pointer mismatches), so
+         * making it fatal would reject valid shaders.  Enable with
+         * MGL_AIR_VERIFY=1 when hunting IR problems by hand. */
+        if (mgl_env_flag_enabled("MGL_AIR_VERIFY")) {
+            std::string verifyMsg;
+            llvm::raw_string_ostream vos(verifyMsg);
+            if (llvm::verifyModule(module, &vos))
+                fprintf(stderr, "MGL AIR VERIFY (%s): llvm::verifyModule "
+                                "reported: %s\n", stageName,
+                        verifyMsg.c_str());
+        }
+        if (problems && fatal) {
+            snprintf(err_buf, err_cap,
+                     "AIR argument metadata verification failed (%d problem(s);"
+                     " see MGL AIR VERIFY messages)", problems);
+            if (own_session) mglFrontendSessionDestroy(sess);
+            return -1;
+        }
+    }
     std::vector<llvm::Metadata *> stageElems = {
         llvm::ValueAsMetadata::get(fn),
         llvm::MDNode::get(ctx, outNodes)};
