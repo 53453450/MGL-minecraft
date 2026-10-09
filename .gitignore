@@ -33,3 +33,7 @@ TestResults.qpa
 .workbuddy/
 tools/
 .venv-typesafe/
+# Build products of the standalone test targets, and Python bytecode caches
+__pycache__/
+*.dSYM/
+test_legacy_compat/test_xfb_plan
