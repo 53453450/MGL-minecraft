@@ -93,6 +93,7 @@ static const char *kMglExtensions[] = {
     /* Integer/bool mix(a,b,genBType): sema + AIR CreateSelect already present;
      * CTS shader_integer_mix.* gates on this string (desktop always). */
     "GL_EXT_shader_integer_mix",
+    "GL_ARB_texture_view",
 };
 static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
               "MGL_NUM_EXTENSIONS must match kMglExtensions");
