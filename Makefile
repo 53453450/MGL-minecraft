@@ -583,6 +583,7 @@ $(build_dir)/test_regression: test_regression/main.c $(build_dir)/libmgl.dylib $
 build-test-regression: $(build_dir)/test_regression
 
 test-regression: build-test-regression
+	MGL_AIR_VERIFY_FAIL=1 \
 	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_regression \
 		--golden-dir $(abspath MGL_Golden_Images)
 
