@@ -19,8 +19,10 @@
 #include "mgl_draw_issue.h"        /* mglDrawHostDevice */
 #include "mgl_render.h"
 #include "mgl_metal_ref.h"
+#include "glm_context.h"
 
 #include <stdio.h>
+#include <string.h>
 
 /* Returns +1. */
 static void *mglTextureCreateDefaultSampler(void *device)
@@ -33,13 +35,55 @@ static void *mglTextureCreateDefaultSampler(void *device)
     return NULL;
 }
 
+/* Metal always filters cube faces seamlessly.  With GL seamless disabled
+ * (the default), approximate non-seamless edges by dropping bilinear so
+ * adjacent-face colors do not bleed — needed when CTS leaves cross-type
+ * cube views at the default LINEAR mag filter. */
+static void mglTextureAdjustCubeSamplerForSeamless(
+    TextureParameter *params, uint32_t target)
+{
+    if (!params ||
+        (target != GL_TEXTURE_CUBE_MAP &&
+         target != GL_TEXTURE_CUBE_MAP_ARRAY)) {
+        return;
+    }
+    GLMContext ctx = MGLgetCurrentContext();
+    if (ctx && ctx->active_state &&
+        ctx->active_state->caps.texture_cube_map_seamless) {
+        return;
+    }
+    params->mag_filter = GL_NEAREST;
+    switch (params->min_filter) {
+        case GL_LINEAR:
+            params->min_filter = GL_NEAREST;
+            break;
+        case GL_LINEAR_MIPMAP_NEAREST:
+            params->min_filter = GL_NEAREST_MIPMAP_NEAREST;
+            break;
+        case GL_LINEAR_MIPMAP_LINEAR:
+            params->min_filter = GL_NEAREST_MIPMAP_LINEAR;
+            break;
+        default:
+            break;
+    }
+}
+
 void *mglTextureCreateSamplerForTexParam(const TextureParameter *tex_param,
                                          uint32_t target)
 {
     mglMetalCountCreate(MGLMetalKindSampler);
     void *sampler = NULL;
     char error[256] = {0};
-    if (mglRenderCreateSamplerForGL(tex_param, target, &sampler, error,
+    TextureParameter local;
+    const TextureParameter *use = tex_param;
+    if (tex_param &&
+        (target == GL_TEXTURE_CUBE_MAP ||
+         target == GL_TEXTURE_CUBE_MAP_ARRAY)) {
+        memcpy(&local, tex_param, sizeof(local));
+        mglTextureAdjustCubeSamplerForSeamless(&local, target);
+        use = &local;
+    }
+    if (mglRenderCreateSamplerForGL(use, target, &sampler, error,
                                     sizeof(error)) == 0 &&
         sampler) {
         return sampler;

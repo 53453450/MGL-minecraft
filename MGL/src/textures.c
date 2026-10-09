@@ -6928,8 +6928,19 @@ void mglTextureView(GLMContext ctx, GLuint texture, GLenum target, GLuint origte
     Texture *root = orig->view_root ? orig->view_root : orig;
     if (!root->view_root_deleted) {
         /* Pending CPU uploads must reach the shared store before every
-         * family member starts reading it back from Metal. */
+         * family member starts reading it back from Metal.  For MS parents,
+         * also force RenderTarget usage *before* the view is registered so
+         * BindViewStorage does not recreate the store under views>0. */
+        const int root_ms =
+            root->target == GL_TEXTURE_2D_MULTISAMPLE ||
+            root->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+        if (root_ms) {
+            root->is_render_target = GL_TRUE;
+        }
         mglRendererBindTexture(ctx, root);
+        if (root_ms) {
+            root->is_render_target = GL_FALSE;
+        }
         ERROR_CHECK_RETURN(root->mtl_data && !root->mtl_data_is_fallback,
                            GL_OUT_OF_MEMORY);
         root->metal_data_authoritative = GL_TRUE;

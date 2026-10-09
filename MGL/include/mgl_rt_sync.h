@@ -56,15 +56,16 @@ extern "C" {
  * that is also a render target qualifies. */
 static inline bool mglTextureCanUseGLSampledRenderTargetCopy(Texture *tex)
 {
+    /* Multisample targets are emulated as multi-slice 2DArray sample planes.
+     * The Y-flipped sampled-copy path only maintains a single 2D (or mismatched)
+     * copy and must not intercept sampler2DMS* texelFetch. */
     return tex &&
            (tex->target == GL_TEXTURE_2D ||
             tex->target == GL_TEXTURE_RECTANGLE ||
             tex->target == GL_TEXTURE_3D ||
             tex->target == GL_TEXTURE_2D_ARRAY ||
             tex->target == GL_TEXTURE_CUBE_MAP ||
-            tex->target == GL_TEXTURE_CUBE_MAP_ARRAY ||
-            tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
-            tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) &&
+            tex->target == GL_TEXTURE_CUBE_MAP_ARRAY) &&
            tex->is_render_target;
 }
 

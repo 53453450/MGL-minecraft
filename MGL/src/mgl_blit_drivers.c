@@ -215,7 +215,7 @@ bool mglBlitResolveMsaaSource(void *renderer, void **read_texid_ptr,
     const MGLRenderTextureInfo read_info = mglBdTextureInfo(read_texid);
     const MGLRenderTextureInfo draw_info = mglBdTextureInfo(draw_texid);
     /* Native Metal MSAA, or the AIR FBO path that stores MS planes as a
-     * 2DArray (sample_count==1, array_length=GL samples). */
+     * 2DArray (sample_count==1, array_length = layers * 8). */
     const int native_msaa = read_info.sample_count > 1u;
     const int emulated_msaa =
         !native_msaa && read_texture_object && read_texture_object->samples > 1u &&

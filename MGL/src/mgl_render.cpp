@@ -1299,14 +1299,18 @@ int mglRenderEmulateMSAsArray(uint32_t tex_type, uint32_t samples, uint64_t dept
         tex_type != MGLTextureType2DMultisampleArray) {
         return 0;
     }
+    /* Fixed stride matches AIR texelFetch / textureSize for sampler2DMSArray
+     * (flat = layer * 8 + sample).  Non-array MS is one logical layer so the
+     * store is always 8 planes — needed for TextureView MS→MS_ARRAY where the
+     * view exposes layer count via array_length/8. */
     const uint64_t kMsPlaneStride = 8u;
     uint32_t sc = 1u;
     uint64_t d = 1u;
     uint64_t arr = 1u;
     uint32_t ot = MGLTextureType2DArray;
-    uint32_t smp = samples < 2u ? 2u : samples;
+    (void)samples;
     if (tex_type == MGLTextureType2DMultisample) {
-        arr = smp < 1u ? 1u : smp;
+        arr = kMsPlaneStride;
     } else {
         uint64_t layers = depth < 1u ? 1u : depth;
         arr = layers * kMsPlaneStride;

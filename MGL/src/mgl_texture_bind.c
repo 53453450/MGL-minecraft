@@ -152,9 +152,9 @@ static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
         view_type = info.texture_type;
     }
     /* GL view_{min,num}_layer count array layers.  Emulated MS storage packs
-     * sample planes into Metal array slices (non-array: one plane per sample;
-     * MS array: 8 planes per GL layer — see mglRenderEmulateMSAsArray /
-     * AIR texelFetch).  Expand the Metal slice range accordingly. */
+     * sample planes into Metal array slices with a fixed stride of 8 per GL
+     * layer (non-array MS = one layer) — see mglRenderEmulateMSAsArray /
+     * AIR texelFetch.  Expand the Metal slice range accordingly. */
     uint64_t slice_loc = tex->view_min_layer;
     uint64_t slice_len = tex->view_num_layers;
     const GLenum root_target = root->target;
@@ -166,15 +166,11 @@ static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
         tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
     if ((root_ms || view_ms) &&
         info.texture_type == MGLTextureType2DArray && slice_len > 0u) {
-        if (root_target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
-            const uint64_t stride = 8u;
+        const uint64_t stride = 8u;
+        if (root_target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ||
+            root_target == GL_TEXTURE_2D_MULTISAMPLE) {
             slice_loc = (uint64_t)tex->view_min_layer * stride;
             slice_len = (uint64_t)tex->view_num_layers * stride;
-        } else if (root_target == GL_TEXTURE_2D_MULTISAMPLE) {
-            /* Parent planes == sample count; GL layer is always a single
-             * logical layer covering every sample plane. */
-            slice_loc = 0u;
-            slice_len = info.array_length ? info.array_length : 1u;
         }
         if (slice_loc >= info.array_length) {
             slice_loc = 0u;
@@ -297,11 +293,29 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
               requiredMipLevels < existingInfo.mipmap_level_count));
         if (existingTexture && (usageMismatch || mipCountMismatch)) {
             fprintf(stderr,
-                    "MGL WARNING: Recreating texture %u for render-target use (old usage=0x%lx oldMips=%lu requiredMips=%lu)\n",
+                    "MGL WARNING: Recreating texture %u for render-target use "
+                    "(old usage=0x%lx oldMips=%lu requiredMips=%lu "
+                    "views=%u)\n",
                     tex->name,
                     (unsigned long)existingInfo.usage,
                     (unsigned long)existingInfo.mipmap_level_count,
-                    (unsigned long)requiredMipLevels);
+                    (unsigned long)requiredMipLevels,
+                    (unsigned)tex->view_count);
+
+            /* Existing TextureViews alias the old store; drop their Metal
+             * views so the next bind rebuilds against the replacement. */
+            for (GLuint vi = 0u; vi < tex->view_count; vi++) {
+                Texture *v = tex->views[vi];
+                if (!v) {
+                    continue;
+                }
+                mglSafeReleaseMetalObj((void **)&v->mtl_data);
+                mglTextureReleaseGLSampledCopy(v);
+                if (v->view_parent_mtl) {
+                    mglTextureBindReleaseAlias(v->view_parent_mtl);
+                    v->view_parent_mtl = NULL;
+                }
+            }
 
             /* Keep the old texture alive so its GPU data can be blitted to the
              * new one after tex->mtl_data is released. */
