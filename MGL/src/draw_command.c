@@ -4617,7 +4617,12 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
             MGL_PERF_INC(g_mglFlushReasonCapacitySinceSwap);
             mglFlushCommandBuffer(ctx);
             if (cb->batch_count >= maxBatchCount) {
+                /* The flush above did not free a batch slot (it is a no-op when
+                 * the renderer handle is gone), so this draw cannot be stored.
+                 * Report it: a silently dropped draw is indistinguishable from
+                 * missing geometry and never reaches any PERF counter. */
                 fprintf(stderr, "MGL Error: mglAppendDrawCommand: batch buffer full after flush\n");
+                mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
                 MGL_SIGNPOST_END(RecordDrawCommand);
                 return;
             }
@@ -4653,6 +4658,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         if (!can_stream_merge) {
             if (!mglInitializeOrShareBatchStateSnapshot(ctx, cb, batch)) {
                 fprintf(stderr, "MGL Error: mglAppendDrawCommand: state snapshot alloc failed\n");
+                mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
                 mglReleaseBatch(ctx, batch);
                 memset(batch, 0, sizeof(*batch));
                 MGL_SIGNPOST_END(RecordDrawCommand);
@@ -4687,6 +4693,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                     mglFlushCommandBuffer(ctx);
                     if (cb->batch_count >= maxBatchCount) {
                         fprintf(stderr, "MGL Error: mglAppendDrawCommand: fallback batch buffer full after flush\n");
+                        mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
                         MGL_SIGNPOST_END(RecordDrawCommand);
                         return;
                     }
@@ -4699,6 +4706,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 batch->uses_elements = cmd_uses_elements;
                 if (!mglInitializeOrShareBatchStateSnapshot(ctx, cb, batch)) {
                     fprintf(stderr, "MGL Error: mglAppendDrawCommand: fallback state snapshot alloc failed\n");
+                    mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
                     mglReleaseBatch(ctx, batch);
                     memset(batch, 0, sizeof(*batch));
                     MGL_SIGNPOST_END(RecordDrawCommand);
@@ -4719,6 +4727,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         }
         if (newCapacity <= batch->command_count) {
             fprintf(stderr, "MGL Error: mglAppendDrawCommand: command capacity exhausted\n");
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
             MGL_SIGNPOST_END(RecordDrawCommand);
             return;
         }
@@ -4737,6 +4746,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         }
         if (!new_cmds) {
             fprintf(stderr, "MGL Error: mglAppendDrawCommand: realloc failed\n");
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
             if (batch->command_count == 0 &&
                 cb->batch_count > 0 &&
                 batch == &cb->batches[cb->batch_count - 1]) {
