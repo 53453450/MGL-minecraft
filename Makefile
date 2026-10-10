@@ -592,6 +592,9 @@ $(build_dir)/test_regression: test_regression/main.c $(build_dir)/libmgl.dylib $
 
 build-test-regression: $(build_dir)/test_regression
 
+# The AIR argument-metadata guard fails closed on its own; the explicit =1
+# pins the requirement here so the suite's contract is visible and a future
+# default flip cannot silently turn the suite warn-only.
 test-regression: build-test-regression
 	MGL_AIR_VERIFY_FAIL=1 \
 	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_regression \

@@ -15897,46 +15897,35 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     if (hasBuffer) {
         llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
-        unsigned idx;
-        if (isVS || isTES || isKernel) {
-            idx = (isCapture ? 1 : 0) + (isCapture ? 0 : attrCount);
-        } else {
-            /* fragment: [ssbo..., ubo..., tex/smp pairs..., varyings...,
-             * buffer, fragCoord?] */
-            idx = ssboCount + uboCount + acCount + (needsBufferSizeBuffer ? 1 : 0);
-            for (VarSym &v : syms) {
-                if (v.kind == VarSym::TEXTURE) {
-                    uint32_t elements =
-                        v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
-                    idx += 2u * elements;
-                }
-            }
-            for (VarSym &v : syms) {
-                if (v.kind == VarSym::IMAGE)
-                    idx += v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
-            }
-            for (VarSym &v : syms) {
-                if (isVS || isTES || isKernel || v.kind != VarSym::VARYING)
-                    continue;
-                /* Count the argument slots the varying ABI really occupies:
-                 * a split `flat uint` is carried by two floats, an array one
-                 * slot per element, a matrix one per column.  Counting a
-                 * single slot per varying symbol short-changes the buffer by
-                 * one slot per such varying, so the `air.buffer` metadata
-                 * index lands on -- and collides with -- the last varying
-                 * argument.  Two arguments sharing one index is invalid AIR
-                 * and crashes Apple's metallib compiler (XPC
-                 * ERROR_CONNECTION_INTERRUPTED). */
-                if (uintUsesSplitFloatCarrier(v.type, has_gs))
-                    idx += 2u;
-                else if (v.type.isArray() && v.type.arr > 0)
-                    idx += (uint32_t)v.type.arr;
-                else if (v.type.isMatrix() && v.type.cols > 0)
-                    idx += (uint32_t)v.type.cols;
-                else
-                    idx += 1u;
-            }
+        /* The pack argument's ABI slot, taken from where that parameter was
+         * actually emitted (hasBufferArgIdx above).
+         *
+         * Do NOT derive it a second time here.  The fragment layout puts the
+         * texture/sampler pairs, the images, the varyings and the
+         * clip/cull-distance arguments in front of the pack, and every
+         * hand-rolled sum of those drifted from the emitter:
+         *   - the texture term charged two slots per element, but a
+         *     texture_buffer has no companion sampler and occupies one, so a
+         *     fragment shader with a samplerBuffer pushed the index past the
+         *     last varying and two arguments ended up claiming one ABI slot;
+         *   - the clip/cull-distance arguments were not counted at all.
+         * Both are invalid AIR, and invalid AIR does not fail as a shader
+         * compile error -- it crashes Apple's metallib compiler
+         * (XPC_ERROR_CONNECTION_INTERRUPTED / AGXMetalG16G code=2).
+         *
+         * The recording is unconditional for every stage that emits the pack,
+         * so a missing one is a bug in this function, not a shader defect:
+         * refuse to guess an index (guessing is what crashed the compiler)
+         * and fail the compile. */
+        if (hasBufferArgIdx == UINT32_MAX) {
+            snprintf(err_buf, err_cap,
+                     "AIR emit: pack buffer argument slot was not recorded "
+                     "(stage=%s)", isVS ? "vertex" : (isKernel ? "kernel"
+                                                                 : "fragment"));
+            if (own_session) mglFrontendSessionDestroy(sess);
+            return -1;
         }
+        const unsigned idx = hasBufferArgIdx;
         std::vector<llvm::Metadata *> structFields;
         for (const Uniform &u : uniforms) {
             structFields.push_back(llvm::ConstantAsMetadata::get(
@@ -17320,8 +17309,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      * two arguments ended up sharing one index, and an `air.buffer` node
      * pointed at a scalar varying.  Both are fatal for the GPU compiler but
      * invisible to a `rc == 0` only test, which is why this class of bug sat
-     * undetected.  Always warn; fail the compile when MGL_AIR_VERIFY_FAIL is
-     * set so the regression suite cannot let it come back. */
+     * undetected.
+     *
+     * Fail CLOSED.  A malformed argument list does not produce a bad shader --
+     * it crashes Apple's metallib compiler process (AGXMetalG16G_B0 code=2),
+     * which takes the whole GPU process down rather than surfacing as a shader
+     * compile error.  Refusing to serialize is therefore always the lesser
+     * evil, so the guard is fatal by default and the environment variable is
+     * an opt-OUT (MGL_AIR_VERIFY_FAIL=0/false/no/off) for experiments that
+     * need to inspect a suspect metallib. */
     {
         auto nodeIdx = [](const llvm::Metadata *m, bool *ok) -> long {
             auto *n = llvm::dyn_cast<llvm::MDNode>(m);
@@ -17346,7 +17342,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                                          : (isVS ? "vertex"
                                                  : (isTES ? "tess-eval"
                                                           : "fragment"));
-        const bool fatal = mgl_env_flag_enabled("MGL_AIR_VERIFY_FAIL");
+        const bool fatal =
+            mgl_env_flag_enabled_default_on("MGL_AIR_VERIFY_FAIL");
         int problems = 0;
         for (size_t i = 0; i < argNodes.size(); i++) {
             bool ok = true;
