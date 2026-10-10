@@ -222,6 +222,10 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
         areas.pipeline_cache ? areas.pipeline_cache->pipelineState : NULL;
     void *compiledPSO = NULL;
     int pipelineReusedPrevious = 0;
+    /* Set when the PSO below came from the virtualized-AGX emergency stub
+     * rather than from the program's own shaders.  It decides whether the
+     * result may be filed in the pipeline cache (see the publish block). */
+    int safeFallbackUsed = 0;
     char cppError[512] = {0};
 
     void *psoPtr = NULL;
@@ -587,6 +591,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
             mglMetalCountCreate(MGLMetalKindPSO);
             successfulState = safeState;
             haveSuccessfulState = 1;
+            safeFallbackUsed = 1;
             builtColor0Format = safeState.color_format[0];
             builtDepthFormat = safeState.depth_format;
             builtStencilFormat = safeState.stencil_format;
@@ -639,11 +644,29 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
                 builtDepthFormat, builtStencilFormat, currentProgramName,
                 vertexFunction, fragmentFunction);
         }
-        /* Archive lookup/add is owned by PipelineCacheOwner's C++ builder. */
-        mglRenderPassInsertPipelineStateIntoCache(
-            renderer, pipelineCacheKeyWords, pipelineSig, vertexSig,
-            &successfulState, vertexFunction, fragmentFunction,
-            stateFromCache);
+        if (safeFallbackUsed) {
+            /* The emergency stub was accepted as this draw's pipeline, but it
+             * must not be filed under the program's real cache key.  A cache
+             * entry here outlives the condition that produced the fallback:
+             * the next draw takes the PSO-cache hit path, re-activates the
+             * stub and never retries the real compile, so a one-off failure
+             * would render as a permanently blank program until resetCaches.
+             * Leaving the key unpopulated hands the retry back to the next
+             * pipeline sync (which runs as soon as program/VAO/FBO/render
+             * state changes again) and keeps the failure loud instead of
+             * papering over it with a cached stub. */
+            fprintf(stderr,
+                    "MGL WARNING: safe-fallback pipeline for program=%u not "
+                    "cached; the real pipeline will be retried on the next "
+                    "pipeline sync\n",
+                    (unsigned)currentProgramName);
+        } else {
+            /* Archive lookup/add is owned by PipelineCacheOwner's C++ builder. */
+            mglRenderPassInsertPipelineStateIntoCache(
+                renderer, pipelineCacheKeyWords, pipelineSig, vertexSig,
+                &successfulState, vertexFunction, fragmentFunction,
+                stateFromCache);
+        }
         if (recovery->programMismatchProgramName == currentProgramName) {
             recovery->programMismatchProgramName = 0;
             recovery->programMismatchRetryAfter = 0.0;

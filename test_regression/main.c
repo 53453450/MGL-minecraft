@@ -26919,6 +26919,12 @@ cleanup:
  * the clear color and the draw completes without GL error.
  * Phase C (fresh program, flag unset): green again — the forced fallback left
  * no fallout in the shared pipeline cache.
+ * Phase D (programB again, flag unset): green again.  Phase C only proves a
+ * *different* cache key stayed clean, which a cache poisoned under programB's
+ * own key would still satisfy.  Re-drawing programB is what pins the actual
+ * requirement: the emergency stub must not be filed under the program's real
+ * key, otherwise that key hits the PSO cache forever and the program renders
+ * the degenerate stub until resetCaches.
  */
 static int test_air_pipeline_safe_fallback(unsigned char *pixels,
                                            const char *out_path)
@@ -27034,6 +27040,26 @@ static int test_air_pipeline_safe_fallback(unsigned char *pixels,
                     "air_pipeline_safe_fallback: phase C outside probe "
                     "not black (%u,%u,%u)\n",
                     outside[0], outside[1], outside[2]);
+            goto cleanup;
+        }
+    }
+
+    /* Phase D: programB again, flag unset — the transient fallback must not be
+     * sticky under programB's own cache key. */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(programB);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *c =
+            &pixels[(px[0][1] * REG_W + px[0][0]) * 4];
+        if (c[0] > 20u || c[1] < 220u || c[2] > 20u) {
+            fprintf(stderr,
+                    "air_pipeline_safe_fallback: phase D not green (%u,%u,%u) "
+                    "— the safe-fallback PSO was cached under the program's key\n",
+                    c[0], c[1], c[2]);
             goto cleanup;
         }
     }
