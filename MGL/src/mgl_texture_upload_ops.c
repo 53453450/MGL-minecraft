@@ -1623,6 +1623,18 @@ void mglTextureFillSafeInitialContents(void *renderer, void *texture,
         uint64_t bytesPerPixel = (uint64_t)mglRenderMetalPixelFormatBytesPerPixel(
             mglPdTextureInfo(texture).pixel_format);
 
+        if (bytesPerPixel == 0) {
+            /* Block-compressed or unrecognised Metal format: it has no linear
+             * per-pixel row stride, so this fill cannot be sized.  Substituting
+             * a default of 4 used to hand Metal a bytesPerRow that is invalid
+             * for block formats (and half the real row for
+             * Depth32Float_Stencil8), so skip the fill instead of guessing. */
+            fprintf(stderr,
+                    "MGL WARNING: Skipping texture fill: no bytes-per-pixel for Metal pixel format %lu\n",
+                    (unsigned long)mglPdTextureInfo(texture).pixel_format);
+            return;
+        }
+
         // Calculate dynamic alignment for Metal textures based on pixel format
 
         uint64_t bytesPerRow = mglPdTextureInfo(texture).width * bytesPerPixel;

@@ -37,6 +37,7 @@
 #include "glm_context.h"
 #include "MGLRenderer.h"
 #include "mgl_env_flag.h"
+#include "mgl_render_api_texture.h"
 
 /* Legacy GL 1.1 clip-plane surface: glClipPlane/glGetClipPlane are not
  * declared by glcorearb.h, and GL_CLIP_PLANE0..5 share the GL_CLIP_DISTANCE
@@ -60,7 +61,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 217
+#define MAX_TESTS 218
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -29173,6 +29174,89 @@ typedef struct {
     int explicit_only;
 } TestCase;
 
+/* ------------------------------------------------------------------ */
+/* MGLPixelFormat -> linear bytes-per-pixel table.
+ *
+ * The table behind mglRenderMetalPixelFormatBytesPerPixel() used to end in
+ * `default: return 4u`, which silently claimed 4 bytes/pixel for
+ * Depth32Float_Stencil8 (8), for every block-compressed format, and for
+ * unassigned enum values.  Its single caller derives
+ * bytesPerRow = width * bytesPerPixel for the "safe initial contents" fill,
+ * so the wrong answer either halved the depth-stencil row or handed Metal a
+ * bytesPerRow that is meaningless for a block format.
+ *
+ * The check is a pure table comparison (no GL context), so it pins the
+ * mapping without depending on the rasteriser. */
+typedef struct {
+    uint32_t lo, hi, expect;
+} MglBppRange;
+
+static int test_pixel_format_bpp_table(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const MglBppRange kRanges[] = {
+        {1u, 1u, 1u},        /* A8Unorm */
+        {10u, 14u, 1u},      /* R8 family */
+        {22u, 25u, 2u},      /* R16Snorm..R16Float (21 is unassigned) */
+        {30u, 34u, 2u},      /* RG8 family */
+        {40u, 43u, 2u},      /* packed 16 bit */
+        {53u, 55u, 4u},      /* R32 family */
+        {62u, 65u, 4u},      /* RG16Snorm..RG16Float (61 is unassigned) */
+        {60u, 60u, 4u},      /* RG16Unorm */
+        {70u, 74u, 4u},      /* RGBA8 family */
+        {80u, 81u, 4u},      /* BGRA8 family */
+        {90u, 94u, 4u},      /* packed 32 bit */
+        {103u, 105u, 8u},    /* RG32 family */
+        {110u, 110u, 8u},    /* RGBA16Unorm */
+        {112u, 115u, 8u},    /* RGBA16 family (111 is unassigned) */
+        {123u, 125u, 16u},   /* RGBA32 family */
+        {130u, 135u, 0u},    /* BC1-3 (block compressed) */
+        {140u, 143u, 0u},    /* BC4-5 / RGTC */
+        {150u, 153u, 0u},    /* BC6H / BC7 */
+        {160u, 167u, 0u},    /* PVRTC */
+        {170u, 183u, 0u},    /* EAC / ETC2 */
+        {186u, 236u, 0u},    /* ASTC */
+        {240u, 241u, 2u},    /* 4:2:2 video */
+        {250u, 250u, 2u},    /* Depth16Unorm */
+        {252u, 252u, 4u},    /* Depth32Float */
+        {253u, 253u, 1u},    /* Stencil8 */
+        {255u, 255u, 4u},    /* Depth24Unorm_Stencil8 */
+        {260u, 260u, 8u},    /* Depth32Float_Stencil8: 4 depth + 4 stencil */
+        {261u, 262u, 4u},    /* X32/X24_Stencil8 */
+        {552u, 555u, 4u},    /* BGRA10_XR / BGR10_XR */
+    };
+    /* Unassigned enum values and garbage must not be given an invented answer. */
+    static const uint32_t kUnknown[] = {
+        0u, 2u, 15u, 17u, 21u, 26u, 44u, 56u, 61u, 66u, 75u, 82u, 95u,
+        106u, 111u, 116u, 126u, 136u, 144u, 168u, 184u, 237u, 242u, 254u,
+        256u, 263u, 999u, 0xffffffffu,
+    };
+
+    int failures = 0;
+    for (size_t r = 0; r < sizeof(kRanges) / sizeof(kRanges[0]); r++) {
+        for (uint32_t f = kRanges[r].lo; f <= kRanges[r].hi; f++) {
+            const uint32_t got = mglRenderMetalPixelFormatBytesPerPixel(f);
+            if (got != kRanges[r].expect) {
+                fprintf(stderr,
+                        "pixel_format_bpp_table: format %u: expected %u bytes/pixel, got %u\n",
+                        f, kRanges[r].expect, got);
+                failures++;
+            }
+        }
+    }
+    for (size_t i = 0; i < sizeof(kUnknown) / sizeof(kUnknown[0]); i++) {
+        const uint32_t got = mglRenderMetalPixelFormatBytesPerPixel(kUnknown[i]);
+        if (got != 0u) {
+            fprintf(stderr,
+                    "pixel_format_bpp_table: unassigned format %u: expected 0 (no linear stride), got %u\n",
+                    kUnknown[i], got);
+            failures++;
+        }
+    }
+    return failures == 0 ? 0 : 1;
+}
+
 #define GOLDEN_TEST(name, fn)              { name, fn, 0, 0 }
 #define SELF_CHECK_TEST(name, fn)          { name, fn, 1, 0 }
 #define EXPLICIT_SELF_CHECK_TEST(name, fn) { name, fn, 1, 1 }
@@ -29498,6 +29582,8 @@ static const TestCase TESTS[] = {
                     test_air_geometry_lines_expand),
     SELF_CHECK_TEST("fs_varying_with_plain_uniform",
                     test_fs_varying_with_plain_uniform),
+    SELF_CHECK_TEST("pixel_format_bpp_table",
+                    test_pixel_format_bpp_table),
     /* depth_test/stencil use probe-style fns (test_depth_probe /
      * test_stencil_probe): hardcoded per-program values.
      * uniform_alias gates the cross-stage uniform-location fix (program.c

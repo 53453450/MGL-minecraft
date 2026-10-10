@@ -1141,30 +1141,73 @@ uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
 }
 
 uint32_t mglRenderMetalPixelFormatBytesPerPixel(uint32_t pixel_format) {
+    /* Linear bytes per pixel for the uncompressed Metal formats.
+     *
+     * 0 means "this format has no per-pixel row stride": block-compressed
+     * formats are sized in blocks, and an unrecognised value has no defensible
+     * answer.  Callers must treat 0 as "cannot be used as a stride" and skip
+     * the work.  The previous `default: return 4u` claimed 4 bytes/pixel for
+     * Depth32Float_Stencil8 (really 8) and for every compressed format, which
+     * made the initial-contents fill compute a row stride that is wrong for
+     * the first and invalid for the second. */
     switch (pixel_format) {
-    case 10u: /* MGLPixelFormatR8Unorm */
-    case 11u: /* MGLPixelFormatR8Unorm_sRGB */
-    case 12u: /* MGLPixelFormatR8Snorm */
-    case 13u: /* MGLPixelFormatR8Uint */
-    case 14u: /* MGLPixelFormatR8Sint */
+    /* 1 byte per pixel: 8 bit single channel, and stencil-only. */
+    case 1u:   /* MGLPixelFormatA8Unorm */
+    case 10u:  /* MGLPixelFormatR8Unorm */
+    case 11u:  /* MGLPixelFormatR8Unorm_sRGB */
+    case 12u:  /* MGLPixelFormatR8Snorm */
+    case 13u:  /* MGLPixelFormatR8Uint */
+    case 14u:  /* MGLPixelFormatR8Sint */
     case 253u: /* MGLPixelFormatStencil8 */
         return 1u;
-    case 20u: /* MGLPixelFormatR16Unorm */
-    case 22u: /* MGLPixelFormatR16Snorm */
-    case 23u: /* MGLPixelFormatR16Uint */
-    case 24u: /* MGLPixelFormatR16Sint */
-    case 25u: /* MGLPixelFormatR16Float */
-    case 30u: /* MGLPixelFormatRG8Unorm */
-    case 31u: /* MGLPixelFormatRG8Unorm_sRGB */
-    case 32u: /* MGLPixelFormatRG8Snorm */
-    case 33u: /* MGLPixelFormatRG8Uint */
-    case 34u: /* MGLPixelFormatRG8Sint */
-    case 40u: /* MGLPixelFormatB5G6R5Unorm */
-    case 41u: /* MGLPixelFormatA1BGR5Unorm */
-    case 42u: /* MGLPixelFormatABGR4Unorm */
-    case 43u: /* MGLPixelFormatBGR5A1Unorm */
+    /* 2 bytes per pixel. */
+    case 20u:  /* MGLPixelFormatR16Unorm */
+    case 22u:  /* MGLPixelFormatR16Snorm */
+    case 23u:  /* MGLPixelFormatR16Uint */
+    case 24u:  /* MGLPixelFormatR16Sint */
+    case 25u:  /* MGLPixelFormatR16Float */
+    case 30u:  /* MGLPixelFormatRG8Unorm */
+    case 31u:  /* MGLPixelFormatRG8Unorm_sRGB */
+    case 32u:  /* MGLPixelFormatRG8Snorm */
+    case 33u:  /* MGLPixelFormatRG8Uint */
+    case 34u:  /* MGLPixelFormatRG8Sint */
+    case 40u:  /* MGLPixelFormatB5G6R5Unorm */
+    case 41u:  /* MGLPixelFormatA1BGR5Unorm */
+    case 42u:  /* MGLPixelFormatABGR4Unorm */
+    case 43u:  /* MGLPixelFormatBGR5A1Unorm */
     case 250u: /* MGLPixelFormatDepth16Unorm */
         return 2u;
+    /* 4 bytes per pixel. */
+    case 53u:  /* MGLPixelFormatR32Uint */
+    case 54u:  /* MGLPixelFormatR32Sint */
+    case 55u:  /* MGLPixelFormatR32Float */
+    case 60u:  /* MGLPixelFormatRG16Unorm */
+    case 62u:  /* MGLPixelFormatRG16Snorm */
+    case 63u:  /* MGLPixelFormatRG16Uint */
+    case 64u:  /* MGLPixelFormatRG16Sint */
+    case 65u:  /* MGLPixelFormatRG16Float */
+    case 70u:  /* MGLPixelFormatRGBA8Unorm */
+    case 71u:  /* MGLPixelFormatRGBA8Unorm_sRGB */
+    case 72u:  /* MGLPixelFormatRGBA8Snorm */
+    case 73u:  /* MGLPixelFormatRGBA8Uint */
+    case 74u:  /* MGLPixelFormatRGBA8Sint */
+    case 80u:  /* MGLPixelFormatBGRA8Unorm */
+    case 81u:  /* MGLPixelFormatBGRA8Unorm_sRGB */
+    case 90u:  /* MGLPixelFormatRGB10A2Unorm */
+    case 91u:  /* MGLPixelFormatRGB10A2Uint */
+    case 92u:  /* MGLPixelFormatRG11B10Float */
+    case 93u:  /* MGLPixelFormatRGB9E5Float */
+    case 94u:  /* MGLPixelFormatBGR10A2Unorm */
+    case 252u: /* MGLPixelFormatDepth32Float */
+    case 255u: /* MGLPixelFormatDepth24Unorm_Stencil8 */
+    case 261u: /* MGLPixelFormatX32_Stencil8 */
+    case 262u: /* MGLPixelFormatX24_Stencil8 */
+    case 552u: /* MGLPixelFormatBGRA10_XR */
+    case 553u: /* MGLPixelFormatBGRA10_XR_sRGB */
+    case 554u: /* MGLPixelFormatBGR10_XR */
+    case 555u: /* MGLPixelFormatBGR10_XR_sRGB */
+        return 4u;
+    /* 8 bytes per pixel. */
     case 103u: /* MGLPixelFormatRG32Uint */
     case 104u: /* MGLPixelFormatRG32Sint */
     case 105u: /* MGLPixelFormatRG32Float */
@@ -1173,13 +1216,22 @@ uint32_t mglRenderMetalPixelFormatBytesPerPixel(uint32_t pixel_format) {
     case 113u: /* MGLPixelFormatRGBA16Uint */
     case 114u: /* MGLPixelFormatRGBA16Sint */
     case 115u: /* MGLPixelFormatRGBA16Float */
+    case 260u: /* MGLPixelFormatDepth32Float_Stencil8: 4 depth + 4 stencil */
         return 8u;
+    /* 16 bytes per pixel. */
     case 123u: /* MGLPixelFormatRGBA32Uint */
     case 124u: /* MGLPixelFormatRGBA32Sint */
     case 125u: /* MGLPixelFormatRGBA32Float */
         return 16u;
+    /* 4:2:2 subsampled video: two pixels per 32 bits, so 2 bytes each. */
+    case 240u: /* MGLPixelFormatGBGR422 */
+    case 241u: /* MGLPixelFormatBGRG422 */
+        return 2u;
     default:
-        return 4u;
+        /* MGLPixelFormatInvalid, and every block-compressed format (BC1-7,
+         * RGTC, BPTC, PVRTC, EAC, ETC2, ASTC) whose storage is a block, not a
+         * pixel.  No guess: the caller must not use this as a row stride. */
+        return 0u;
     }
 }
 
