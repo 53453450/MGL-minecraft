@@ -2552,6 +2552,16 @@ static uint64_t mglComputeRenderStateHash(GLMContext ctx)
     hash ^= mglHashBytes64(&var->sample_coverage_value, sizeof(var->sample_coverage_value), 0x20eu);
     hash ^= mglHashBytes64(&var->polygon_offset_clamp, sizeof(var->polygon_offset_clamp), 0x20fu);
     hash ^= mglRotateLeft64((uint64_t)var->sample_coverage_invert, 38);
+    /* Sample-mask and sample-shading state.  Both live in GLMParams and both
+     * change what a draw produces (the mask gates which samples the fragment
+     * coverage enables; min_sample_shading drives the emulated per-sample draw
+     * loop), so two draws that differ only in glSampleMaski /
+     * glMinSampleShading must not be merged into one batch entry.  The
+     * SAMPLE_MASK *enable* is in GLMCaps and is already covered by the caps
+     * hash above; these are the two fields that were missing. */
+    hash ^= mglRotateLeft64((uint64_t)var->sample_mask_value, 44);
+    hash ^= mglHashBytes64(&var->min_sample_shading,
+                           sizeof(var->min_sample_shading), 0x210u);
     hash ^= mglRotateLeft64((uint64_t)var->primitive_restart_index, 39);
     hash ^= mglRotateLeft64((uint64_t)var->clip_origin, 40);
     hash ^= mglRotateLeft64((uint64_t)var->clip_depth_mode, 41);

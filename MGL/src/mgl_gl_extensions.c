@@ -6926,6 +6926,12 @@ void mglSampleMaski(GLMContext ctx, GLuint maskNumber, GLbitfield mask)
 {
 	ERROR_CHECK_RETURN(maskNumber < STATE(var).max_sample_mask_words, GL_INVALID_VALUE);
 	STATE(var).sample_mask_value = mask;
+	/* sample_mask_value is part of mglComputeRenderStateHash, but that hash is
+	 * cached and only recomputed while render_state_dirty is set, so writing
+	 * the field without dirtying DIRTY_RENDER_STATE left the cached key stale
+	 * and let a following draw with a different mask merge into the previous
+	 * batch entry. */
+	mglMarkStateDirtyBits(ctx->active_state, DIRTY_RENDER_STATE);
 }
 
 void mglScissorArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLint *v)

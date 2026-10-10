@@ -61,7 +61,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 218
+#define MAX_TESTS 219
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -29257,6 +29257,70 @@ static int test_pixel_format_bpp_table(unsigned char *pixels, const char *out_pa
     return failures == 0 ? 0 : 1;
 }
 
+/* P0-4: glSampleMaski / glMinSampleShading must invalidate the cached
+ * render-state key.
+ *
+ * mglComputeRenderStateHash() is cached: it is only recomputed while
+ * render_state_dirty is set.  A setter that writes one of the hashed fields
+ * without dirtying DIRTY_RENDER_STATE therefore leaves the cached key stale,
+ * and two draws that differ only in the sample mask (or the minimum sample
+ * shading value) compare equal through mglStateKeysEqual() -- the second draw
+ * then reuses the first one's batched snapshot and the change is silently
+ * dropped.
+ *
+ * The check is behavioural: compute the state key twice with only that field
+ * changed and require the two keys to differ. */
+static int test_sample_mask_state_key(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLMContext ctx = MGLgetCurrentContext();
+    if (!ctx || !ctx->active_state) {
+        fprintf(stderr, "sample_mask_state_key: no current GLM context\n");
+        return 1;
+    }
+    if (ctx->active_state->var.max_sample_mask_words < 1u) {
+        fprintf(stderr, "sample_mask_state_key: GL_MAX_SAMPLE_MASK_WORDS is 0\n");
+        return 1;
+    }
+
+    const GLuint prev_mask = ctx->active_state->var.sample_mask_value;
+    const GLfloat prev_min = ctx->active_state->var.min_sample_shading;
+    int failures = 0;
+    MGLStateKey a, b;
+
+    /* glSampleMaski: a different mask must yield a different key. */
+    glSampleMaski(0u, 0x1u);
+    mglComputeStateKey(ctx, GL_TRIANGLES, false, &a);
+    glSampleMaski(0u, 0x2u);
+    mglComputeStateKey(ctx, GL_TRIANGLES, false, &b);
+    if (mglStateKeysEqual(&a, &b)) {
+        fprintf(stderr,
+                "sample_mask_state_key: glSampleMaski did not change the state key "
+                "(render_state_hash=%016llx)\n",
+                (unsigned long long)a.render_state_hash);
+        failures++;
+    }
+
+    /* glMinSampleShading: same requirement (its setter already dirties, so this
+     * half pins the value being part of the hash at all). */
+    glMinSampleShading(0.0f);
+    mglComputeStateKey(ctx, GL_TRIANGLES, false, &a);
+    glMinSampleShading(0.5f);
+    mglComputeStateKey(ctx, GL_TRIANGLES, false, &b);
+    if (mglStateKeysEqual(&a, &b)) {
+        fprintf(stderr,
+                "sample_mask_state_key: glMinSampleShading did not change the state key "
+                "(render_state_hash=%016llx)\n",
+                (unsigned long long)a.render_state_hash);
+        failures++;
+    }
+
+    glSampleMaski(0u, prev_mask);
+    glMinSampleShading(prev_min);
+    return failures == 0 ? 0 : 1;
+}
+
 #define GOLDEN_TEST(name, fn)              { name, fn, 0, 0 }
 #define SELF_CHECK_TEST(name, fn)          { name, fn, 1, 0 }
 #define EXPLICIT_SELF_CHECK_TEST(name, fn) { name, fn, 1, 1 }
@@ -29584,6 +29648,7 @@ static const TestCase TESTS[] = {
                     test_fs_varying_with_plain_uniform),
     SELF_CHECK_TEST("pixel_format_bpp_table",
                     test_pixel_format_bpp_table),
+    SELF_CHECK_TEST("sample_mask_state_key", test_sample_mask_state_key),
     /* depth_test/stencil use probe-style fns (test_depth_probe /
      * test_stencil_probe): hardcoded per-program values.
      * uniform_alias gates the cross-stage uniform-location fix (program.c
