@@ -300,10 +300,20 @@ spirv_cross_objs := $(patsubst $(SPIRV_CROSS_DIR)/%.cpp,$(build_dir)/spirv-cross
 $(SPIRV_CROSS_DIR)/spirv_cross_c.h:
 	@bash external/clone_external.sh
 
-$(spirv_cross_objs) $(mgl_core_objs) $(mgl_es_objs): $(SPIRV_CROSS_DIR)/spirv_cross_c.h
+$(mgl_core_objs) $(mgl_es_objs): $(SPIRV_CROSS_DIR)/spirv_cross_c.h
 deps += $(spirv_cross_objs:.o=.d)
 
-$(build_dir)/spirv-cross/%.o: $(SPIRV_CROSS_DIR)/%.cpp
+# Static pattern rule, deliberately not an implicit one.  These objects also
+# appear in recipe-less dependency-only entries (the compile-config stamp
+# further down), and GNU make 3.81 -- the /usr/bin/make shipped with macOS --
+# does not reliably attach an implicit pattern rule to a target that already
+# carries such entries.  On a clean checkout the six objects stayed out of the
+# graph: make went straight to the link step and failed with
+# "no such file or directory: build/spirv-cross/<name>.o", and only a second
+# `make` (after build/ was partly populated) picked them up.  A static pattern
+# rule binds the recipe to this exact file list, so the objects are always
+# built before they are linked.
+$(spirv_cross_objs): $(build_dir)/spirv-cross/%.o: $(SPIRV_CROSS_DIR)/%.cpp $(SPIRV_CROSS_DIR)/spirv_cross_c.h
 	@mkdir -p $(dir $@)
 	$(CXX) -MMD -std=c++17 -fexceptions \
 		-gfull -O2 -arch $(HOST_ARCH) -isysroot $(SDK_ROOT) \
