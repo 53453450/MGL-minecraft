@@ -33,6 +33,7 @@
 #include "mgl_render_pass_clear.h"   /* mglRenderPassPlanClearValues */
 #include "mgl_program_resource.h"   /* mglProgramStageBuiltinMask */
 #include "mgl_shader_abi.h"         /* mglAIRPerVertexStrideForResources, mglShaderCompileGLSL */
+#include "mgl_buffer_slots.h"       /* mglProgramStageHasSamplers (shared with the link gate) */
 #include "mgl_metal_ref.h"         /* mglReleaseMetalObjNoNull */
 #include "mgl_draw_gs.h"           /* mglDrawGsPassthroughDeclType */
 #include "mgl_render_pass_plan.h"    /* mglRenderProcessGLState*, plans */
@@ -73,34 +74,6 @@ extern void mglLogRenderPassLifecycle(const char *tag, uint64_t call,
 extern void *mglPlatformShellDrawable(void *renderer);
 extern int mglPlatformShellGuardedCall(void *renderer, const char *what,
                                        int (*body)(void *));
-
-static int mglProgramStageHasSamplers(Program *prog, int stage)
-{
-    static const int kSamplerRes[] = {
-        _SAMPLED_IMAGE_RES, _SEPARATE_IMAGE_RES, _SEPARATE_SAMPLERS_RES};
-    int t;
-    GLuint i;
-    if (!prog || stage < 0 || stage >= _MAX_SHADER_TYPES)
-        return 0;
-    for (t = 0; t < (int)(sizeof(kSamplerRes) / sizeof(kSamplerRes[0])); t++) {
-        MGLShaderResourceList *list =
-            &prog->shader_resources_list[stage][kSamplerRes[t]];
-        if (list && list->count > 0u)
-            return 1;
-    }
-    /* Combined samplers may also appear under UNIFORM_CONSTANT. */
-    {
-        MGLShaderResourceList *list =
-            &prog->shader_resources_list[stage][_UNIFORM_CONSTANT_RES];
-        if (list) {
-            for (i = 0; i < list->count; i++) {
-                if (list->list[i].has_combined_sampler)
-                    return 1;
-            }
-        }
-    }
-    return 0;
-}
 
 enum { kMGLLodBiasPackHeaderFloats = 4 };
 

@@ -61,7 +61,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 223
+#define MAX_TESTS 224
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18151,6 +18151,156 @@ static int test_attrib_location_matrix_array_span(unsigned char *pixels,
     return result;
 }
 
+/* Link-time gate for the VS/FS internal buffer packs (S7).  The sampler wrap
+ * table occupies Metal slot 23 on every draw command of both stages, the
+ * packed LOD-bias table occupies slot 14 for a stage exactly when that stage
+ * has samplers, and slots 16..30 carry the VS VAO attribute streams.  A user
+ * buffer landing there used to link and then silently overwrite (or be
+ * overwritten by) the internal pack; the gate now fails the link.
+ *
+ * The Metal slot of a user buffer is allocated, not chosen: a VS user buffer
+ * sits at hasPlain+attrCount+index, an FS one at hasPlain+index, so the cases
+ * reach the gated slots by sizing the attribute / block counts. */
+static int link_expect(const char *label, const char *vs, const char *fs,
+                       int expect_ok)
+{
+    /* Compile first: a compile failure must not be mistaken for the
+     * expected link rejection. */
+    GLuint v = compile_shader(GL_VERTEX_SHADER, vs);
+    GLuint f = compile_shader(GL_FRAGMENT_SHADER, fs);
+    int result = 0;
+    if (!v || !f) {
+        fprintf(stderr, "%s: shader compile failed (unexpected)\n", label);
+        if (v) glDeleteShader(v);
+        if (f) glDeleteShader(f);
+        return 1;
+    }
+    glDeleteShader(v);
+    glDeleteShader(f);
+    GLuint prog = link_program(vs, fs);
+    if (expect_ok && !prog) {
+        fprintf(stderr, "%s: link failed but the slot is legal\n", label);
+        result = 1;
+    } else if (!expect_ok && prog) {
+        fprintf(stderr, "%s: link succeeded but the slot is reserved\n",
+                label);
+        glDeleteProgram(prog);
+        result = 1;
+    }
+    if (prog) glDeleteProgram(prog);
+    return result;
+}
+
+/* Emit a VS with `n` vec4 attributes, optionally the plain uniform pack, a
+ * sampler, and one UBO -- every resource used so none is optimised away. */
+static void build_vs_gate_source(char *buf, size_t cap, int nattrs,
+                                 int with_plain, int with_sampler,
+                                 int with_ubo)
+{
+    size_t off = 0;
+    off += (size_t)snprintf(buf + off, cap - off, "#version 460 core\n");
+    for (int i = 0; i < nattrs; i++)
+        off += (size_t)snprintf(buf + off, cap - off, "in vec4 a%d;\n", i);
+    if (with_plain)
+        off += (size_t)snprintf(buf + off, cap - off,
+                                "uniform float u_shift;\n");
+    if (with_sampler)
+        off += (size_t)snprintf(buf + off, cap - off,
+                                "layout(binding=0) uniform sampler2D tex;\n");
+    if (with_ubo)
+        off += (size_t)snprintf(buf + off, cap - off,
+                                "layout(std140) uniform Data { float x; } blk;\n");
+    off += (size_t)snprintf(buf + off, cap - off,
+                            "out vec4 v_color;\n"
+                            "void main() {\n  vec4 s = ");
+    for (int i = 0; i < nattrs; i++)
+        off += (size_t)snprintf(buf + off, cap - off, "%sa%d",
+                                i ? " + " : "", i);
+    off += (size_t)snprintf(buf + off, cap - off, ";\n");
+    if (with_plain)
+        off += (size_t)snprintf(buf + off, cap - off, "  s += vec4(u_shift);\n");
+    if (with_sampler)
+        off += (size_t)snprintf(buf + off, cap - off,
+                                "  s += texture(tex, vec2(0.5));\n");
+    if (with_ubo)
+        off += (size_t)snprintf(buf + off, cap - off, "  s += vec4(blk.x);\n");
+    snprintf(buf + off, cap - off,
+             "  v_color = s;\n  gl_Position = s;\n}\n");
+}
+
+static int test_buffer_slot_conflict_gate(unsigned char *pixels,
+                                          const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *fs_trivial =
+        "#version 460 core\n"
+        "layout(location=0) out vec4 o;\n"
+        "void main() { o = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    int result = 0;
+    char vs[4096];
+    char fs[4096];
+
+    /* (a) VS UBO at Metal slot 14 with a VS sampler: the LOD-bias pack owns
+     * 14 while the stage has samplers -> reject. */
+    build_vs_gate_source(vs, sizeof(vs), 13, 1, 1, 1);
+    result |= link_expect("buffer_slot_gate vs14+sampler", vs, fs_trivial, 0);
+
+    /* (b) same layout without the sampler: 14 is not bound -> link. */
+    build_vs_gate_source(vs, sizeof(vs), 13, 1, 0, 1);
+    result |= link_expect("buffer_slot_gate vs14-nosampler", vs, fs_trivial, 1);
+
+    /* (c) VS UBO at slot 16 (16 attributes, no plain pack: the user base is
+     * attrCount): the VAO attribute-stream region -> reject. */
+    build_vs_gate_source(vs, sizeof(vs), 16, 0, 0, 1);
+    result |= link_expect("buffer_slot_gate vs16-attrstream", vs, fs_trivial, 0);
+
+    /* (f) control: a low VS UBO slot stays legal. */
+    build_vs_gate_source(vs, sizeof(vs), 2, 1, 0, 1);
+    result |= link_expect("buffer_slot_gate vs3-control", vs, fs_trivial, 1);
+
+    /* (d) FS with 14 UBOs and a sampler: the pack is at 0, the UBOs at 1..14,
+     * so the last block lands on the gated 14 -> reject. */
+    {
+        size_t off = (size_t)snprintf(fs, sizeof(fs), "#version 460 core\n"
+                                      "uniform float u_bias;\n"
+                                      "layout(binding=0) uniform sampler2D tex;\n");
+        for (int i = 0; i < 14; i++)
+            off += (size_t)snprintf(fs + off, sizeof(fs) - off,
+                                    "layout(std140) uniform B%d { float x%d; } b%d;\n",
+                                    i, i, i);
+        off += (size_t)snprintf(fs + off, sizeof(fs) - off,
+                                "out vec4 o;\n"
+                                "void main() {\n  float s = u_bias;\n");
+        for (int i = 0; i < 14; i++)
+            off += (size_t)snprintf(fs + off, sizeof(fs) - off,
+                                    "  s += b%d.x%d;\n", i, i);
+        snprintf(fs + off, sizeof(fs) - off,
+                 "  s += texture(tex, vec2(0.5)).x;\n  o = vec4(s);\n}\n");
+        result |= link_expect("buffer_slot_gate fs14+sampler", fs, fs_trivial, 0);
+    }
+
+    /* (e) same blocks without the sampler: 14 is not bound -> link. */
+    {
+        size_t off = (size_t)snprintf(fs, sizeof(fs), "#version 460 core\n"
+                                      "uniform float u_bias;\n");
+        for (int i = 0; i < 14; i++)
+            off += (size_t)snprintf(fs + off, sizeof(fs) - off,
+                                    "layout(std140) uniform B%d { float x%d; } b%d;\n",
+                                    i, i, i);
+        off += (size_t)snprintf(fs + off, sizeof(fs) - off,
+                                "out vec4 o;\n"
+                                "void main() {\n  float s = u_bias;\n");
+        for (int i = 0; i < 14; i++)
+            off += (size_t)snprintf(fs + off, sizeof(fs) - off,
+                                    "  s += b%d.x%d;\n", i, i);
+        snprintf(fs + off, sizeof(fs) - off, "  o = vec4(s);\n}\n");
+        result |= link_expect("buffer_slot_gate fs14-nosampler", fs, fs_trivial, 1);
+    }
+
+    return result;
+}
+
 /* Draw one point at the FBO centre with `program` and return its RGBA8. */
 static void iface_point_color(GLuint program, unsigned char out[4])
 {
@@ -30142,6 +30292,8 @@ static const TestCase TESTS[] = {
                     test_attrib_location_sparse_bind),
     SELF_CHECK_TEST("attrib_location_matrix_array_span",
                     test_attrib_location_matrix_array_span),
+    SELF_CHECK_TEST("buffer_slot_conflict_gate",
+                    test_buffer_slot_conflict_gate),
     SELF_CHECK_TEST("stage_interface_location_matching",
                     test_stage_interface_location_matching),
     SELF_CHECK_TEST("stage_interface_component",

@@ -150,6 +150,33 @@ GLboolean mglBufferSlotIsReservedForFragCoordFixup(GLuint slot)
     return (slot == 30u) ? GL_TRUE : GL_FALSE;
 }
 
+int mglProgramStageHasSamplers(const Program *prog, int stage)
+{
+    static const int kSamplerRes[] = {
+        _SAMPLED_IMAGE_RES, _SEPARATE_IMAGE_RES, _SEPARATE_SAMPLERS_RES};
+    if (!prog || stage < 0 || stage >= _MAX_SHADER_TYPES)
+        return 0;
+    for (size_t t = 0;
+         t < sizeof(kSamplerRes) / sizeof(kSamplerRes[0]); t++) {
+        MGLShaderResourceList *list =
+            &prog->shader_resources_list[stage][kSamplerRes[t]];
+        if (list && list->count > 0u)
+            return 1;
+    }
+    /* Combined samplers may also appear under UNIFORM_CONSTANT. */
+    {
+        MGLShaderResourceList *list =
+            &prog->shader_resources_list[stage][_UNIFORM_CONSTANT_RES];
+        if (list) {
+            for (GLuint i = 0; i < list->count; i++) {
+                if (list->list[i].has_combined_sampler)
+                    return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 GLuint mglRuntimeArraySizeBufferIndexForProgram(const Program *program,
                                                 int stage)
 {
@@ -179,6 +206,21 @@ GLboolean mglBufferSlotConflictsForProgram(const Program *program,
         return GL_TRUE;
     }
 
+    /* VS/FS draw-path internal packs.  The sampler wrap table (23) is bound
+     * on every draw command for both stages, so a user buffer there is always
+     * corrupted.  The packed LOD-bias table (14) is bound for a stage exactly
+     * when that stage has samplers (mglProgramStageHasSamplers is the shared
+     * predicate the bind site uses), so gate it conditionally. */
+    if (stage == _VERTEX_SHADER || stage == _FRAGMENT_SHADER) {
+        if (slot == kMGLSamplerWrapBufferIndex) {
+            return GL_TRUE;
+        }
+        if (slot == kMGLLodBiasMaxBufferIndex &&
+            mglProgramStageHasSamplers(program, stage)) {
+            return GL_TRUE;
+        }
+    }
+
     switch (stage) {
         case _VERTEX_SHADER:
             if (program->uses_point_size_params &&
@@ -191,6 +233,16 @@ GLboolean mglBufferSlotConflictsForProgram(const Program *program,
             }
             if (program->uses_cull_distance &&
                 mglBufferSlotIsReservedForCullDistance(slot)) {
+                return GL_TRUE;
+            }
+            /* Slots 16..30 carry the VAO attribute streams: the vertex
+             * descriptor's buffer bindings are assigned upward from
+             * kMGLVertexAttribBufferBase for every draw that maps vertex
+             * attribs (mgl_vertex_attrib_plan.c), sharing the same Metal
+             * buffer-index namespace as the kernel's own buffer arguments.
+             * A user buffer landing there is corrupted as soon as the VAO
+             * uses enough streams, so the whole region is reserved. */
+            if (slot >= kMGLVertexAttribBufferBase) {
                 return GL_TRUE;
             }
             break;
@@ -250,10 +302,14 @@ GLboolean mglBufferSlotConflictsForProgram(const Program *program,
 const char *mglBufferSlotReservedName(GLuint slot)
 {
     switch (slot) {
+        case 16: case 17: case 18: case 19: case 20: case 21:
+            return "vertex attribute stream region "
+                   "(kMGLVertexAttribBufferBase..30, VS VAO buffer bindings)";
         case 22:
             return "MGL_AIR_TESS_SLOT_XFB_OUT / MGL_AIR_GS_SLOT_XFB (TES/GS transform-feedback stream, disjoint encoders)";
         case 23:
-            return "MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX (GS/compute-TES runtime-sized SSBO sizing)";
+            return "kMGLSamplerWrapBufferIndex (VS/FS integer textureGather wrap table, every draw) / "
+                   "MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX (GS/compute-TES runtime-sized SSBO sizing)";
         case 14:
             return "kMGLLodBiasMaxBufferIndex (VS/FS packed LOD_BIAS table)";
         case 15:

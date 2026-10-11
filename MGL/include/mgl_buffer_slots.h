@@ -213,6 +213,12 @@ struct Program_t;
 GLuint mglRuntimeArraySizeBufferIndexForProgram(
     const struct Program_t *program, int stage);
 
+/* GL_TRUE when `prog` declares any sampler/image resource for `stage`.
+ * Single source of truth for the draw-time LOD-bias pack bind condition
+ * (slot 14) and for the link-time gate below; the bind site
+ * (mgl_render_pass_manager_ops.c) and this gate must never drift apart. */
+int mglProgramStageHasSamplers(const struct Program_t *prog, int stage);
+
 /* Returns GL_TRUE when a reflected user buffer at `slot` would collide with
  * an internal buffer used by the active execution path for `program` and
  * `stage`.  Unlike the conservative registry helpers above, this query is
