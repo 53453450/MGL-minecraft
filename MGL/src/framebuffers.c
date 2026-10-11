@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 #include "mgl_env_flag.h"
 
 #include "glm_context.h"
@@ -100,7 +101,7 @@ static GLubyte mglClampClearComponentToByte(GLfloat value)
     if (value >= 1.0f) {
         return 255;
     }
-    return (GLubyte)(value * 255.0f + 0.5f);
+    return (GLubyte)lround((double)value * 255.0);
 }
 
 static GLuint mglTraceSafeFramebufferName(GLMContext ctx, Framebuffer *fbo)

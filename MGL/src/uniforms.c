@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <unistd.h>
 
@@ -2344,6 +2345,20 @@ void mglGetUniformdv(GLMContext ctx, GLuint program, GLint location, GLdouble *p
     }
 }
 
+/* GL 4.6 2.2.2: a float is converted to an integer by rounding to nearest.
+ * Round in double and clamp, because narrowing an out-of-range or NaN float to
+ * an integer is undefined -- on arm64 it merely happens to saturate. */
+static int64_t mglRoundToInt64Clamped(GLfloat f, int64_t lo, int64_t hi)
+{
+    if (f != f) {
+        return 0; /* NaN has no nearest integer; the sign tests used to yield 0 */
+    }
+    int64_t r = llround((double)f);
+    if (r < lo) r = lo;
+    if (r > hi) r = hi;
+    return r;
+}
+
 void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *params)
 {
     if (!ctx) {
@@ -2397,7 +2412,7 @@ void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *para
             GLfloat f;
             memcpy(&f, &bits[i], sizeof(f));
             /* Spec 2.2.2: float -> int converts by rounding to nearest. */
-            params[i] = (GLint)(f >= 0.0f ? f + 0.5f : f - 0.5f);
+            params[i] = (GLint)mglRoundToInt64Clamped(f, INT_MIN, INT_MAX);
         } else {
             params[i] = (GLint)bits[i];
         }
@@ -2430,7 +2445,8 @@ void mglGetUniformuiv(GLMContext ctx, GLuint program, GLint location, GLuint *pa
         if (is_float) {
             GLfloat f;
             memcpy(&f, &bits[i], sizeof(f));
-            params[i] = (GLuint)(f >= 0.0f ? f + 0.5f : 0.0f);
+            /* Spec 2.2.2: negative inputs clamp to 0 for an unsigned target. */
+            params[i] = (GLuint)mglRoundToInt64Clamped(f, 0, (int64_t)UINT32_MAX);
         } else {
             params[i] = bits[i];
         }

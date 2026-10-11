@@ -517,7 +517,7 @@ static GLubyte mglClearComponentToByte(GLfloat value)
 {
     if (!(value > 0.0f)) return 0u;
     if (value >= 1.0f) return 255u;
-    return (GLubyte)(value * 255.0f + 0.5f);
+    return (GLubyte)lround((double)value * 255.0);
 }
 
 /* only_slot < 0 updates every draw buffer. */

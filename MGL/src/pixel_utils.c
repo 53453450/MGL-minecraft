@@ -3382,13 +3382,16 @@ uint32_t mglPackUnsignedFloatFromUNorm8(uint32_t value, uint32_t mantissa_bits)
         for (uint32_t i = 0; i < mantissa_bits + 14u; i++) {
             subnormal *= 2.0f;
         }
-        mantissa = (uint32_t)(subnormal + 0.5f);
-        if (mantissa > mantissa_mask) {
-            mantissa = mantissa_mask;
-        }
+        /* The doubled value can leave the target range, so clamp in double
+         * before narrowing -- an out-of-range float->int conversion is
+         * undefined and merely saturates on arm64.  Round explicitly for the
+         * same reason the other packers do. */
+        double m = (double)subnormal;
+        if (m > (double)mantissa_mask) m = (double)mantissa_mask;
+        mantissa = (uint32_t)llround(m);
     } else {
         float frac = (scaled - 1.0f) * (float)(1u << mantissa_bits);
-        mantissa = (uint32_t)(frac + 0.5f);
+        mantissa = (uint32_t)llround((double)frac);
         if (mantissa > mantissa_mask) {
             mantissa = 0u;
             if (exponent < 31) {
