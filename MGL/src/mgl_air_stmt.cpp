@@ -804,10 +804,21 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             if (switchExitUnreachable(bbEnd)) {
                 /* Every segment returned: code after the switch cannot run, so
                  * keep the running values instead of merging.  bbEnd is still
-                 * terminated to keep the IR well-formed. */
+                 * terminated to keep the IR well-formed, but leaving the insert
+                 * point on it is unsafe: a *following* statement would be
+                 * appended after the `unreachable` ("Terminator found in the
+                 * middle of a basic block!"), and an enclosing if/loop would
+                 * wire no edge into its merge yet still name bbEnd as a PHI
+                 * incoming (its `!tail->getTerminator()` test sees the
+                 * terminator and skips the edge).  Open a fresh block the way
+                 * break/continue do, so the enclosing construct sees an
+                 * ordinary, un-terminated tail and stays consistent. */
                 cg.b->SetInsertPoint(bbEnd);
                 cg.b->CreateUnreachable();
                 cg.err = savedErr;
+                if (cg.err == 0)
+                    cg.b->SetInsertPoint(
+                        llvm::BasicBlock::Create(*cg.ctx, "dead", cg.fn));
                 break;
             }
             cg.b->SetInsertPoint(bbEnd);
@@ -878,10 +889,15 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         cg.breakStack.pop_back();
 
         if (switchExitUnreachable(bbEnd)) {
-            /* Every segment returned: see the constant-condition path above. */
+            /* Every segment returned: see the constant-condition path above
+             * (a fresh dead block keeps following statements -- and the
+             * enclosing if/loop's merge wiring -- consistent). */
             cg.b->SetInsertPoint(bbEnd);
             cg.b->CreateUnreachable();
             cg.err = savedErr;
+            if (cg.err == 0)
+                cg.b->SetInsertPoint(
+                    llvm::BasicBlock::Create(*cg.ctx, "dead", cg.fn));
             break;
         }
         cg.b->SetInsertPoint(bbEnd);
