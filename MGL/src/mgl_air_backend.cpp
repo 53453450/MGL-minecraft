@@ -1555,6 +1555,26 @@ static llvm::Value *addTexelOffset(Codegen &cg, llvm::Value *coord,
     return coord;
 }
 
+/* Multisample targets are stored in Metal row order: the raster path maps
+ * gl_FragCoord.y = 0 to the bottom row (row height-1), and a non-MS render
+ * target then gets a Y-flipped sampled copy so shader reads see GL row order
+ * again.  MS targets are excluded from that copy -- the plane store is a
+ * texture2d_array whose sub-slices the 2D sampled-copy path cannot mirror --
+ * so flip the fetch row here and let texelFetch(sampler2DMS*) report the texel
+ * for GL row y.  The backing is always a texture2d_array (mglRenderEmulateMSAsArray),
+ * so the 2D-array height query is the plane height. */
+static llvm::Value *flipMultisampleFetchRow(Codegen &cg, llvm::Value *tex,
+                                            llvm::Value *coord)
+{
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+    llvm::Value *h = callAirFn(cg, "air.get_height_texture_2d_array", i32,
+                               {tex, cg.b->getInt32(0)});
+    llvm::Value *y = cg.b->CreateExtractElement(coord, cg.b->getInt32(1));
+    llvm::Value *row =
+        cg.b->CreateSub(cg.b->CreateSub(h, cg.b->getInt32(1)), y);
+    return cg.b->CreateInsertElement(coord, row, cg.b->getInt32(1));
+}
+
 /* emitExpr / interpolateAt declared early for call sites. */
 llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals);
@@ -8757,24 +8777,30 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         {t, fetchRdSmp, coord, arrayLayer, fetchOff2,
                          lodOrSample, cg.b->getInt32(3)});
                 } else if (texKind == MGLIR_TEX_2D_MS) {
-                    /* Non-RT MS textures are texture2d_array sample planes. */
+                    /* The MS plane store has no Y-flipped sampled copy (see
+                     * flipMultisampleFetchRow), so row y here is the flipped
+                     * Metal row; flip it back for the GL texel. */
+                    llvm::Value *msCoord =
+                        flipMultisampleFetchRow(cg, t, coord);
                     r = callAirFn(
                         cg,
                         readIntrinsic("air.read_texture_2d_array.v4f32")
                             .c_str(),
                         retTy,
-                        {t, fetchRdSmp, coord, lodOrSample, fetchOff2,
+                        {t, fetchRdSmp, msCoord, lodOrSample, fetchOff2,
                          cg.b->getInt32(0), cg.b->getInt32(3)});
                 } else if (texKind == MGLIR_TEX_2D_MS_ARRAY) {
                     llvm::Value *flat = cg.b->CreateAdd(
                         cg.b->CreateMul(arrayLayer, cg.b->getInt32(8)),
                         lodOrSample);
+                    llvm::Value *msCoord =
+                        flipMultisampleFetchRow(cg, t, coord);
                     r = callAirFn(
                         cg,
                         readIntrinsic("air.read_texture_2d_array.v4f32")
                             .c_str(),
                         retTy,
-                        {t, fetchRdSmp, coord, flat, fetchOff2,
+                        {t, fetchRdSmp, msCoord, flat, fetchOff2,
                          cg.b->getInt32(0), cg.b->getInt32(3)});
                 } else if (texKind == MGLIR_TEX_3D) {
                     r = callAirFn(
