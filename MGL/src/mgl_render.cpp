@@ -3979,6 +3979,11 @@ const char *mglRenderVertexFormatName(uint32_t format) {
         case MTL::VertexFormatUChar2Normalized: return "UChar2Normalized";
         case MTL::VertexFormatUChar: return "UChar";
         case MTL::VertexFormatUCharNormalized: return "UCharNormalized";
+        case MTL::VertexFormatChar: return "Char";
+        case MTL::VertexFormatCharNormalized: return "CharNormalized";
+        case MTL::VertexFormatChar2Normalized: return "Char2Normalized";
+        case MTL::VertexFormatChar3Normalized: return "Char3Normalized";
+        case MTL::VertexFormatChar4Normalized: return "Char4Normalized";
         case MTL::VertexFormatShort: return "Short";
         case MTL::VertexFormatShort2: return "Short2";
         case MTL::VertexFormatShort3: return "Short3";
@@ -3995,6 +4000,18 @@ const char *mglRenderVertexFormatName(uint32_t format) {
         case MTL::VertexFormatUShort2Normalized: return "UShort2Normalized";
         case MTL::VertexFormatUShort3Normalized: return "UShort3Normalized";
         case MTL::VertexFormatUShort4Normalized: return "UShort4Normalized";
+        /* Integral formats.  These were absent, so every integer attribute
+         * -- e.g. Sodium's packed chunk format, whose POSITION is
+         * UNSIGNED_INT x2 and LIGHT_MATERIAL_INDEX UNSIGNED_BYTE x4 --
+         * printed as "Unknown" in the vertex-format diagnostics. */
+        case MTL::VertexFormatInt: return "Int";
+        case MTL::VertexFormatInt2: return "Int2";
+        case MTL::VertexFormatInt3: return "Int3";
+        case MTL::VertexFormatInt4: return "Int4";
+        case MTL::VertexFormatUInt: return "UInt";
+        case MTL::VertexFormatUInt2: return "UInt2";
+        case MTL::VertexFormatUInt3: return "UInt3";
+        case MTL::VertexFormatUInt4: return "UInt4";
         case MTL::VertexFormatUInt1010102Normalized: return "UInt1010102Normalized";
         case MTL::VertexFormatInt1010102Normalized: return "Int1010102Normalized";
         default: return "Unknown";
