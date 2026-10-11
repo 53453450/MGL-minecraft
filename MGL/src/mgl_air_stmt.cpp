@@ -82,6 +82,21 @@ static bool terminatorLeavesHelper(Codegen &cg, llvm::Instruction *term)
     return false;
 }
 
+/* True when nothing can reach the switch's exit block, i.e. every segment left
+ * the enclosing function -- either a plain `return`, or an inlined helper's
+ * return branching to the inline exit.  A merge must not be built there: its
+ * PHINodes would have zero incoming values, which is LLVM poison, and the merge
+ * writes them back into cg.lvalues -- a table that is *not* scoped to an
+ * inlined helper, so the caller's varyings, builtins and vertex attributes were
+ * silently replaced.  That blackened every stage-out whose value was bound
+ * before a call to a helper whose switch cases all `return`.  The `if`
+ * generator guards the same way, via terminatorLeavesHelper() plus a live
+ * bbMerge check. */
+static bool switchExitUnreachable(llvm::BasicBlock *bbEnd)
+{
+    return bbEnd->hasNPredecessors(0);
+}
+
 void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
               std::map<std::string, MType> *locals, const AirStmtDeps &deps) {
     if (cg.err) return;
@@ -786,6 +801,15 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                 cg.b->SetInsertPoint(ip);
             }
             cg.breakStack.pop_back();
+            if (switchExitUnreachable(bbEnd)) {
+                /* Every segment returned: code after the switch cannot run, so
+                 * keep the running values instead of merging.  bbEnd is still
+                 * terminated to keep the IR well-formed. */
+                cg.b->SetInsertPoint(bbEnd);
+                cg.b->CreateUnreachable();
+                cg.err = savedErr;
+                break;
+            }
             cg.b->SetInsertPoint(bbEnd);
             for (auto &kv : snap) {
                 llvm::Value *v = kv.second;
@@ -838,7 +862,12 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             }
             llvm::BasicBlock *tail = cg.b->GetInsertBlock();
             if (!tail->getTerminator()) {
-                if (i + 1 < segs.size())
+                if (tail->hasNPredecessors(0)) {
+                    /* Dead block left by break/continue/return in a nested
+                     * construct: nothing falls through from it, so it must not
+                     * become a live edge into the exit merge. */
+                    cg.b->CreateUnreachable();
+                } else if (i + 1 < segs.size())
                     cg.b->CreateBr(segs[i + 1].entry);
                 else {
                     cg.b->CreateBr(bbEnd);
@@ -848,6 +877,13 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         }
         cg.breakStack.pop_back();
 
+        if (switchExitUnreachable(bbEnd)) {
+            /* Every segment returned: see the constant-condition path above. */
+            cg.b->SetInsertPoint(bbEnd);
+            cg.b->CreateUnreachable();
+            cg.err = savedErr;
+            break;
+        }
         cg.b->SetInsertPoint(bbEnd);
         /* Merge over the union of pre-switch lvalues and anything first
          * assigned inside the switch (builtins like gl_Position are only
