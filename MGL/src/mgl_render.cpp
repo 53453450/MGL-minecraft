@@ -3971,6 +3971,11 @@ const char *mglRenderVertexFormatName(uint32_t format) {
         case MTL::VertexFormatFloat2: return "Float2";
         case MTL::VertexFormatFloat3: return "Float3";
         case MTL::VertexFormatFloat4: return "Float4";
+        /* Packed float formats.  The GL type mapper never produces these (its
+         * RG11B10/RGB9E5 handling is pixel-only), but they are part of the
+         * VertexFormat enum -- name them for completeness. */
+        case MTL::VertexFormatFloatRG11B10: return "FloatRG11B10";
+        case MTL::VertexFormatFloatRGB9E5: return "FloatRGB9E5";
         case MTL::VertexFormatUChar4: return "UChar4";
         case MTL::VertexFormatUChar4Normalized: return "UChar4Normalized";
         case MTL::VertexFormatUChar3: return "UChar3";
@@ -3979,11 +3984,17 @@ const char *mglRenderVertexFormatName(uint32_t format) {
         case MTL::VertexFormatUChar2Normalized: return "UChar2Normalized";
         case MTL::VertexFormatUChar: return "UChar";
         case MTL::VertexFormatUCharNormalized: return "UCharNormalized";
+        case MTL::VertexFormatUChar4Normalized_BGRA: return "UChar4Normalized_BGRA";
         case MTL::VertexFormatChar: return "Char";
         case MTL::VertexFormatCharNormalized: return "CharNormalized";
         case MTL::VertexFormatChar2Normalized: return "Char2Normalized";
         case MTL::VertexFormatChar3Normalized: return "Char3Normalized";
         case MTL::VertexFormatChar4Normalized: return "Char4Normalized";
+        /* Non-normalized Char2/3/4 -- the siblings the previous slice missed
+         * (the GL mapper returns them for GL_BYTE with size 2/3/4). */
+        case MTL::VertexFormatChar2: return "Char2";
+        case MTL::VertexFormatChar3: return "Char3";
+        case MTL::VertexFormatChar4: return "Char4";
         case MTL::VertexFormatShort: return "Short";
         case MTL::VertexFormatShort2: return "Short2";
         case MTL::VertexFormatShort3: return "Short3";
@@ -4000,6 +4011,12 @@ const char *mglRenderVertexFormatName(uint32_t format) {
         case MTL::VertexFormatUShort2Normalized: return "UShort2Normalized";
         case MTL::VertexFormatUShort3Normalized: return "UShort3Normalized";
         case MTL::VertexFormatUShort4Normalized: return "UShort4Normalized";
+        /* Half-precision family (the GL mapper returns these for
+         * GL_HALF_FLOAT with size 1..4). */
+        case MTL::VertexFormatHalf: return "Half";
+        case MTL::VertexFormatHalf2: return "Half2";
+        case MTL::VertexFormatHalf3: return "Half3";
+        case MTL::VertexFormatHalf4: return "Half4";
         /* Integral formats.  These were absent, so every integer attribute
          * -- e.g. Sodium's packed chunk format, whose POSITION is
          * UNSIGNED_INT x2 and LIGHT_MATERIAL_INDEX UNSIGNED_BYTE x4 --
