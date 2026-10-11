@@ -554,6 +554,37 @@ double mglClampDouble(double v, double lo, double hi)
     return v;
 }
 
+/* GL 4.6 2.2.2: a normalised float is converted to an integer by rounding to
+ * nearest.  Scale the operand in double, clamp it to the destination range and
+ * round explicitly.  The hand-rolled "scale * max + 0.5 then cast" form these
+ * replace relied on the intermediate being exactly representable, and for a
+ * negative or NaN operand it narrowed a value the destination type cannot hold
+ * -- undefined behaviour that merely happens to saturate on arm64. */
+static uint64_t mglRoundNormalizedToUnsigned(double value, uint64_t maxv)
+{
+    if (!(value > 0.0)) {
+        return 0u;              /* the negated test also traps -0.0 and NaN */
+    }
+    if (value >= 1.0) {
+        return maxv;
+    }
+    return (uint64_t)llround(value * (double)maxv);
+}
+
+static int64_t mglRoundNormalizedToSigned(double value, int64_t maxv)
+{
+    if (value != value) {
+        return 0;               /* NaN has no nearest integer */
+    }
+    if (value >= 1.0) {
+        return maxv;
+    }
+    if (value <= -1.0) {
+        return -maxv;
+    }
+    return (int64_t)llround(value * (double)maxv);
+}
+
 double mglUnsignedMaxForBits(GLuint bits)
 {
     if (bits >= 32u) {
@@ -840,7 +871,7 @@ void mglStoreInternalComponent(uint8_t *dst,
         }
         case GL_UNSIGNED_NORMALIZED: {
             double maxv = mglUnsignedMaxForBits(component->bits);
-            uint32_t v = (uint32_t)(mglClampDouble(value, 0.0, 1.0) * maxv + 0.5);
+            uint32_t v = (uint32_t)mglRoundNormalizedToUnsigned(value, (uint64_t)maxv);
             if (component->storage_size > 0u &&
                 component->storage_size <= sizeof(uint64_t) &&
                 (component->bit_offset != 0u ||
@@ -863,7 +894,7 @@ void mglStoreInternalComponent(uint8_t *dst,
         }
         case GL_SIGNED_NORMALIZED: {
             double maxv = mglSignedMaxForBits(component->bits);
-            int32_t v = (int32_t)(mglClampDouble(value, -1.0, 1.0) * maxv + (value >= 0.0 ? 0.5 : -0.5));
+            int32_t v = (int32_t)mglRoundNormalizedToSigned(value, (int64_t)maxv);
             if (component->bits == 8u) {
                 int8_t s8 = (int8_t)v;
                 memcpy(p, &s8, sizeof(s8));
@@ -1162,7 +1193,7 @@ void mglWriteExternalComponent(uint8_t *dst,
             if (integer_format) {
                 iv = (uint64_t)mglClampDouble(value, 0.0, (double)maxv);
             } else {
-                iv = (uint64_t)(mglClampDouble(value, 0.0, 1.0) * (double)maxv + 0.5);
+                iv = mglRoundNormalizedToUnsigned(value, maxv);
             }
             uint64_t packed = mglReadUnsignedLE(dst, storage_size);
             packed &= ~(maxv << shift);
@@ -1184,42 +1215,42 @@ void mglWriteExternalComponent(uint8_t *dst,
         case GL_UNSIGNED_BYTE: {
             uint8_t v = integer_format
                 ? (uint8_t)mglClampDouble(value, 0.0, 255.0)
-                : (uint8_t)(mglClampDouble(value, 0.0, 1.0) * 255.0 + 0.5);
+                : (uint8_t)mglRoundNormalizedToUnsigned(value, 255u);
             memcpy(p, &v, sizeof(v));
             break;
         }
         case GL_BYTE: {
             int8_t v = integer_format
                 ? (int8_t)mglClampDouble(value, -128.0, 127.0)
-                : (int8_t)(mglClampDouble(value, -1.0, 1.0) * 127.0 + (value >= 0.0 ? 0.5 : -0.5));
+                : (int8_t)mglRoundNormalizedToSigned(value, 127);
             memcpy(p, &v, sizeof(v));
             break;
         }
         case GL_UNSIGNED_SHORT: {
             uint16_t v = integer_format
                 ? (uint16_t)mglClampDouble(value, 0.0, 65535.0)
-                : (uint16_t)(mglClampDouble(value, 0.0, 1.0) * 65535.0 + 0.5);
+                : (uint16_t)mglRoundNormalizedToUnsigned(value, 65535u);
             memcpy(p, &v, sizeof(v));
             break;
         }
         case GL_SHORT: {
             int16_t v = integer_format
                 ? (int16_t)mglClampDouble(value, -32768.0, 32767.0)
-                : (int16_t)(mglClampDouble(value, -1.0, 1.0) * 32767.0 + (value >= 0.0 ? 0.5 : -0.5));
+                : (int16_t)mglRoundNormalizedToSigned(value, 32767);
             memcpy(p, &v, sizeof(v));
             break;
         }
         case GL_UNSIGNED_INT: {
             uint32_t v = integer_format
                 ? (uint32_t)mglClampDouble(value, 0.0, 4294967295.0)
-                : (uint32_t)(mglClampDouble(value, -1.0, 1.0) * 4294967295.0 + (value >= 0.0 ? 0.5 : -0.5));
+                : (uint32_t)mglRoundNormalizedToUnsigned(value, 4294967295u);
             memcpy(p, &v, sizeof(v));
             break;
         }
         case GL_INT: {
             int32_t v = integer_format
                 ? (int32_t)mglClampDouble(value, -2147483648.0, 2147483647.0)
-                : (int32_t)(mglClampDouble(value, -1.0, 1.0) * 2147483647.0 + (value >= 0.0 ? 0.5 : -0.5));
+                : (int32_t)mglRoundNormalizedToSigned(value, 2147483647);
             memcpy(p, &v, sizeof(v));
             break;
         }

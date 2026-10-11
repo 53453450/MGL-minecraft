@@ -2205,7 +2205,9 @@ int mglRenderCopySnorm8TextureBytesToGL(
                     uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
                     memcpy(out, &iv, sizeof(iv));
                 } else if (type == GL_INT) {
-                    int64_t iv = (int64_t)llroundf(fv * 2147483647.0f);
+                    /* Scale in double: 2147483647.0f rounds up to 2^31, so the
+                     * float product loses the low bits of a 31-bit result. */
+                    int64_t iv = (int64_t)llround((double)fv * 2147483647.0);
                     if (iv > 2147483647LL) iv = 2147483647LL;
                     if (iv < -2147483648LL) iv = -2147483648LL;
                     int32_t iiv = (int32_t)iv;

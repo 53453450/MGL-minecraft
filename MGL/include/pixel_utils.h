@@ -100,6 +100,13 @@ uint32_t mglPackUnsignedFloatFromUNorm8(uint32_t value, uint32_t mantissa_bits);
  * and handles Inf/NaN (exponent == 31) correctly. */
 float mglUnpackUnsignedFloatComponent(uint32_t value, uint32_t mantissa_bits);
 
+/* GL_DEPTH24_STENCIL8 stores its depth in the high 24 bits.  Convert a
+ * normalised depth to that integer range the way GL 4.6 2.2.2 mandates:
+ * round to nearest.  The operand is clamped in double first, because a negative
+ * or NaN depth would otherwise be narrowed out of the unsigned range -- that is
+ * undefined behaviour which merely happens to saturate on arm64. */
+uint32_t mglPackDepth24FromNormalized(GLfloat depth);
+
 
 #ifndef API_AVAILABLE
 #define API_AVAILABLE(...) __API_AVAILABLE_GET_MACRO(__VA_ARGS__,__API_AVAILABLE7, __API_AVAILABLE6, __API_AVAILABLE5, __API_AVAILABLE4, __API_AVAILABLE3, __API_AVAILABLE2, __API_AVAILABLE1, 0)(__VA_ARGS__)

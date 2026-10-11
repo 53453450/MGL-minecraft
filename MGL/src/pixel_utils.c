@@ -3358,6 +3358,23 @@ void mglUnpackSharedExp(uint32_t packed, double *r, double *g, double *b)
     *b = (double)mant_b * scale;
 }
 
+/* GL_DEPTH24_STENCIL8 stores its depth in the high 24 bits.  GL 4.6 2.2.2
+ * converts the normalised depth by rounding to nearest, so scale in double and
+ * round explicitly.  Negatives and NaN are clamped in double first: the plain
+ * cast this replaces narrowed an out-of-range value, which is undefined and
+ * merely happens to saturate on arm64. */
+uint32_t mglPackDepth24FromNormalized(GLfloat depth)
+{
+    double d = (double)depth;
+    if (!(d >= 0.0)) {
+        d = 0.0;                /* the negated test also traps NaN */
+    }
+    if (d > 1.0) {
+        d = 1.0;
+    }
+    return (uint32_t)lround(d * 16777215.0);
+}
+
 uint32_t mglPackUnsignedFloatFromUNorm8(uint32_t value, uint32_t mantissa_bits)
 {
     if (value == 0u || mantissa_bits == 0u || mantissa_bits > 23u) {

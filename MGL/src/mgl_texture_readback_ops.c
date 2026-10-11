@@ -1318,11 +1318,9 @@ static void mglPdGetDepthStencilImage(
             } else if (type == GL_UNSIGNED_INT_24_8) {
                 const float c = d < 0.0f ? 0.0f : (d > 1.0f ? 1.0f : d);
                 /* float32 cannot round-trip 2^24-1; 1.0f * 16777215.0f
-                 * becomes 16777216 and << 8 wraps to 0. */
-                uint32_t d24 = (uint32_t)((double)c * 16777215.0 + 0.5);
-                if (d24 > 0x00FFFFFFu) {
-                    d24 = 0x00FFFFFFu;
-                }
+                 * becomes 16777216 and << 8 wraps to 0, so the depth is
+                 * rounded in double by the shared helper. */
+                const uint32_t d24 = mglPackDepth24FromNormalized(c);
                 const uint32_t packed = (d24 << 8) | (s & 0xffu);
                 memcpy(dst + x * 4u, &packed, sizeof(packed));
             } else {

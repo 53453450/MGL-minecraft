@@ -2842,14 +2842,13 @@ static bool mglReadPixelsDepthStencil(GLMContext ctx,
                     (size_t)readY * stencilTex->stencil_shadow_width + readX];
             }
 
-            if (depthVal < 0.0f) depthVal = 0.0f;
+            /* The negated form also traps NaN, which the old "< 0.0f" test let
+             * through into an out-of-range float->integer cast below. */
+            if (!(depthVal >= 0.0f)) depthVal = 0.0f;
             if (depthVal > 1.0f) depthVal = 1.0f;
 
             if (type == GL_UNSIGNED_INT_24_8) {
-                uint32_t d24 = (uint32_t)((double)depthVal * 16777215.0 + 0.5);
-                if (d24 > 0x00FFFFFFu) {
-                    d24 = 0x00FFFFFFu;
-                }
+                uint32_t d24 = mglPackDepth24FromNormalized(depthVal);
                 uint32_t packed = (d24 << 8) | (uint32_t)stencilVal;
                 memcpy(dst + (size_t)column * sizeof(uint32_t), &packed, sizeof(uint32_t));
             } else if (type == GL_FLOAT_32_UNSIGNED_INT_24_8_REV) {
