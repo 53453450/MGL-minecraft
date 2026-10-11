@@ -2627,10 +2627,10 @@ static bool mglReadPixelsDepthComponent(GLMContext ctx,
                     ((int16_t *)dst)[column] = (int16_t)(d * 32767.0f + 0.5f);
                     break;
                 case GL_UNSIGNED_INT:
-                    ((uint32_t *)dst)[column] = (uint32_t)(d * 4294967295.0f + 0.5f);
+                    ((uint32_t *)dst)[column] = (uint32_t)(d * 4294967295.0 + 0.5f);
                     break;
                 case GL_INT:
-                    ((int32_t *)dst)[column] = (int32_t)(d * 2147483647.0f + 0.5f);
+                    ((int32_t *)dst)[column] = (int32_t)(d * 2147483647.0 + 0.5f);
                     break;
                 default:
                     break;

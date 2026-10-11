@@ -2212,7 +2212,7 @@ int mglRenderCopySnorm8TextureBytesToGL(
                     memcpy(out, &iiv, sizeof(iiv));
                 } else if (type == GL_UNSIGNED_INT) {
                     float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                    uint32_t iv = (uint32_t)llroundf(cv * 4294967295.0f);
+                    uint32_t iv = (uint32_t)llround(cv * 4294967295.0);
                     memcpy(out, &iv, sizeof(iv));
                 }
             }
@@ -2341,11 +2341,11 @@ int mglRenderCopyRG11B10TextureBytesToGL(
                         memcpy(out, &iv, sizeof(iv));
                     } else if (type == GL_UNSIGNED_INT) {
                         float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                        uint32_t iv = (uint32_t)llroundf(cv * 4294967295.0f);
+                        uint32_t iv = (uint32_t)llround(cv * 4294967295.0);
                         memcpy(out, &iv, sizeof(iv));
                     } else if (type == GL_INT) {
                         float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                        int32_t iv = (int32_t)llroundf(cv * 2147483647.0f);
+                        int32_t iv = (int32_t)llround(cv * 2147483647.0);
                         memcpy(out, &iv, sizeof(iv));
                     } else if (type == GL_FLOAT) {
                         memcpy(out, &fv, sizeof(fv));
@@ -2602,11 +2602,11 @@ int mglRenderCopy16or32TextureBytesToGL(
                     memcpy(out, &iv, sizeof(iv));
                 } else if (type == GL_UNSIGNED_INT) {
                     float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                    uint32_t iv = (uint32_t)llroundf(cv * 4294967295.0f);
+                    uint32_t iv = (uint32_t)llround(cv * 4294967295.0);
                     memcpy(out, &iv, sizeof(iv));
                 } else if (type == GL_INT) {
                     float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                    int32_t iv = (int32_t)llroundf(cv * 2147483647.0f);
+                    int32_t iv = (int32_t)llround(cv * 2147483647.0);
                     memcpy(out, &iv, sizeof(iv));
                 } else if (type == GL_FLOAT) {
                     memcpy(out, &fv, sizeof(fv));
