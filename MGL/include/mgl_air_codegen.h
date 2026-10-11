@@ -250,6 +250,13 @@ struct Codegen {
     llvm::Value *inlineRetVal = nullptr;
     llvm::BasicBlock *inlineExitBB = nullptr;
     llvm::PHINode *inlineRetPhi = nullptr;
+    /* Live values captured at each inlined `return` (block -> snapshot).
+     * The inline exit joins return edges that may originate inside a nested
+     * loop/if, so a value merged in one of those blocks does not dominate the
+     * exit; the caller merges these snapshots into phis at inlineExitBB,
+     * exactly as BreakCtx::snaps does for `break`. */
+    std::vector<std::pair<llvm::BasicBlock *,
+                          std::map<std::string, llvm::Value *>>> inlineExitSnaps;
     /* Named user struct types from the TU (`struct S { … };`), used for
      * S(...) / S[](...) constructors and local member ExtractValue. */
     std::map<std::string, MGLIRType *> structTypes;

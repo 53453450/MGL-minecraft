@@ -10356,21 +10356,99 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     llvm::Value *savedRet = cg.inlineRetVal;
                     llvm::BasicBlock *savedExit = cg.inlineExitBB;
                     llvm::PHINode *savedPhi = cg.inlineRetPhi;
+                    auto savedExitSnaps = cg.inlineExitSnaps;
                     cg.inliningHelper = true;
                     cg.inlineRetVal = nullptr;
                     cg.inlineExitBB = nullptr;
                     cg.inlineRetPhi = nullptr;
+                    cg.inlineExitSnaps.clear();
                     cg.err = 0;
                     emitStmt(cg, fd->body, mod, &ilocals);
                     if (cg.inlineExitBB) {
                         llvm::BasicBlock *cur = cg.b->GetInsertBlock();
-                        if (cur && !cur->getTerminator()) {
+                        bool fellThrough = cur && !cur->getTerminator();
+                        if (fellThrough) {
                             if (cg.inlineRetPhi)
                                 cg.inlineRetPhi->addIncoming(
                                     llvm::UndefValue::get(
                                         cg.inlineRetPhi->getType()),
                                     cur);
                             cg.b->CreateBr(cg.inlineExitBB);
+                        }
+                        /* Merge the live values at the exit.  A return edge may
+                         * originate inside a nested loop/if, so a value merged
+                         * in one of those blocks does not dominate the exit --
+                         * handing the caller that block-local value produced
+                         * "Instruction does not dominate all uses!".  Build a
+                         * phi whenever the edges disagree; a value carried
+                         * identically by every edge already dominates the exit,
+                         * so it is left as is.  Mirrors BreakCtx::snaps. */
+                        if (cg.err != 1) {
+                            std::set<std::string> names;
+                            for (const auto &s : cg.inlineExitSnaps)
+                                for (const auto &kv : s.second)
+                                    names.insert(kv.first);
+                            if (fellThrough)
+                                for (const auto &kv : cg.lvalues)
+                                    names.insert(kv.first);
+                            unsigned nEdges =
+                                (unsigned)cg.inlineExitSnaps.size() +
+                                (fellThrough ? 1u : 0u);
+                            for (const auto &n : names) {
+                                if (nEdges == 0u) break;
+                                llvm::Type *ty = nullptr;
+                                llvm::Value *first = nullptr;
+                                unsigned present = 0, mismatch = 0;
+                                auto observe = [&](llvm::Value *v) {
+                                    if (!v) return;
+                                    if (!ty) {
+                                        ty = v->getType();
+                                        first = v;
+                                        present = 1;
+                                        return;
+                                    }
+                                    present++;
+                                    if (v->getType() != ty || v != first)
+                                        mismatch++;
+                                };
+                                for (const auto &s : cg.inlineExitSnaps) {
+                                    auto it = s.second.find(n);
+                                    observe(it != s.second.end() ? it->second
+                                                                 : nullptr);
+                                }
+                                if (fellThrough) {
+                                    auto it = cg.lvalues.find(n);
+                                    observe(it != cg.lvalues.end() ? it->second
+                                                                   : nullptr);
+                                }
+                                /* Uniform across every edge -> it dominates the
+                                 * exit already; only (re)build on disagreement
+                                 * (including a name present on some edges only,
+                                 * which enters as undef on the rest). */
+                                if (!ty || (present == nEdges && mismatch == 0))
+                                    continue;
+                                auto *phi = llvm::PHINode::Create(
+                                    ty, nEdges, n, cg.inlineExitBB);
+                                for (const auto &s : cg.inlineExitSnaps) {
+                                    auto it = s.second.find(n);
+                                    llvm::Value *v =
+                                        (it != s.second.end() &&
+                                         it->second->getType() == ty)
+                                            ? it->second
+                                            : llvm::UndefValue::get(ty);
+                                    phi->addIncoming(v, s.first);
+                                }
+                                if (fellThrough) {
+                                    auto it = cg.lvalues.find(n);
+                                    llvm::Value *v =
+                                        (it != cg.lvalues.end() &&
+                                         it->second->getType() == ty)
+                                            ? it->second
+                                            : llvm::UndefValue::get(ty);
+                                    phi->addIncoming(v, cur);
+                                }
+                                cg.lvalues[n] = phi;
+                            }
                         }
                         cg.b->SetInsertPoint(cg.inlineExitBB);
                     }
@@ -10381,6 +10459,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     cg.inlineRetVal = savedRet;
                     cg.inlineExitBB = savedExit;
                     cg.inlineRetPhi = savedPhi;
+                    cg.inlineExitSnaps = savedExitSnaps;
                     /* GLSL out/inout: write the final param value back to
                      * the caller's lvalue argument before unshadowing. */
                     for (uint32_t a = 0; a < fd->param_count &&

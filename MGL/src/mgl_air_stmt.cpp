@@ -214,6 +214,11 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                 cg.inlineRetPhi->addIncoming(v, here);
                 cg.inlineRetVal = cg.inlineRetPhi;
             }
+            /* Snapshot the live values on this return edge.  The inline exit
+             * may join edges from inside a nested loop/if, where a merged
+             * value does not dominate the exit; the caller turns these
+             * snapshots into phis at inlineExitBB. */
+            cg.inlineExitSnaps.push_back({here, cg.lvalues});
             cg.b->CreateBr(cg.inlineExitBB);
             cg.err = 2;
             break;
