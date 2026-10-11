@@ -61,7 +61,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 219
+#define MAX_TESTS 221
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -24165,6 +24165,305 @@ static int test_ms_integer_texel_fetch(unsigned char *pixels, const char *out_pa
     return fail ? 1 : 0;
 }
 
+/* GL 4.6 §8.26: image load/store address texels with the same coordinates as
+ * texelFetch, so imageLoad on a multisample image must report the texel for GL
+ * row y.  The MS plane store is Metal row order and cannot use the
+ * render-target unflip path, so the codegen has to flip the row exactly as it
+ * does for texelFetch.  A 2x2 R32I source with distinguishable rows turns a
+ * missing flip into a swapped pair rather than an off-by-one.
+ *
+ * Phase 1 reads the MS image and checks the GL rows directly.
+ * Phase 2 stores to GL row 1 and reads it back through the already-validated
+ * texelFetch(sampler2DMS) path, so a load that is flipped while the store is
+ * not (or the reverse) also fails. */
+static int test_ms_integer_image_load(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    GLuint prog_fill = link_program(vs,
+        "#version 450\n"
+        "layout(pixel_center_integer) in vec4 gl_FragCoord;\n"
+        "uniform isampler2D s;\n"
+        "out ivec4 c;\n"
+        "void main() { c = texelFetch(s, ivec2(gl_FragCoord.xy), 0); }\n");
+    GLuint prog_read = link_program(vs,
+        "#version 450\n"
+        "layout(pixel_center_integer) in vec4 gl_FragCoord;\n"
+        "uniform isampler2DMS s;\n"
+        "uniform int smp;\n"
+        "out ivec4 c;\n"
+        "void main() { c = texelFetch(s, ivec2(gl_FragCoord.xy), smp); }\n");
+    GLuint prog_load = link_compute_program(
+        "#version 450\n"
+        "layout(local_size_x = 2, local_size_y = 2) in;\n"
+        "layout(r32i, binding = 0) readonly uniform iimage2DMS msimg;\n"
+        "layout(r32i, binding = 1) writeonly uniform iimage2D dst;\n"
+        "void main() {\n"
+        "  ivec2 p = ivec2(gl_GlobalInvocationID.xy);\n"
+        "  imageStore(dst, p, imageLoad(msimg, p, 0));\n"
+        "}\n");
+    GLuint prog_store = link_compute_program(
+        "#version 450\n"
+        "layout(local_size_x = 2, local_size_y = 1) in;\n"
+        "layout(r32i, binding = 0) uniform iimage2DMS msimg;\n"
+        "void main() {\n"
+        "  int x = int(gl_GlobalInvocationID.x);\n"
+        "  imageStore(msimg, ivec2(x, 1), 0, imageLoad(msimg, ivec2(x, 0), 0) + ivec4(500));\n"
+        "}\n");
+    if (!prog_fill || !prog_read || !prog_load || !prog_store) return 1;
+
+    /* Row 0 = {-7, 3}, row 1 = {100000, -2}. */
+    static const GLint src[4] = {-7, 3, 100000, -2};
+    int fail = 0;
+    GLuint vao = 0, tex[3] = {0}, fbo[2] = {0};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenTextures(3, tex);
+    glGenFramebuffers(2, fbo);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex[0]);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32I, 2, 2);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 2, 2, GL_RED_INTEGER, GL_INT, src);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    /* Fill the multisample texture: fragment row y writes GL texel row y. */
+    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, tex[1]);
+    glTextureStorage2DMultisample(tex[1], 1, GL_R32I, 2, 2, GL_FALSE);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo[0]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D_MULTISAMPLE, tex[1], 0);
+    glViewport(0, 0, 2, 2);
+    glUseProgram(prog_fill);
+    glBindTexture(GL_TEXTURE_2D, tex[0]);
+    glUniform1i(glGetUniformLocation(prog_fill, "s"), 0);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+    /* Phase 1: imageLoad(image2DMS) reports the GL row. */
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, tex[2]);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32I, 2, 2);
+    glBindImageTexture(0, tex[1], 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32I);
+    glBindImageTexture(1, tex[2], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32I);
+    glUseProgram(prog_load);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
+                    GL_TEXTURE_FETCH_BARRIER_BIT);
+    GLint got[4] = {0};
+    glBindTexture(GL_TEXTURE_2D, tex[2]);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_INT, got);
+    for (int i = 0; i < 4; i++) {
+        if (got[i] != src[i]) {
+            fprintf(stderr, "ms_integer_image_load: imageLoad [%d] got %d want %d\n",
+                    i, got[i], src[i]);
+            fail |= 1;
+        }
+    }
+
+    /* Phase 2: a store to GL row 1 must land where texelFetch reads row 1. */
+    glBindImageTexture(1, 0, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32I);
+    glBindImageTexture(0, tex[1], 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32I);
+    glUseProgram(prog_store);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
+                    GL_TEXTURE_FETCH_BARRIER_BIT);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo[1]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           tex[2], 0);
+    glViewport(0, 0, 2, 2);
+    glUseProgram(prog_read);
+    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, tex[1]);
+    glUniform1i(glGetUniformLocation(prog_read, "s"), 0);
+    glUniform1i(glGetUniformLocation(prog_read, "smp"), 0);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    {
+        /* The store put row 0 + 500 into row 1; row 0 is untouched. */
+        const GLint want[4] = {src[0], src[1], src[0] + 500, src[1] + 500};
+        GLint got2[4] = {0};
+        glBindTexture(GL_TEXTURE_2D, tex[2]);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_INT, got2);
+        for (int i = 0; i < 4; i++) {
+            if (got2[i] != want[i]) {
+                fprintf(stderr,
+                        "ms_integer_image_load: imageStore [%d] got %d want %d\n",
+                        i, got2[i], want[i]);
+                fail |= 2;
+            }
+        }
+    }
+
+    glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32I);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(2, fbo);
+    glDeleteTextures(3, tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog_fill);
+    glDeleteProgram(prog_read);
+    glDeleteProgram(prog_load);
+    glDeleteProgram(prog_store);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail ? 1 : 0;
+}
+
+/* Same contract as ms_integer_image_load for the array form: the plane store is
+ * a texture2d_array whose slice is layer*8+sample, and image2DMSArray must still
+ * address GL row y of the selected layer.  Layer 1 carries src_hi and layer 0
+ * carries a different set, so a layer mix-up is distinguishable from a row
+ * mix-up. */
+static int test_ms_integer_image_load_array(unsigned char *pixels,
+                                            const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    GLuint prog_fill = link_program(vs,
+        "#version 450\n"
+        "layout(pixel_center_integer) in vec4 gl_FragCoord;\n"
+        "uniform isampler2D s;\n"
+        "out ivec4 c;\n"
+        "void main() { c = texelFetch(s, ivec2(gl_FragCoord.xy), 0); }\n");
+    GLuint prog_read = link_program(vs,
+        "#version 450\n"
+        "layout(pixel_center_integer) in vec4 gl_FragCoord;\n"
+        "uniform isampler2DMSArray s;\n"
+        "out ivec4 c;\n"
+        "void main() { c = texelFetch(s, ivec3(ivec2(gl_FragCoord.xy), 1), 0); }\n");
+    GLuint prog_load = link_compute_program(
+        "#version 450\n"
+        "layout(local_size_x = 2, local_size_y = 2) in;\n"
+        "layout(r32i, binding = 0) readonly uniform iimage2DMSArray msimg;\n"
+        "layout(r32i, binding = 1) writeonly uniform iimage2D dst;\n"
+        "void main() {\n"
+        "  ivec2 p = ivec2(gl_GlobalInvocationID.xy);\n"
+        "  imageStore(dst, p, imageLoad(msimg, ivec3(p, 1), 0));\n"
+        "}\n");
+    GLuint prog_store = link_compute_program(
+        "#version 450\n"
+        "layout(local_size_x = 2, local_size_y = 1) in;\n"
+        "layout(r32i, binding = 0) uniform iimage2DMSArray msimg;\n"
+        "void main() {\n"
+        "  int x = int(gl_GlobalInvocationID.x);\n"
+        "  imageStore(msimg, ivec3(x, 1, 1), 0,\n"
+        "             imageLoad(msimg, ivec3(x, 0, 1), 0) + ivec4(500));\n"
+        "}\n");
+    if (!prog_fill || !prog_read || !prog_load || !prog_store) return 1;
+
+    static const GLint src_lo[4] = {11, 22, 33, 44};
+    static const GLint src_hi[4] = {-7, 3, 100000, -2};
+    int fail = 0;
+    GLuint vao = 0, tex[4] = {0}, fbo[2] = {0};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenTextures(4, tex);
+    glGenFramebuffers(2, fbo);
+    glActiveTexture(GL_TEXTURE0);
+    for (int k = 0; k < 2; k++) {
+        glBindTexture(GL_TEXTURE_2D, tex[k == 0 ? 0 : 3]);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32I, 2, 2);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 2, 2, GL_RED_INTEGER, GL_INT,
+                        k == 0 ? src_lo : src_hi);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+
+    /* Fill both layers: layer y=0 rows from src_lo, layer 1 rows from src_hi. */
+    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE_ARRAY, tex[1]);
+    glTextureStorage3DMultisample(tex[1], 1, GL_R32I, 2, 2, 2, GL_FALSE);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo[0]);
+    glViewport(0, 0, 2, 2);
+    glUseProgram(prog_fill);
+    glUniform1i(glGetUniformLocation(prog_fill, "s"), 0);
+    for (int layer = 0; layer < 2; layer++) {
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, tex[1],
+                                  0, layer);
+        glBindTexture(GL_TEXTURE_2D, layer == 0 ? tex[0] : tex[3]);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+
+    /* Phase 1: imageLoad(image2DMSArray) reports layer 1's GL rows. */
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, tex[2]);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32I, 2, 2);
+    glBindImageTexture(0, tex[1], 0, GL_TRUE, 0, GL_READ_ONLY, GL_R32I);
+    glBindImageTexture(1, tex[2], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32I);
+    glUseProgram(prog_load);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
+                    GL_TEXTURE_FETCH_BARRIER_BIT);
+    {
+        GLint got[4] = {0};
+        glBindTexture(GL_TEXTURE_2D, tex[2]);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_INT, got);
+        for (int i = 0; i < 4; i++) {
+            if (got[i] != src_hi[i]) {
+                fprintf(stderr,
+                        "ms_integer_image_load_array: imageLoad [%d] got %d want %d\n",
+                        i, got[i], src_hi[i]);
+                fail |= 1;
+            }
+        }
+    }
+
+    /* Phase 2: a store to GL row 1 of layer 1 must land where texelFetch reads
+     * row 1 of layer 1. */
+    glBindImageTexture(1, 0, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32I);
+    glBindImageTexture(0, tex[1], 0, GL_TRUE, 0, GL_READ_WRITE, GL_R32I);
+    glUseProgram(prog_store);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
+                    GL_TEXTURE_FETCH_BARRIER_BIT);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo[1]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           tex[2], 0);
+    glViewport(0, 0, 2, 2);
+    glUseProgram(prog_read);
+    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE_ARRAY, tex[1]);
+    glUniform1i(glGetUniformLocation(prog_read, "s"), 0);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    {
+        /* The store put layer 1's row 0 + 500 into its row 1. */
+        const GLint want[4] = {src_hi[0], src_hi[1], src_hi[0] + 500,
+                               src_hi[1] + 500};
+        GLint got2[4] = {0};
+        glBindTexture(GL_TEXTURE_2D, tex[2]);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RED_INTEGER, GL_INT, got2);
+        for (int i = 0; i < 4; i++) {
+            if (got2[i] != want[i]) {
+                fprintf(stderr,
+                        "ms_integer_image_load_array: imageStore [%d] got %d want %d\n",
+                        i, got2[i], want[i]);
+                fail |= 2;
+            }
+        }
+    }
+
+    glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32I);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(2, fbo);
+    glDeleteTextures(4, tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog_fill);
+    glDeleteProgram(prog_read);
+    glDeleteProgram(prog_load);
+    glDeleteProgram(prog_store);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail ? 1 : 0;
+}
+
 /* Atomic counters in a vertex-processing stage whose outputs are captured
  * with transform feedback.  The counters start at 7 and 77; with one buffer
  * they live at offsets 8 and 16. */
@@ -29627,6 +29926,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("depth_integer_upload", test_depth_integer_upload),
     SELF_CHECK_TEST("depth_readback_clear_types", test_depth_readback_clear_types),
     SELF_CHECK_TEST("ms_integer_texel_fetch", test_ms_integer_texel_fetch),
+    SELF_CHECK_TEST("ms_integer_image_load", test_ms_integer_image_load),
+    SELF_CHECK_TEST("ms_integer_image_load_array", test_ms_integer_image_load_array),
     SELF_CHECK_TEST("generic_buffer_binding_queries", test_generic_buffer_binding_queries),
     SELF_CHECK_TEST("simple_query_pnames", test_simple_query_pnames),
     SELF_CHECK_TEST("point_sprite_coord_origin", test_point_sprite_coord_origin),

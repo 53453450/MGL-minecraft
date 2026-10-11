@@ -1560,11 +1560,13 @@ static llvm::Value *addTexelOffset(Codegen &cg, llvm::Value *coord,
  * target then gets a Y-flipped sampled copy so shader reads see GL row order
  * again.  MS targets are excluded from that copy -- the plane store is a
  * texture2d_array whose sub-slices the 2D sampled-copy path cannot mirror --
- * so flip the fetch row here and let texelFetch(sampler2DMS*) report the texel
- * for GL row y.  The backing is always a texture2d_array (mglRenderEmulateMSAsArray),
- * so the 2D-array height query is the plane height. */
-static llvm::Value *flipMultisampleFetchRow(Codegen &cg, llvm::Value *tex,
-                                            llvm::Value *coord)
+ * so every MS access has to flip the row itself: texelFetch(sampler2DMS*) and
+ * imageLoad/imageStore(image2DMS*) all address texels in GL coordinates
+ * (GL 4.6 8.26), while the plane store is Metal row order.  The backing is
+ * always a texture2d_array (mglRenderEmulateMSAsArray), so the 2D-array height
+ * query is the plane height. */
+static llvm::Value *flipMultisampleStorageRow(Codegen &cg, llvm::Value *tex,
+                                              llvm::Value *coord)
 {
     llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
     llvm::Value *h = callAirFn(cg, "air.get_height_texture_2d_array", i32,
@@ -8330,15 +8332,22 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                   retTy, {t, rdSmp, coord2, layerOrFace, off2,
                                           lod0, acc3});
                 } else if (tk == MGLIR_TEX_2D_MS) {
+                    /* GL 4.6 8.26 addresses image texels in the same
+                     * coordinates as texelFetch, so the MS plane row has to be
+                     * flipped here too (see flipMultisampleStorageRow). */
+                    llvm::Value *msCoord =
+                        flipMultisampleStorageRow(cg, t, coord2);
                     r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {t, rdSmp, coord2, msSample, off2,
+                                  retTy, {t, rdSmp, msCoord, msSample, off2,
                                           lod0, acc3});
                 } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
                     llvm::Value *flat = cg.b->CreateAdd(
                         cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
                         msSample);
+                    llvm::Value *msCoord =
+                        flipMultisampleStorageRow(cg, t, coord2);
                     r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {t, rdSmp, coord2, flat, off2, lod0,
+                                  retTy, {t, rdSmp, msCoord, flat, off2, lod0,
                                           acc3});
                 } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
                     r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
@@ -8439,18 +8448,22 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                cg.b->getInt32(3)});
                     fenceAfterImageWrite(t, tk);
                 } else if (tk == MGLIR_TEX_2D_MS) {
+                    llvm::Value *msCoord =
+                        flipMultisampleStorageRow(cg, t, coord2);
                     callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
                               voidTy,
-                              {t, coord2, msSample, value, cg.b->getInt32(0),
+                              {t, msCoord, msSample, value, cg.b->getInt32(0),
                                cg.b->getInt32(3)});
                     fenceAfterImageWrite(t, tk);
                 } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
                     llvm::Value *flat = cg.b->CreateAdd(
                         cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
                         msSample);
+                    llvm::Value *msCoord =
+                        flipMultisampleStorageRow(cg, t, coord2);
                     callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
                               voidTy,
-                              {t, coord2, flat, value, cg.b->getInt32(0),
+                              {t, msCoord, flat, value, cg.b->getInt32(0),
                                cg.b->getInt32(3)});
                     fenceAfterImageWrite(t, tk);
                 } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
@@ -8778,10 +8791,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                          lodOrSample, cg.b->getInt32(3)});
                 } else if (texKind == MGLIR_TEX_2D_MS) {
                     /* The MS plane store has no Y-flipped sampled copy (see
-                     * flipMultisampleFetchRow), so row y here is the flipped
+                     * flipMultisampleStorageRow), so row y here is the flipped
                      * Metal row; flip it back for the GL texel. */
                     llvm::Value *msCoord =
-                        flipMultisampleFetchRow(cg, t, coord);
+                        flipMultisampleStorageRow(cg, t, coord);
                     r = callAirFn(
                         cg,
                         readIntrinsic("air.read_texture_2d_array.v4f32")
@@ -8794,7 +8807,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         cg.b->CreateMul(arrayLayer, cg.b->getInt32(8)),
                         lodOrSample);
                     llvm::Value *msCoord =
-                        flipMultisampleFetchRow(cg, t, coord);
+                        flipMultisampleStorageRow(cg, t, coord);
                     r = callAirFn(
                         cg,
                         readIntrinsic("air.read_texture_2d_array.v4f32")
