@@ -135,8 +135,14 @@ struct Sha256 {
         while (total % 64 != 56) {
             update(&zero, 1);
         }
+        /* FIPS 180-4 5.1.1: the 64-bit message length is appended
+         * most-significant byte first.  Shifting by 8*i walks the length
+         * from its top byte down; the previous 8*(7-i) walked it from the
+         * low byte up, i.e. little-endian, which disagreed with every
+         * reference SHA-256 for all inputs whose length is not a multiple
+         * of 256 bytes. */
         for (int i = 7; i >= 0; i--) {
-            uint8_t b = uint8_t(bits >> (8 * (7 - i)));
+            uint8_t b = uint8_t(bits >> (8 * i));
             update(&b, 1);
         }
         for (unsigned i = 0; i < 8; i++) {
