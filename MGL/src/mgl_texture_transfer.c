@@ -26,6 +26,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -99,7 +100,7 @@ static void mglStoreDepth(uint8_t *pixel, size_t storage_pixel_size, double d)
 {
     d = d < 0.0 ? 0.0 : (d > 1.0 ? 1.0 : d);
     if (storage_pixel_size == 2u) {
-        uint16_t v = (uint16_t)(d * 65535.0 + 0.5);
+        uint16_t v = (uint16_t)lround(d * 65535.0);
         memcpy(pixel, &v, sizeof(v));
     } else {
         GLfloat v = (GLfloat)d;

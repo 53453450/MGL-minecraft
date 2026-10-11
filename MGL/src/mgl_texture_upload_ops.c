@@ -33,6 +33,7 @@
 #include "mgl_render.h"
 
 #include <dispatch/dispatch.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -427,7 +428,7 @@ static int mglUpUploadPackedDepthStencil(void *renderer, void *texture,
                 if (unormDepth) {
                     if (!(depth > 0.0f)) depth = 0.0f;
                     if (depth > 1.0f) depth = 1.0f;
-                    depthWord = (uint32_t)(depth * 16777215.0f + 0.5f);
+                    depthWord = (uint32_t)llround((double)depth * 16777215.0);
                 } else {
                     memcpy(&depthWord, &depth, 4u);
                 }

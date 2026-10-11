@@ -32,6 +32,7 @@
 #include <mach/mach_init.h>
 #include <mach/vm_map.h>
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -2605,6 +2606,13 @@ static bool mglReadPixelsDepthComponent(GLMContext ctx,
             GLfloat d = src[column];
             if (d < 0.0f) d = 0.0f;
             if (d > 1.0f) d = 1.0f;
+            /* Pack the clamped value with an explicit round and an explicit
+             * double scale.  A hand-rolled "x * max + 0.5" cast is only
+             * correct while the scale literal stays exactly representable and
+             * the product stays inside the target's range -- and when it does
+             * not, the cast is undefined and merely happens to saturate on
+             * arm64.  Rounding to nearest and doing the multiply in double
+             * removes both dependencies. */
             switch (type) {
                 case GL_FLOAT:
                     ((GLfloat *)dst)[column] = d;
@@ -2615,22 +2623,22 @@ static bool mglReadPixelsDepthComponent(GLMContext ctx,
                     break;
                 }
                 case GL_UNSIGNED_BYTE:
-                    ((uint8_t *)dst)[column] = (uint8_t)(d * 255.0f + 0.5f);
+                    ((uint8_t *)dst)[column] = (uint8_t)lround((double)d * 255.0);
                     break;
                 case GL_BYTE:
-                    ((int8_t *)dst)[column] = (int8_t)(d * 127.0f + 0.5f);
+                    ((int8_t *)dst)[column] = (int8_t)lround((double)d * 127.0);
                     break;
                 case GL_UNSIGNED_SHORT:
-                    ((uint16_t *)dst)[column] = (uint16_t)(d * 65535.0f + 0.5f);
+                    ((uint16_t *)dst)[column] = (uint16_t)lround((double)d * 65535.0);
                     break;
                 case GL_SHORT:
-                    ((int16_t *)dst)[column] = (int16_t)(d * 32767.0f + 0.5f);
+                    ((int16_t *)dst)[column] = (int16_t)lround((double)d * 32767.0);
                     break;
                 case GL_UNSIGNED_INT:
-                    ((uint32_t *)dst)[column] = (uint32_t)(d * 4294967295.0 + 0.5f);
+                    ((uint32_t *)dst)[column] = (uint32_t)llround((double)d * 4294967295.0);
                     break;
                 case GL_INT:
-                    ((int32_t *)dst)[column] = (int32_t)(d * 2147483647.0 + 0.5f);
+                    ((int32_t *)dst)[column] = (int32_t)llround((double)d * 2147483647.0);
                     break;
                 default:
                     break;

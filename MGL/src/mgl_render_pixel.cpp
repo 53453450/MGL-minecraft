@@ -779,7 +779,7 @@ uint8_t mglRenderFloatToUnorm8(float value) {
     if (value >= 1.0f) {
         return 255u;
     }
-    return (uint8_t)(value * 255.0f + 0.5f);
+    return (uint8_t)lround((double)value * 255.0);
 }
 
 extern "C"
