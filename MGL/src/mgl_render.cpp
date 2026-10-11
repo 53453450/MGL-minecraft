@@ -1549,10 +1549,16 @@ int mglRenderTargetIsRenderbuffer(uint32_t target) {
 
 int mglRenderMSSamplePlaneAdjust(int in_ms_loop, uint32_t target,
                                  int32_t offset) {
-    return in_ms_loop && mglRenderIsMultisampleTextureTarget(target) &&
-                   offset > 0
-               ? 1
-               : 0;
+    if (!in_ms_loop || offset <= 0) {
+        return 0;
+    }
+    /* Reaching a positive offset means the emulated per-sample loop is running
+     * (mglPlatformShellSetMSSampleState stores s as both the forced sample id
+     * and the plane offset), and that loop only runs for multisample targets,
+     * so a sample count > 1 is already implied.  A multisample renderbuffer's
+     * backing carries the same plane layout as an MS texture, hence the plane
+     * target predicate rather than the texture-target one. */
+    return mglRenderIsEmulatedMSPlaneTarget(target, 2) ? 1 : 0;
 }
 
 

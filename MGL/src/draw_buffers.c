@@ -44,6 +44,7 @@
 #include "mgl_safety.h"
 #include "mgl_program_reflection.h"
 #include "vertex_arrays.h"
+#include "mgl_render_api_query.h" /* mglRenderIsEmulatedMSPlaneTarget */
 
 extern void mglInvalidateColorShadowsForDraw(GLMContext ctx);
 extern Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
@@ -1940,9 +1941,8 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
             else
                 tex = att->buf.tex;
             if (tex &&
-                (tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
-                 tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) &&
-                tex->samples > 1) {
+                mglRenderIsEmulatedMSPlaneTarget((uint32_t)tex->target,
+                                                 (int32_t)tex->samples)) {
                 msImmediate = true;
                 if (ctx->draw_command_buffer.batch_count > 0u)
                     mglFlushCommandBuffer(ctx);

@@ -191,6 +191,18 @@ int mglRenderIsEmulatedMSColorTexture(uint32_t target, int32_t samples) {
     return samples > 1 ? 1 : 0;
 }
 
+int mglRenderIsEmulatedMSPlaneTarget(uint32_t target, int32_t samples) {
+    if (mglRenderIsEmulatedMSColorTexture(target, samples)) {
+        return 1;
+    }
+    /* A multisample renderbuffer is backed by the same emulated sample-plane
+     * texture2d_array, but its GL target never becomes a multisample texture
+     * target — mglRenderbufferStorage keeps it at GL_RENDERBUFFER.  Treat it
+     * like an MS texture so the sample-plane broadcast and the per-sample
+     * plane offset cover renderbuffer attachments too (air_msaa_resolve). */
+    return target == GL_RENDERBUFFER && samples > 1 ? 1 : 0;
+}
+
 int mglRenderPlanDirtyDomains(uint32_t dirty_bits, int draw_command,
                               int has_pipeline, int fbo_binding_dirty,
                               MGLDirtyDomainPlan *out) {

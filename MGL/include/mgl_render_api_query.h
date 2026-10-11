@@ -78,6 +78,13 @@ int mglRenderExecuteComputeExecutionPlan(MGLCommandBufferOwner *command_buffer_o
 
 int mglRenderIsEmulatedMSColorTexture(uint32_t target, int32_t samples);
 
+/* True when the GL target's Metal backing is the emulated multisample store
+ * (texture2d_array sample planes, 8-plane stride per logical layer).  Unlike
+ * mglRenderIsEmulatedMSColorTexture this also accepts GL_RENDERBUFFER: a
+ * multisample renderbuffer's backing texture carries the same plane layout,
+ * but its GL target stays GL_RENDERBUFFER. */
+int mglRenderIsEmulatedMSPlaneTarget(uint32_t target, int32_t samples);
+
 int mglRenderPlanDirtyDomains(uint32_t dirty_bits, int draw_command,
                               int has_pipeline, int fbo_binding_dirty,
                               MGLDirtyDomainPlan *out);

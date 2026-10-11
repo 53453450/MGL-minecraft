@@ -315,13 +315,14 @@ Texture *mglDrawEmulatedMSAttachmentTexture(GLMContext ctx, FBOAttachment *att)
     if (!tex) {
         return NULL;
     }
-    if (!mglRenderIsEmulatedMSColorTexture((uint32_t)tex->target,
-                                           (int32_t)tex->samples)) {
+    if (!mglRenderIsEmulatedMSPlaneTarget((uint32_t)tex->target,
+                                          (int32_t)tex->samples)) {
         return NULL;
     }
     /* Metal backing is created during processGLState; before the first draw
-     * mtl_data may still be nil. All MS textures are emulated as array sample
-     * planes, so the GL target/samples check is sufficient. */
+     * mtl_data may still be nil. All MS targets are emulated as array sample
+     * planes (a multisample renderbuffer's backing included), so the GL
+     * target/samples check is sufficient. */
     if (tex->mtl_data) {
         MGLRenderTextureInfo info = {0};
         (void)mglRenderGetTextureInfo(tex->mtl_data, &info);
