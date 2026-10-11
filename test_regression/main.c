@@ -7659,7 +7659,18 @@ static int test_compute_max_limits(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
     (void)out_path;
-    static const char *cs =
+    /* The image limits live in two places: the frontend constant table
+     * (mgl_glsl_parser.c, "must match glm_params / glGet") and the context
+     * caps (glm_params.c).  They drifted apart once already, so take the
+     * shader's expectations from the caps query rather than repeating the
+     * numbers, and pin the caps below. */
+    GLint units = 0, samples = 0, comb = 0;
+    glGetIntegerv(GL_MAX_IMAGE_UNITS, &units);
+    glGetIntegerv(GL_MAX_IMAGE_SAMPLES, &samples);
+    glGetIntegerv(GL_MAX_COMBINED_IMAGE_UNIFORMS, &comb);
+
+    char cs[2048];
+    snprintf(cs, sizeof(cs),
         "#version 430 core\n"
         "layout(local_size_x = 1) in;\n"
         "layout(std430, binding = 0) buffer Output { int g_output; };\n"
@@ -7671,13 +7682,14 @@ static int test_compute_max_limits(unsigned char *pixels, const char *out_path)
         "    g_output = 0;\n"
         "  if (gl_MaxComputeUniformComponents != 1024) g_output = 0;\n"
         "  if (gl_MaxComputeTextureImageUnits != 16) g_output = 0;\n"
-        "  if (gl_MaxComputeImageUniforms != 8) g_output = 0;\n"
+        "  if (gl_MaxComputeImageUniforms != %d) g_output = 0;\n"
         "  if (gl_MaxComputeAtomicCounters != 8) g_output = 0;\n"
         "  if (gl_MaxComputeAtomicCounterBuffers != 8) g_output = 0;\n"
-        "  if (gl_MaxImageUnits != 8) g_output = 0;\n"
-        "  if (gl_MaxImageSamples != 4) g_output = 0;\n"
-        "  if (gl_MaxCombinedImageUniforms != 40) g_output = 0;\n"
-        "}\n";
+        "  if (gl_MaxImageUnits != %d) g_output = 0;\n"
+        "  if (gl_MaxImageSamples != %d) g_output = 0;\n"
+        "  if (gl_MaxCombinedImageUniforms != %d) g_output = 0;\n"
+        "}\n",
+        (int)units, (int)units, (int)samples, (int)comb);
     GLuint program = link_compute_program(cs);
     if (!program) {
         fprintf(stderr, "compute_max_limits: link failed\n");
@@ -7700,17 +7712,15 @@ static int test_compute_max_limits(unsigned char *pixels, const char *out_path)
         fprintf(stderr, "compute_max_limits: g_output=%d\n", data);
         return 1;
     }
-    {
-        GLint units = 0, samples = 0, comb = 0;
-        glGetIntegerv(GL_MAX_IMAGE_UNITS, &units);
-        glGetIntegerv(GL_MAX_IMAGE_SAMPLES, &samples);
-        glGetIntegerv(GL_MAX_COMBINED_IMAGE_UNIFORMS, &comb);
-        if (units != 8 || samples != 4 || comb != 40) {
-            fprintf(stderr,
-                    "compute_max_limits: glGet units=%d samples=%d comb=%d\n",
-                    units, samples, comb);
-            return 1;
-        }
+    /* GL 4.6 core table 23.68 floors are 8 image units, 4 image samples and
+     * 8 combined image uniforms; MGL reports 16/4/80.  A value below the
+     * floor is a capability regression, a different value means the constant
+     * table and the caps have drifted apart again. */
+    if (units != 16 || samples != 4 || comb != 80) {
+        fprintf(stderr,
+                "compute_max_limits: glGet units=%d samples=%d comb=%d\n",
+                units, samples, comb);
+        return 1;
     }
     return 0;
 }
