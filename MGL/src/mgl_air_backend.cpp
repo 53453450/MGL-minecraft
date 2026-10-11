@@ -12916,6 +12916,96 @@ static char *airPrepareLegacySource(const char *src, int air_stage) {
     return translated;
 }
 
+/* --- Output-aggregate poison guard ----------------------------------
+ *
+ * The stage output is built as an LLVM aggregate through an `insertvalue`
+ * chain.  A merge created where its exit block had no predecessor yields a
+ * PHINode with zero incoming values, which LLVM folds to `poison`: every
+ * stage-out bound before that merge turns into a poison literal inside the
+ * returned aggregate, and the shader renders black with no error reported
+ * anywhere -- `rc == 0`, no glGetError, no skipped draw.  One such merge
+ * (the `switch` exit in mgl_air_stmt.cpp) has been fixed, but a poisoned
+ * aggregate is completely invisible to a compile-status-only check, so walk
+ * the returned value before serializing and report whatever survived.
+ *
+ * The walk is deliberately narrow.  It follows only `insertvalue` chains and
+ * constant aggregates, so it cannot fire on the legal broadcast idioms
+ * (`shufflevector` / `insertelement` with a poison operand) that appear as
+ * intermediate expressions.  `undef` is not reported -- an unassigned
+ * varying is legal and the frontend emits it intentionally -- and `freeze`
+ * ends the walk, because `freeze poison` is a defined value. */
+struct MGLAirPoisonField {
+    std::string path;   /* `[2][1]`-style chain from the aggregate root */
+};
+
+static void mglAirCollectOutputPoison(const llvm::Value *v,
+                                      const std::string &path,
+                                      std::vector<MGLAirPoisonField> &out,
+                                      unsigned depth) {
+    if (!v || depth > 12) return;
+    if (llvm::isa<llvm::PoisonValue>(v)) {
+        out.push_back({path.empty() ? std::string("<whole aggregate>") : path});
+        return;
+    }
+    if (llvm::isa<llvm::UndefValue>(v)) return;   /* unassigned varying: legal */
+    if (llvm::isa<llvm::FreezeInst>(v)) return;   /* freeze(poison) is defined */
+    if (const auto *iv = llvm::dyn_cast<llvm::InsertValueInst>(v)) {
+        mglAirCollectOutputPoison(iv->getAggregateOperand(), path, out,
+                                  depth + 1);
+        std::string sub = path;
+        for (unsigned idx : iv->getIndices()) {
+            sub += "[";
+            sub += std::to_string(idx);
+            sub += "]";
+        }
+        mglAirCollectOutputPoison(iv->getInsertedValueOperand(), sub, out,
+                                  depth + 1);
+        return;
+    }
+    if (const auto *ca = llvm::dyn_cast<llvm::ConstantAggregate>(v)) {
+        for (unsigned i = 0; i < ca->getNumOperands(); i++)
+            mglAirCollectOutputPoison(ca->getOperand(i),
+                                      path + "[" + std::to_string(i) + "]",
+                                      out, depth + 1);
+        return;
+    }
+    if (const auto *phi = llvm::dyn_cast<llvm::PHINode>(v)) {
+        /* Keep the raw zero-incoming shape visible as well: without the pass
+         * pipeline's InstCombine fold this is exactly what the defect leaves
+         * behind, and seeing it means the guard fired before the fold. */
+        if (phi->getNumIncomingValues() == 0)
+            out.push_back({path.empty() ? std::string("<whole aggregate>")
+                                        : path});
+        return;
+    }
+}
+
+/* Stage-output names in aggregate-field order, harvested from the air.*
+ * output metadata so the report can name the poisoned varying instead of
+ * only its slot index. */
+static std::vector<std::string> mglAirOutputNames(
+        const std::vector<llvm::Metadata *> &outNodes) {
+    std::vector<std::string> names;
+    names.reserve(outNodes.size());
+    for (llvm::Metadata *m : outNodes) {
+        auto *n = llvm::dyn_cast<llvm::MDNode>(m);
+        std::string name;
+        if (n) {
+            for (unsigned i = 0; i + 1 < n->getNumOperands(); i++) {
+                auto *k = llvm::dyn_cast<llvm::MDString>(n->getOperand(i).get());
+                auto *val =
+                    llvm::dyn_cast<llvm::MDString>(n->getOperand(i + 1).get());
+                if (k && val && k->getString() == "air.arg_name") {
+                    name = val->getString().str();
+                    break;
+                }
+            }
+        }
+        names.push_back(name);
+    }
+    return names;
+}
+
 static int compileGLSLImpl(const char *src, int stage, int capture,
                            bool has_gs, bool force_tes_compute,
                            bool tes_vertex_render,
@@ -17484,6 +17574,60 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         FPM.addPass(llvm::DCEPass());
         MPM.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(FPM)));
         MPM.run(module, MAM);
+    }
+
+    /* Poison guard, after the pass pipeline so the aggregate is in its final
+     * shape (InstCombine folds a zero-incoming PHINode to a `poison` literal)
+     * and before serialization so a poisoned shader can still be refused.
+     * Reporting is unconditional because this condition is a codegen bug that
+     * is otherwise completely silent; escalating to a hard failure is opt-in
+     * via MGL_AIR_POISON_FAIL, so the default path keeps building the
+     * metallib exactly as before. */
+    {
+        const char *poisonStage = isKernel ? "kernel"
+                                           : (isVS ? "vertex"
+                                                   : (isTES ? "tess-eval"
+                                                            : "fragment"));
+        std::vector<MGLAirPoisonField> poisonFields;
+        if (fn && !fn->getReturnType()->isVoidTy()) {
+            for (const llvm::BasicBlock &bb : *fn) {
+                const auto *ret =
+                    llvm::dyn_cast<llvm::ReturnInst>(bb.getTerminator());
+                if (ret && ret->getReturnValue())
+                    mglAirCollectOutputPoison(ret->getReturnValue(), "",
+                                              poisonFields, 0);
+            }
+        }
+        if (!poisonFields.empty()) {
+            const std::vector<std::string> outNames =
+                mglAirOutputNames(outNodes);
+            std::string detail;
+            for (const MGLAirPoisonField &pf : poisonFields) {
+                std::string name;
+                if (pf.path.size() > 1u && pf.path[0] == '[') {
+                    const long idx = strtol(pf.path.c_str() + 1, nullptr, 10);
+                    if (idx >= 0 && (size_t)idx < outNames.size())
+                        name = outNames[(size_t)idx];
+                }
+                if (!detail.empty()) detail += " ";
+                detail += pf.path;
+                if (!name.empty()) detail += "(" + name + ")";
+            }
+            fprintf(stderr,
+                    "MGL AIR POISON (%s): %zu poison value(s) in the stage "
+                    "output aggregate: %s -- the shader was miscompiled (a "
+                    "merge with no incoming value reached the output); this "
+                    "is a codegen bug, not a shader bug\n",
+                    poisonStage, poisonFields.size(), detail.c_str());
+            if (mgl_env_flag_enabled("MGL_AIR_POISON_FAIL")) {
+                snprintf(err_buf, err_cap,
+                         "AIR output verification failed (%zu poison field(s)"
+                         " in the %s output aggregate)",
+                         poisonFields.size(), poisonStage);
+                if (own_session) mglFrontendSessionDestroy(sess);
+                return -1;
+            }
+        }
     }
 
     if (mgl_env_flag_enabled("MGL_DUMP_IR"))
