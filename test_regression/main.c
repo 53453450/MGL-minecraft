@@ -61,7 +61,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 221
+#define MAX_TESTS 223
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -17897,6 +17897,260 @@ static int test_vertex_input_name_locations(unsigned char *pixels,
     return result;
 }
 
+/* GL 4.6 §11.1.1 / §4.4.1: the location GetAttribLocation reports must be the
+ * location the AIR kernel stores the attribute at, because the vertex
+ * descriptor is indexed by the GL attribute slot the application enabled
+ * while the kernel addresses it through [[attribute(N)]].  Binding a
+ * later-declared input to a lower slot than an earlier one used to step
+ * reflection's running counter backwards (assignment instead of max), so the
+ * auto-assigned input got a lower slot than the kernel's.
+ *
+ * Every attribute slot is filled with its own index, so the red channel of
+ * the drawn colour names the slot the kernel actually read. */
+static int test_attrib_location_sparse_bind(unsigned char *pixels,
+                                            const char *out_path)
+{
+    (void)out_path;
+    enum { SLOTS = 8, POS_SLOT = 3, PAD_SLOT = 0 };
+    static const char *vs =
+        "#version 330 core\n"
+        "in vec2 PositionIn;\n"     /* glBindAttribLocation -> POS_SLOT   */
+        "in vec2 PadIn;\n"          /* glBindAttribLocation -> PAD_SLOT   */
+        "in vec3 AutoIn;\n"         /* auto-assigned (the probe)          */
+        "out vec3 v_color;\n"
+        "void main() {\n"
+        "  v_color = AutoIn;\n"
+        "  gl_Position = vec4(PositionIn + PadIn, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 330 core\n"
+        "in vec3 v_color;\n"
+        "out vec4 o;\n"
+        "void main() { o = vec4(v_color, 1.0); }\n";
+
+    GLuint vs_sh = compile_shader(GL_VERTEX_SHADER, vs);
+    GLuint fs_sh = compile_shader(GL_FRAGMENT_SHADER, fs);
+    if (!vs_sh || !fs_sh) {
+        fprintf(stderr, "attrib_location_sparse_bind: shader compile failed\n");
+        if (vs_sh) glDeleteShader(vs_sh);
+        if (fs_sh) glDeleteShader(fs_sh);
+        return 1;
+    }
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, vs_sh);
+    glAttachShader(prog, fs_sh);
+    glBindAttribLocation(prog, POS_SLOT, "PositionIn");
+    glBindAttribLocation(prog, PAD_SLOT, "PadIn");
+    glLinkProgram(prog);
+    glDeleteShader(vs_sh);
+    glDeleteShader(fs_sh);
+    GLint ok = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[1024];
+        glGetProgramInfoLog(prog, sizeof(log), NULL, log);
+        fprintf(stderr, "attrib_location_sparse_bind: link failed: %s\n", log);
+        glDeleteProgram(prog);
+        return 1;
+    }
+    GLint p_loc = glGetAttribLocation(prog, "PositionIn");
+    GLint d_loc = glGetAttribLocation(prog, "PadIn");
+    GLint a_loc = glGetAttribLocation(prog, "AutoIn");
+    if (p_loc != POS_SLOT || d_loc != PAD_SLOT || a_loc < 0 || a_loc >= SLOTS) {
+        fprintf(stderr, "attrib_location_sparse_bind: Position=%d Pad=%d "
+                "Auto=%d (want %d/%d/[0,%d))\n", p_loc, d_loc, a_loc,
+                POS_SLOT, PAD_SLOT, SLOTS);
+        glDeleteProgram(prog);
+        return 1;
+    }
+
+    GLuint vao = 0, vbos[SLOTS];
+    for (int i = 0; i < SLOTS; i++) vbos[i] = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(SLOTS, vbos);
+    static const float tri[6] = { -1.0f, -1.0f, 3.0f, -1.0f, -1.0f, 3.0f };
+    static const float zero2[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    for (int k = 0; k < SLOTS; k++) {
+        glBindBuffer(GL_ARRAY_BUFFER, vbos[k]);
+        if (k == POS_SLOT) {
+            glBufferData(GL_ARRAY_BUFFER, sizeof tri, tri, GL_STATIC_DRAW);
+            glVertexAttribPointer((GLuint)k, 2, GL_FLOAT, GL_FALSE, 0, 0);
+        } else if (k == PAD_SLOT) {
+            glBufferData(GL_ARRAY_BUFFER, sizeof zero2, zero2, GL_STATIC_DRAW);
+            glVertexAttribPointer((GLuint)k, 2, GL_FLOAT, GL_FALSE, 0, 0);
+        } else {
+            const float tag = (float)k / (float)SLOTS;
+            const float data[9] = { tag, 0.0f, 0.0f, tag, 0.0f, 0.0f,
+                                    tag, 0.0f, 0.0f };
+            glBufferData(GL_ARRAY_BUFFER, sizeof data, data, GL_STATIC_DRAW);
+            glVertexAttribPointer((GLuint)k, 3, GL_FLOAT, GL_FALSE, 0, 0);
+        }
+        glEnableVertexAttribArray((GLuint)k);
+    }
+
+    GLuint tex = 0;
+    GLuint fbo = make_fbo(REG_W, REG_H, &tex);
+    int result = 0;
+    if (!fbo) {
+        fprintf(stderr, "attrib_location_sparse_bind: no fbo\n");
+        result = 1;
+    } else {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, REG_W, REG_H);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glUseProgram(prog);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glUseProgram(0);
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *px =
+            pixels + (REG_H / 2 * REG_W + REG_W / 2) * 4;
+        int read_slot = (px[0] * SLOTS + 127) / 255;
+        if (read_slot != a_loc) {
+            fprintf(stderr, "attrib_location_sparse_bind: AutoIn read slot %d "
+                    "(R=%u) but GetAttribLocation says %d\n",
+                    read_slot, px[0], a_loc);
+            result = 1;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+    }
+    glBindVertexArray(0);
+    glDeleteBuffers(SLOTS, vbos);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    return result;
+}
+
+/* GL 4.6 §4.4.1: an array attribute consumes one location per element, so the
+ * next auto-assigned input starts at base+elements.  Reflection must derive
+ * that span from the same rule the codegen counters use
+ * (mglVaryingLocationSpan, mgl_ir.h).  Every attribute slot is filled with
+ * its own index, so the red channel names the slot the kernel actually read.
+ *
+ * An array of *matrices* would span cols*N the same way, but the AIR backend
+ * cannot expand a matrix attribute into per-column kernel inputs yet, so that
+ * shape is not exercised here. */
+static int test_attrib_location_matrix_array_span(unsigned char *pixels,
+                                                 const char *out_path)
+{
+    (void)out_path;
+    enum { SLOTS = 8, ELEMS = 3, POS_SLOT = 7 };
+    static const char *vs =
+        "#version 330 core\n"
+        "in vec2 Coords[" "3" "];"  /* locations 0..2 */
+        "in vec3 Tail;\n"           /* auto-assigned -> 3 */
+        "in vec2 PositionIn;\n"     /* glBindAttribLocation -> 7 */
+        "out vec3 v_color;\n"
+        "void main() {\n"
+        "  v_color = Tail + vec3(Coords[0] * 0.0, 0.0);\n"
+        "  gl_Position = vec4(PositionIn, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 330 core\n"
+        "in vec3 v_color;\n"
+        "out vec4 o;\n"
+        "void main() { o = vec4(v_color, 1.0); }\n";
+
+    GLuint vs_sh = compile_shader(GL_VERTEX_SHADER, vs);
+    GLuint fs_sh = compile_shader(GL_FRAGMENT_SHADER, fs);
+    if (!vs_sh || !fs_sh) {
+        fprintf(stderr, "attrib_location_matrix_array_span: shader compile "
+                "failed\n");
+        if (vs_sh) glDeleteShader(vs_sh);
+        if (fs_sh) glDeleteShader(fs_sh);
+        return 1;
+    }
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, vs_sh);
+    glAttachShader(prog, fs_sh);
+    glBindAttribLocation(prog, POS_SLOT, "PositionIn");
+    glLinkProgram(prog);
+    glDeleteShader(vs_sh);
+    glDeleteShader(fs_sh);
+    GLint ok = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[1024];
+        glGetProgramInfoLog(prog, sizeof(log), NULL, log);
+        fprintf(stderr, "attrib_location_matrix_array_span: link failed: %s\n",
+                log);
+        glDeleteProgram(prog);
+        return 1;
+    }
+    GLint c0 = glGetAttribLocation(prog, "Coords[0]");
+    GLint tail = glGetAttribLocation(prog, "Tail");
+    if (c0 != 0 || tail != ELEMS) {
+        fprintf(stderr, "attrib_location_matrix_array_span: Coords[0]=%d "
+                "Tail=%d (want 0/%d)\n", c0, tail, ELEMS);
+        glDeleteProgram(prog);
+        return 1;
+    }
+
+    GLuint vao = 0, vbos[SLOTS];
+    for (int i = 0; i < SLOTS; i++) vbos[i] = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(SLOTS, vbos);
+    static const float tri[6] = { -1.0f, -1.0f, 3.0f, -1.0f, -1.0f, 3.0f };
+    static const float zero2[6] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    for (int k = 0; k < SLOTS; k++) {
+        glBindBuffer(GL_ARRAY_BUFFER, vbos[k]);
+        if (k == POS_SLOT) {
+            glBufferData(GL_ARRAY_BUFFER, sizeof tri, tri, GL_STATIC_DRAW);
+            glVertexAttribPointer((GLuint)k, 2, GL_FLOAT, GL_FALSE, 0, 0);
+        } else if (k < ELEMS) {
+            /* Array elements keep vec2 shape; zero them out so the
+             * `Coords * 0.0` term never shifts the colour. */
+            glBufferData(GL_ARRAY_BUFFER, sizeof zero2, zero2, GL_STATIC_DRAW);
+            glVertexAttribPointer((GLuint)k, 2, GL_FLOAT, GL_FALSE, 0, 0);
+        } else {
+            const float tag = (float)k / (float)SLOTS;
+            const float data[9] = { tag, 0.0f, 0.0f, tag, 0.0f, 0.0f,
+                                    tag, 0.0f, 0.0f };
+            glBufferData(GL_ARRAY_BUFFER, sizeof data, data, GL_STATIC_DRAW);
+            glVertexAttribPointer((GLuint)k, 3, GL_FLOAT, GL_FALSE, 0, 0);
+        }
+        glEnableVertexAttribArray((GLuint)k);
+    }
+
+    GLuint tex = 0;
+    GLuint fbo = make_fbo(REG_W, REG_H, &tex);
+    int result = 0;
+    if (!fbo) {
+        fprintf(stderr, "attrib_location_matrix_array_span: no fbo\n");
+        result = 1;
+    } else {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, REG_W, REG_H);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glUseProgram(prog);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glUseProgram(0);
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const unsigned char *px =
+            pixels + (REG_H / 2 * REG_W + REG_W / 2) * 4;
+        int read_slot = (px[0] * SLOTS + 127) / 255;
+        if (read_slot != tail) {
+            fprintf(stderr, "attrib_location_matrix_array_span: Tail read "
+                    "slot %d (R=%u) but GetAttribLocation says %d\n",
+                    read_slot, px[0], tail);
+            result = 1;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+    }
+    glBindVertexArray(0);
+    glDeleteBuffers(SLOTS, vbos);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    return result;
+}
+
 /* Draw one point at the FBO centre with `program` and return its RGBA8. */
 static void iface_point_color(GLuint program, unsigned char out[4])
 {
@@ -29884,6 +30138,10 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("rt_upload_orientation", test_rt_upload_orientation),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
+    SELF_CHECK_TEST("attrib_location_sparse_bind",
+                    test_attrib_location_sparse_bind),
+    SELF_CHECK_TEST("attrib_location_matrix_array_span",
+                    test_attrib_location_matrix_array_span),
     SELF_CHECK_TEST("stage_interface_location_matching",
                     test_stage_interface_location_matching),
     SELF_CHECK_TEST("stage_interface_component",

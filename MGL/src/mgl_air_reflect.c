@@ -753,6 +753,35 @@ static int air_is_per_vertex_builtin_io(const MGLIRSymbol *s)
            strcmp(s->name, "gl_CullDistance") == 0;
 }
 
+/* Location span of one stage input/output, derived from the shared rule
+ * (mglVaryingLocationSpan, mgl_ir.h) so reflection cannot drift from the
+ * codegen counters built on varyingLocationSpan.
+ *
+ * `strip_invocation` removes one array level first: the per-vertex dimension
+ * of a plain (non-block) TCS/TES/GS per-vertex input, or of a plain TCS
+ * output, is consumed as the per-vertex record index by collectStageVarSyms,
+ * so it occupies no location.  Matches mgl_air_varsym.cpp's
+ * `v.type = typeFromIR(s->type->elem_type)` stripping. */
+static uint32_t air_reflect_io_span(const MGLIRType *t, int strip_invocation)
+{
+    if (!t)
+        return 1u;
+    if (strip_invocation && t->kind == MGLIR_TYPE_ARRAY && t->array_size > 0u &&
+        t->elem_type) {
+        t = t->elem_type;
+    }
+    if (t->kind == MGLIR_TYPE_ARRAY) {
+        const MGLIRType *e = t->elem_type;
+        int is_matrix = e && e->kind == MGLIR_TYPE_MATRIX;
+        uint32_t cols = is_matrix ? e->cols : 0u;
+        return mglVaryingLocationSpan(is_matrix, cols, 1, t->array_size);
+    }
+    if (t->kind == MGLIR_TYPE_MATRIX) {
+        return mglVaryingLocationSpan(1, t->cols, 0, 0u);
+    }
+    return mglVaryingLocationSpan(0, 0u, 0, 0u);
+}
+
 /* Returns 1 on success, 0 on realloc failure (partial `r` is freed). */
 static int push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
                          const MGLIRType *type, GLuint location,
@@ -1150,7 +1179,12 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         while (base_t && base_t->kind == MGLIR_TYPE_ARRAY)
             base_t = base_t->elem_type;
         if (isVS && (q & MGL_AST_Q_IN)) {
-            attrCount++;
+            /* One Metal/GL location per array element or matrix column, the
+             * same span the codegen attrCount sums (varyingLocationSpan in
+             * mgl_air_backend.cpp).  Counting 1 per symbol under-reported the
+             * base for VS SSBO/UBO slots whenever an attribute was a matrix
+             * or an array. */
+            attrCount += air_reflect_io_span(t, 0);
         } else if ((q & MGL_AST_Q_UNIFORM) &&
                    base_t && base_t->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
             acCount++;
@@ -1356,9 +1390,12 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
     uint32_t next_user_in = 0;
     uint32_t next_user_out = 0;
     /* TCS/TES: patch and per-vertex I/O use separate location spaces
-     * (matches mgl_air_backend.cpp).  Reflection used to share one counter,
-     * so TES←TCS name remapping picked the wrong slot when a TES omitted
-     * earlier per-vertex outs or when patch outs preceded them. */
+     * (matches assignStageVarSymLocations in mgl_air_varsym.cpp).  Reflection
+     * used to share one counter, so TES←TCS name remapping picked the wrong
+     * slot when a TES omitted earlier per-vertex outs or when patch outs
+     * preceded them.  The same split applies to TCS/TES patch *inputs*: the
+     * kernel keeps nextPatchInputLocation apart from nextInputLocation. */
+    uint32_t tess_next_patch_in = 0;
     uint32_t tess_next_vertex_out = 0;
     uint32_t tess_next_patch_out = 0;
     for (uint32_t i = 0; i < mod->symbol_count; i++) {
@@ -1605,13 +1642,23 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         } else if (q & MGL_AST_Q_IN) {
             /* GL 4.6 §11.1.1: shader-text location, then BindAttribLocation
              * (VS only, as in assignStageVarSymLocations), then declaration
-             * order. */
+             * order.  Mirror assignStageVarSymLocations exactly:
+             *  - per-vertex and per-patch inputs have separate counters;
+             *  - an explicitly located input still steps the counter, so a
+             *    sparse bind that lands *below* the running position must not
+             *    rewind it (the kernel uses std::max).  Rewinding made the
+             *    next auto-assigned input take a lower location than the
+             *    kernel's [[attribute(N)]], and the vertex descriptor (indexed
+             *    by the GL slot the application enabled) then left that
+             *    attribute undefined. */
             if (location == UINT32_MAX && isVS) {
                 location = air_reflect_attrib_location(s->name,
                                                        attrib_names);
             }
+            uint32_t *next_in = (q & MGL_AST_Q_PATCH) ? &tess_next_patch_in
+                                                      : &next_user_in;
             if (location == UINT32_MAX && !air_is_per_vertex_builtin_io(s)) {
-                location = next_user_in;
+                location = *next_in;
             }
             if (!push_resource(&lists[_STAGE_INPUT_RES], s, t, location, 0,
                                stage) ||
@@ -1623,71 +1670,38 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 mglAirReflectDestroy(lists);
                 return -1;
             }
-            /* Array / matrix attributes occupy one location per element or
-             * column so glGetAttribLocation("a[i]") == base+i stays aligned
-             * with VAO binds and the AIR vertex_input location_index
-             * sequence (GL 4.6 §4.4.1). */
+            /* Array / matrix inputs occupy one location per element or column
+             * so glGetAttribLocation("a[i]") == base+i stays aligned with VAO
+             * binds and the AIR vertex_input location_index sequence
+             * (GL 4.6 §4.4.1).  The per-vertex dimension of a plain TCS/TES/
+             * GS input is the record index, not a location. */
             if (!air_is_per_vertex_builtin_io(s) && location != UINT32_MAX) {
-                uint32_t span = 1u;
-                if (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 1u) {
-                    span = t->array_size;
-                } else if (t->kind == MGLIR_TYPE_MATRIX && t->cols > 1u) {
-                    span = t->cols;
-                }
-                next_user_in = location + span;
+                int strip = (stage == MGL_STAGE_TESS_CONTROL ||
+                             stage == MGL_STAGE_TESS_EVALUATION ||
+                             stage == MGL_STAGE_GEOMETRY) &&
+                            !(q & MGL_AST_Q_PATCH) && !s->block_name;
+                uint32_t end = location + air_reflect_io_span(t, strip);
+                if (end > *next_in)
+                    *next_in = end;
             }
         } else if (q & MGL_AST_Q_OUT) {
-            if (location == UINT32_MAX && !air_is_per_vertex_builtin_io(s)) {
-                if (stage == MGL_STAGE_TESS_CONTROL ||
-                    stage == MGL_STAGE_TESS_EVALUATION) {
-                    const MGLIRType *span_t = t;
-                    /* Per-vertex TCS/TES arrays are sized by patch vertices;
-                     * codegen strips that dimension before assigning slots. */
-                    if (!(q & MGL_AST_Q_PATCH) &&
-                        span_t->kind == MGLIR_TYPE_ARRAY &&
-                        span_t->elem_type) {
-                        span_t = span_t->elem_type;
-                    }
-                    uint32_t span = 1u;
-                    if (span_t->kind == MGLIR_TYPE_MATRIX &&
-                        span_t->cols > 0u) {
-                        span = span_t->cols;
-                    } else if (span_t->kind == MGLIR_TYPE_ARRAY &&
-                               span_t->array_size > 0u) {
-                        uint32_t elem = 1u;
-                        if (span_t->elem_type &&
-                            span_t->elem_type->kind == MGLIR_TYPE_MATRIX &&
-                            span_t->elem_type->cols > 0u) {
-                            elem = span_t->elem_type->cols;
-                        }
-                        span = elem * span_t->array_size;
-                    }
-                    if (q & MGL_AST_Q_PATCH) {
-                        location = tess_next_patch_out;
-                        tess_next_patch_out += span;
-                    } else {
-                        location = tess_next_vertex_out;
-                        tess_next_vertex_out += span;
-                    }
-                } else {
-                    /* GL 4.6 §4.4.1: arrays/matrices consume consecutive
-                     * locations.  Stepping next_user_out by 1 packed the
-                     * next output at location 1 while codegen stored it at
-                     * base+span (VAB inputI attribui[0] read attribi[1]). */
-                    uint32_t span = 1u;
-                    if (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 1u) {
-                        span = t->array_size;
-                        if (t->elem_type &&
-                            t->elem_type->kind == MGLIR_TYPE_MATRIX &&
-                            t->elem_type->cols > 1u) {
-                            span *= t->elem_type->cols;
-                        }
-                    } else if (t->kind == MGLIR_TYPE_MATRIX && t->cols > 1u) {
-                        span = t->cols;
-                    }
-                    location = next_user_out;
-                    next_user_out += span;
-                }
+            bool out_builtin = air_is_per_vertex_builtin_io(s) != 0;
+            bool tess_out = (stage == MGL_STAGE_TESS_CONTROL ||
+                             stage == MGL_STAGE_TESS_EVALUATION);
+            const MGLIRType *span_t = t;
+            /* Per-vertex TCS/TES outputs are sized by patch vertices; codegen
+             * strips that dimension before assigning slots. */
+            if (tess_out && !(q & MGL_AST_Q_PATCH) &&
+                span_t->kind == MGLIR_TYPE_ARRAY && span_t->elem_type) {
+                span_t = span_t->elem_type;
+            }
+            uint32_t out_span = air_reflect_io_span(span_t, 0);
+            uint32_t *next_out = tess_out
+                ? ((q & MGL_AST_Q_PATCH) ? &tess_next_patch_out
+                                         : &tess_next_vertex_out)
+                : &next_user_out;
+            if (location == UINT32_MAX && !out_builtin) {
+                location = *next_out;
             }
             if (!push_resource(&lists[_STAGE_OUTPUT_RES], s, t, location, 0,
                                stage) ||
@@ -1698,6 +1712,16 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 free(agg_names);
                 mglAirReflectDestroy(lists);
                 return -1;
+            }
+            /* Advance exactly like the kernel: every non-builtin output steps
+             * its counter with max (never backwards), including an explicitly
+             * located one.  Skipping the explicit case let the next auto
+             * output collide with it and disagree with air.location_index
+             * (GL 4.6 §4.4.1 auto-assignment must avoid explicit slots). */
+            if (!out_builtin && location != UINT32_MAX) {
+                uint32_t end = location + out_span;
+                if (end > *next_out)
+                    *next_out = end;
             }
         }
     }

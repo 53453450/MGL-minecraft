@@ -147,6 +147,26 @@ struct MGLIRType {
     MGLIRLayoutCache layout_cache[MGLIR_LAYOUT_CACHE_COUNT];
 };
 
+/* GL 4.6 §4.4.1: a matrix consumes one location per column and an array one
+ * per element, so an array of matrices consumes cols*N.  This is the single
+ * source of truth for the location span of a stage input/output; the
+ * reflector (mgl_air_reflect.c) and codegen (mgl_air_varsym.cpp) both derive
+ * their auto-assignment counters from it, so reflection must not re-derive
+ * the rule by hand.
+ *
+ * `is_matrix`/`cols` describe the innermost element (the element of an array
+ * of matrices); `is_array`/`elements` describe the outermost array.  Callers
+ * unwrap their own type model and pass the two facts in. */
+static inline uint32_t mglVaryingLocationSpan(int is_matrix, uint32_t cols,
+                                              int is_array, uint32_t elements)
+{
+    uint32_t per_element = (is_matrix && cols > 0u) ? cols : 1u;
+    if (is_array && elements > 0u) {
+        return per_element * elements;
+    }
+    return per_element;
+}
+
 /* Constructors.  Returned structure is heap-owned; destroy with mglIRTypeDestroy. */
 MGLIRType *mglIRTypeScalar(MGLIRScalar s);
 MGLIRType *mglIRTypeVector(MGLIRScalar s, uint32_t components);

@@ -32,10 +32,10 @@ uint32_t varyingLocationSpan(const MType &t)
 {
     /* GL 4.6 §4.4.1: a matrix consumes one location per column; an array
      * of matrices consumes cols*N.  Non-matrix arrays consume one per
-     * element (each element is one location / record slot). */
-    uint32_t elem = (t.isMatrix() && t.cols > 0) ? t.cols : 1u;
-    if (t.isArray() && t.arr > 0) return elem * (uint32_t)t.arr;
-    return elem;
+     * element (each element is one location / record slot).  The rule lives
+     * in mglVaryingLocationSpan (mgl_ir.h) so reflection derives the same
+     * span from the same place. */
+    return mglVaryingLocationSpan(t.isMatrix(), t.cols, t.isArray(), t.arr);
 }
 
 uint32_t airAttribLocation(const char *name, const char *const *attrib_names,
