@@ -13141,17 +13141,52 @@ static bool mglAirTargetSelfCheck(void) {
     return false;
 }
 
-static int compileGLSLImpl(const char *src, int stage, int capture,
-                           bool has_gs, bool force_tes_compute,
-                           bool tes_vertex_render,
-                           bool clip_depth_zero_to_one,
-                           const char *const *attrib_names,
-                           uint32_t tessPatchVertices,
-                           const MGLShaderResourceList *iface_location_peers,
+/* Stage is a compile-time choice, but the vertex "capture" variants (XFB,
+ * tess, cull distance) are selected by a second value that `stage` alone
+ * cannot express: capture 2 and 3 are also compiled with MGL_STAGE_VERTEX,
+ * so a bare int at the call site would read as a magic number and silently
+ * mean "an ordinary vertex shader" if mistyped. */
+enum class CaptureKind {
+    None = 0,
+    VsXfb = 1,
+    Tess = 2,
+    CullDistance = 3,
+};
+
+/* Everything that selects *what* to compile.  The outputs (metallib bytes,
+ * size, error buffer) stay positional so a call site still shows what it
+ * produces. */
+struct CompileOptions {
+    int stage = 0;
+    CaptureKind capture = CaptureKind::None;
+    bool has_gs = false;
+    bool force_tes_compute = false;
+    bool tes_vertex_render = false;
+    bool clip_depth_zero_to_one = false;
+    bool fs_clip_emulate = false;
+    const char *const *attrib_names = nullptr;
+    uint32_t tessPatchVertices = 0;
+    const MGLShaderResourceList *iface_location_peers = nullptr;
+    MGLFrontendSession *session_in = nullptr;
+};
+
+static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                            unsigned char **metallib_out, size_t *size_out,
-                           char *err_buf, size_t err_cap,
-                           MGLFrontendSession *session_in = nullptr,
-                           bool fs_clip_emulate = false) {
+                           char *err_buf, size_t err_cap) {
+    /* Unpack once: the body below is ~4.7k lines and refers to these as plain
+     * locals, so keeping the names identical contains this change to the
+     * signature plus the three capture tests. */
+    const int stage = opt.stage;
+    const bool has_gs = opt.has_gs;
+    const bool force_tes_compute = opt.force_tes_compute;
+    const bool tes_vertex_render = opt.tes_vertex_render;
+    const bool clip_depth_zero_to_one = opt.clip_depth_zero_to_one;
+    const bool fs_clip_emulate = opt.fs_clip_emulate;
+    const char *const *attrib_names = opt.attrib_names;
+    const uint32_t tessPatchVertices = opt.tessPatchVertices;
+    const MGLShaderResourceList *iface_location_peers =
+        opt.iface_location_peers;
+    MGLFrontendSession *const session_in = opt.session_in;
     if (!src || !metallib_out || !size_out) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "bad args");
         return -1;
@@ -13197,9 +13232,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool isTCS = (stage == MGL_STAGE_TESS_CONTROL);
     const bool isTES = (stage == MGL_STAGE_TESS_EVALUATION);
     const bool isGS = (stage == MGL_STAGE_GEOMETRY);
-    const bool isCapture = capture != 0 && isVS;
-    const bool isTessCapture = capture == 2 && isVS;
-    const bool isCullCapture = capture == 3 && isVS;
+    const bool isCapture = opt.capture != CaptureKind::None && isVS;
+    const bool isTessCapture = opt.capture == CaptureKind::Tess && isVS;
+    const bool isCullCapture = opt.capture == CaptureKind::CullDistance && isVS;
     if (isGS && mgl_env_flag_enabled("MGL_GS_DIAG_SOURCE"))
         fprintf(stderr, "MGL GS SOURCE BEGIN\n%s\nMGL GS SOURCE END\n", esrc);
     MGLTranslationUnit *tu = sess->tu;
@@ -17825,12 +17860,9 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
                                     unsigned char **metallib_out,
                                     size_t *size_out, char *err_buf,
                                     size_t err_cap) {
-    return compileGLSLImpl(src, stage, 0, /*has_gs=*/false,
-                           /*force_tes_compute=*/false,
-                           /*tes_vertex_render=*/false,
-                           /*clip_depth_zero_to_one=*/false, nullptr, 0u,
-                           /*iface_location_peers=*/nullptr, metallib_out,
-                           size_out, err_buf, err_cap);
+    CompileOptions opt;
+    opt.stage = stage;
+    return compileGLSLImpl(src, opt, metallib_out, size_out, err_buf, err_cap);
 }
 
 /* XFB capture variant: the vertex stage writes its full output record
@@ -17842,36 +17874,33 @@ extern "C" int mglShaderCompileGLSLCapture(const char *src,
                                            unsigned char **metallib_out,
                                            size_t *size_out, char *err_buf,
                                            size_t err_cap) {
-    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 1, /*has_gs=*/false,
-                           /*force_tes_compute=*/false,
-                           /*tes_vertex_render=*/false,
-                           /*clip_depth_zero_to_one=*/false, attrib_names,
-                           0u, /*iface_location_peers=*/nullptr,
-                           metallib_out, size_out, err_buf, err_cap);
+    CompileOptions opt;
+    opt.stage = MGL_STAGE_VERTEX;
+    opt.capture = CaptureKind::VsXfb;
+    opt.attrib_names = attrib_names;
+    return compileGLSLImpl(src, opt, metallib_out, size_out, err_buf, err_cap);
 }
 
 extern "C" int mglShaderCompileGLSLTessCapture(
     const char *src, const char *const *attrib_names,
     unsigned char **metallib_out, size_t *size_out,
     char *err_buf, size_t err_cap) {
-    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 2, /*has_gs=*/false,
-                           /*force_tes_compute=*/false,
-                           /*tes_vertex_render=*/false,
-                           /*clip_depth_zero_to_one=*/false, attrib_names,
-                           0u, /*iface_location_peers=*/nullptr,
-                           metallib_out, size_out, err_buf, err_cap);
+    CompileOptions opt;
+    opt.stage = MGL_STAGE_VERTEX;
+    opt.capture = CaptureKind::Tess;
+    opt.attrib_names = attrib_names;
+    return compileGLSLImpl(src, opt, metallib_out, size_out, err_buf, err_cap);
 }
 
 extern "C" int mglShaderCompileGLSLCullDistanceCapture(
     const char *src, const char *const *attrib_names,
     unsigned char **metallib_out, size_t *size_out,
     char *err_buf, size_t err_cap) {
-    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 3, /*has_gs=*/false,
-                           /*force_tes_compute=*/false,
-                           /*tes_vertex_render=*/false,
-                           /*clip_depth_zero_to_one=*/false, attrib_names,
-                           0u, /*iface_location_peers=*/nullptr,
-                           metallib_out, size_out, err_buf, err_cap);
+    CompileOptions opt;
+    opt.stage = MGL_STAGE_VERTEX;
+    opt.capture = CaptureKind::CullDistance;
+    opt.attrib_names = attrib_names;
+    return compileGLSLImpl(src, opt, metallib_out, size_out, err_buf, err_cap);
 }
 
 static void fillStageInfo(const MGLTranslationUnit *tu,
@@ -18129,24 +18158,33 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
         }
     }
 
-    int capture = 0;
+    CaptureKind capture = CaptureKind::None;
     if (flags & MGL_AIR_COMPILE_CULL_CAPTURE)
-        capture = 3;
+        capture = CaptureKind::CullDistance;
     else if (flags & MGL_AIR_COMPILE_TESS_CAPTURE)
-        capture = 2;
+        capture = CaptureKind::Tess;
     else if (flags & MGL_AIR_COMPILE_VS_CAPTURE)
-        capture = 1;
+        capture = CaptureKind::VsXfb;
     const bool tes_vertex_render =
         (flags & MGL_AIR_COMPILE_TES_VERTEX) != 0;
     const bool clip_depth_zero_to_one =
         (flags & MGL_AIR_COMPILE_CLIP_DEPTH_ZERO_TO_ONE) != 0;
 
-    int rc = compileGLSLImpl(sess.src, stage, capture, has_gs, force_tes_compute,
-                             tes_vertex_render, clip_depth_zero_to_one,
-                             attrib_names, tessPatchVertices,
-                             iface_location_peers, metallib_out, size_out,
-                             err_buf, err_cap, &sess,
-                             (flags & MGL_AIR_COMPILE_FS_CLIP_INTERP) != 0);
+    CompileOptions opt;
+    opt.stage = stage;
+    opt.capture = capture;
+    opt.has_gs = has_gs;
+    opt.force_tes_compute = force_tes_compute;
+    opt.tes_vertex_render = tes_vertex_render;
+    opt.clip_depth_zero_to_one = clip_depth_zero_to_one;
+    opt.attrib_names = attrib_names;
+    opt.tessPatchVertices = tessPatchVertices;
+    opt.iface_location_peers = iface_location_peers;
+    opt.session_in = &sess;
+    opt.fs_clip_emulate = (flags & MGL_AIR_COMPILE_FS_CLIP_INTERP) != 0;
+
+    int rc = compileGLSLImpl(sess.src, opt, metallib_out, size_out, err_buf,
+                             err_cap);
     if (rc == 0 && tu_out)
         *tu_out = mglFrontendSessionStealTU(&sess);
     else if (tu_out)
