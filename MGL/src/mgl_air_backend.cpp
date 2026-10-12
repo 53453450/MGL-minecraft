@@ -71,6 +71,7 @@
 #include "mgl_glsl_parser.h"
 #include "mgl_glsl_sema.h"
 #include "mgl_ir.h"
+#include "mgl_air_target.h" /* AirTarget: triple + !air.* versions + container */
 #include "mgl_metallib_writer.h"
 #include "mgl_air_reflect.h"
 #include "mgl_buffer_slots.h"
@@ -13124,6 +13125,22 @@ static std::vector<std::string> mglAirOutputNames(
     return names;
 }
 
+/* The AIR target is a compile-time constant, but the parts of it that reach
+ * Metal are spread over two serializers (the module metadata and the MTLB
+ * container).  Verify the derivations once, on the first compile, so a
+ * mismatch that would make Metal reject the library - `newLibrary` returns nil
+ * with no useful message - is reported as a named internal error instead. */
+static bool mglAirTargetSelfCheck(void) {
+    char reason[192];
+    if (mgl::mglAirTargetIsConsistent(mgl::mglAirTarget(), reason,
+                                      sizeof(reason))) {
+        return true;
+    }
+    fprintf(stderr, "MGL ERROR: AIR target version contract violated: %s\n",
+            reason);
+    return false;
+}
+
 static int compileGLSLImpl(const char *src, int stage, int capture,
                            bool has_gs, bool force_tes_compute,
                            bool tes_vertex_render,
@@ -13146,6 +13163,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         stage != MGL_STAGE_GEOMETRY) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "unsupported stage");
         return -1;
+    }
+    {
+        static const bool target_ok = mglAirTargetSelfCheck();
+        if (!target_ok) {
+            if (err_buf && err_cap) {
+                snprintf(err_buf, err_cap,
+                         "internal error: the AIR target version contract is "
+                         "inconsistent (see the MGL ERROR line)");
+            }
+            return -1;
+        }
     }
     /* FrontendSession: one legacy rewrite + parse + sema for codegen. */
     MGLFrontendSession local_session;
@@ -13459,7 +13487,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     llvm::LLVMContext ctx;
     ctx.setOpaquePointers(false);
     llvm::Module module("mgl_shader", ctx);
-    module.setTargetTriple("air64_v28-apple-macosx26.0.0");
+    module.setTargetTriple(mgl::mglAirTargetTriple(mgl::mglAirTarget()));
     module.setDataLayout("e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64"
                          "-f32:32:32-f64:64:64-v16:16:16-v24:32:32-v32:32:32"
                          "-v48:64:64-v64:64:64-v96:128:128-v128:128:128"
@@ -17651,24 +17679,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                  : ((isVS || isTES) ? "air.vertex" : "air.fragment"));
     air->addOperand(llvm::MDNode::get(ctx, stageElems));
 
-    llvm::NamedMDNode *ver = module.getOrInsertNamedMetadata("air.version");
-    ver->addOperand(llvm::MDNode::get(ctx, {
-        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-            llvm::Type::getInt32Ty(ctx), 2)),
-        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-            llvm::Type::getInt32Ty(ctx), 8)),
-        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-            llvm::Type::getInt32Ty(ctx), 0))}));
-    llvm::NamedMDNode *lver = module.getOrInsertNamedMetadata(
-        "air.language_version");
-    lver->addOperand(llvm::MDNode::get(ctx, {
-        llvm::MDString::get(ctx, "Metal"),
-        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-            llvm::Type::getInt32Ty(ctx), 4)),
-        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-            llvm::Type::getInt32Ty(ctx), 0)),
-        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-            llvm::Type::getInt32Ty(ctx), 0))}));
+    /* !air.version and !air.language_version: the container's per-function VERS
+     * tag carries the same numbers, so both sides read them from AirTarget. */
+    mgl::mglAirTargetApplyModuleMetadata(module, mgl::mglAirTarget());
     addModuleFlags(&module);
 
     {

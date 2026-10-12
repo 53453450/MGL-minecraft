@@ -1045,6 +1045,21 @@ $(build_dir)/test_mgl_air_type: test_legacy_compat/test_mgl_air_type.cpp \
 test-mgl-air-type: $(build_dir)/test_mgl_air_type
 	$(build_dir)/test_mgl_air_type
 
+# Non-Metal AirTarget golden: the module metadata (!air.version,
+# !air.language_version, triple) and the MTLB container bytes (file header,
+# VERS tag) must describe the same target.  LLVM only.
+$(build_dir)/test_air_target: test_legacy_compat/test_air_target.cpp \
+	MGL/src/mgl_air_target.cpp MGL/src/mgl_air_target.h \
+	MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_metallib_writer.h
+	@mkdir -p $(build_dir)
+	$(LLVM_CXX) -x c++ $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
+		test_legacy_compat/test_air_target.cpp \
+		MGL/src/mgl_air_target.cpp MGL/src/mgl_metallib_writer.cpp \
+		-o $@
+
+test-air-target: $(build_dir)/test_air_target
+	$(build_dir)/test_air_target
+
 $(build_dir)/test_mgllex: test_legacy_compat/test_mgllex.c MGL/src/mgl_glsl_lexer.c
 	$(APPLE_CLANG) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -gfull -O0 \
 		-IMGL/include \
@@ -1073,7 +1088,7 @@ test-mglsema: $(build_dir)/test_mglsema
 	$(build_dir)/test_mglsema
 
 $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
-	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp \
+	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
 	MGL/src/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
 	MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
@@ -1082,7 +1097,7 @@ $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -gfull -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Cocoa -framework Foundation -framework Metal \
 		test_legacy_compat/test_mglair.mm \
-		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp \
+		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 		MGL/src/mgl_legacy_compat.c \
 		MGL/src/mgl_frontend_session.c \
 		MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
@@ -1107,12 +1122,12 @@ $(build_dir)/mcrepro_%.o: MGL/src/%.c
 		-IMGL/include/GL -IMGL/src -c $< -o $@
 
 $(build_dir)/test_mcrepro: test_legacy_compat/test_mcrepro.mm \
-	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp \
+	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 	$(MCREPRO_COBJ)
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Foundation \
 		test_legacy_compat/test_mcrepro.mm \
-		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp \
+		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 		-x none $(MCREPRO_COBJ) \
 		-o $@
 
@@ -1214,7 +1229,7 @@ $(GTEST_STAMP):
 	@touch $@
 
 $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
-	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp \
+	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
 	MGL/src/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
 	MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
@@ -1223,7 +1238,7 @@ $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 	$(GTEST_STAMP)
 	$(LLVM_CXX) -x c++ $(LLVM_CXXFLAGS) $(GTEST_CXXFLAGS) $(LLVM_LDFLAGS) \
 		test_legacy_compat/test_mglair_gtest.cpp \
-		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp \
+		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 		MGL/src/mgl_legacy_compat.c MGL/src/mgl_frontend_session.c \
 		MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
 		MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
@@ -1280,6 +1295,7 @@ test-all:
 	$(MAKE) build_dir=$(build_dir) test-dirty-hash
 	$(MAKE) build_dir=$(build_dir) test-arch-correctness
 	$(MAKE) build_dir=$(build_dir) test-tess-domain
+	$(MAKE) build_dir=$(build_dir) test-air-target
 	$(MAKE) build_dir=$(build_dir) test-xfb-plan
 	$(MAKE) build_dir=$(build_dir) test-batch-path
 	$(MAKE) build_dir=$(build_dir) test-batch-hazard

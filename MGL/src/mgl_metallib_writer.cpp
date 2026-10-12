@@ -42,6 +42,7 @@
  */
 
 #include "mgl_metallib_writer.h"
+#include "mgl_air_target.h" /* AirTarget: one source for the version fields */
 
 #include <cstring>
 
@@ -201,14 +202,18 @@ void writeRecordTags(TagWriter &w, const MTLBFunction &fn,
     w.u64(privOffset);
     w.u64(bitcodeOffset);
 
-    /* Container versions must agree with the bitcode module's
-     * !air.version (2.8) and !air.language_version (Metal 4.0). */
+    /* The record's VERS tag must agree with the bitcode module's
+     * !air.version and !air.language_version (AirTarget).  It carries the
+     * major/minor pair of each; neither has a patch field, which is why
+     * mglAirTargetIsConsistent refuses a non-zero patch - it would leave the
+     * container disagreeing with the module with no visible edit. */
+    const AirTarget &airTarget = mglAirTarget();
     w.fourcc("VERS");
     w.u16(8);
-    w.u16(2); /* air major */
-    w.u16(8); /* air minor */
-    w.u16(4); /* language major */
-    w.u16(0); /* language minor */
+    w.u16(uint16_t(airTarget.air_major)); /* air major */
+    w.u16(uint16_t(airTarget.air_minor)); /* air minor */
+    w.u16(uint16_t(airTarget.language_major)); /* language major */
+    w.u16(uint16_t(airTarget.language_minor)); /* language minor */
 
     /* Post-tessellation vertex functions carry a one-byte TESS tag in the
      * function record.  Apple's encoding is 4 * controlPointCount plus the
@@ -288,9 +293,17 @@ void mglMTLBWrite(const std::vector<MTLBFunction> &fns, llvm::raw_ostream &os) {
     const uint64_t bcOffset = privOffset + priv.size();
 
     os.write("MTLB", 4);
-    uint16_t platform = 0x8001, vMajor = 2, vMinor = 9;
-    uint8_t type = 0, target = 0x81;
-    uint16_t osMajor = 26, osMinor = 0;
+    /* The header's platform/format/target/OS and the module's target triple
+     * both describe the same target; the format version is the container's
+     * own serialization version and is deliberately a different number from
+     * air.version (AirTarget keeps the two apart). */
+    const AirTarget &airTarget = mglAirTarget();
+    uint16_t platform = uint16_t(airTarget.platform);
+    uint16_t vMajor = uint16_t(airTarget.container_major);
+    uint16_t vMinor = uint16_t(airTarget.container_minor);
+    uint8_t type = 0, target = uint8_t(airTarget.target);
+    uint16_t osMajor = uint16_t(airTarget.os_major);
+    uint16_t osMinor = uint16_t(airTarget.os_minor);
     os.write(reinterpret_cast<const char *>(&platform), 2);
     os.write(reinterpret_cast<const char *>(&vMajor), 2);
     os.write(reinterpret_cast<const char *>(&vMinor), 2);
