@@ -445,7 +445,13 @@ inline BufferCowSnapshot takeBufferCowSnapshot(MTL::Device* device,
         gBufferCompletedGeneration.load(std::memory_order_acquire);
     if (pool) {
         for (BufferCowSlot& slot : pool->slots) {
+            /* A pooled snapshot must be able to hold the owner's whole Metal
+             * length: the caller memcpy's the CPU shadow into it and then
+             * memsets the tail up to `length`.  The owner can grow between
+             * snapshots (reused glBufferData), so a slot allocated for an
+             * earlier, smaller buffer has to be skipped rather than reused. */
             if (!slot.buffer || slot.buffer == oldBuffer ||
+                static_cast<size_t>(slot.buffer->length()) < length ||
                 completed < slot.lastUseGeneration) {
                 continue;
             }

@@ -1157,6 +1157,8 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_tess_factor_normalize.c MGL/src/mgl_tess_domain_gen.c \
 	MGL/include/mgl_tess_domain.h \
 	MGL/src/mgl_renderer_backend.cpp MGL/src/mgl_renderer_backend.h \
+	MGL/src/mgl_render_internal.h MGL/src/mgl_render_pixel.h \
+	MGL/src/mgl_air_loader.h MGL/src/mgl_metal.h \
 	MGL/include/mgl_backend_handles.h \
 	$(METALCPP_PLATFORM_SHELL_OBJ) $(METALCPP_PLATFORM_SHELL_SRC) \
 	MGL/include/mgl_platform_shell_result.h \

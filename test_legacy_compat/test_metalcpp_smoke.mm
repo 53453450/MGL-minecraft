@@ -566,6 +566,79 @@ static int verifyBufferBinding(void) {
         mglRenderReleaseBufferCowPool(&capped);
     }
 
+    /* The rewrite pool may only hand back a snapshot whose Metal capacity
+     * covers the owner's current length: the split-shadow path memcpy's the
+     * shadow and then memsets up to the full Metal length, so an undersized
+     * pooled slot overflows it.  Grow the owner between two snapshots so the
+     * first (small) slot is retired and therefore reusable, then require the
+     * second snapshot to have been allocated at the bigger length. */
+    {
+        uint32_t smallSource[4] = {7u, 8u, 9u, 10u};
+        uint32_t grownSource[256];
+        for (size_t i = 0; i < 256u; ++i) {
+            grownSource[i] = static_cast<uint32_t>(i);
+        }
+        Buffer resized = {};
+        resized.name = 104u;
+        resized.size = sizeof(smallSource);
+        resized.data.buffer_size = sizeof(smallSource);
+        resized.data.buffer_data = (vm_address_t)(uintptr_t)smallSource;
+        resized.storage_flags = GL_MAP_READ_BIT;
+        if (mglRenderBindBufferStorage(&resized, message, sizeof(message)) !=
+            MGL_RENDER_BUFFER_BOUND) {
+            fprintf(stderr, "FAIL: COW resize buffer bind: %s\n", message);
+            return 1;
+        }
+        uint32_t firstValue = 91u;
+        mglRenderBufferSubData(NULL, &resized, 0, sizeof(firstValue),
+                               &firstValue);
+        id<MTLBuffer> smallSnapshot =
+            (__bridge id<MTLBuffer>)resized.data.mtl_data;
+        if (smallSnapshot.length != sizeof(smallSource)) {
+            fprintf(stderr, "FAIL: COW resize first snapshot length=%lu\n",
+                    (unsigned long)smallSnapshot.length);
+            return 1;
+        }
+
+        /* Retire the small slot so a later snapshot is allowed to reuse it. */
+        uint64_t resizeGeneration = mglRenderAdvanceBufferGeneration();
+        mglRenderNoteBufferEncoded(&resized);
+        mglRenderRecordBufferGenerationCompleted(resizeGeneration);
+
+        /* Grow the owner: binding again replaces the Metal buffer with a
+         * larger one, exactly as a reused glBufferData does. */
+        resized.size = sizeof(grownSource);
+        resized.data.buffer_size = sizeof(grownSource);
+        resized.data.buffer_data = (vm_address_t)(uintptr_t)grownSource;
+        if (mglRenderBindBufferStorage(&resized, message, sizeof(message)) !=
+            MGL_RENDER_BUFFER_BOUND) {
+            fprintf(stderr, "FAIL: COW grown buffer bind: %s\n", message);
+            return 1;
+        }
+
+        uint32_t secondValue = 92u;
+        mglRenderBufferSubData(NULL, &resized, 0, sizeof(secondValue),
+                               &secondValue);
+        id<MTLBuffer> grownSnapshot =
+            (__bridge id<MTLBuffer>)resized.data.mtl_data;
+        if (grownSnapshot.length < sizeof(grownSource)) {
+            fprintf(stderr,
+                    "FAIL: COW pool reused a %lu-byte slot for a %lu-byte"
+                    " snapshot\n",
+                    (unsigned long)smallSnapshot.length,
+                    (unsigned long)sizeof(grownSource));
+            return 1;
+        }
+        if (grownSource[0] != secondValue ||
+            memcmp(grownSnapshot.contents, grownSource,
+                   sizeof(grownSource)) != 0) {
+            fprintf(stderr, "FAIL: COW grown snapshot contents\n");
+            return 1;
+        }
+        mglRenderReleaseBufferMetalData(NULL, &resized);
+        mglRenderReleaseBufferCowPool(&resized);
+    }
+
     Buffer direct = {};
     direct.name = 103u;
     direct.size = sizeof(source);
@@ -953,6 +1026,11 @@ static int verifyVertexConversions(void) {
     conversion.kind = MGL_RENDER_VERTEX_PACKED_1010102_TO_FLOAT;
     conversion.component_count = 4;
     conversion.source_type = GL_UNSIGNED_INT_10_10_10_2;
+    /* The vertex classifier only emits this kind with normalized set
+     * (mgl_render_binding.cpp MGL_ATTRIB_CONV_UINT_1010102), so this is the
+     * production shape; the un-normalized pass below covers the other side of
+     * the same decode, which the classifier never selects for ARGB. */
+    conversion.normalized = 1;
     rawBuffer = NULL;
     if (mglRenderConvertVertexBuffer(
             &packedBuffer, &conversion, &stride, &rawBuffer,
@@ -965,7 +1043,35 @@ static int verifyVertexConversions(void) {
     if (!packedValues || packedValues[0] != 1.0f ||
         fabsf(packedValues[1] - (512.0f / 1023.0f)) > 0.0001f ||
         packedValues[2] != 0.0f || packedValues[3] != 1.0f) {
-        fprintf(stderr, "FAIL: packed 1010102 conversion values\n");
+        fprintf(stderr,
+                "FAIL: packed 1010102 conversion values got [%g %g %g %g]\n",
+                packedValues ? packedValues[0] : -1.0f,
+                packedValues ? packedValues[1] : -1.0f,
+                packedValues ? packedValues[2] : -1.0f,
+                packedValues ? packedValues[3] : -1.0f);
+        return 1;
+    }
+
+    conversion.normalized = 0;
+    rawBuffer = NULL;
+    if (mglRenderConvertVertexBuffer(
+            &packedBuffer, &conversion, &stride, &rawBuffer,
+            message, sizeof(message)) != 0 || !rawBuffer || stride != 16) {
+        fprintf(stderr, "FAIL: raw packed 1010102 conversion: %s\n", message);
+        return 1;
+    }
+    id<MTLBuffer> rawPackedMetal =
+        (__bridge_transfer id<MTLBuffer>)rawBuffer;
+    const float *rawPackedValues = (const float *)rawPackedMetal.contents;
+    if (!rawPackedValues || rawPackedValues[0] != 1023.0f ||
+        rawPackedValues[1] != 512.0f || rawPackedValues[2] != 0.0f ||
+        rawPackedValues[3] != 3.0f) {
+        fprintf(stderr,
+                "FAIL: raw packed 1010102 values got [%g %g %g %g]\n",
+                rawPackedValues ? rawPackedValues[0] : -1.0f,
+                rawPackedValues ? rawPackedValues[1] : -1.0f,
+                rawPackedValues ? rawPackedValues[2] : -1.0f,
+                rawPackedValues ? rawPackedValues[3] : -1.0f);
         return 1;
     }
 
@@ -1458,6 +1564,7 @@ static int verifyAuxShaderAssets(void) {
         {"scaled_blit_cs", "mgl_scaled_blit_cs", 3},
         {"scaled_depth_blit", "mgl_scaled_depth_blit_vs", 2},
         {"msaa_integer_resolve", "mgl_msaa_resolve_uint", 2},
+        {"emulated_ms_resolve", "mgl_emulated_ms_resolve_float", 1},
         {"clear_rect", "mgl_clear_rect_vs", 2},
         {"safe_fallback", "mgl_safe_fallback_vs", 4},
         {"gs_xfb_scatter", "mgl_gs_xfb_scatter", 1},
@@ -3713,10 +3820,14 @@ static int verifyIntegerAttribConversionFormat(void) {
          MTLVertexFormatUInt3},
         {"byte-uvec4-4", GL_BYTE, GL_UNSIGNED_INT_VEC4, 4u,
          MTLVertexFormatUInt4},
-        {"signed-compatible", GL_SHORT, GL_INT_VEC4, 4u,
-         MTLVertexFormatInvalid},
-        {"unsigned-compatible", GL_UNSIGNED_SHORT, GL_UNSIGNED_INT_VEC4, 4u,
-         MTLVertexFormatInvalid},
+        /* Narrow integer sources widen into the shader's integer vector
+         * regardless of signedness (see src_narrow in
+         * mglRenderIntegerAttribConversionFormat); only 32-bit sources need
+         * the sign flip to stay representable. */
+        {"short-ivec4-widen", GL_SHORT, GL_INT_VEC4, 4u,
+         MTLVertexFormatInt4},
+        {"ushort-uvec4-widen", GL_UNSIGNED_SHORT, GL_UNSIGNED_INT_VEC4, 4u,
+         MTLVertexFormatUInt4},
         {"float-shader", GL_UNSIGNED_BYTE, GL_FLOAT_VEC4, 4u,
          MTLVertexFormatInvalid},
         {"unknown-source", 0xfeedu, GL_INT_VEC4, 4u,
@@ -4149,8 +4260,9 @@ static int verifyShaderResourceTextureTypes(void) {
         uint32_t multisampled;
         uint32_t expected;
     } cases[] = {
-        /* GL 1D / buffer / MS images are backed by Metal 2D / 2D-array
-         * storage so AIR sampler/image declarations match bindable textures. */
+        /* GL 1D / MS images are backed by Metal 2D / 2D-array storage so AIR
+         * sampler/image declarations match bindable textures; GL buffer
+         * textures use Metal's texture_buffer type outright. */
         {"1D", 1u, MGL_IMAGE_DIM_1D, 0u, 0u, (uint32_t)MTLTextureType2D},
         {"1DArray", 1u, MGL_IMAGE_DIM_1D, 1u, 0u, (uint32_t)MTLTextureType2DArray},
         {"2D", 1u, MGL_IMAGE_DIM_2D, 0u, 0u, (uint32_t)MTLTextureType2D},
@@ -4160,7 +4272,8 @@ static int verifyShaderResourceTextureTypes(void) {
         {"3D", 1u, MGL_IMAGE_DIM_3D, 0u, 0u, (uint32_t)MTLTextureType3D},
         {"Cube", 1u, MGL_IMAGE_DIM_CUBE, 0u, 0u, (uint32_t)MTLTextureTypeCube},
         {"CubeArray", 1u, MGL_IMAGE_DIM_CUBE, 1u, 0u, (uint32_t)MTLTextureTypeCubeArray},
-        {"Buffer", 1u, MGL_IMAGE_DIM_BUFFER, 0u, 0u, (uint32_t)MTLTextureType2D},
+        {"Buffer", 1u, MGL_IMAGE_DIM_BUFFER, 0u, 0u,
+         (uint32_t)MTLTextureTypeTextureBuffer},
         {"invalid", 1u, UINT32_MAX, 0u, 0u, 0u},
         {"null", 0u, MGL_IMAGE_DIM_2D, 1u, 1u, 0u},
     };

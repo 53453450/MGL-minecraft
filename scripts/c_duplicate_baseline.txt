@@ -23,7 +23,6 @@ mglPdGeometryPassthroughLayerStride
 mglPdGetPersistentAttachmentState
 mglPdLoadActionFor
 mglPdMaxU64
-mglPdMinU64
 mglPdRenderTargetHeightFor
 mglPdRenderTargetSizeFor
 mglPdRenderTargetWidthFor
@@ -37,7 +36,6 @@ mglPdStencilTextureFor
 mglPdStoreActionFor
 mglPdStubFSValueClass
 mglPdTextureBufferContents
-mglPdTextureGetBytes
 mglPdTextureInfo
 
 # mgl_renderer_entries.c / mgl_renderer_host.c

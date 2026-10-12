@@ -158,14 +158,14 @@ int mglProgramStageHasSamplers(const Program *prog, int stage)
         return 0;
     for (size_t t = 0;
          t < sizeof(kSamplerRes) / sizeof(kSamplerRes[0]); t++) {
-        MGLShaderResourceList *list =
+        const MGLShaderResourceList *list =
             &prog->shader_resources_list[stage][kSamplerRes[t]];
         if (list && list->count > 0u)
             return 1;
     }
     /* Combined samplers may also appear under UNIFORM_CONSTANT. */
     {
-        MGLShaderResourceList *list =
+        const MGLShaderResourceList *list =
             &prog->shader_resources_list[stage][_UNIFORM_CONSTANT_RES];
         if (list) {
             for (GLuint i = 0; i < list->count; i++) {
@@ -240,9 +240,14 @@ GLboolean mglBufferSlotConflictsForProgram(const Program *program,
              * kMGLVertexAttribBufferBase for every draw that maps vertex
              * attribs (mgl_vertex_attrib_plan.c), sharing the same Metal
              * buffer-index namespace as the kernel's own buffer arguments.
-             * A user buffer landing there is corrupted as soon as the VAO
-             * uses enough streams, so the whole region is reserved. */
-            if (slot >= kMGLVertexAttribBufferBase) {
+             * Only reserve the region when the stage declares vertex inputs:
+             * a program without stage inputs maps no attribute stream, so the
+             * same numeric slot stays legal there — which also keeps the
+             * per-path reservations above discriminating instead of being
+             * shadowed by a blanket range. */
+            if (slot >= kMGLVertexAttribBufferBase &&
+                program->shader_resources_list[_VERTEX_SHADER]
+                                              [_STAGE_INPUT_RES].count > 0u) {
                 return GL_TRUE;
             }
             break;
