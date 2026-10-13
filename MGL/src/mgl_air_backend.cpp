@@ -547,6 +547,41 @@ static MType controlPointLocationType(const MType &t)
     return el;
 }
 
+/* Metal vertex-attribute expansion for one GLSL attribute.
+ *
+ * A Metal vertex attribute is at most one 4-component value, whereas a GLSL
+ * attribute can span several locations: one per matrix column, one per array
+ * element (GL 4.6 §4.4.1) -- and both at once for `mat3 X[2]`, which is why
+ * the array and matrix cases cannot be two independent branches.  `count` is
+ * the number of stage_in arguments (== varyingLocationSpan, so the argument
+ * sequence and air.location_index agree), `argType` is the interface type of
+ * each single argument (one location, so both dimensions are stripped) and
+ * `aggType` is the interface type of the value the shader body reads.  The
+ * argument list, the argument consumption and the air.vertex_input metadata
+ * must all agree on all three, so they derive them from here. */
+struct AttrExpansion {
+    uint32_t count = 1;
+    MType argType;
+    MType aggType;
+};
+
+static AttrExpansion attrExpansion(const MType &t)
+{
+    AttrExpansion e;
+    e.aggType = attrMetalIfaceType(t);
+    e.count = varyingLocationSpan(t);
+    e.argType = attrMetalIfaceType(controlPointLocationType(t));
+    return e;
+}
+
+/* True for the one shape whose arguments are neither an array's elements nor a
+ * matrix's columns: an array of matrices, whose arguments are element-major
+ * columns.  Callers reassemble it by building `cols` columns per element. */
+static bool attrIsMatrixArray(const MType &t)
+{
+    return t.isArray() && t.arr > 0 && t.isMatrix() && t.cols > 0;
+}
+
 /* Reassemble a control-point member from the per-location fields emitted by
  * the native post-tessellation ABI: field `base` holds location 0, field
  * base+1 the next location, and so on (arrays elements then matrix columns).
@@ -14103,18 +14138,9 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
          * keep the legacy layout with attributes AFTER all buffers. */
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATTR) continue;
-            if (v.type.isArray() && v.type.arr > 0) {
-                MType el = attrMetalIfaceType(v.type);
-                el.arr = 0;
-                for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
-                    paramTys.push_back(llvmType(el, ctx));
-            } else if (v.type.isMatrix()) {
-                MType col = attrMetalIfaceType(matrixColumnType(v.type));
-                for (uint32_t c = 0; c < v.type.cols; c++)
-                    paramTys.push_back(llvmType(col, ctx));
-            } else {
-                paramTys.push_back(llvmType(attrMetalIfaceType(v.type), ctx));
-            }
+            const AttrExpansion ex = attrExpansion(v.type);
+            for (uint32_t k = 0; k < ex.count; k++)
+                paramTys.push_back(llvmType(ex.argType, ctx));
         }
     }
     /* Remember where the plain (non-SSBO/UBO) buffer argument actually landed.
@@ -14228,18 +14254,9 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         /* XFB capture variant: attributes trail all buffers (see above). */
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATTR) continue;
-            if (v.type.isArray() && v.type.arr > 0) {
-                MType el = attrMetalIfaceType(v.type);
-                el.arr = 0;
-                for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
-                    paramTys.push_back(llvmType(el, ctx));
-            } else if (v.type.isMatrix()) {
-                MType col = attrMetalIfaceType(matrixColumnType(v.type));
-                for (uint32_t c = 0; c < v.type.cols; c++)
-                    paramTys.push_back(llvmType(col, ctx));
-            } else {
-                paramTys.push_back(llvmType(attrMetalIfaceType(v.type), ctx));
-            }
+            const AttrExpansion ex = attrExpansion(v.type);
+            for (uint32_t k = 0; k < ex.count; k++)
+                paramTys.push_back(llvmType(ex.argType, ctx));
         }
     }
     if (isTCS) {
@@ -14564,29 +14581,32 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     if (isVS && !isCapture) {
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATTR) continue;
-            MType iface = attrMetalIfaceType(v.type);
-            if (v.type.isArray() && v.type.arr > 0) {
-                /* Assemble float[N] from N scalar stage_in args so
-                 * gl_CullDistance/ClipDistance loads keep working. */
-                llvm::Type *aggTy = llvmType(iface, ctx);
-                llvm::Value *agg = llvm::UndefValue::get(aggTy);
-                for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
-                    agg = cg.b->CreateInsertValue(agg, fn->getArg(argSlot++),
-                                                  k);
-                cg.lvalues[v.name] = agg;
-            } else if (v.type.isMatrix()) {
-                MType colIface = attrMetalIfaceType(matrixColumnType(v.type));
-                MType matIface = v.type;
-                matIface.scalar = colIface.scalar;
-                llvm::Type *aggTy = llvmType(matIface, ctx);
-                llvm::Value *agg = llvm::UndefValue::get(aggTy);
-                for (uint32_t c = 0; c < v.type.cols; c++)
-                    agg = cg.b->CreateInsertValue(agg, fn->getArg(argSlot++),
-                                                  c);
-                cg.lvalues[v.name] = agg;
-            } else {
+            const AttrExpansion ex = attrExpansion(v.type);
+            if (ex.count <= 1u) {
                 cg.lvalues[v.name] = fn->getArg(argSlot++);
+                continue;
             }
+            llvm::Value *agg = llvm::UndefValue::get(llvmType(ex.aggType, ctx));
+            if (attrIsMatrixArray(v.type)) {
+                /* Array of matrices: element-major columns, so `cols`
+                 * arguments make one element and the elements make the array. */
+                const MType col = matrixColumnType(v.type);
+                for (uint32_t element = 0; element < (uint32_t)v.type.arr;
+                     element++) {
+                    llvm::Value *mat = llvm::UndefValue::get(llvmType(col, ctx));
+                    for (uint32_t c = 0; c < v.type.cols; c++)
+                        mat = cg.b->CreateInsertValue(mat, fn->getArg(argSlot++),
+                                                      c);
+                    agg = cg.b->CreateInsertValue(agg, mat, element);
+                }
+            } else {
+                /* Assemble float[N] from N scalar stage_in args so
+                 * gl_CullDistance/ClipDistance loads keep working, and one
+                 * column per argument for a matrix. */
+                for (uint32_t k = 0; k < ex.count; k++)
+                    agg = cg.b->CreateInsertValue(agg, fn->getArg(argSlot++), k);
+            }
+            cg.lvalues[v.name] = agg;
         }
     }
     if ((isVS || isTES || isKernel) && hasBuffer)
@@ -14711,6 +14731,24 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         }
     }
     for (VarSym &v : syms) {
+        if (isVS && isCapture && v.kind == VarSym::ATTR &&
+            attrIsMatrixArray(v.type)) {
+            /* Array of matrices: its arguments are element-major columns, which
+             * is neither the "array of elements" nor the "matrix of columns"
+             * shape the flattened paths below handle (see attrExpansion). */
+            const AttrExpansion ex = attrExpansion(v.type);
+            const MType col = matrixColumnType(v.type);
+            llvm::Value *agg = llvm::UndefValue::get(llvmType(ex.aggType, ctx));
+            for (uint32_t element = 0; element < (uint32_t)v.type.arr;
+                 element++) {
+                llvm::Value *mat = llvm::UndefValue::get(llvmType(col, ctx));
+                for (uint32_t c = 0; c < v.type.cols; c++)
+                    mat = cg.b->CreateInsertValue(mat, fn->getArg(argSlot++), c);
+                agg = cg.b->CreateInsertValue(agg, mat, element);
+            }
+            cg.lvalues[v.name] = agg;
+            continue;
+        }
         if ((isVS && isCapture && v.kind == VarSym::ATTR) ||
             (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING)) {
             if (v.type.isArray() && v.type.arr > 0) {
@@ -16323,11 +16361,9 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             } else if (attrLoc == UINT32_MAX) {
                 attrLoc = nextFreeAttrLoc;
             }
-            const uint32_t n = varyingLocationSpan(v.type);
-            MType el = v.type;
-            if (v.type.isArray() && v.type.arr > 0) el.arr = 0;
-            else if (v.type.isMatrix()) el = matrixColumnType(v.type);
-            el = attrMetalIfaceType(el);
+            const AttrExpansion ex = attrExpansion(v.type);
+            const uint32_t n = ex.count;
+            const MType el = ex.argType;
             for (uint32_t k = 0; k < n; k++) {
                 std::string argName = n > 1u
                     ? v.name + "[" + std::to_string(k) + "]"
@@ -16837,11 +16873,9 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             if (want == UINT32_MAX)
                 want = nextFreeAttrLoc;
             attrLoc = want;
-            const uint32_t n = varyingLocationSpan(v.type);
-            MType el = v.type;
-            if (v.type.isArray() && v.type.arr > 0) el.arr = 0;
-            else if (v.type.isMatrix()) el = matrixColumnType(v.type);
-            el = attrMetalIfaceType(el);
+            const AttrExpansion ex = attrExpansion(v.type);
+            const uint32_t n = ex.count;
+            const MType el = ex.argType;
             for (uint32_t k = 0; k < n; k++) {
                 std::string argName = n > 1u
                     ? v.name + "[" + std::to_string(k) + "]"
