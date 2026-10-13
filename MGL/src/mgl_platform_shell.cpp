@@ -130,7 +130,7 @@ static SEL s_shellSelAlloc = NULL;
 static void mglShellStoreObject(void **slot, MGLObjectId value)
 {
     if (value) {
-        (void)mglSend<MGLObjectId>(value, sel_registerName("retain"));
+        (void)objc_retain(value);
     }
     void *previous = *slot;
     *slot = (void *)value;

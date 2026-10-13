@@ -52,6 +52,17 @@ typedef struct objc_object *MGLObjectId;
 extern "C" void *objc_autoreleasePoolPush(void);
 extern "C" void objc_autoreleasePoolPop(void *pool);
 
+/* ARC's retain/release/autorelease entry points.  libobjc exports them -- they
+ * are the ABI every ARC-compiled binary calls -- but the public SDK headers
+ * declare them for ObjC/ARC TUs only, exactly like the pool API above, so they
+ * are spelled out here.  Preferring them over `-retain`/`-release` messages
+ * keeps selector lookup out of the hot ownership paths and routes tagged and
+ * non-pointer-isa objects through the runtime's own handling.  Signatures are
+ * the documented ones with `id` spelled as MGLObjectId (same struct pointer). */
+extern "C" MGLObjectId objc_retain(MGLObjectId object);
+extern "C" void objc_release(MGLObjectId object);
+extern "C" MGLObjectId objc_autorelease(MGLObjectId object);
+
 /* ------------------------------------------------------------ messages --- */
 
 /* Typed message send.  The cast is what makes objc_msgSend's ABI work out:
@@ -85,22 +96,21 @@ static inline SEL mglCachedSel(SEL *slot, const char *name)
 /* __bridge_retained id -> hand a +1 to C (CFBridgingRetain). */
 static inline void *mglBridgingRetain(MGLObjectId object)
 {
-    return object ? (void *)mglSend<MGLObjectId>(object, sel_registerName("retain"))
-                  : NULL;
+    return object ? (void *)objc_retain(object) : NULL;
 }
 
 /* __bridge_transfer id discarded / CFBridgingRelease -> give the +1 back. */
 static inline void mglBridgingRelease(void *pointer)
 {
     if (pointer) {
-        (void)mglSend<MGLObjectId>((MGLObjectId)pointer, sel_registerName("release"));
+        objc_release((MGLObjectId)pointer);
     }
 }
 
 static inline void mglReleaseObject(MGLObjectId object)
 {
     if (object) {
-        (void)mglSend<MGLObjectId>(object, sel_registerName("release"));
+        objc_release(object);
     }
 }
 
@@ -109,8 +119,7 @@ static inline void mglReleaseObject(MGLObjectId object)
  * exactly the same autorelease. */
 static inline MGLObjectId mglAutoreleaseObject(MGLObjectId object)
 {
-    return object ? mglSend<MGLObjectId>(object, sel_registerName("autorelease"))
-                  : NULL;
+    return object ? objc_autorelease(object) : NULL;
 }
 
 /* ------------------------------------------------------------ strings --- */
