@@ -1626,6 +1626,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
  * `if`.  Keep the comma form. */
 static bool emitCallTextureQuery(Codegen &cg, const MGLExpr *e,
                                  const char *name, llvm::Value **out);
+static bool emitCallTexelFetch(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out);
 static bool emitCallImageLoadStore(
     Codegen &cg, const MGLExpr *e, const char *name,
     const MGLIRModule *mod, const std::map<std::string, MType> &locals,
@@ -7633,352 +7637,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (emitCallImageLoadStore(cg, e, name, mod, locals, &handled))
                 return handled;
         }
-        /* texelFetch(sampler, ivecP, lod): unfiltered read. */
-        if (strcmp(name, "texelFetch") == 0 ||
-            strcmp(name, "texelFetchOffset") == 0) {
-            const bool hasFetchOffset = strcmp(name, "texelFetchOffset") == 0;
-            if ((!hasFetchOffset &&
-                 e->u.call.arg_count != 3 && e->u.call.arg_count != 2) ||
-                (hasFetchOffset && e->u.call.arg_count != 4)) {
-                cg.err = 1;
-                cg.errmsg = hasFetchOffset
-                                ? "codegen: texelFetchOffset expects 4 arguments"
-                                : "codegen: texelFetch expects 2 or 3 arguments";
-                return nullptr;
-            }
-            const MGLExpr *sa = e->u.call.args[0];
-            std::string samplerPath;
-            const char *samplerName = nullptr;
-            llvm::Value *tex = nullptr;
-            bool dynamicSamplerArray = false;
-            llvm::Value *arrayIndex = nullptr;
-            const std::vector<llvm::Value *> *texArray = nullptr;
-            const bool topLevelSamplerArray =
-                sa->kind == MGL_EXPR_INDEX && sa->u.index.object &&
-                sa->u.index.object->kind == MGL_EXPR_VAR_REF;
-            if (topLevelSamplerArray) {
-                /* Same pattern as texture(): texInput[i] with constant or
-                 * dynamic i (CTS texture_barrier usampler2D[N] loops). */
-                samplerName = sa->u.index.object->u.var_ref.name;
-                llvm::Value *index =
-                    emitExpr(cg, sa->u.index.index, mod, locals);
-                if (!index) return nullptr;
-                index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
-                auto ti = cg.texArrayValues.find(samplerName);
-                if (ti == cg.texArrayValues.end()) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: texelFetch first argument must be a "
-                                "sampler variable";
-                    return nullptr;
-                }
-                if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(index)) {
-                    uint32_t k = (uint32_t)ci->getZExtValue();
-                    if (k < ti->second.size())
-                        tex = ti->second[k];
-                    else if (!ti->second.empty())
-                        tex = ti->second.back();
-                } else {
-                    dynamicSamplerArray = true;
-                    arrayIndex = index;
-                    texArray = &ti->second;
-                }
-            } else if (!resolveSamplerAccessName(sa, &samplerPath)) {
-                cg.err = 1;
-                cg.errmsg = "codegen: texelFetch first argument must be a "
-                            "sampler variable";
-                return nullptr;
-            } else {
-                samplerName = samplerPath.c_str();
-                tex = samplerTexValue(cg, samplerName);
-            }
-            if (!dynamicSamplerArray && !tex) {
-                cg.err = 1;
-                cg.errmsg = "codegen: texelFetch first argument must be a "
-                            "sampler variable";
-                return nullptr;
-            }
-            const MGLIRType *sampleType = nullptr;
-            auto sti = cg.samplerIRTypes.find(samplerName);
-            if (sti != cg.samplerIRTypes.end())
-                sampleType = sti->second;
-            else {
-                const MGLIRSymbol *ts = findSymbol(mod, samplerName);
-                sampleType = ts ? ts->type : nullptr;
-            }
-            if (sampleType && sampleType->kind == MGLIR_TYPE_ARRAY &&
-                sampleType->elem_type)
-                sampleType = sampleType->elem_type;
-            MGLIRTexKind texKind = sampleType &&
-                                           sampleType->kind == MGLIR_TYPE_SAMPLER
-                                       ? sampleType->tex_kind
-                                       : MGLIR_TEX_2D;
-            MGLIRScalar texel =
-                sampleType && sampleType->kind == MGLIR_TYPE_SAMPLER
-                    ? sampleType->tex_storage
-                    : MGLIR_SCALAR_FLOAT;
-            bool isBuf = texKind == MGLIR_TEX_BUFFER;
-            llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
-            llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
-            llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
-            llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
-            llvm::Type *vecTy =
-                texel == MGLIR_SCALAR_FLOAT
-                    ? (llvm::Type *)llvm::FixedVectorType::get(f32, 4)
-                    : (llvm::Type *)llvm::FixedVectorType::get(i32, 4);
-            llvm::Type *retTy =
-                llvm::StructType::get(*cg.ctx, {vecTy, cg.b->getInt8Ty()});
-            auto readIntrinsic = [&](const char *floatName) -> std::string {
-                if (texel == MGLIR_SCALAR_FLOAT) {
-                    return floatName;
-                }
-                std::string n(floatName);
-                const char *from = ".v4f32";
-                const char *to = texel == MGLIR_SCALAR_INT ? ".s.v4i32"
-                                                           : ".u.v4i32";
-                size_t pos = n.find(from);
-                if (pos != std::string::npos) {
-                    n.replace(pos, strlen(from), to);
-                }
-                return n;
-            };
-            if (isBuf) {
-                if (e->u.call.arg_count != 2) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: texelFetch on a samplerBuffer "
-                                "expects 2 arguments";
-                    return nullptr;
-                }
-                llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod,
-                                              locals);
-                if (!coord) return nullptr;
-                coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
-                llvm::StructType *smpT = llvm::StructType::getTypeByName(
-                    *cg.ctx, "struct._sampler_t");
-                if (!smpT)
-                    smpT = llvm::StructType::create(*cg.ctx,
-                                                   "struct._sampler_t");
-                llvm::Value *rdSmp = callAirFn(
-                    cg, "air.get_read_sampler", smpT->getPointerTo(2), {});
-                /* access::read = 1 for samplerBuffer. */
-                llvm::Value *accRead = cg.b->getInt32(1);
-                auto doBufFetch =
-                    [&](llvm::Value *t, llvm::Value *) -> llvm::Value * {
-                    llvm::Value *r = callAirFn(
-                        cg,
-                        readIntrinsic("air.read_texture_buffer_1d.v4f32")
-                            .c_str(),
-                        retTy, {t, rdSmp, coord, accRead});
-                    return cg.b->CreateExtractValue(r, 0);
-                };
-                if (dynamicSamplerArray) {
-                    std::vector<llvm::Value *> empty;
-                    return sampleArrayElementBySwitch(
-                        cg, arrayIndex, *texArray, empty, vecTy, doBufFetch);
-                }
-                return doBufFetch(tex, nullptr);
-            }
-            auto toIvec2XY0 = [&](llvm::Value *x) -> llvm::Value * {
-                llvm::Value *v = llvm::UndefValue::get(v2i32);
-                v = cg.b->CreateInsertElement(v, x, cg.b->getInt32(0));
-                v = cg.b->CreateInsertElement(v, cg.b->getInt32(0),
-                                              cg.b->getInt32(1));
-                return v;
-            };
-            bool isRect = texKind == MGLIR_TEX_2D_RECT;
-            if (!hasFetchOffset && e->u.call.arg_count == 2 && !isRect) {
-                cg.err = 1;
-                cg.errmsg = "codegen: texelFetch on a sampler expects 2 or 3 "
-                            "arguments";
-                return nullptr;
-            }
-            llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod, locals);
-            if (!coord) return nullptr;
-            coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
-            llvm::Value *lodOrSample = cg.b->getInt32(0);
-            uint32_t lodArg = 2;
-            if (hasFetchOffset) {
-                lodArg = 2;
-            }
-            if (e->u.call.arg_count >= 3 && (!hasFetchOffset || e->u.call.arg_count == 4)) {
-                lodOrSample = emitExpr(cg, e->u.call.args[lodArg], mod, locals);
-                if (!lodOrSample) return nullptr;
-                lodOrSample = coerceScalar(cg, lodOrSample, MGLIR_SCALAR_INT);
-            }
-            if (hasFetchOffset) {
-                llvm::Value *off =
-                    emitExpr(cg, e->u.call.args[3], mod, locals);
-                if (!off) return nullptr;
-                off = coerceScalar(cg, off, MGLIR_SCALAR_INT);
-                coord = addTexelOffset(cg, coord, off);
-            }
-            llvm::Value *arrayLayer = nullptr;
-            if (texKind == MGLIR_TEX_2D_ARRAY) {
-                if (coord->getType() != v3i32) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: texelFetch on a sampler2DArray "
-                                "expects ivec3 coordinates";
-                    return nullptr;
-                }
-                arrayLayer =
-                    cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
-                coord = cg.b->CreateShuffleVector(
-                    coord, llvm::UndefValue::get(coord->getType()),
-                    {0, 1});
-            } else if (texKind == MGLIR_TEX_1D_ARRAY) {
-                if (coord->getType() != v2i32) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: texelFetch on a sampler1DArray "
-                                "expects ivec2 coordinates";
-                    return nullptr;
-                }
-                arrayLayer =
-                    cg.b->CreateExtractElement(coord, cg.b->getInt32(1));
-                coord = toIvec2XY0(
-                    cg.b->CreateExtractElement(coord, cg.b->getInt32(0)));
-            } else if (texKind == MGLIR_TEX_1D) {
-                if (!coord->getType()->isIntegerTy()) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: texelFetch on a sampler1D expects "
-                                "int coordinates";
-                    return nullptr;
-                }
-                coord = toIvec2XY0(coord);
-            } else if (texKind == MGLIR_TEX_2D_RECT) {
-                if (coord->getType() != v2i32) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: texelFetch on a sampler2DRect "
-                                "expects ivec2 coordinates";
-                    return nullptr;
-                }
-            } else if (texKind == MGLIR_TEX_2D_MS) {
-                if (coord->getType() != v2i32) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: texelFetch on a sampler2DMS "
-                                "expects ivec2 coordinates";
-                    return nullptr;
-                }
-            } else if (texKind == MGLIR_TEX_2D_MS_ARRAY) {
-                if (coord->getType() != v3i32) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: texelFetch on a sampler2DMSArray "
-                                "expects ivec3 coordinates";
-                    return nullptr;
-                }
-                arrayLayer =
-                    cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
-                coord = cg.b->CreateShuffleVector(
-                    coord, llvm::UndefValue::get(coord->getType()),
-                    {0, 1});
-            } else if (texKind == MGLIR_TEX_3D || texKind == MGLIR_TEX_CUBE) {
-                if (coord->getType() != v3i32) {
-                    cg.err = 1;
-                    cg.errmsg = texKind == MGLIR_TEX_3D
-                                    ? "codegen: texelFetch on a sampler3D "
-                                      "expects ivec3 coordinates"
-                                    : "codegen: texelFetch on a samplerCube "
-                                      "expects ivec3 coordinates";
-                    return nullptr;
-                }
-            } else {
-                if (coord->getType()->isIntegerTy()) {
-                    coord = toIvec2XY0(coord);
-                } else if (coord->getType() != v2i32) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: texelFetch on a sampler2D expects "
-                                "ivec2 coordinates";
-                    return nullptr;
-                }
-            }
-            /* Apple texture.read is (tex, get_read_sampler, coord[, layer],
-             * offset, lod, access).  Must match imageLoad / buffer
-             * texelFetch arity — getOrInsertFunction bitcast of 4-arg vs
-             * 6-arg on the same name crashes the AGX Metal compiler. */
-            llvm::StructType *fetchSmpT = llvm::StructType::getTypeByName(
-                *cg.ctx, "struct._sampler_t");
-            if (!fetchSmpT)
-                fetchSmpT = llvm::StructType::create(*cg.ctx,
-                                                    "struct._sampler_t");
-            llvm::Value *fetchRdSmp = callAirFn(
-                cg, "air.get_read_sampler", fetchSmpT->getPointerTo(2), {});
-            llvm::Value *fetchOff2 = llvm::Constant::getNullValue(v2i32);
-            llvm::Value *fetchOff3 = llvm::ConstantVector::get(
-                {cg.b->getInt32(0), cg.b->getInt32(0), cg.b->getInt32(0)});
-            auto doFetchVec =
-                [&](llvm::Value *t, llvm::Value *) -> llvm::Value * {
-                llvm::Value *r = nullptr;
-                if (texKind == MGLIR_TEX_2D_ARRAY ||
-                    texKind == MGLIR_TEX_1D_ARRAY) {
-                    r = callAirFn(
-                        cg,
-                        readIntrinsic("air.read_texture_2d_array.v4f32")
-                            .c_str(),
-                        retTy,
-                        {t, fetchRdSmp, coord, arrayLayer, fetchOff2,
-                         lodOrSample, cg.b->getInt32(3)});
-                } else if (texKind == MGLIR_TEX_2D_MS) {
-                    /* The MS plane store has no Y-flipped sampled copy (see
-                     * flipMultisampleStorageRow), so row y here is the flipped
-                     * Metal row; flip it back for the GL texel. */
-                    llvm::Value *msCoord =
-                        flipMultisampleStorageRow(cg, t, coord);
-                    r = callAirFn(
-                        cg,
-                        readIntrinsic("air.read_texture_2d_array.v4f32")
-                            .c_str(),
-                        retTy,
-                        {t, fetchRdSmp, msCoord, lodOrSample, fetchOff2,
-                         cg.b->getInt32(0), cg.b->getInt32(3)});
-                } else if (texKind == MGLIR_TEX_2D_MS_ARRAY) {
-                    llvm::Value *flat = cg.b->CreateAdd(
-                        cg.b->CreateMul(arrayLayer, cg.b->getInt32(8)),
-                        lodOrSample);
-                    llvm::Value *msCoord =
-                        flipMultisampleStorageRow(cg, t, coord);
-                    r = callAirFn(
-                        cg,
-                        readIntrinsic("air.read_texture_2d_array.v4f32")
-                            .c_str(),
-                        retTy,
-                        {t, fetchRdSmp, msCoord, flat, fetchOff2,
-                         cg.b->getInt32(0), cg.b->getInt32(3)});
-                } else if (texKind == MGLIR_TEX_3D) {
-                    r = callAirFn(
-                        cg, readIntrinsic("air.read_texture_3d.v4f32").c_str(),
-                        retTy,
-                        {t, fetchRdSmp, coord, fetchOff3, lodOrSample,
-                         cg.b->getInt32(3)});
-                } else if (texKind == MGLIR_TEX_CUBE) {
-                    /* Cube face packed as array layer (same as imageLoad). */
-                    llvm::Value *face = cg.b->CreateExtractElement(
-                        coord, cg.b->getInt32(2));
-                    llvm::Value *xy = cg.b->CreateShuffleVector(
-                        coord, llvm::UndefValue::get(coord->getType()),
-                        {0, 1});
-                    r = callAirFn(
-                        cg,
-                        readIntrinsic("air.read_texture_2d_array.v4f32")
-                            .c_str(),
-                        retTy,
-                        {t, fetchRdSmp, xy, face, fetchOff2, lodOrSample,
-                         cg.b->getInt32(3)});
-                } else {
-                    llvm::Value *level =
-                        texKind == MGLIR_TEX_2D_RECT ? cg.b->getInt32(0)
-                                                     : lodOrSample;
-                    r = callAirFn(
-                        cg, readIntrinsic("air.read_texture_2d.v4f32").c_str(),
-                        retTy,
-                        {t, fetchRdSmp, coord, fetchOff2, level,
-                         cg.b->getInt32(3)});
-                }
-                return cg.b->CreateExtractValue(r, 0);
-            };
-            if (dynamicSamplerArray) {
-                std::vector<llvm::Value *> empty;
-                return sampleArrayElementBySwitch(
-                    cg, arrayIndex, *texArray, empty, vecTy, doFetchVec);
-            }
-            return doFetchVec(tex, nullptr);
+        {
+            llvm::Value *handled = nullptr;
+            if (emitCallTexelFetch(cg, e, name, mod, locals, &handled))
+                return handled;
         }
         {
             llvm::Value *handled = nullptr;
@@ -11388,6 +11050,363 @@ static bool emitCallImageLoadStore(
         }
         emitWrite(tex);
         return (*out = cg.b->getInt32(0), true);
+    }
+
+    return false;
+}
+
+/* Lifted out of emitExpr's MGL_EXPR_CALL case. */
+static bool emitCallTexelFetch(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out)
+{
+    /* texelFetch(sampler, ivecP, lod): unfiltered read. */
+    if (strcmp(name, "texelFetch") == 0 ||
+        strcmp(name, "texelFetchOffset") == 0) {
+        const bool hasFetchOffset = strcmp(name, "texelFetchOffset") == 0;
+        if ((!hasFetchOffset &&
+             e->u.call.arg_count != 3 && e->u.call.arg_count != 2) ||
+            (hasFetchOffset && e->u.call.arg_count != 4)) {
+            cg.err = 1;
+            cg.errmsg = hasFetchOffset
+                            ? "codegen: texelFetchOffset expects 4 arguments"
+                            : "codegen: texelFetch expects 2 or 3 arguments";
+            return true;
+        }
+        const MGLExpr *sa = e->u.call.args[0];
+        std::string samplerPath;
+        const char *samplerName = nullptr;
+        llvm::Value *tex = nullptr;
+        bool dynamicSamplerArray = false;
+        llvm::Value *arrayIndex = nullptr;
+        const std::vector<llvm::Value *> *texArray = nullptr;
+        const bool topLevelSamplerArray =
+            sa->kind == MGL_EXPR_INDEX && sa->u.index.object &&
+            sa->u.index.object->kind == MGL_EXPR_VAR_REF;
+        if (topLevelSamplerArray) {
+            /* Same pattern as texture(): texInput[i] with constant or
+             * dynamic i (CTS texture_barrier usampler2D[N] loops). */
+            samplerName = sa->u.index.object->u.var_ref.name;
+            llvm::Value *index =
+                emitExpr(cg, sa->u.index.index, mod, locals);
+            if (!index) return true;
+            index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
+            auto ti = cg.texArrayValues.find(samplerName);
+            if (ti == cg.texArrayValues.end()) {
+                cg.err = 1;
+                cg.errmsg = "codegen: texelFetch first argument must be a "
+                            "sampler variable";
+                return true;
+            }
+            if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(index)) {
+                uint32_t k = (uint32_t)ci->getZExtValue();
+                if (k < ti->second.size())
+                    tex = ti->second[k];
+                else if (!ti->second.empty())
+                    tex = ti->second.back();
+            } else {
+                dynamicSamplerArray = true;
+                arrayIndex = index;
+                texArray = &ti->second;
+            }
+        } else if (!resolveSamplerAccessName(sa, &samplerPath)) {
+            cg.err = 1;
+            cg.errmsg = "codegen: texelFetch first argument must be a "
+                        "sampler variable";
+            return true;
+        } else {
+            samplerName = samplerPath.c_str();
+            tex = samplerTexValue(cg, samplerName);
+        }
+        if (!dynamicSamplerArray && !tex) {
+            cg.err = 1;
+            cg.errmsg = "codegen: texelFetch first argument must be a "
+                        "sampler variable";
+            return true;
+        }
+        const MGLIRType *sampleType = nullptr;
+        auto sti = cg.samplerIRTypes.find(samplerName);
+        if (sti != cg.samplerIRTypes.end())
+            sampleType = sti->second;
+        else {
+            const MGLIRSymbol *ts = findSymbol(mod, samplerName);
+            sampleType = ts ? ts->type : nullptr;
+        }
+        if (sampleType && sampleType->kind == MGLIR_TYPE_ARRAY &&
+            sampleType->elem_type)
+            sampleType = sampleType->elem_type;
+        MGLIRTexKind texKind = sampleType &&
+                                       sampleType->kind == MGLIR_TYPE_SAMPLER
+                                   ? sampleType->tex_kind
+                                   : MGLIR_TEX_2D;
+        MGLIRScalar texel =
+            sampleType && sampleType->kind == MGLIR_TYPE_SAMPLER
+                ? sampleType->tex_storage
+                : MGLIR_SCALAR_FLOAT;
+        bool isBuf = texKind == MGLIR_TEX_BUFFER;
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+        llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
+        llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
+        llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+        llvm::Type *vecTy =
+            texel == MGLIR_SCALAR_FLOAT
+                ? (llvm::Type *)llvm::FixedVectorType::get(f32, 4)
+                : (llvm::Type *)llvm::FixedVectorType::get(i32, 4);
+        llvm::Type *retTy =
+            llvm::StructType::get(*cg.ctx, {vecTy, cg.b->getInt8Ty()});
+        auto readIntrinsic = [&](const char *floatName) -> std::string {
+            if (texel == MGLIR_SCALAR_FLOAT) {
+                return floatName;
+            }
+            std::string n(floatName);
+            const char *from = ".v4f32";
+            const char *to = texel == MGLIR_SCALAR_INT ? ".s.v4i32"
+                                                       : ".u.v4i32";
+            size_t pos = n.find(from);
+            if (pos != std::string::npos) {
+                n.replace(pos, strlen(from), to);
+            }
+            return n;
+        };
+        if (isBuf) {
+            if (e->u.call.arg_count != 2) {
+                cg.err = 1;
+                cg.errmsg = "codegen: texelFetch on a samplerBuffer "
+                            "expects 2 arguments";
+                return true;
+            }
+            llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod,
+                                          locals);
+            if (!coord) return true;
+            coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
+            llvm::StructType *smpT = llvm::StructType::getTypeByName(
+                *cg.ctx, "struct._sampler_t");
+            if (!smpT)
+                smpT = llvm::StructType::create(*cg.ctx,
+                                               "struct._sampler_t");
+            llvm::Value *rdSmp = callAirFn(
+                cg, "air.get_read_sampler", smpT->getPointerTo(2), {});
+            /* access::read = 1 for samplerBuffer. */
+            llvm::Value *accRead = cg.b->getInt32(1);
+            auto doBufFetch =
+                [&](llvm::Value *t, llvm::Value *) -> llvm::Value * {
+                llvm::Value *r = callAirFn(
+                    cg,
+                    readIntrinsic("air.read_texture_buffer_1d.v4f32")
+                        .c_str(),
+                    retTy, {t, rdSmp, coord, accRead});
+                return cg.b->CreateExtractValue(r, 0);
+            };
+            if (dynamicSamplerArray) {
+                std::vector<llvm::Value *> empty;
+                return (*out = sampleArrayElementBySwitch(
+                    cg, arrayIndex, *texArray, empty, vecTy, doBufFetch), true);
+            }
+            return (*out = doBufFetch(tex, nullptr), true);
+        }
+        auto toIvec2XY0 = [&](llvm::Value *x) -> llvm::Value * {
+            llvm::Value *v = llvm::UndefValue::get(v2i32);
+            v = cg.b->CreateInsertElement(v, x, cg.b->getInt32(0));
+            v = cg.b->CreateInsertElement(v, cg.b->getInt32(0),
+                                          cg.b->getInt32(1));
+            return v;
+        };
+        bool isRect = texKind == MGLIR_TEX_2D_RECT;
+        if (!hasFetchOffset && e->u.call.arg_count == 2 && !isRect) {
+            cg.err = 1;
+            cg.errmsg = "codegen: texelFetch on a sampler expects 2 or 3 "
+                        "arguments";
+            return true;
+        }
+        llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod, locals);
+        if (!coord) return true;
+        coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
+        llvm::Value *lodOrSample = cg.b->getInt32(0);
+        uint32_t lodArg = 2;
+        if (hasFetchOffset) {
+            lodArg = 2;
+        }
+        if (e->u.call.arg_count >= 3 && (!hasFetchOffset || e->u.call.arg_count == 4)) {
+            lodOrSample = emitExpr(cg, e->u.call.args[lodArg], mod, locals);
+            if (!lodOrSample) return true;
+            lodOrSample = coerceScalar(cg, lodOrSample, MGLIR_SCALAR_INT);
+        }
+        if (hasFetchOffset) {
+            llvm::Value *off =
+                emitExpr(cg, e->u.call.args[3], mod, locals);
+            if (!off) return true;
+            off = coerceScalar(cg, off, MGLIR_SCALAR_INT);
+            coord = addTexelOffset(cg, coord, off);
+        }
+        llvm::Value *arrayLayer = nullptr;
+        if (texKind == MGLIR_TEX_2D_ARRAY) {
+            if (coord->getType() != v3i32) {
+                cg.err = 1;
+                cg.errmsg = "codegen: texelFetch on a sampler2DArray "
+                            "expects ivec3 coordinates";
+                return true;
+            }
+            arrayLayer =
+                cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
+            coord = cg.b->CreateShuffleVector(
+                coord, llvm::UndefValue::get(coord->getType()),
+                {0, 1});
+        } else if (texKind == MGLIR_TEX_1D_ARRAY) {
+            if (coord->getType() != v2i32) {
+                cg.err = 1;
+                cg.errmsg = "codegen: texelFetch on a sampler1DArray "
+                            "expects ivec2 coordinates";
+                return true;
+            }
+            arrayLayer =
+                cg.b->CreateExtractElement(coord, cg.b->getInt32(1));
+            coord = toIvec2XY0(
+                cg.b->CreateExtractElement(coord, cg.b->getInt32(0)));
+        } else if (texKind == MGLIR_TEX_1D) {
+            if (!coord->getType()->isIntegerTy()) {
+                cg.err = 1;
+                cg.errmsg = "codegen: texelFetch on a sampler1D expects "
+                            "int coordinates";
+                return true;
+            }
+            coord = toIvec2XY0(coord);
+        } else if (texKind == MGLIR_TEX_2D_RECT) {
+            if (coord->getType() != v2i32) {
+                cg.err = 1;
+                cg.errmsg = "codegen: texelFetch on a sampler2DRect "
+                            "expects ivec2 coordinates";
+                return true;
+            }
+        } else if (texKind == MGLIR_TEX_2D_MS) {
+            if (coord->getType() != v2i32) {
+                cg.err = 1;
+                cg.errmsg = "codegen: texelFetch on a sampler2DMS "
+                            "expects ivec2 coordinates";
+                return true;
+            }
+        } else if (texKind == MGLIR_TEX_2D_MS_ARRAY) {
+            if (coord->getType() != v3i32) {
+                cg.err = 1;
+                cg.errmsg = "codegen: texelFetch on a sampler2DMSArray "
+                            "expects ivec3 coordinates";
+                return true;
+            }
+            arrayLayer =
+                cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
+            coord = cg.b->CreateShuffleVector(
+                coord, llvm::UndefValue::get(coord->getType()),
+                {0, 1});
+        } else if (texKind == MGLIR_TEX_3D || texKind == MGLIR_TEX_CUBE) {
+            if (coord->getType() != v3i32) {
+                cg.err = 1;
+                cg.errmsg = texKind == MGLIR_TEX_3D
+                                ? "codegen: texelFetch on a sampler3D "
+                                  "expects ivec3 coordinates"
+                                : "codegen: texelFetch on a samplerCube "
+                                  "expects ivec3 coordinates";
+                return true;
+            }
+        } else {
+            if (coord->getType()->isIntegerTy()) {
+                coord = toIvec2XY0(coord);
+            } else if (coord->getType() != v2i32) {
+                cg.err = 1;
+                cg.errmsg = "codegen: texelFetch on a sampler2D expects "
+                            "ivec2 coordinates";
+                return true;
+            }
+        }
+        /* Apple texture.read is (tex, get_read_sampler, coord[, layer],
+         * offset, lod, access).  Must match imageLoad / buffer
+         * texelFetch arity — getOrInsertFunction bitcast of 4-arg vs
+         * 6-arg on the same name crashes the AGX Metal compiler. */
+        llvm::StructType *fetchSmpT = llvm::StructType::getTypeByName(
+            *cg.ctx, "struct._sampler_t");
+        if (!fetchSmpT)
+            fetchSmpT = llvm::StructType::create(*cg.ctx,
+                                                "struct._sampler_t");
+        llvm::Value *fetchRdSmp = callAirFn(
+            cg, "air.get_read_sampler", fetchSmpT->getPointerTo(2), {});
+        llvm::Value *fetchOff2 = llvm::Constant::getNullValue(v2i32);
+        llvm::Value *fetchOff3 = llvm::ConstantVector::get(
+            {cg.b->getInt32(0), cg.b->getInt32(0), cg.b->getInt32(0)});
+        auto doFetchVec =
+            [&](llvm::Value *t, llvm::Value *) -> llvm::Value * {
+            llvm::Value *r = nullptr;
+            if (texKind == MGLIR_TEX_2D_ARRAY ||
+                texKind == MGLIR_TEX_1D_ARRAY) {
+                r = callAirFn(
+                    cg,
+                    readIntrinsic("air.read_texture_2d_array.v4f32")
+                        .c_str(),
+                    retTy,
+                    {t, fetchRdSmp, coord, arrayLayer, fetchOff2,
+                     lodOrSample, cg.b->getInt32(3)});
+            } else if (texKind == MGLIR_TEX_2D_MS) {
+                /* The MS plane store has no Y-flipped sampled copy (see
+                 * flipMultisampleStorageRow), so row y here is the flipped
+                 * Metal row; flip it back for the GL texel. */
+                llvm::Value *msCoord =
+                    flipMultisampleStorageRow(cg, t, coord);
+                r = callAirFn(
+                    cg,
+                    readIntrinsic("air.read_texture_2d_array.v4f32")
+                        .c_str(),
+                    retTy,
+                    {t, fetchRdSmp, msCoord, lodOrSample, fetchOff2,
+                     cg.b->getInt32(0), cg.b->getInt32(3)});
+            } else if (texKind == MGLIR_TEX_2D_MS_ARRAY) {
+                llvm::Value *flat = cg.b->CreateAdd(
+                    cg.b->CreateMul(arrayLayer, cg.b->getInt32(8)),
+                    lodOrSample);
+                llvm::Value *msCoord =
+                    flipMultisampleStorageRow(cg, t, coord);
+                r = callAirFn(
+                    cg,
+                    readIntrinsic("air.read_texture_2d_array.v4f32")
+                        .c_str(),
+                    retTy,
+                    {t, fetchRdSmp, msCoord, flat, fetchOff2,
+                     cg.b->getInt32(0), cg.b->getInt32(3)});
+            } else if (texKind == MGLIR_TEX_3D) {
+                r = callAirFn(
+                    cg, readIntrinsic("air.read_texture_3d.v4f32").c_str(),
+                    retTy,
+                    {t, fetchRdSmp, coord, fetchOff3, lodOrSample,
+                     cg.b->getInt32(3)});
+            } else if (texKind == MGLIR_TEX_CUBE) {
+                /* Cube face packed as array layer (same as imageLoad). */
+                llvm::Value *face = cg.b->CreateExtractElement(
+                    coord, cg.b->getInt32(2));
+                llvm::Value *xy = cg.b->CreateShuffleVector(
+                    coord, llvm::UndefValue::get(coord->getType()),
+                    {0, 1});
+                r = callAirFn(
+                    cg,
+                    readIntrinsic("air.read_texture_2d_array.v4f32")
+                        .c_str(),
+                    retTy,
+                    {t, fetchRdSmp, xy, face, fetchOff2, lodOrSample,
+                     cg.b->getInt32(3)});
+            } else {
+                llvm::Value *level =
+                    texKind == MGLIR_TEX_2D_RECT ? cg.b->getInt32(0)
+                                                 : lodOrSample;
+                r = callAirFn(
+                    cg, readIntrinsic("air.read_texture_2d.v4f32").c_str(),
+                    retTy,
+                    {t, fetchRdSmp, coord, fetchOff2, level,
+                     cg.b->getInt32(3)});
+            }
+            return cg.b->CreateExtractValue(r, 0);
+        };
+        if (dynamicSamplerArray) {
+            std::vector<llvm::Value *> empty;
+            return (*out = sampleArrayElementBySwitch(
+                cg, arrayIndex, *texArray, empty, vecTy, doFetchVec), true);
+        }
+        return (*out = doFetchVec(tex, nullptr), true);
     }
 
     return false;
