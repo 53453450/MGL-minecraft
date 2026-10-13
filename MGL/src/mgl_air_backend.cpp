@@ -1615,6 +1615,21 @@ llvm::Value *emitMatrixBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
 llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals);
 
+/* Builtin families carved out of emitExpr's MGL_EXPR_CALL case.  Each returns
+ * true when the call name was one of its own; *out then holds the emitted
+ * value, or stays null if the call was rejected (cg.err is set).  A false
+ * return means "not ours" and the caller keeps dispatching. */
+static bool emitCallTextureQuery(Codegen &cg, const MGLExpr *e,
+                                 const char *name, llvm::Value **out);
+static bool emitCallAtomicCounter(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out);
+static bool emitCallSsboAtomic(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out);
+
 /* C1d: math builtins body in mgl_air_math.cpp; facade defined later. */
 static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
                                     const char *name, const MGLIRModule *mod,
@@ -8855,28 +8870,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return doFetchVec(tex, nullptr);
         }
-        /* textureQuery*: compile-side stubs (CTS SPIR-V builtin probe only
-         * needs linkage; results are unused). */
-        if (strcmp(name, "textureQueryLod") == 0) {
-            if (e->u.call.arg_count != 2) {
-                cg.err = 1;
-                cg.errmsg = "codegen: textureQueryLod expects 2 arguments";
-                return nullptr;
-            }
-            llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
-            return llvm::Constant::getNullValue(
-                llvm::FixedVectorType::get(f32, 2));
-        }
-        if (strcmp(name, "textureQueryLevels") == 0 ||
-            strcmp(name, "textureSamples") == 0 ||
-            strcmp(name, "imageSamples") == 0) {
-            if (e->u.call.arg_count != 1) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: '") + name +
-                            "' expects 1 argument";
-                return nullptr;
-            }
-            return cg.b->getInt32(1);
+        {
+            llvm::Value *handled = nullptr;
+            if (emitCallTextureQuery(cg, e, name, &handled))
+                return handled;
         }
         /* texture / textureLod / textureGather / textureSize: the sampler
          * argument maps to paired AIR texture + sampler parameters. */
@@ -10031,241 +10028,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return doSampleVec(tex, smp);
         }
-        /* atomicCounterIncrement(counter): monotonic RMW on device memory. */
-        if (strcmp(name, "atomicCounterIncrement") == 0) {
-            if (e->u.call.arg_count != 1) {
-                cg.err = 1;
-                cg.errmsg = "codegen: atomicCounterIncrement expects 1 argument";
-                return nullptr;
-            }
-            llvm::Value *p = emitAtomicCounterAddress(
-                cg, e->u.call.args[0], mod, locals);
-            if (!p) return nullptr;
-            /* GLSL 4.60 8.11: returns the value previously in the counter. */
-            return cg.b->CreateAtomicRMW(
-                llvm::AtomicRMWInst::Add, p, cg.b->getInt32(1),
-                llvm::MaybeAlign(), llvm::AtomicOrdering::Monotonic);
-        }
-        /* atomicCounterDecrement(counter): monotonic RMW on device memory. */
-        if (strcmp(name, "atomicCounterDecrement") == 0) {
-            if (e->u.call.arg_count != 1) {
-                cg.err = 1;
-                cg.errmsg = "codegen: atomicCounterDecrement expects 1 argument";
-                return nullptr;
-            }
-            llvm::Value *p = emitAtomicCounterAddress(
-                cg, e->u.call.args[0], mod, locals);
-            if (!p) return nullptr;
-            /* GLSL 4.60 §8.11: atomicCounterDecrement returns the value
-             * *resulting from* the decrement (post-decrement), unlike
-             * atomicCounterIncrement which returns the pre-increment
-             * value.  AtomicRMW::Sub yields the old value, so subtract
-             * one more. */
-            llvm::Value *old = cg.b->CreateAtomicRMW(
-                llvm::AtomicRMWInst::Sub, p, cg.b->getInt32(1),
-                llvm::MaybeAlign(), llvm::AtomicOrdering::Monotonic);
-            return cg.b->CreateSub(old, cg.b->getInt32(1));
-        }
-        /* atomicCounter(counter): non-modifying read of device memory. */
-        if (strcmp(name, "atomicCounter") == 0) {
-            if (e->u.call.arg_count != 1) {
-                cg.err = 1;
-                cg.errmsg = "codegen: atomicCounter expects 1 argument";
-                return nullptr;
-            }
-            llvm::Value *p = emitAtomicCounterAddress(
-                cg, e->u.call.args[0], mod, locals);
-            if (!p) return nullptr;
-            llvm::LoadInst *load =
-                cg.b->CreateLoad(cg.b->getInt32Ty(), p, "acval");
-            load->setAtomic(llvm::AtomicOrdering::Monotonic);
-            return load;
-        }
-        /* GL_ARB_shader_atomic_counter_ops / GLSL 4.60 §8.11: all return
-         * the value previously stored in the counter. */
         {
-            const char *acName = name;
-            char acBuf[64];
-            size_t nlen = strlen(name);
-            if (nlen > 3 && nlen - 3 < sizeof(acBuf) &&
-                strcmp(name + nlen - 3, "ARB") == 0) {
-                /* Strip ARB suffix used under #version 450 + extension. */
-                memcpy(acBuf, name, nlen - 3);
-                acBuf[nlen - 3] = '\0';
-                acName = acBuf;
-            }
-            llvm::AtomicRMWInst::BinOp acOp = llvm::AtomicRMWInst::BAD_BINOP;
-            int acCompSwap = 0;
-            if (strcmp(acName, "atomicCounterAdd") == 0)
-                acOp = llvm::AtomicRMWInst::Add;
-            else if (strcmp(acName, "atomicCounterSubtract") == 0)
-                acOp = llvm::AtomicRMWInst::Sub;
-            else if (strcmp(acName, "atomicCounterMin") == 0)
-                acOp = llvm::AtomicRMWInst::UMin;
-            else if (strcmp(acName, "atomicCounterMax") == 0)
-                acOp = llvm::AtomicRMWInst::UMax;
-            else if (strcmp(acName, "atomicCounterAnd") == 0)
-                acOp = llvm::AtomicRMWInst::And;
-            else if (strcmp(acName, "atomicCounterOr") == 0)
-                acOp = llvm::AtomicRMWInst::Or;
-            else if (strcmp(acName, "atomicCounterXor") == 0)
-                acOp = llvm::AtomicRMWInst::Xor;
-            else if (strcmp(acName, "atomicCounterExchange") == 0)
-                acOp = llvm::AtomicRMWInst::Xchg;
-            else if (strcmp(acName, "atomicCounterCompSwap") == 0)
-                acCompSwap = 1;
-
-            if (acCompSwap || acOp != llvm::AtomicRMWInst::BAD_BINOP) {
-                uint32_t want = acCompSwap ? 3u : 2u;
-                if (e->u.call.arg_count != want) {
-                    cg.err = 1;
-                    cg.errmsg = std::string("codegen: ") + name +
-                                " argument count mismatch";
-                    return nullptr;
-                }
-                llvm::Value *p = emitAtomicCounterAddress(
-                    cg, e->u.call.args[0], mod, locals);
-                if (!p) return nullptr;
-                llvm::Value *data =
-                    emitExpr(cg, e->u.call.args[1], mod, locals);
-                if (!data) return nullptr;
-                data = coerceScalar(cg, data, MGLIR_SCALAR_UINT);
-                if (acCompSwap) {
-                    llvm::Value *neu =
-                        emitExpr(cg, e->u.call.args[2], mod, locals);
-                    if (!neu) return nullptr;
-                    neu = coerceScalar(cg, neu, MGLIR_SCALAR_UINT);
-                    auto *cx = cg.b->CreateAtomicCmpXchg(
-                        p, data, neu, llvm::MaybeAlign(),
-                        llvm::AtomicOrdering::Monotonic,
-                        llvm::AtomicOrdering::Monotonic);
-                    return cg.b->CreateExtractValue(cx, 0);
-                }
-                return cg.b->CreateAtomicRMW(
-                    acOp, p, data, llvm::MaybeAlign(),
-                    llvm::AtomicOrdering::Monotonic);
-            }
+            llvm::Value *handled = nullptr;
+            if (emitCallAtomicCounter(cg, e, name, mod, locals, &handled))
+                return handled;
         }
-        /* SPIRV-Cross may lower OpAtomicLoad(atomic_uint) to
-         * atomicAdd(counter, 0); route that through the counter address. */
-        if (strcmp(name, "atomicAdd") == 0 && e->u.call.arg_count == 2) {
-            const MGLIRType *acTy =
-                exprIRType(cg, e->u.call.args[0], mod, locals);
-            if (acTy && acTy->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
-                llvm::Value *acPtr = emitAtomicCounterAddress(
-                    cg, e->u.call.args[0], mod, locals);
-                if (!acPtr) return nullptr;
-                llvm::Value *data =
-                    emitExpr(cg, e->u.call.args[1], mod, locals);
-                if (!data) return nullptr;
-                data = coerceScalar(cg, data, MGLIR_SCALAR_UINT);
-                return cg.b->CreateAtomicRMW(
-                    llvm::AtomicRMWInst::Add, acPtr, data, llvm::MaybeAlign(),
-                    llvm::AtomicOrdering::Monotonic);
-            }
-        }
-        /* SSBO atomic* (GLSL 4.60 §8.11): RMW on device memory; every
-         * op returns the original contents of mem before the update. */
         {
-            llvm::AtomicRMWInst::BinOp rmwOp = llvm::AtomicRMWInst::BAD_BINOP;
-            int isCompSwap = 0;
-            if (strcmp(name, "atomicAdd") == 0)
-                rmwOp = llvm::AtomicRMWInst::Add;
-            else if (strcmp(name, "atomicMin") == 0)
-                rmwOp = llvm::AtomicRMWInst::BAD_BINOP; /* signedness below */
-            else if (strcmp(name, "atomicMax") == 0)
-                rmwOp = llvm::AtomicRMWInst::BAD_BINOP;
-            else if (strcmp(name, "atomicAnd") == 0)
-                rmwOp = llvm::AtomicRMWInst::And;
-            else if (strcmp(name, "atomicOr") == 0)
-                rmwOp = llvm::AtomicRMWInst::Or;
-            else if (strcmp(name, "atomicXor") == 0)
-                rmwOp = llvm::AtomicRMWInst::Xor;
-            else if (strcmp(name, "atomicExchange") == 0)
-                rmwOp = llvm::AtomicRMWInst::Xchg;
-            else if (strcmp(name, "atomicCompSwap") == 0)
-                isCompSwap = 1;
-
-            int isAtomicFamily =
-                isCompSwap || strcmp(name, "atomicAdd") == 0 ||
-                strcmp(name, "atomicMin") == 0 ||
-                strcmp(name, "atomicMax") == 0 ||
-                strcmp(name, "atomicAnd") == 0 ||
-                strcmp(name, "atomicOr") == 0 ||
-                strcmp(name, "atomicXor") == 0 ||
-                strcmp(name, "atomicExchange") == 0;
-
-            if (isAtomicFamily) {
-                uint32_t wantArgs = isCompSwap ? 3u : 2u;
-                if (e->u.call.arg_count != wantArgs) {
-                    cg.err = 1;
-                    cg.errmsg = std::string("codegen: ") + name +
-                                " argument count mismatch";
-                    return nullptr;
-                }
-                const MGLIRSymbol *sb = ssboRootSym(e->u.call.args[0], mod);
-                const MGLIRType *ty = nullptr;
-                llvm::Value *p = nullptr;
-                unsigned as = 1;
-                if (sb) {
-                    p = ssboAddress(cg, e->u.call.args[0], sb, mod,
-                                    locals, &ty);
-                } else {
-                    /* GLSL 4.60 §8.11: atomic* also apply to shared. */
-                    llvm::Type *elemTy = nullptr;
-                    p = arrayMemLValuePtr(cg, e->u.call.args[0], mod,
-                                          locals, &elemTy);
-                    if (p)
-                        as = p->getType()->getPointerAddressSpace();
-                    const MGLExpr *r = e->u.call.args[0];
-                    while (r && (r->kind == MGL_EXPR_INDEX ||
-                                 r->kind == MGL_EXPR_MEMBER))
-                        r = r->kind == MGL_EXPR_INDEX ? r->u.index.object
-                                                      : r->u.member.object;
-                    if (r && r->kind == MGL_EXPR_VAR_REF && r->u.var_ref.name) {
-                        const MGLIRSymbol *sh =
-                            findSymbol(mod, r->u.var_ref.name);
-                        ty = sh ? sh->type : nullptr;
-                        while (ty && ty->kind == MGLIR_TYPE_ARRAY)
-                            ty = ty->elem_type;
-                    }
-                }
-                if (!p) return nullptr;
-                llvm::Value *data = emitExpr(cg, e->u.call.args[1], mod, locals);
-                if (!data) return nullptr;
-                data = coerceScalar(cg, data,
-                                    ty && ty->scalar == MGLIR_SCALAR_UINT
-                                        ? MGLIR_SCALAR_UINT
-                                        : MGLIR_SCALAR_INT);
-                p = cg.b->CreateBitCast(p, data->getType()->getPointerTo(as));
-                if (isCompSwap) {
-                    llvm::Value *cmp = data;
-                    llvm::Value *neu =
-                        emitExpr(cg, e->u.call.args[2], mod, locals);
-                    if (!neu) return nullptr;
-                    neu = coerceScalar(cg, neu,
-                                       ty && ty->scalar == MGLIR_SCALAR_UINT
-                                           ? MGLIR_SCALAR_UINT
-                                           : MGLIR_SCALAR_INT);
-                    auto *cx = cg.b->CreateAtomicCmpXchg(
-                        p, cmp, neu, llvm::MaybeAlign(),
-                        llvm::AtomicOrdering::Monotonic,
-                        llvm::AtomicOrdering::Monotonic);
-                    return cg.b->CreateExtractValue(cx, 0);
-                }
-                if (strcmp(name, "atomicMin") == 0) {
-                    rmwOp = (ty && ty->scalar == MGLIR_SCALAR_UINT)
-                                ? llvm::AtomicRMWInst::UMin
-                                : llvm::AtomicRMWInst::Min;
-                } else if (strcmp(name, "atomicMax") == 0) {
-                    rmwOp = (ty && ty->scalar == MGLIR_SCALAR_UINT)
-                                ? llvm::AtomicRMWInst::UMax
-                                : llvm::AtomicRMWInst::Max;
-                }
-                return cg.b->CreateAtomicRMW(rmwOp, p, data,
-                                             llvm::MaybeAlign(),
-                                             llvm::AtomicOrdering::Monotonic);
-            }
+            llvm::Value *handled = nullptr;
+            if (emitCallSsboAtomic(cg, e, name, mod, locals, &handled))
+                return handled;
         }
         /* User-defined function call. */
         if (cg.userFns || cg.userFnDecls) {
@@ -11793,6 +11564,297 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     std::to_string(e->kind);
         return nullptr;
     }
+}
+
+static bool emitCallTextureQuery(Codegen &cg, const MGLExpr *e,
+                                const char *name, llvm::Value **out)
+{
+    /* textureQuery*: compile-side stubs (CTS SPIR-V builtin probe only
+     * needs linkage; results are unused). */
+    if (strcmp(name, "textureQueryLod") == 0) {
+        if (e->u.call.arg_count != 2) {
+            cg.err = 1;
+            cg.errmsg = "codegen: textureQueryLod expects 2 arguments";
+            return true;
+        }
+        llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+        *out = llvm::Constant::getNullValue(
+            llvm::FixedVectorType::get(f32, 2));
+        return true;
+    }
+    if (strcmp(name, "textureQueryLevels") == 0 ||
+        strcmp(name, "textureSamples") == 0 ||
+        strcmp(name, "imageSamples") == 0) {
+        if (e->u.call.arg_count != 1) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: '") + name +
+                        "' expects 1 argument";
+            return true;
+        }
+        *out = cg.b->getInt32(1);
+        return true;
+    }
+    return false;
+}
+
+static bool emitCallAtomicCounter(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out)
+{
+    /* atomicCounterIncrement(counter): monotonic RMW on device memory. */
+    if (strcmp(name, "atomicCounterIncrement") == 0) {
+        if (e->u.call.arg_count != 1) {
+            cg.err = 1;
+            cg.errmsg = "codegen: atomicCounterIncrement expects 1 argument";
+            return true;
+        }
+        llvm::Value *p = emitAtomicCounterAddress(
+            cg, e->u.call.args[0], mod, locals);
+        if (!p) return true;
+        /* GLSL 4.60 8.11: returns the value previously in the counter. */
+        *out = cg.b->CreateAtomicRMW(
+            llvm::AtomicRMWInst::Add, p, cg.b->getInt32(1),
+            llvm::MaybeAlign(), llvm::AtomicOrdering::Monotonic);
+        return true;
+    }
+    /* atomicCounterDecrement(counter): monotonic RMW on device memory. */
+    if (strcmp(name, "atomicCounterDecrement") == 0) {
+        if (e->u.call.arg_count != 1) {
+            cg.err = 1;
+            cg.errmsg = "codegen: atomicCounterDecrement expects 1 argument";
+            return true;
+        }
+        llvm::Value *p = emitAtomicCounterAddress(
+            cg, e->u.call.args[0], mod, locals);
+        if (!p) return true;
+        /* GLSL 4.60 §8.11: atomicCounterDecrement returns the value
+         * *resulting from* the decrement (post-decrement), unlike
+         * atomicCounterIncrement which returns the pre-increment
+         * value.  AtomicRMW::Sub yields the old value, so subtract
+         * one more. */
+        llvm::Value *old = cg.b->CreateAtomicRMW(
+            llvm::AtomicRMWInst::Sub, p, cg.b->getInt32(1),
+            llvm::MaybeAlign(), llvm::AtomicOrdering::Monotonic);
+        *out = cg.b->CreateSub(old, cg.b->getInt32(1));
+        return true;
+    }
+    /* atomicCounter(counter): non-modifying read of device memory. */
+    if (strcmp(name, "atomicCounter") == 0) {
+        if (e->u.call.arg_count != 1) {
+            cg.err = 1;
+            cg.errmsg = "codegen: atomicCounter expects 1 argument";
+            return true;
+        }
+        llvm::Value *p = emitAtomicCounterAddress(
+            cg, e->u.call.args[0], mod, locals);
+        if (!p) return true;
+        llvm::LoadInst *load =
+            cg.b->CreateLoad(cg.b->getInt32Ty(), p, "acval");
+        load->setAtomic(llvm::AtomicOrdering::Monotonic);
+        *out = load;
+        return true;
+    }
+    /* GL_ARB_shader_atomic_counter_ops / GLSL 4.60 §8.11: all return
+     * the value previously stored in the counter. */
+    {
+        const char *acName = name;
+        char acBuf[64];
+        size_t nlen = strlen(name);
+        if (nlen > 3 && nlen - 3 < sizeof(acBuf) &&
+            strcmp(name + nlen - 3, "ARB") == 0) {
+            /* Strip ARB suffix used under #version 450 + extension. */
+            memcpy(acBuf, name, nlen - 3);
+            acBuf[nlen - 3] = '\0';
+            acName = acBuf;
+        }
+        llvm::AtomicRMWInst::BinOp acOp = llvm::AtomicRMWInst::BAD_BINOP;
+        int acCompSwap = 0;
+        if (strcmp(acName, "atomicCounterAdd") == 0)
+            acOp = llvm::AtomicRMWInst::Add;
+        else if (strcmp(acName, "atomicCounterSubtract") == 0)
+            acOp = llvm::AtomicRMWInst::Sub;
+        else if (strcmp(acName, "atomicCounterMin") == 0)
+            acOp = llvm::AtomicRMWInst::UMin;
+        else if (strcmp(acName, "atomicCounterMax") == 0)
+            acOp = llvm::AtomicRMWInst::UMax;
+        else if (strcmp(acName, "atomicCounterAnd") == 0)
+            acOp = llvm::AtomicRMWInst::And;
+        else if (strcmp(acName, "atomicCounterOr") == 0)
+            acOp = llvm::AtomicRMWInst::Or;
+        else if (strcmp(acName, "atomicCounterXor") == 0)
+            acOp = llvm::AtomicRMWInst::Xor;
+        else if (strcmp(acName, "atomicCounterExchange") == 0)
+            acOp = llvm::AtomicRMWInst::Xchg;
+        else if (strcmp(acName, "atomicCounterCompSwap") == 0)
+            acCompSwap = 1;
+
+        if (acCompSwap || acOp != llvm::AtomicRMWInst::BAD_BINOP) {
+            uint32_t want = acCompSwap ? 3u : 2u;
+            if (e->u.call.arg_count != want) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: ") + name +
+                            " argument count mismatch";
+                return true;
+            }
+            llvm::Value *p = emitAtomicCounterAddress(
+                cg, e->u.call.args[0], mod, locals);
+            if (!p) return true;
+            llvm::Value *data =
+                emitExpr(cg, e->u.call.args[1], mod, locals);
+            if (!data) return true;
+            data = coerceScalar(cg, data, MGLIR_SCALAR_UINT);
+            if (acCompSwap) {
+                llvm::Value *neu =
+                    emitExpr(cg, e->u.call.args[2], mod, locals);
+                if (!neu) return true;
+                neu = coerceScalar(cg, neu, MGLIR_SCALAR_UINT);
+                auto *cx = cg.b->CreateAtomicCmpXchg(
+                    p, data, neu, llvm::MaybeAlign(),
+                    llvm::AtomicOrdering::Monotonic,
+                    llvm::AtomicOrdering::Monotonic);
+                *out = cg.b->CreateExtractValue(cx, 0);
+                return true;
+            }
+            *out = cg.b->CreateAtomicRMW(
+                acOp, p, data, llvm::MaybeAlign(),
+                llvm::AtomicOrdering::Monotonic);
+            return true;
+        }
+    }
+    /* SPIRV-Cross may lower OpAtomicLoad(atomic_uint) to
+     * atomicAdd(counter, 0); route that through the counter address. */
+    if (strcmp(name, "atomicAdd") == 0 && e->u.call.arg_count == 2) {
+        const MGLIRType *acTy =
+            exprIRType(cg, e->u.call.args[0], mod, locals);
+        if (acTy && acTy->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
+            llvm::Value *acPtr = emitAtomicCounterAddress(
+                cg, e->u.call.args[0], mod, locals);
+            if (!acPtr) return true;
+            llvm::Value *data =
+                emitExpr(cg, e->u.call.args[1], mod, locals);
+            if (!data) return true;
+            data = coerceScalar(cg, data, MGLIR_SCALAR_UINT);
+            *out = cg.b->CreateAtomicRMW(
+                llvm::AtomicRMWInst::Add, acPtr, data, llvm::MaybeAlign(),
+                llvm::AtomicOrdering::Monotonic);
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool emitCallSsboAtomic(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out)
+{
+    /* SSBO atomic* (GLSL 4.60 §8.11): RMW on device memory; every
+     * op returns the original contents of mem before the update. */
+    {
+        llvm::AtomicRMWInst::BinOp rmwOp = llvm::AtomicRMWInst::BAD_BINOP;
+        int isCompSwap = 0;
+        if (strcmp(name, "atomicAdd") == 0)
+            rmwOp = llvm::AtomicRMWInst::Add;
+        else if (strcmp(name, "atomicMin") == 0)
+            rmwOp = llvm::AtomicRMWInst::BAD_BINOP; /* signedness below */
+        else if (strcmp(name, "atomicMax") == 0)
+            rmwOp = llvm::AtomicRMWInst::BAD_BINOP;
+        else if (strcmp(name, "atomicAnd") == 0)
+            rmwOp = llvm::AtomicRMWInst::And;
+        else if (strcmp(name, "atomicOr") == 0)
+            rmwOp = llvm::AtomicRMWInst::Or;
+        else if (strcmp(name, "atomicXor") == 0)
+            rmwOp = llvm::AtomicRMWInst::Xor;
+        else if (strcmp(name, "atomicExchange") == 0)
+            rmwOp = llvm::AtomicRMWInst::Xchg;
+        else if (strcmp(name, "atomicCompSwap") == 0)
+            isCompSwap = 1;
+
+        int isAtomicFamily =
+            isCompSwap || strcmp(name, "atomicAdd") == 0 ||
+            strcmp(name, "atomicMin") == 0 ||
+            strcmp(name, "atomicMax") == 0 ||
+            strcmp(name, "atomicAnd") == 0 ||
+            strcmp(name, "atomicOr") == 0 ||
+            strcmp(name, "atomicXor") == 0 ||
+            strcmp(name, "atomicExchange") == 0;
+
+        if (isAtomicFamily) {
+            uint32_t wantArgs = isCompSwap ? 3u : 2u;
+            if (e->u.call.arg_count != wantArgs) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: ") + name +
+                            " argument count mismatch";
+                return true;
+            }
+            const MGLIRSymbol *sb = ssboRootSym(e->u.call.args[0], mod);
+            const MGLIRType *ty = nullptr;
+            llvm::Value *p = nullptr;
+            unsigned as = 1;
+            if (sb) {
+                p = ssboAddress(cg, e->u.call.args[0], sb, mod,
+                                locals, &ty);
+            } else {
+                /* GLSL 4.60 §8.11: atomic* also apply to shared. */
+                llvm::Type *elemTy = nullptr;
+                p = arrayMemLValuePtr(cg, e->u.call.args[0], mod,
+                                      locals, &elemTy);
+                if (p)
+                    as = p->getType()->getPointerAddressSpace();
+                const MGLExpr *r = e->u.call.args[0];
+                while (r && (r->kind == MGL_EXPR_INDEX ||
+                             r->kind == MGL_EXPR_MEMBER))
+                    r = r->kind == MGL_EXPR_INDEX ? r->u.index.object
+                                                  : r->u.member.object;
+                if (r && r->kind == MGL_EXPR_VAR_REF && r->u.var_ref.name) {
+                    const MGLIRSymbol *sh =
+                        findSymbol(mod, r->u.var_ref.name);
+                    ty = sh ? sh->type : nullptr;
+                    while (ty && ty->kind == MGLIR_TYPE_ARRAY)
+                        ty = ty->elem_type;
+                }
+            }
+            if (!p) return true;
+            llvm::Value *data = emitExpr(cg, e->u.call.args[1], mod, locals);
+            if (!data) return true;
+            data = coerceScalar(cg, data,
+                                ty && ty->scalar == MGLIR_SCALAR_UINT
+                                    ? MGLIR_SCALAR_UINT
+                                    : MGLIR_SCALAR_INT);
+            p = cg.b->CreateBitCast(p, data->getType()->getPointerTo(as));
+            if (isCompSwap) {
+                llvm::Value *cmp = data;
+                llvm::Value *neu =
+                    emitExpr(cg, e->u.call.args[2], mod, locals);
+                if (!neu) return true;
+                neu = coerceScalar(cg, neu,
+                                   ty && ty->scalar == MGLIR_SCALAR_UINT
+                                       ? MGLIR_SCALAR_UINT
+                                       : MGLIR_SCALAR_INT);
+                auto *cx = cg.b->CreateAtomicCmpXchg(
+                    p, cmp, neu, llvm::MaybeAlign(),
+                    llvm::AtomicOrdering::Monotonic,
+                    llvm::AtomicOrdering::Monotonic);
+                *out = cg.b->CreateExtractValue(cx, 0);
+                return true;
+            }
+            if (strcmp(name, "atomicMin") == 0) {
+                rmwOp = (ty && ty->scalar == MGLIR_SCALAR_UINT)
+                            ? llvm::AtomicRMWInst::UMin
+                            : llvm::AtomicRMWInst::Min;
+            } else if (strcmp(name, "atomicMax") == 0) {
+                rmwOp = (ty && ty->scalar == MGLIR_SCALAR_UINT)
+                            ? llvm::AtomicRMWInst::UMax
+                            : llvm::AtomicRMWInst::Max;
+            }
+            *out = cg.b->CreateAtomicRMW(rmwOp, p, data,
+                                         llvm::MaybeAlign(),
+                                         llvm::AtomicOrdering::Monotonic);
+            return true;
+        }
+    }
+    return false;
 }
 
 MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
