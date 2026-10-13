@@ -1618,7 +1618,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
 /* Builtin families carved out of emitExpr's MGL_EXPR_CALL case.  Each returns
  * true when the call name was one of its own; *out then holds the emitted
  * value, or stays null if the call was rejected (cg.err is set).  A false
- * return means "not ours" and the caller keeps dispatching. */
+ * return means "not ours" and the caller keeps dispatching.
+ *
+ * The value returns inside these helpers read `return (*out = x, true);` on
+ * purpose: the original code had unbraced `if (c) return x;` bodies, and
+ * splitting that into two statements would lift `return true` out of the
+ * `if`.  Keep the comma form. */
 static bool emitCallTextureQuery(Codegen &cg, const MGLExpr *e,
                                  const char *name, llvm::Value **out);
 static bool emitCallAtomicCounter(
@@ -1629,6 +1634,19 @@ static bool emitCallSsboAtomic(
     Codegen &cg, const MGLExpr *e, const char *name,
     const MGLIRModule *mod, const std::map<std::string, MType> &locals,
     llvm::Value **out);
+static bool emitCallArrayLength(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out);
+static bool emitCallGeometryStream(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out);
+/* Terminal fallback of the same case: reports "declared but not defined" or
+ * "not implemented", always fails, and never returns a value. */
+static llvm::Value *emitCallUnimplemented(Codegen &cg, const MGLExpr *e,
+                                          const char *name,
+                                          const MGLIRModule *mod);
 
 /* C1d: math builtins body in mgl_air_math.cpp; facade defined later. */
 static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
@@ -7007,225 +7025,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     }
     case MGL_EXPR_CALL: {
         const char *name = e->u.call.name;
-        if (strcmp(name, "__mgl_array_length") == 0) {
-            if (e->u.call.arg_count != 1) {
-                cg.err = 1;
-                cg.errmsg = "codegen: array length() requires one internal object argument";
-                return nullptr;
-            }
-            const MGLExpr *object = e->u.call.args[0];
-            if (const MGLIRSymbol *sb = ssboRootSym(object, mod)) {
-                uint32_t tailOffset = 0;
-                const MGLIRType *array = ssboExprType(object, sb, &tailOffset);
-                if (!array || array->kind != MGLIR_TYPE_ARRAY) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: length() object is not an SSBO array";
-                    return nullptr;
-                }
-                if (array->array_size != 0)
-                    return cg.b->getInt32(array->array_size);
-                /* Anonymous members are keyed by the owning block name in
-                 * ssboSlots/ssboPtrs (same as ssboAddress). */
-                const char *slotName =
-                    (sb->block_name && sb->block_name[0]) ? sb->block_name
-                                                         : sb->name;
-                auto slot = cg.ssboSlots.find(slotName);
-                if (!cg.bufferSizePtr || slot == cg.ssboSlots.end()) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: runtime SSBO length requires buffer(25) sizes";
-                    return nullptr;
-                }
-                uint32_t stride = array->layout.array_stride;
-                if (!stride && array->elem_type)
-                    stride = array->elem_type->layout.size;
-                if (!stride) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: runtime SSBO array has zero stride";
-                    return nullptr;
-                }
-                uint32_t sizeSlot = slot->second;
-                /* Buffer instance arrays: g_input23[i].data.length() must
-                 * read the size of element i's bound Metal buffer. */
-                if (uniformBlockIsInstanceArray(sb->type) &&
-                    !sb->block_name) {
-                    const MGLExpr *walk = object;
-                    while (walk && (walk->kind == MGL_EXPR_MEMBER ||
-                                    walk->kind == MGL_EXPR_INDEX)) {
-                        if (walk->kind == MGL_EXPR_INDEX &&
-                            walk->u.index.object &&
-                            walk->u.index.object->kind == MGL_EXPR_VAR_REF &&
-                            walk->u.index.object->u.var_ref.name &&
-                            strcmp(walk->u.index.object->u.var_ref.name,
-                                   sb->name) == 0) {
-                            llvm::Value *iv = emitExpr(
-                                cg, walk->u.index.index, mod, locals);
-                            if (!iv) return nullptr;
-                            if (auto *ci =
-                                    llvm::dyn_cast<llvm::ConstantInt>(iv)) {
-                                uint64_t idx = ci->getZExtValue();
-                                uint32_t n =
-                                    uniformBlockElementCount(sb->type);
-                                if (idx < n) sizeSlot += (uint32_t)idx;
-                            } else {
-                                /* Dynamic instance index: load sizes[base+i]
-                                 * at runtime. */
-                                llvm::Value *sizes = cg.b->CreateBitCast(
-                                    cg.bufferSizePtr,
-                                    llvm::Type::getInt32Ty(*cg.ctx)
-                                        ->getPointerTo(2));
-                                iv = coerceScalar(cg, iv, MGLIR_SCALAR_UINT);
-                                llvm::Value *base =
-                                    cg.b->getInt32(slot->second);
-                                llvm::Value *idx32 = cg.b->CreateAdd(
-                                    base,
-                                    cg.b->CreateZExtOrTrunc(
-                                        iv, cg.b->getInt32Ty()));
-                                llvm::Value *sizePtr = cg.b->CreateGEP(
-                                    cg.b->getInt32Ty(), sizes, idx32);
-                                llvm::Value *boundSize =
-                                    cg.b->CreateAlignedLoad(
-                                        cg.b->getInt32Ty(), sizePtr,
-                                        llvm::Align(4));
-                                llvm::Value *hasTail = cg.b->CreateICmpUGT(
-                                    boundSize, cg.b->getInt32(tailOffset));
-                                llvm::Value *available = cg.b->CreateSelect(
-                                    hasTail,
-                                    cg.b->CreateSub(
-                                        boundSize,
-                                        cg.b->getInt32(tailOffset)),
-                                    cg.b->getInt32(0));
-                                return cg.b->CreateUDiv(
-                                    available, cg.b->getInt32(stride));
-                            }
-                            break;
-                        }
-                        walk = walk->kind == MGL_EXPR_MEMBER
-                                   ? walk->u.member.object
-                                   : walk->u.index.object;
-                    }
-                }
-                llvm::Value *sizes = cg.b->CreateBitCast(
-                    cg.bufferSizePtr,
-                    llvm::Type::getInt32Ty(*cg.ctx)->getPointerTo(2));
-                llvm::Value *sizePtr = cg.b->CreateGEP(
-                    cg.b->getInt32Ty(), sizes, cg.b->getInt64(sizeSlot));
-                llvm::Value *boundSize = cg.b->CreateAlignedLoad(
-                    cg.b->getInt32Ty(), sizePtr, llvm::Align(4));
-                llvm::Value *hasTail = cg.b->CreateICmpUGT(
-                    boundSize, cg.b->getInt32(tailOffset));
-                llvm::Value *available = cg.b->CreateSelect(
-                    hasTail,
-                    cg.b->CreateSub(boundSize, cg.b->getInt32(tailOffset)),
-                    cg.b->getInt32(0));
-                return cg.b->CreateUDiv(available, cg.b->getInt32(stride));
-            }
-            if (object && object->kind == MGL_EXPR_VAR_REF &&
-                strcmp(object->u.var_ref.name, "gl_in") == 0 &&
-                cg.isGeometry) {
-                return cg.b->getInt32(cg.geometryInputVertices);
-            }
-            if (llvm::Value *len = emitGLSLTypeLength(cg, object, mod, locals))
-                return len;
-            cg.err = 1;
-            cg.errmsg = "codegen: length() requires an array, vector, or matrix expression";
-            return nullptr;
+        {
+            llvm::Value *handled = nullptr;
+            if (emitCallArrayLength(cg, e, name, mod, locals, &handled))
+                return handled;
         }
-        if (strcmp(name, "EmitVertex") == 0 ||
-            strcmp(name, "EmitStreamVertex") == 0) {
-            if (strcmp(name, "EmitStreamVertex") == 0 &&
-                e->u.call.arg_count != 1) {
-                cg.err = 1;
-                cg.errmsg = "GS AIR codegen: EmitStreamVertex takes one constant stream argument";
-                return nullptr;
-            }
-            if (strcmp(name, "EmitVertex") == 0 && e->u.call.arg_count != 0) {
-                cg.err = 1;
-                cg.errmsg = "GS AIR codegen: EmitVertex takes no arguments";
-                return nullptr;
-            }
-            int32_t stream = 0;
-            if (strcmp(name, "EmitStreamVertex") == 0) {
-                llvm::Value *sv = emitExpr(
-                    cg, e->u.call.args[0], mod, locals);
-                if (!sv) return nullptr;
-                if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(sv)) {
-                    if (ci->getZExtValue() >= MGL_AIR_GS_MAX_STREAMS) {
-                        cg.err = 1;
-                        cg.errmsg = "GS AIR codegen: stream must be in [0, 3]";
-                        return nullptr;
-                    }
-                    stream = (int32_t)ci->getZExtValue();
-                } else {
-                    cg.err = 1;
-                    cg.errmsg = "GS AIR codegen: stream must be a constant expression";
-                    return nullptr;
-                }
-                if (stream > 0 &&
-                    cg.geometryOutputType != MGL_AST_GS_OUT_POINTS) {
-                    cg.err = 1;
-                    cg.errmsg = "GS AIR codegen: streams above 0 require points output";
-                    return nullptr;
-                }
-            }
-            if (stream > 0) {
-                return emitGeometryStreamVertex(cg, stream);
-            }
-            return emitGeometryVertex(cg);
-        }
-        if (strcmp(name, "EndPrimitive") == 0 ||
-            strcmp(name, "EndStreamPrimitive") == 0) {
-            if (strcmp(name, "EndStreamPrimitive") == 0) {
-                if (e->u.call.arg_count != 1) {
-                    cg.err = 1;
-                    cg.errmsg = "GS AIR codegen: EndStreamPrimitive takes one constant stream argument";
-                    return nullptr;
-                }
-                llvm::Value *sv = emitExpr(
-                    cg, e->u.call.args[0], mod, locals);
-                if (!sv) return nullptr;
-                uint64_t stream = 0;
-                if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(sv)) {
-                    stream = ci->getZExtValue();
-                    if (stream >= MGL_AIR_GS_MAX_STREAMS) {
-                        cg.err = 1;
-                        cg.errmsg = "GS AIR codegen: stream must be in [0, 3]";
-                        return nullptr;
-                    }
-                } else {
-                    cg.err = 1;
-                    cg.errmsg = "GS AIR codegen: stream must be a constant expression";
-                    return nullptr;
-                }
-                if (!cg.isGeometry || !cg.geometryCountPtr ||
-                    !cg.geometryPrimitiveId) {
-                    cg.err = 1;
-                    cg.errmsg = "GS AIR codegen: EndStreamPrimitive requires the GS output ABI";
-                    return nullptr;
-                }
-                /* Stream 0 owns the raster strip counter.  Streams > 0 are
-                 * points-only; EndStreamPrimitive there must not reset
-                 * stream 0's strip. */
-                if (stream == 0) {
-                    cg.b->CreateAlignedStore(cg.b->getInt32(0),
-                                             geometryCounterPtr(cg, 1),
-                                             llvm::Align(4));
-                }
-                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0);
-            } else if (e->u.call.arg_count != 0) {
-                cg.err = 1;
-                cg.errmsg = "GS AIR codegen: EndPrimitive takes no arguments";
-                return nullptr;
-            }
-            if (!cg.isGeometry || !cg.geometryCountPtr ||
-                !cg.geometryPrimitiveId) {
-                cg.err = 1;
-                cg.errmsg = "GS AIR codegen: EndPrimitive requires the  output ABI";
-                return nullptr;
-            }
-            cg.b->CreateAlignedStore(cg.b->getInt32(0),
-                                     geometryCounterPtr(cg, 1),
-                                     llvm::Align(4));
-            return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0);
+        {
+            llvm::Value *handled = nullptr;
+            if (emitCallGeometryStream(cg, e, name, mod, locals, &handled))
+                return handled;
         }
         /* User struct constructors: S(a,b,...) and S[](…).  Must run before
          * the generic array-ctor path so element type stays a struct. */
@@ -10535,26 +10343,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return call;
             }
         }
-        /* Declaration-only call with no inlined/local body: emitting a
-         * zero stub would silently run with wrong results. Fail codegen
-         * until true cross-TU linking exists. */
-        if (mod) {
-            for (uint32_t si = 0; si < mod->symbol_count; si++) {
-                const MGLIRSymbol *fs = mod->symbols[si];
-                if (!fs || !fs->is_function || !fs->name ||
-                    strcmp(fs->name, name) != 0 ||
-                    fs->param_count != e->u.call.arg_count)
-                    continue;
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: call to '") + name +
-                            "' has no definition in this compilation unit";
-                return nullptr;
-            }
-        }
-        cg.err = 1;
-        cg.errmsg = std::string("codegen: call to '") + name +
-                    "' not implemented in M1";
-        return nullptr;
+        return emitCallUnimplemented(cg, e, name, mod);
     }
     case MGL_EXPR_UNARY: {
         llvm::Value *v = emitExpr(cg, e->u.unary.operand, mod, locals);
@@ -11855,6 +11644,270 @@ static bool emitCallSsboAtomic(
         }
     }
     return false;
+}
+
+static bool emitCallArrayLength(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out)
+{
+    if (strcmp(name, "__mgl_array_length") == 0) {
+        if (e->u.call.arg_count != 1) {
+            cg.err = 1;
+            cg.errmsg = "codegen: array length() requires one internal object argument";
+            return true;
+        }
+        const MGLExpr *object = e->u.call.args[0];
+        if (const MGLIRSymbol *sb = ssboRootSym(object, mod)) {
+            uint32_t tailOffset = 0;
+            const MGLIRType *array = ssboExprType(object, sb, &tailOffset);
+            if (!array || array->kind != MGLIR_TYPE_ARRAY) {
+                cg.err = 1;
+                cg.errmsg = "codegen: length() object is not an SSBO array";
+                return true;
+            }
+            if (array->array_size != 0)
+                return (*out = cg.b->getInt32(array->array_size), true);
+            /* Anonymous members are keyed by the owning block name in
+             * ssboSlots/ssboPtrs (same as ssboAddress). */
+            const char *slotName =
+                (sb->block_name && sb->block_name[0]) ? sb->block_name
+                                                     : sb->name;
+            auto slot = cg.ssboSlots.find(slotName);
+            if (!cg.bufferSizePtr || slot == cg.ssboSlots.end()) {
+                cg.err = 1;
+                cg.errmsg = "codegen: runtime SSBO length requires buffer(25) sizes";
+                return true;
+            }
+            uint32_t stride = array->layout.array_stride;
+            if (!stride && array->elem_type)
+                stride = array->elem_type->layout.size;
+            if (!stride) {
+                cg.err = 1;
+                cg.errmsg = "codegen: runtime SSBO array has zero stride";
+                return true;
+            }
+            uint32_t sizeSlot = slot->second;
+            /* Buffer instance arrays: g_input23[i].data.length() must
+             * read the size of element i's bound Metal buffer. */
+            if (uniformBlockIsInstanceArray(sb->type) &&
+                !sb->block_name) {
+                const MGLExpr *walk = object;
+                while (walk && (walk->kind == MGL_EXPR_MEMBER ||
+                                walk->kind == MGL_EXPR_INDEX)) {
+                    if (walk->kind == MGL_EXPR_INDEX &&
+                        walk->u.index.object &&
+                        walk->u.index.object->kind == MGL_EXPR_VAR_REF &&
+                        walk->u.index.object->u.var_ref.name &&
+                        strcmp(walk->u.index.object->u.var_ref.name,
+                               sb->name) == 0) {
+                        llvm::Value *iv = emitExpr(
+                            cg, walk->u.index.index, mod, locals);
+                        if (!iv) return true;
+                        if (auto *ci =
+                                llvm::dyn_cast<llvm::ConstantInt>(iv)) {
+                            uint64_t idx = ci->getZExtValue();
+                            uint32_t n =
+                                uniformBlockElementCount(sb->type);
+                            if (idx < n) sizeSlot += (uint32_t)idx;
+                        } else {
+                            /* Dynamic instance index: load sizes[base+i]
+                             * at runtime. */
+                            llvm::Value *sizes = cg.b->CreateBitCast(
+                                cg.bufferSizePtr,
+                                llvm::Type::getInt32Ty(*cg.ctx)
+                                    ->getPointerTo(2));
+                            iv = coerceScalar(cg, iv, MGLIR_SCALAR_UINT);
+                            llvm::Value *base =
+                                cg.b->getInt32(slot->second);
+                            llvm::Value *idx32 = cg.b->CreateAdd(
+                                base,
+                                cg.b->CreateZExtOrTrunc(
+                                    iv, cg.b->getInt32Ty()));
+                            llvm::Value *sizePtr = cg.b->CreateGEP(
+                                cg.b->getInt32Ty(), sizes, idx32);
+                            llvm::Value *boundSize =
+                                cg.b->CreateAlignedLoad(
+                                    cg.b->getInt32Ty(), sizePtr,
+                                    llvm::Align(4));
+                            llvm::Value *hasTail = cg.b->CreateICmpUGT(
+                                boundSize, cg.b->getInt32(tailOffset));
+                            llvm::Value *available = cg.b->CreateSelect(
+                                hasTail,
+                                cg.b->CreateSub(
+                                    boundSize,
+                                    cg.b->getInt32(tailOffset)),
+                                cg.b->getInt32(0));
+                            return (*out = cg.b->CreateUDiv(
+                                available, cg.b->getInt32(stride)), true);
+                        }
+                        break;
+                    }
+                    walk = walk->kind == MGL_EXPR_MEMBER
+                               ? walk->u.member.object
+                               : walk->u.index.object;
+                }
+            }
+            llvm::Value *sizes = cg.b->CreateBitCast(
+                cg.bufferSizePtr,
+                llvm::Type::getInt32Ty(*cg.ctx)->getPointerTo(2));
+            llvm::Value *sizePtr = cg.b->CreateGEP(
+                cg.b->getInt32Ty(), sizes, cg.b->getInt64(sizeSlot));
+            llvm::Value *boundSize = cg.b->CreateAlignedLoad(
+                cg.b->getInt32Ty(), sizePtr, llvm::Align(4));
+            llvm::Value *hasTail = cg.b->CreateICmpUGT(
+                boundSize, cg.b->getInt32(tailOffset));
+            llvm::Value *available = cg.b->CreateSelect(
+                hasTail,
+                cg.b->CreateSub(boundSize, cg.b->getInt32(tailOffset)),
+                cg.b->getInt32(0));
+            return (*out = cg.b->CreateUDiv(available, cg.b->getInt32(stride)), true);
+        }
+        if (object && object->kind == MGL_EXPR_VAR_REF &&
+            strcmp(object->u.var_ref.name, "gl_in") == 0 &&
+            cg.isGeometry) {
+            return (*out = cg.b->getInt32(cg.geometryInputVertices), true);
+        }
+        if (llvm::Value *len = emitGLSLTypeLength(cg, object, mod, locals))
+            return (*out = len, true);
+        cg.err = 1;
+        cg.errmsg = "codegen: length() requires an array, vector, or matrix expression";
+        return true;
+    }
+
+    return false;
+}
+
+static bool emitCallGeometryStream(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out)
+{
+    if (strcmp(name, "EmitVertex") == 0 ||
+        strcmp(name, "EmitStreamVertex") == 0) {
+        if (strcmp(name, "EmitStreamVertex") == 0 &&
+            e->u.call.arg_count != 1) {
+            cg.err = 1;
+            cg.errmsg = "GS AIR codegen: EmitStreamVertex takes one constant stream argument";
+            return true;
+        }
+        if (strcmp(name, "EmitVertex") == 0 && e->u.call.arg_count != 0) {
+            cg.err = 1;
+            cg.errmsg = "GS AIR codegen: EmitVertex takes no arguments";
+            return true;
+        }
+        int32_t stream = 0;
+        if (strcmp(name, "EmitStreamVertex") == 0) {
+            llvm::Value *sv = emitExpr(
+                cg, e->u.call.args[0], mod, locals);
+            if (!sv) return true;
+            if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(sv)) {
+                if (ci->getZExtValue() >= MGL_AIR_GS_MAX_STREAMS) {
+                    cg.err = 1;
+                    cg.errmsg = "GS AIR codegen: stream must be in [0, 3]";
+                    return true;
+                }
+                stream = (int32_t)ci->getZExtValue();
+            } else {
+                cg.err = 1;
+                cg.errmsg = "GS AIR codegen: stream must be a constant expression";
+                return true;
+            }
+            if (stream > 0 &&
+                cg.geometryOutputType != MGL_AST_GS_OUT_POINTS) {
+                cg.err = 1;
+                cg.errmsg = "GS AIR codegen: streams above 0 require points output";
+                return true;
+            }
+        }
+        if (stream > 0) {
+            return (*out = emitGeometryStreamVertex(cg, stream), true);
+        }
+        return (*out = emitGeometryVertex(cg), true);
+    }
+    if (strcmp(name, "EndPrimitive") == 0 ||
+        strcmp(name, "EndStreamPrimitive") == 0) {
+        if (strcmp(name, "EndStreamPrimitive") == 0) {
+            if (e->u.call.arg_count != 1) {
+                cg.err = 1;
+                cg.errmsg = "GS AIR codegen: EndStreamPrimitive takes one constant stream argument";
+                return true;
+            }
+            llvm::Value *sv = emitExpr(
+                cg, e->u.call.args[0], mod, locals);
+            if (!sv) return true;
+            uint64_t stream = 0;
+            if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(sv)) {
+                stream = ci->getZExtValue();
+                if (stream >= MGL_AIR_GS_MAX_STREAMS) {
+                    cg.err = 1;
+                    cg.errmsg = "GS AIR codegen: stream must be in [0, 3]";
+                    return true;
+                }
+            } else {
+                cg.err = 1;
+                cg.errmsg = "GS AIR codegen: stream must be a constant expression";
+                return true;
+            }
+            if (!cg.isGeometry || !cg.geometryCountPtr ||
+                !cg.geometryPrimitiveId) {
+                cg.err = 1;
+                cg.errmsg = "GS AIR codegen: EndStreamPrimitive requires the GS output ABI";
+                return true;
+            }
+            /* Stream 0 owns the raster strip counter.  Streams > 0 are
+             * points-only; EndStreamPrimitive there must not reset
+             * stream 0's strip. */
+            if (stream == 0) {
+                cg.b->CreateAlignedStore(cg.b->getInt32(0),
+                                         geometryCounterPtr(cg, 1),
+                                         llvm::Align(4));
+            }
+            return (*out = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0), true);
+        } else if (e->u.call.arg_count != 0) {
+            cg.err = 1;
+            cg.errmsg = "GS AIR codegen: EndPrimitive takes no arguments";
+            return true;
+        }
+        if (!cg.isGeometry || !cg.geometryCountPtr ||
+            !cg.geometryPrimitiveId) {
+            cg.err = 1;
+            cg.errmsg = "GS AIR codegen: EndPrimitive requires the  output ABI";
+            return true;
+        }
+        cg.b->CreateAlignedStore(cg.b->getInt32(0),
+                                 geometryCounterPtr(cg, 1),
+                                 llvm::Align(4));
+        return (*out = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0), true);
+    }
+
+    return false;
+}
+
+static llvm::Value *emitCallUnimplemented(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod)
+{
+    /* Declaration-only call with no inlined/local body: emitting a
+     * zero stub would silently run with wrong results. Fail codegen
+     * until true cross-TU linking exists. */
+    if (mod) {
+        for (uint32_t si = 0; si < mod->symbol_count; si++) {
+            const MGLIRSymbol *fs = mod->symbols[si];
+            if (!fs || !fs->is_function || !fs->name ||
+                strcmp(fs->name, name) != 0 ||
+                fs->param_count != e->u.call.arg_count)
+                continue;
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: call to '") + name +
+                        "' has no definition in this compilation unit";
+            return nullptr;
+        }
+    }
+    cg.err = 1;
+    cg.errmsg = std::string("codegen: call to '") + name +
+                "' not implemented in M1";
+    return nullptr;
 }
 
 MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
