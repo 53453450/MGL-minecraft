@@ -4920,25 +4920,46 @@ static void storeVaryingValueAtLocation(Codegen &cg, llvm::Value *record,
                                         const VarSym &varying,
                                         llvm::Value *value)
 {
-    llvm::Type *ty = llvmType(varying.type, *cg.ctx);
+    const MType &t = varying.type;
+    llvm::Type *ty = llvmType(t, *cg.ctx);
     if (!value) value = llvm::UndefValue::get(ty);
-    if (varying.type.isMatrix() && varying.type.cols > 0) {
-        llvm::Type *colTy = llvm::FixedVectorType::get(
-            llvmScalar(varying.type.scalar, *cg.ctx), varying.type.rows);
-        for (uint32_t c = 0; c < varying.type.cols; c++) {
-            llvm::Value *col = cg.b->CreateExtractValue(value, c);
-            llvm::Value *p = cg.b->CreateGEP(
-                cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
-                cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
-                               (varying.location + c) * 16u));
-            p = cg.b->CreateBitCast(p, colTy->getPointerTo(1));
-            cg.b->CreateAlignedStore(col, p, llvm::Align(4));
+    /* An array takes one 16-byte location per element and a matrix one per
+     * column, an array of matrices `cols` per element (element-major), all
+     * (varyingLocationSpan).  The slot stride is a fixed 16 bytes, which is
+     * NOT the aggregate's own stride: LLVM lays an array out with its element
+     * type's ABI alignment -- 4 for float, 8 for vec2 -- so storing the value
+     * in one go would pack the elements together instead of landing one per
+     * location.  Emit one store per location; the element type's alignment
+     * only happens to be 16 for vec3/vec4/mat3. */
+    const bool arr = t.isArray() && t.arr > 0;
+    const bool mat = t.isMatrix() && t.cols > 0;
+    if (arr || mat) {
+        const uint32_t elements = arr ? (uint32_t)t.arr : 1u;
+        const uint32_t cols = mat ? t.cols : 1u;
+        const MType locTy = controlPointLocationType(t);
+        llvm::Type *locLlTy = llvmType(locTy, *cg.ctx);
+        for (uint32_t element = 0; element < elements; element++) {
+            llvm::Value *elem = value;
+            if (elements > 1 && elem->getType()->isArrayTy())
+                elem = cg.b->CreateExtractValue(elem, element);
+            for (uint32_t c = 0; c < cols; c++) {
+                llvm::Value *loc = elem;
+                if (cols > 1 && elem->getType()->isArrayTy())
+                    loc = cg.b->CreateExtractValue(elem, c);
+                llvm::Value *p = cg.b->CreateGEP(
+                    cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
+                    cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                                   (varying.location + element * cols + c) *
+                                       16u));
+                p = cg.b->CreateBitCast(p, locLlTy->getPointerTo(1));
+                cg.b->CreateAlignedStore(loc, p, llvm::Align(4));
+            }
         }
         return;
     }
     llvm::Type *storeTy = ty;
-    if (varyingNeedsFloatRecordCarrier(varying.type)) {
-        value = encodeFloatCarrier(cg, value, varying.type.scalar);
+    if (varyingNeedsFloatRecordCarrier(t)) {
+        value = encodeFloatCarrier(cg, value, t.scalar);
         storeTy = value->getType();
     }
     llvm::Value *p = cg.b->CreateGEP(
@@ -4951,33 +4972,53 @@ static void storeVaryingValueAtLocation(Codegen &cg, llvm::Value *record,
 static llvm::Value *loadVaryingValueAtLocation(Codegen &cg, llvm::Value *record,
                                                const VarSym &varying)
 {
-    llvm::Type *ty = llvmType(varying.type, *cg.ctx);
-    if (varying.type.isMatrix() && varying.type.cols > 0) {
-        llvm::Type *colTy = llvm::FixedVectorType::get(
-            llvmScalar(varying.type.scalar, *cg.ctx), varying.type.rows);
+    const MType &t = varying.type;
+    llvm::Type *ty = llvmType(t, *cg.ctx);
+    /* Mirror storeVaryingValueAtLocation: one location per element / column,
+     * reassembled into the single aggregate the read paths expect. */
+    const bool arr = t.isArray() && t.arr > 0;
+    const bool mat = t.isMatrix() && t.cols > 0;
+    if (arr || mat) {
+        const uint32_t elements = arr ? (uint32_t)t.arr : 1u;
+        const uint32_t cols = mat ? t.cols : 1u;
+        const MType locTy = controlPointLocationType(t);
+        llvm::Type *locLlTy = llvmType(locTy, *cg.ctx);
+        llvm::Type *elemLlTy = ty;
+        if (arr) {
+            if (auto *aty = llvm::dyn_cast<llvm::ArrayType>(ty))
+                elemLlTy = aty->getElementType();
+        }
         llvm::Value *agg = llvm::UndefValue::get(ty);
-        for (uint32_t c = 0; c < varying.type.cols; c++) {
-            llvm::Value *p = cg.b->CreateGEP(
-                cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
-                cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
-                               (varying.location + c) * 16u));
-            p = cg.b->CreateBitCast(p, colTy->getPointerTo(1));
-            llvm::Value *col =
-                cg.b->CreateAlignedLoad(colTy, p, llvm::Align(4));
-            agg = cg.b->CreateInsertValue(agg, col, c);
+        for (uint32_t element = 0; element < elements; element++) {
+            llvm::Value *elem = llvm::UndefValue::get(elemLlTy);
+            for (uint32_t c = 0; c < cols; c++) {
+                llvm::Value *p = cg.b->CreateGEP(
+                    cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
+                    cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                                   (varying.location + element * cols + c) *
+                                       16u));
+                p = cg.b->CreateBitCast(p, locLlTy->getPointerTo(1));
+                llvm::Value *loc =
+                    cg.b->CreateAlignedLoad(locLlTy, p, llvm::Align(4));
+                /* A bare array element is the whole per-location value; only
+                 * matrix columns go into an aggregate. */
+                elem = cols > 1 ? cg.b->CreateInsertValue(elem, loc, c) : loc;
+            }
+            agg = elements > 1 ? cg.b->CreateInsertValue(agg, elem, element)
+                               : elem;
         }
         return agg;
     }
     llvm::Type *loadTy = ty;
-    if (varyingNeedsFloatRecordCarrier(varying.type))
-        loadTy = llvmType(floatCarrierType(varying.type), *cg.ctx);
+    if (varyingNeedsFloatRecordCarrier(t))
+        loadTy = llvmType(floatCarrierType(t), *cg.ctx);
     llvm::Value *p = cg.b->CreateGEP(
         cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + varying.location * 16u));
     p = cg.b->CreateBitCast(p, loadTy->getPointerTo(1));
     llvm::Value *v = cg.b->CreateAlignedLoad(loadTy, p, llvm::Align(4));
-    if (varyingNeedsFloatRecordCarrier(varying.type))
-        v = decodeFloatCarrier(cg, v, varying.type.scalar, ty);
+    if (varyingNeedsFloatRecordCarrier(t))
+        v = decodeFloatCarrier(cg, v, t.scalar, ty);
     return v;
 }
 
