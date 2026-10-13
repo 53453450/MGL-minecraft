@@ -1626,6 +1626,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
  * `if`.  Keep the comma form. */
 static bool emitCallTextureQuery(Codegen &cg, const MGLExpr *e,
                                  const char *name, llvm::Value **out);
+static bool emitCallImageLoadStore(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out);
 static bool emitCallImageAtomic(
     Codegen &cg, const MGLExpr *e, const char *name,
     const MGLIRModule *mod, const std::map<std::string, MType> &locals,
@@ -7624,488 +7628,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (emitCallImageAtomic(cg, e, name, mod, locals, &handled))
                 return handled;
         }
-        if (strcmp(name, "imageStore") == 0 ||
-            strcmp(name, "imageLoad") == 0 ||
-            strcmp(name, "imageSize") == 0) {
-            const MGLExpr *ia = e->u.call.arg_count > 0
-                ? e->u.call.args[0] : nullptr;
-            const MGLIRType *imgTy = nullptr;
-            llvm::Value *tex = resolveImageTex(cg, ia, mod, locals, &imgTy);
-            if (!tex) return nullptr;
-            const MGLIRTexKind tk = imgTy->tex_kind;
-            llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
-            llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
-            llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
-            llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
-            llvm::Type *v4f32 = llvm::FixedVectorType::get(f32, 4);
-            llvm::Type *v4i32 = llvm::FixedVectorType::get(i32, 4);
-            const MGLIRScalar storage = imgTy->tex_storage;
-            const bool isInt =
-                storage == MGLIR_SCALAR_INT || storage == MGLIR_SCALAR_UINT;
-            auto writeName = [&](const char *base) -> std::string {
-                if (!isInt) return std::string(base) + ".v4f32";
-                return std::string(base) +
-                       (storage == MGLIR_SCALAR_UINT ? ".u.v4i32" : ".s.v4i32");
-            };
-            auto readName = [&](const char *base) -> std::string {
-                if (!isInt) return std::string(base) + ".v4f32";
-                return std::string(base) +
-                       (storage == MGLIR_SCALAR_UINT ? ".u.v4i32" : ".s.v4i32");
-            };
-            auto toIvec2X0 = [&](llvm::Value *x) -> llvm::Value * {
-                llvm::Value *v = llvm::Constant::getNullValue(v2i32);
-                v = cg.b->CreateInsertElement(v, x, cg.b->getInt32(0));
-                return cg.b->CreateInsertElement(v, cg.b->getInt32(0),
-                                                 cg.b->getInt32(1));
-            };
-            if (strcmp(name, "imageSize") == 0) {
-                /* GLSL 4.60 §8.12.  Metal image uniforms are read_write
-                 * textures; 1D/buffer/MS share the 2D/2D-array backing used
-                 * in IMAGE metadata. */
-                auto emitSize = [&](llvm::Value *t) -> llvm::Value * {
-                    llvm::Value *lod = cg.b->getInt32(0);
-                    auto pack2 = [&](llvm::Value *x, llvm::Value *y) {
-                        llvm::Value *s = llvm::UndefValue::get(v2i32);
-                        s = cg.b->CreateInsertElement(s, x, cg.b->getInt32(0));
-                        return cg.b->CreateInsertElement(s, y,
-                                                         cg.b->getInt32(1));
-                    };
-                    auto pack3 = [&](llvm::Value *x, llvm::Value *y,
-                                     llvm::Value *z) {
-                        llvm::Value *s = llvm::UndefValue::get(v3i32);
-                        s = cg.b->CreateInsertElement(s, x, cg.b->getInt32(0));
-                        s = cg.b->CreateInsertElement(s, y, cg.b->getInt32(1));
-                        return cg.b->CreateInsertElement(s, z,
-                                                         cg.b->getInt32(2));
-                    };
-                    if (tk == MGLIR_TEX_3D) {
-                        llvm::Value *w = callAirFn(
-                            cg, "air.get_width_texture_3d", i32, {t, lod});
-                        llvm::Value *h = callAirFn(
-                            cg, "air.get_height_texture_3d", i32, {t, lod});
-                        llvm::Value *d = callAirFn(
-                            cg, "air.get_depth_texture_3d", i32, {t, lod});
-                        return pack3(w, h, d);
-                    }
-                    if (tk == MGLIR_TEX_CUBE) {
-                        llvm::Value *w = callAirFn(
-                            cg, "air.get_width_texture_2d_array", i32,
-                            {t, lod});
-                        llvm::Value *h = callAirFn(
-                            cg, "air.get_height_texture_2d_array", i32,
-                            {t, lod});
-                        return pack2(w, h);
-                    }
-                    if (tk == MGLIR_TEX_CUBE_ARRAY) {
-                        llvm::Value *w = callAirFn(
-                            cg, "air.get_width_texture_2d_array", i32,
-                            {t, lod});
-                        llvm::Value *n = callAirFn(
-                            cg, "air.get_array_size_texture_2d_array", i32,
-                            {t});
-                        n = cg.b->CreateUDiv(n, cg.b->getInt32(6));
-                        return pack3(w, w, n);
-                    }
-                    if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY ||
-                        tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY) {
-                        llvm::Value *w = callAirFn(
-                            cg, "air.get_width_texture_2d_array", i32,
-                            {t, lod});
-                        llvm::Value *h = callAirFn(
-                            cg, "air.get_height_texture_2d_array", i32,
-                            {t, lod});
-                        llvm::Value *n = callAirFn(
-                            cg, "air.get_array_size_texture_2d_array", i32,
-                            {t});
-                        if (tk == MGLIR_TEX_1D_ARRAY)
-                            return pack2(w, n);
-                        if (tk == MGLIR_TEX_2D_MS)
-                            return pack2(w, h);
-                        if (tk == MGLIR_TEX_2D_MS_ARRAY)
-                            n = cg.b->CreateUDiv(n, cg.b->getInt32(8));
-                        return pack3(w, h, n);
-                    }
-                    if (tk == MGLIR_TEX_BUFFER)
-                        return callAirFn(
-                            cg, "air.get_width_texture_buffer_1d", i32, {t});
-                    llvm::Value *w = callAirFn(
-                        cg, "air.get_width_texture_2d", i32, {t, lod});
-                    if (tk == MGLIR_TEX_1D)
-                        return w;
-                    llvm::Value *h = callAirFn(
-                        cg, "air.get_height_texture_2d", i32, {t, lod});
-                    return pack2(w, h);
-                };
-                const MGLExpr *idxE = nullptr;
-                if (ia && ia->kind == MGL_EXPR_INDEX)
-                    idxE = ia->u.index.index;
-                if (idxE) {
-                    llvm::Value *index = emitExpr(cg, idxE, mod, locals);
-                    if (!index) return nullptr;
-                    index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
-                    const char *imageName =
-                        ia->u.index.object &&
-                                ia->u.index.object->kind == MGL_EXPR_VAR_REF
-                            ? ia->u.index.object->u.var_ref.name
-                            : nullptr;
-                    auto ti = imageName ? cg.texArrayValues.find(imageName)
-                                        : cg.texArrayValues.end();
-                    if (ti == cg.texArrayValues.end() || ti->second.empty())
-                        return emitSize(tex);
-                    const bool scalarSize =
-                        tk == MGLIR_TEX_1D || tk == MGLIR_TEX_BUFFER;
-                    llvm::Type *retTy =
-                        scalarSize ? (llvm::Type *)i32
-                        : (tk == MGLIR_TEX_3D || tk == MGLIR_TEX_2D_ARRAY ||
-                           tk == MGLIR_TEX_CUBE_ARRAY ||
-                           tk == MGLIR_TEX_2D_MS_ARRAY)
-                              ? (llvm::Type *)v3i32
-                              : (llvm::Type *)v2i32;
-                    if (scalarSize) {
-                        llvm::Function *fn = cg.b->GetInsertBlock()->getParent();
-                        llvm::BasicBlock *mergeBB = llvm::BasicBlock::Create(
-                            *cg.ctx, "imgsz.merge", fn);
-                        llvm::BasicBlock *defBB = llvm::BasicBlock::Create(
-                            *cg.ctx, "imgsz.def", fn);
-                        size_t n = ti->second.size();
-                        llvm::SwitchInst *sw =
-                            cg.b->CreateSwitch(index, defBB, (unsigned)n);
-                        llvm::PHINode *phi = llvm::PHINode::Create(
-                            i32, (unsigned)(n + 1), "imgsz", mergeBB);
-                        for (size_t i = 0; i < n; ++i) {
-                            llvm::BasicBlock *bb = llvm::BasicBlock::Create(
-                                *cg.ctx, "imgsz.case", fn);
-                            sw->addCase(cg.b->getInt32((uint32_t)i), bb);
-                            cg.b->SetInsertPoint(bb);
-                            llvm::Value *s = emitSize(ti->second[i]);
-                            phi->addIncoming(s, bb);
-                            cg.b->CreateBr(mergeBB);
-                        }
-                        cg.b->SetInsertPoint(defBB);
-                        llvm::Value *ds = emitSize(ti->second.back());
-                        phi->addIncoming(ds, defBB);
-                        cg.b->CreateBr(mergeBB);
-                        cg.b->SetInsertPoint(mergeBB);
-                        return phi;
-                    }
-                    return sampleArrayElementBySwitch(
-                        cg, index, ti->second, {}, retTy,
-                        [&](llvm::Value *t, llvm::Value *) {
-                            return emitSize(t);
-                        });
-                }
-                return emitSize(tex);
-            }
-            llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod, locals);
-            if (!coord) return nullptr;
-            coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
-            llvm::Value *layerOrFace = nullptr;
-            llvm::Value *coord2 = nullptr;
-            llvm::Value *coord3 = nullptr;
-            /* Normalize GLSL coords to the Metal texture backing. */
-            switch (tk) {
-            case MGLIR_TEX_1D:
-            case MGLIR_TEX_BUFFER:
-                /* Buffer images are uploaded as a width×1 texture2d fallback
-                 * (see TEXBUFFER CREATE … as=texture2d), same as 1D. */
-                if (!coord->getType()->isIntegerTy(32)) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: image1D/imageBuffer coord must be int";
-                    return nullptr;
-                }
-                coord2 = toIvec2X0(coord);
-                break;
-            case MGLIR_TEX_2D:
-            case MGLIR_TEX_2D_RECT:
-                if (coord->getType() != v2i32) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: image2D/image2DRect coord must be ivec2";
-                    return nullptr;
-                }
-                coord2 = coord;
-                break;
-            case MGLIR_TEX_1D_ARRAY:
-                if (coord->getType() != v2i32) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: image1DArray coord must be ivec2";
-                    return nullptr;
-                }
-                layerOrFace = cg.b->CreateExtractElement(coord, cg.b->getInt32(1));
-                coord2 = toIvec2X0(
-                    cg.b->CreateExtractElement(coord, cg.b->getInt32(0)));
-                break;
-            case MGLIR_TEX_2D_ARRAY:
-            case MGLIR_TEX_CUBE:
-            case MGLIR_TEX_CUBE_ARRAY:
-            case MGLIR_TEX_3D:
-            case MGLIR_TEX_2D_MS_ARRAY:
-                if (coord->getType() != v3i32) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: image3D/cube/2DArray/2DMSArray coord must be ivec3";
-                    return nullptr;
-                }
-                if (tk == MGLIR_TEX_3D) {
-                    coord3 = coord;
-                } else {
-                    layerOrFace = cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
-                    coord2 = cg.b->CreateShuffleVector(
-                        coord, llvm::UndefValue::get(coord->getType()), {0, 1});
-                }
-                break;
-            case MGLIR_TEX_2D_MS:
-                if (coord->getType() != v2i32) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: image2DMS coord must be ivec2";
-                    return nullptr;
-                }
-                coord2 = coord;
-                break;
-            default:
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: ") + name +
-                    " unsupported image type";
-                return nullptr;
-            }
-            /* Multisample imageLoad/Store take an explicit sample index. Metal
-             * cannot write texture2d_ms, so MS images are backed as
-             * texture2d_array with sample (or layer*samples+sample) as layer. */
-            llvm::Value *msSample = nullptr;
-            const bool isMsImage =
-                tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY;
-            if (isMsImage) {
-                const unsigned expectArgs =
-                    strcmp(name, "imageStore") == 0 ? 4u : 3u;
-                if (e->u.call.arg_count != expectArgs) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: multisample image op arity mismatch";
-                    return nullptr;
-                }
-                msSample = emitExpr(cg, e->u.call.args[2], mod, locals);
-                if (!msSample) return nullptr;
-                msSample = coerceScalar(cg, msSample, MGLIR_SCALAR_INT);
-            }
-            if (strcmp(name, "imageLoad") == 0) {
-                llvm::Type *vecTy = isInt ? v4i32 : v4f32;
-                llvm::Type *retTy = llvm::StructType::get(
-                    *cg.ctx, {vecTy, cg.b->getInt8Ty()});
-                const char *imgFmt = imageLayoutFormat(mod, ia);
-                /* Apple texture.read() is (tex, get_read_sampler, coord,
-                 * offset, lod, access). */
-                llvm::StructType *smpT = llvm::StructType::getTypeByName(
-                    *cg.ctx, "struct._sampler_t");
-                if (!smpT)
-                    smpT = llvm::StructType::create(*cg.ctx,
-                                                   "struct._sampler_t");
-                llvm::Value *rdSmp = callAirFn(
-                    cg, "air.get_read_sampler", smpT->getPointerTo(2), {});
-                llvm::Value *lod0 = cg.b->getInt32(0);
-                llvm::Value *acc3 = cg.b->getInt32(3);
-                llvm::Value *off2 = llvm::ConstantVector::get(
-                    {cg.b->getInt32(0), cg.b->getInt32(0)});
-                llvm::Value *off3 = llvm::ConstantVector::get(
-                    {cg.b->getInt32(0), cg.b->getInt32(0), cg.b->getInt32(0)});
-                /* Key by the GLSL coord SSA (before Metal packing) so a
-                 * buffer int and a 2D/3D ivec share one namespace per tex. */
-                llvm::Value *fwdCoord = coord;
-                auto emitLoad = [&](llvm::Value *t,
-                                    llvm::Value *) -> llvm::Value * {
-                llvm::BasicBlock *bb = cg.b->GetInsertBlock();
-                for (auto it = cg.imageStoreFwd.rbegin();
-                     it != cg.imageStoreFwd.rend(); ++it) {
-                    if (it->bb == bb && it->tex == t &&
-                        it->coord == fwdCoord && it->value)
-                        return expandImageLoadFromStore(cg, it->value, imgFmt,
-                                                        isInt);
-                }
-                llvm::Value *r = nullptr;
-                if (tk == MGLIR_TEX_BUFFER) {
-                    r = callAirFn(
-                        cg, readName("air.read_texture_buffer_1d").c_str(),
-                        retTy, {t, rdSmp, coord, acc3});
-                } else if (tk == MGLIR_TEX_3D) {
-                    r = callAirFn(cg, readName("air.read_texture_3d").c_str(),
-                                  retTy, {t, rdSmp, coord3, off3, lod0, acc3});
-                } else if (tk == MGLIR_TEX_CUBE ||
-                           tk == MGLIR_TEX_CUBE_ARRAY) {
-                    r = callAirFn(cg,
-                                  readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {t, rdSmp, coord2, layerOrFace, off2,
-                                          lod0, acc3});
-                } else if (tk == MGLIR_TEX_2D_MS) {
-                    /* GL 4.6 8.26 addresses image texels in the same
-                     * coordinates as texelFetch, so the MS plane row has to be
-                     * flipped here too (see flipMultisampleStorageRow). */
-                    llvm::Value *msCoord =
-                        flipMultisampleStorageRow(cg, t, coord2);
-                    r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {t, rdSmp, msCoord, msSample, off2,
-                                          lod0, acc3});
-                } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
-                    llvm::Value *flat = cg.b->CreateAdd(
-                        cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
-                        msSample);
-                    llvm::Value *msCoord =
-                        flipMultisampleStorageRow(cg, t, coord2);
-                    r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {t, rdSmp, msCoord, flat, off2, lod0,
-                                          acc3});
-                } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
-                    r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {t, rdSmp, coord2, layerOrFace, off2,
-                                          lod0, acc3});
-                } else {
-                    r = callAirFn(cg, readName("air.read_texture_2d").c_str(),
-                                  retTy, {t, rdSmp, coord2, off2, lod0, acc3});
-                }
-                return cg.b->CreateExtractValue(r, 0);
-                };
-                const MGLExpr *idxE = nullptr;
-                if (ia && ia->kind == MGL_EXPR_INDEX)
-                    idxE = ia->u.index.index;
-                if (idxE) {
-                    llvm::Value *index = emitExpr(cg, idxE, mod, locals);
-                    if (!index) return nullptr;
-                    index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
-                    if (!llvm::isa<llvm::ConstantInt>(index)) {
-                        const char *imageName =
-                            ia->u.index.object &&
-                                    ia->u.index.object->kind == MGL_EXPR_VAR_REF
-                                ? ia->u.index.object->u.var_ref.name
-                                : nullptr;
-                        auto ti = imageName ? cg.texArrayValues.find(imageName)
-                                            : cg.texArrayValues.end();
-                        if (ti != cg.texArrayValues.end() &&
-                            !ti->second.empty()) {
-                            return sampleArrayElementBySwitch(
-                                cg, index, ti->second, {}, vecTy, emitLoad);
-                        }
-                    }
-                }
-                return emitLoad(tex, nullptr);
-            }
-            const MGLExpr *valueArg = isMsImage ? e->u.call.args[3]
-                                                : e->u.call.args[2];
-            llvm::Value *value = emitExpr(cg, valueArg, mod, locals);
-            if (!value) return nullptr;
-            if (isInt) {
-                value = coerceScalar(cg, value, MGLIR_SCALAR_INT);
-                if (value->getType() != v4i32) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: integer imageStore value must be ivec4/uvec4";
-                    return nullptr;
-                }
-            } else {
-                value = coerceScalar(cg, value, MGLIR_SCALAR_FLOAT);
-                if (value->getType() != v4f32) {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: imageStore value must be vec4";
-                    return nullptr;
-                }
-            }
-            llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
-            auto fenceAfterImageWrite = [&](llvm::Value *texH, MGLIRTexKind kind) {
-                /* Metal requires texture.fence() between write and a later
-                 * read of the same texture in one invocation (CTS
-                 * basic-glsl-misc / image atomics). */
-                const char *fn = "air.fence_texture_2d";
-                switch (kind) {
-                case MGLIR_TEX_BUFFER:
-                    fn = "air.fence_texture_buffer_1d";
-                    break;
-                case MGLIR_TEX_3D:
-                    fn = "air.fence_texture_3d";
-                    break;
-                case MGLIR_TEX_CUBE:
-                case MGLIR_TEX_CUBE_ARRAY:
-                case MGLIR_TEX_2D_ARRAY:
-                case MGLIR_TEX_1D_ARRAY:
-                case MGLIR_TEX_2D_MS:
-                case MGLIR_TEX_2D_MS_ARRAY:
-                    fn = "air.fence_texture_2d_array";
-                    break;
-                default:
-                    break;
-                }
-                callAirFn(cg, fn, voidTy, {texH});
-            };
-            llvm::Value *fwdCoordStore = coord;
-            auto emitWrite = [&](llvm::Value *t) {
-                if (tk == MGLIR_TEX_BUFFER) {
-                    callAirFn(
-                        cg, writeName("air.write_texture_buffer_1d").c_str(),
-                        voidTy, {t, coord, value, cg.b->getInt32(3)});
-                    fenceAfterImageWrite(t, tk);
-                } else if (tk == MGLIR_TEX_3D) {
-                    callAirFn(cg, writeName("air.write_texture_3d").c_str(),
-                              voidTy,
-                              {t, coord3, value, cg.b->getInt32(0),
-                               cg.b->getInt32(3)});
-                    fenceAfterImageWrite(t, tk);
-                } else if (tk == MGLIR_TEX_CUBE || tk == MGLIR_TEX_CUBE_ARRAY) {
-                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
-                              voidTy,
-                              {t, coord2, layerOrFace, value, cg.b->getInt32(0),
-                               cg.b->getInt32(3)});
-                    fenceAfterImageWrite(t, tk);
-                } else if (tk == MGLIR_TEX_2D_MS) {
-                    llvm::Value *msCoord =
-                        flipMultisampleStorageRow(cg, t, coord2);
-                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
-                              voidTy,
-                              {t, msCoord, msSample, value, cg.b->getInt32(0),
-                               cg.b->getInt32(3)});
-                    fenceAfterImageWrite(t, tk);
-                } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
-                    llvm::Value *flat = cg.b->CreateAdd(
-                        cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
-                        msSample);
-                    llvm::Value *msCoord =
-                        flipMultisampleStorageRow(cg, t, coord2);
-                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
-                              voidTy,
-                              {t, msCoord, flat, value, cg.b->getInt32(0),
-                               cg.b->getInt32(3)});
-                    fenceAfterImageWrite(t, tk);
-                } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
-                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
-                              voidTy,
-                              {t, coord2, layerOrFace, value, cg.b->getInt32(0),
-                               cg.b->getInt32(3)});
-                    fenceAfterImageWrite(t, tk);
-                } else {
-                    callAirFn(cg, writeName("air.write_texture_2d").c_str(), voidTy,
-                              {t, coord2, value, cg.b->getInt32(0),
-                               cg.b->getInt32(3)});
-                    fenceAfterImageWrite(t, tk);
-                }
-                cg.imageStoreFwd.push_back({cg.b->GetInsertBlock(), t,
-                                            fwdCoordStore, value});
-            };
-            const MGLExpr *storeIdxE = nullptr;
-            if (ia && ia->kind == MGL_EXPR_INDEX)
-                storeIdxE = ia->u.index.index;
-            if (storeIdxE) {
-                llvm::Value *index = emitExpr(cg, storeIdxE, mod, locals);
-                if (!index)
-                    return nullptr;
-                index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
-                if (!llvm::isa<llvm::ConstantInt>(index)) {
-                    const char *imageName =
-                        ia->u.index.object &&
-                                ia->u.index.object->kind == MGL_EXPR_VAR_REF
-                            ? ia->u.index.object->u.var_ref.name
-                            : nullptr;
-                    auto ti = imageName ? cg.texArrayValues.find(imageName)
-                                        : cg.texArrayValues.end();
-                    if (ti != cg.texArrayValues.end() && !ti->second.empty()) {
-                        storeArrayElementBySwitch(cg, index, ti->second,
-                                                  emitWrite);
-                        return cg.b->getInt32(0);
-                    }
-                }
-            }
-            emitWrite(tex);
-            return cg.b->getInt32(0);
+        {
+            llvm::Value *handled = nullptr;
+            if (emitCallImageLoadStore(cg, e, name, mod, locals, &handled))
+                return handled;
         }
         /* texelFetch(sampler, ivecP, lod): unfiltered read. */
         if (strcmp(name, "texelFetch") == 0 ||
@@ -11369,6 +10895,499 @@ static bool emitCallImageAtomic(
                                access});
         }
         return (*out = cg.b->CreateExtractElement(oldV4, cg.b->getInt32(0)), true);
+    }
+
+    return false;
+}
+
+/* Lifted out of emitExpr's MGL_EXPR_CALL case. */
+static bool emitCallImageLoadStore(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out)
+{
+    if (strcmp(name, "imageStore") == 0 ||
+        strcmp(name, "imageLoad") == 0 ||
+        strcmp(name, "imageSize") == 0) {
+        const MGLExpr *ia = e->u.call.arg_count > 0
+            ? e->u.call.args[0] : nullptr;
+        const MGLIRType *imgTy = nullptr;
+        llvm::Value *tex = resolveImageTex(cg, ia, mod, locals, &imgTy);
+        if (!tex) return true;
+        const MGLIRTexKind tk = imgTy->tex_kind;
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+        llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+        llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
+        llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
+        llvm::Type *v4f32 = llvm::FixedVectorType::get(f32, 4);
+        llvm::Type *v4i32 = llvm::FixedVectorType::get(i32, 4);
+        const MGLIRScalar storage = imgTy->tex_storage;
+        const bool isInt =
+            storage == MGLIR_SCALAR_INT || storage == MGLIR_SCALAR_UINT;
+        auto writeName = [&](const char *base) -> std::string {
+            if (!isInt) return std::string(base) + ".v4f32";
+            return std::string(base) +
+                   (storage == MGLIR_SCALAR_UINT ? ".u.v4i32" : ".s.v4i32");
+        };
+        auto readName = [&](const char *base) -> std::string {
+            if (!isInt) return std::string(base) + ".v4f32";
+            return std::string(base) +
+                   (storage == MGLIR_SCALAR_UINT ? ".u.v4i32" : ".s.v4i32");
+        };
+        auto toIvec2X0 = [&](llvm::Value *x) -> llvm::Value * {
+            llvm::Value *v = llvm::Constant::getNullValue(v2i32);
+            v = cg.b->CreateInsertElement(v, x, cg.b->getInt32(0));
+            return cg.b->CreateInsertElement(v, cg.b->getInt32(0),
+                                             cg.b->getInt32(1));
+        };
+        if (strcmp(name, "imageSize") == 0) {
+            /* GLSL 4.60 §8.12.  Metal image uniforms are read_write
+             * textures; 1D/buffer/MS share the 2D/2D-array backing used
+             * in IMAGE metadata. */
+            auto emitSize = [&](llvm::Value *t) -> llvm::Value * {
+                llvm::Value *lod = cg.b->getInt32(0);
+                auto pack2 = [&](llvm::Value *x, llvm::Value *y) {
+                    llvm::Value *s = llvm::UndefValue::get(v2i32);
+                    s = cg.b->CreateInsertElement(s, x, cg.b->getInt32(0));
+                    return cg.b->CreateInsertElement(s, y,
+                                                     cg.b->getInt32(1));
+                };
+                auto pack3 = [&](llvm::Value *x, llvm::Value *y,
+                                 llvm::Value *z) {
+                    llvm::Value *s = llvm::UndefValue::get(v3i32);
+                    s = cg.b->CreateInsertElement(s, x, cg.b->getInt32(0));
+                    s = cg.b->CreateInsertElement(s, y, cg.b->getInt32(1));
+                    return cg.b->CreateInsertElement(s, z,
+                                                     cg.b->getInt32(2));
+                };
+                if (tk == MGLIR_TEX_3D) {
+                    llvm::Value *w = callAirFn(
+                        cg, "air.get_width_texture_3d", i32, {t, lod});
+                    llvm::Value *h = callAirFn(
+                        cg, "air.get_height_texture_3d", i32, {t, lod});
+                    llvm::Value *d = callAirFn(
+                        cg, "air.get_depth_texture_3d", i32, {t, lod});
+                    return pack3(w, h, d);
+                }
+                if (tk == MGLIR_TEX_CUBE) {
+                    llvm::Value *w = callAirFn(
+                        cg, "air.get_width_texture_2d_array", i32,
+                        {t, lod});
+                    llvm::Value *h = callAirFn(
+                        cg, "air.get_height_texture_2d_array", i32,
+                        {t, lod});
+                    return pack2(w, h);
+                }
+                if (tk == MGLIR_TEX_CUBE_ARRAY) {
+                    llvm::Value *w = callAirFn(
+                        cg, "air.get_width_texture_2d_array", i32,
+                        {t, lod});
+                    llvm::Value *n = callAirFn(
+                        cg, "air.get_array_size_texture_2d_array", i32,
+                        {t});
+                    n = cg.b->CreateUDiv(n, cg.b->getInt32(6));
+                    return pack3(w, w, n);
+                }
+                if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY ||
+                    tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY) {
+                    llvm::Value *w = callAirFn(
+                        cg, "air.get_width_texture_2d_array", i32,
+                        {t, lod});
+                    llvm::Value *h = callAirFn(
+                        cg, "air.get_height_texture_2d_array", i32,
+                        {t, lod});
+                    llvm::Value *n = callAirFn(
+                        cg, "air.get_array_size_texture_2d_array", i32,
+                        {t});
+                    if (tk == MGLIR_TEX_1D_ARRAY)
+                        return pack2(w, n);
+                    if (tk == MGLIR_TEX_2D_MS)
+                        return pack2(w, h);
+                    if (tk == MGLIR_TEX_2D_MS_ARRAY)
+                        n = cg.b->CreateUDiv(n, cg.b->getInt32(8));
+                    return pack3(w, h, n);
+                }
+                if (tk == MGLIR_TEX_BUFFER)
+                    return callAirFn(
+                        cg, "air.get_width_texture_buffer_1d", i32, {t});
+                llvm::Value *w = callAirFn(
+                    cg, "air.get_width_texture_2d", i32, {t, lod});
+                if (tk == MGLIR_TEX_1D)
+                    return w;
+                llvm::Value *h = callAirFn(
+                    cg, "air.get_height_texture_2d", i32, {t, lod});
+                return pack2(w, h);
+            };
+            const MGLExpr *idxE = nullptr;
+            if (ia && ia->kind == MGL_EXPR_INDEX)
+                idxE = ia->u.index.index;
+            if (idxE) {
+                llvm::Value *index = emitExpr(cg, idxE, mod, locals);
+                if (!index) return true;
+                index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
+                const char *imageName =
+                    ia->u.index.object &&
+                            ia->u.index.object->kind == MGL_EXPR_VAR_REF
+                        ? ia->u.index.object->u.var_ref.name
+                        : nullptr;
+                auto ti = imageName ? cg.texArrayValues.find(imageName)
+                                    : cg.texArrayValues.end();
+                if (ti == cg.texArrayValues.end() || ti->second.empty())
+                    return (*out = emitSize(tex), true);
+                const bool scalarSize =
+                    tk == MGLIR_TEX_1D || tk == MGLIR_TEX_BUFFER;
+                llvm::Type *retTy =
+                    scalarSize ? (llvm::Type *)i32
+                    : (tk == MGLIR_TEX_3D || tk == MGLIR_TEX_2D_ARRAY ||
+                       tk == MGLIR_TEX_CUBE_ARRAY ||
+                       tk == MGLIR_TEX_2D_MS_ARRAY)
+                          ? (llvm::Type *)v3i32
+                          : (llvm::Type *)v2i32;
+                if (scalarSize) {
+                    llvm::Function *fn = cg.b->GetInsertBlock()->getParent();
+                    llvm::BasicBlock *mergeBB = llvm::BasicBlock::Create(
+                        *cg.ctx, "imgsz.merge", fn);
+                    llvm::BasicBlock *defBB = llvm::BasicBlock::Create(
+                        *cg.ctx, "imgsz.def", fn);
+                    size_t n = ti->second.size();
+                    llvm::SwitchInst *sw =
+                        cg.b->CreateSwitch(index, defBB, (unsigned)n);
+                    llvm::PHINode *phi = llvm::PHINode::Create(
+                        i32, (unsigned)(n + 1), "imgsz", mergeBB);
+                    for (size_t i = 0; i < n; ++i) {
+                        llvm::BasicBlock *bb = llvm::BasicBlock::Create(
+                            *cg.ctx, "imgsz.case", fn);
+                        sw->addCase(cg.b->getInt32((uint32_t)i), bb);
+                        cg.b->SetInsertPoint(bb);
+                        llvm::Value *s = emitSize(ti->second[i]);
+                        phi->addIncoming(s, bb);
+                        cg.b->CreateBr(mergeBB);
+                    }
+                    cg.b->SetInsertPoint(defBB);
+                    llvm::Value *ds = emitSize(ti->second.back());
+                    phi->addIncoming(ds, defBB);
+                    cg.b->CreateBr(mergeBB);
+                    cg.b->SetInsertPoint(mergeBB);
+                    return (*out = phi, true);
+                }
+                return (*out = sampleArrayElementBySwitch(
+                    cg, index, ti->second, {}, retTy,
+                    [&](llvm::Value *t, llvm::Value *) {
+                        return emitSize(t);
+                    }), true);
+            }
+            return (*out = emitSize(tex), true);
+        }
+        llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod, locals);
+        if (!coord) return true;
+        coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
+        llvm::Value *layerOrFace = nullptr;
+        llvm::Value *coord2 = nullptr;
+        llvm::Value *coord3 = nullptr;
+        /* Normalize GLSL coords to the Metal texture backing. */
+        switch (tk) {
+        case MGLIR_TEX_1D:
+        case MGLIR_TEX_BUFFER:
+            /* Buffer images are uploaded as a width×1 texture2d fallback
+             * (see TEXBUFFER CREATE … as=texture2d), same as 1D. */
+            if (!coord->getType()->isIntegerTy(32)) {
+                cg.err = 1;
+                cg.errmsg = "codegen: image1D/imageBuffer coord must be int";
+                return true;
+            }
+            coord2 = toIvec2X0(coord);
+            break;
+        case MGLIR_TEX_2D:
+        case MGLIR_TEX_2D_RECT:
+            if (coord->getType() != v2i32) {
+                cg.err = 1;
+                cg.errmsg = "codegen: image2D/image2DRect coord must be ivec2";
+                return true;
+            }
+            coord2 = coord;
+            break;
+        case MGLIR_TEX_1D_ARRAY:
+            if (coord->getType() != v2i32) {
+                cg.err = 1;
+                cg.errmsg = "codegen: image1DArray coord must be ivec2";
+                return true;
+            }
+            layerOrFace = cg.b->CreateExtractElement(coord, cg.b->getInt32(1));
+            coord2 = toIvec2X0(
+                cg.b->CreateExtractElement(coord, cg.b->getInt32(0)));
+            break;
+        case MGLIR_TEX_2D_ARRAY:
+        case MGLIR_TEX_CUBE:
+        case MGLIR_TEX_CUBE_ARRAY:
+        case MGLIR_TEX_3D:
+        case MGLIR_TEX_2D_MS_ARRAY:
+            if (coord->getType() != v3i32) {
+                cg.err = 1;
+                cg.errmsg = "codegen: image3D/cube/2DArray/2DMSArray coord must be ivec3";
+                return true;
+            }
+            if (tk == MGLIR_TEX_3D) {
+                coord3 = coord;
+            } else {
+                layerOrFace = cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
+                coord2 = cg.b->CreateShuffleVector(
+                    coord, llvm::UndefValue::get(coord->getType()), {0, 1});
+            }
+            break;
+        case MGLIR_TEX_2D_MS:
+            if (coord->getType() != v2i32) {
+                cg.err = 1;
+                cg.errmsg = "codegen: image2DMS coord must be ivec2";
+                return true;
+            }
+            coord2 = coord;
+            break;
+        default:
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: ") + name +
+                " unsupported image type";
+            return true;
+        }
+        /* Multisample imageLoad/Store take an explicit sample index. Metal
+         * cannot write texture2d_ms, so MS images are backed as
+         * texture2d_array with sample (or layer*samples+sample) as layer. */
+        llvm::Value *msSample = nullptr;
+        const bool isMsImage =
+            tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY;
+        if (isMsImage) {
+            const unsigned expectArgs =
+                strcmp(name, "imageStore") == 0 ? 4u : 3u;
+            if (e->u.call.arg_count != expectArgs) {
+                cg.err = 1;
+                cg.errmsg = "codegen: multisample image op arity mismatch";
+                return true;
+            }
+            msSample = emitExpr(cg, e->u.call.args[2], mod, locals);
+            if (!msSample) return true;
+            msSample = coerceScalar(cg, msSample, MGLIR_SCALAR_INT);
+        }
+        if (strcmp(name, "imageLoad") == 0) {
+            llvm::Type *vecTy = isInt ? v4i32 : v4f32;
+            llvm::Type *retTy = llvm::StructType::get(
+                *cg.ctx, {vecTy, cg.b->getInt8Ty()});
+            const char *imgFmt = imageLayoutFormat(mod, ia);
+            /* Apple texture.read() is (tex, get_read_sampler, coord,
+             * offset, lod, access). */
+            llvm::StructType *smpT = llvm::StructType::getTypeByName(
+                *cg.ctx, "struct._sampler_t");
+            if (!smpT)
+                smpT = llvm::StructType::create(*cg.ctx,
+                                               "struct._sampler_t");
+            llvm::Value *rdSmp = callAirFn(
+                cg, "air.get_read_sampler", smpT->getPointerTo(2), {});
+            llvm::Value *lod0 = cg.b->getInt32(0);
+            llvm::Value *acc3 = cg.b->getInt32(3);
+            llvm::Value *off2 = llvm::ConstantVector::get(
+                {cg.b->getInt32(0), cg.b->getInt32(0)});
+            llvm::Value *off3 = llvm::ConstantVector::get(
+                {cg.b->getInt32(0), cg.b->getInt32(0), cg.b->getInt32(0)});
+            /* Key by the GLSL coord SSA (before Metal packing) so a
+             * buffer int and a 2D/3D ivec share one namespace per tex. */
+            llvm::Value *fwdCoord = coord;
+            auto emitLoad = [&](llvm::Value *t,
+                                llvm::Value *) -> llvm::Value * {
+            llvm::BasicBlock *bb = cg.b->GetInsertBlock();
+            for (auto it = cg.imageStoreFwd.rbegin();
+                 it != cg.imageStoreFwd.rend(); ++it) {
+                if (it->bb == bb && it->tex == t &&
+                    it->coord == fwdCoord && it->value)
+                    return expandImageLoadFromStore(cg, it->value, imgFmt,
+                                                    isInt);
+            }
+            llvm::Value *r = nullptr;
+            if (tk == MGLIR_TEX_BUFFER) {
+                r = callAirFn(
+                    cg, readName("air.read_texture_buffer_1d").c_str(),
+                    retTy, {t, rdSmp, coord, acc3});
+            } else if (tk == MGLIR_TEX_3D) {
+                r = callAirFn(cg, readName("air.read_texture_3d").c_str(),
+                              retTy, {t, rdSmp, coord3, off3, lod0, acc3});
+            } else if (tk == MGLIR_TEX_CUBE ||
+                       tk == MGLIR_TEX_CUBE_ARRAY) {
+                r = callAirFn(cg,
+                              readName("air.read_texture_2d_array").c_str(),
+                              retTy, {t, rdSmp, coord2, layerOrFace, off2,
+                                      lod0, acc3});
+            } else if (tk == MGLIR_TEX_2D_MS) {
+                /* GL 4.6 8.26 addresses image texels in the same
+                 * coordinates as texelFetch, so the MS plane row has to be
+                 * flipped here too (see flipMultisampleStorageRow). */
+                llvm::Value *msCoord =
+                    flipMultisampleStorageRow(cg, t, coord2);
+                r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
+                              retTy, {t, rdSmp, msCoord, msSample, off2,
+                                      lod0, acc3});
+            } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
+                llvm::Value *flat = cg.b->CreateAdd(
+                    cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
+                    msSample);
+                llvm::Value *msCoord =
+                    flipMultisampleStorageRow(cg, t, coord2);
+                r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
+                              retTy, {t, rdSmp, msCoord, flat, off2, lod0,
+                                      acc3});
+            } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+                r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
+                              retTy, {t, rdSmp, coord2, layerOrFace, off2,
+                                      lod0, acc3});
+            } else {
+                r = callAirFn(cg, readName("air.read_texture_2d").c_str(),
+                              retTy, {t, rdSmp, coord2, off2, lod0, acc3});
+            }
+            return cg.b->CreateExtractValue(r, 0);
+            };
+            const MGLExpr *idxE = nullptr;
+            if (ia && ia->kind == MGL_EXPR_INDEX)
+                idxE = ia->u.index.index;
+            if (idxE) {
+                llvm::Value *index = emitExpr(cg, idxE, mod, locals);
+                if (!index) return true;
+                index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
+                if (!llvm::isa<llvm::ConstantInt>(index)) {
+                    const char *imageName =
+                        ia->u.index.object &&
+                                ia->u.index.object->kind == MGL_EXPR_VAR_REF
+                            ? ia->u.index.object->u.var_ref.name
+                            : nullptr;
+                    auto ti = imageName ? cg.texArrayValues.find(imageName)
+                                        : cg.texArrayValues.end();
+                    if (ti != cg.texArrayValues.end() &&
+                        !ti->second.empty()) {
+                        return (*out = sampleArrayElementBySwitch(
+                            cg, index, ti->second, {}, vecTy, emitLoad), true);
+                    }
+                }
+            }
+            return (*out = emitLoad(tex, nullptr), true);
+        }
+        const MGLExpr *valueArg = isMsImage ? e->u.call.args[3]
+                                            : e->u.call.args[2];
+        llvm::Value *value = emitExpr(cg, valueArg, mod, locals);
+        if (!value) return true;
+        if (isInt) {
+            value = coerceScalar(cg, value, MGLIR_SCALAR_INT);
+            if (value->getType() != v4i32) {
+                cg.err = 1;
+                cg.errmsg = "codegen: integer imageStore value must be ivec4/uvec4";
+                return true;
+            }
+        } else {
+            value = coerceScalar(cg, value, MGLIR_SCALAR_FLOAT);
+            if (value->getType() != v4f32) {
+                cg.err = 1;
+                cg.errmsg = "codegen: imageStore value must be vec4";
+                return true;
+            }
+        }
+        llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
+        auto fenceAfterImageWrite = [&](llvm::Value *texH, MGLIRTexKind kind) {
+            /* Metal requires texture.fence() between write and a later
+             * read of the same texture in one invocation (CTS
+             * basic-glsl-misc / image atomics). */
+            const char *fn = "air.fence_texture_2d";
+            switch (kind) {
+            case MGLIR_TEX_BUFFER:
+                fn = "air.fence_texture_buffer_1d";
+                break;
+            case MGLIR_TEX_3D:
+                fn = "air.fence_texture_3d";
+                break;
+            case MGLIR_TEX_CUBE:
+            case MGLIR_TEX_CUBE_ARRAY:
+            case MGLIR_TEX_2D_ARRAY:
+            case MGLIR_TEX_1D_ARRAY:
+            case MGLIR_TEX_2D_MS:
+            case MGLIR_TEX_2D_MS_ARRAY:
+                fn = "air.fence_texture_2d_array";
+                break;
+            default:
+                break;
+            }
+            callAirFn(cg, fn, voidTy, {texH});
+        };
+        llvm::Value *fwdCoordStore = coord;
+        auto emitWrite = [&](llvm::Value *t) {
+            if (tk == MGLIR_TEX_BUFFER) {
+                callAirFn(
+                    cg, writeName("air.write_texture_buffer_1d").c_str(),
+                    voidTy, {t, coord, value, cg.b->getInt32(3)});
+                fenceAfterImageWrite(t, tk);
+            } else if (tk == MGLIR_TEX_3D) {
+                callAirFn(cg, writeName("air.write_texture_3d").c_str(),
+                          voidTy,
+                          {t, coord3, value, cg.b->getInt32(0),
+                           cg.b->getInt32(3)});
+                fenceAfterImageWrite(t, tk);
+            } else if (tk == MGLIR_TEX_CUBE || tk == MGLIR_TEX_CUBE_ARRAY) {
+                callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
+                          voidTy,
+                          {t, coord2, layerOrFace, value, cg.b->getInt32(0),
+                           cg.b->getInt32(3)});
+                fenceAfterImageWrite(t, tk);
+            } else if (tk == MGLIR_TEX_2D_MS) {
+                llvm::Value *msCoord =
+                    flipMultisampleStorageRow(cg, t, coord2);
+                callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
+                          voidTy,
+                          {t, msCoord, msSample, value, cg.b->getInt32(0),
+                           cg.b->getInt32(3)});
+                fenceAfterImageWrite(t, tk);
+            } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
+                llvm::Value *flat = cg.b->CreateAdd(
+                    cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
+                    msSample);
+                llvm::Value *msCoord =
+                    flipMultisampleStorageRow(cg, t, coord2);
+                callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
+                          voidTy,
+                          {t, msCoord, flat, value, cg.b->getInt32(0),
+                           cg.b->getInt32(3)});
+                fenceAfterImageWrite(t, tk);
+            } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+                callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
+                          voidTy,
+                          {t, coord2, layerOrFace, value, cg.b->getInt32(0),
+                           cg.b->getInt32(3)});
+                fenceAfterImageWrite(t, tk);
+            } else {
+                callAirFn(cg, writeName("air.write_texture_2d").c_str(), voidTy,
+                          {t, coord2, value, cg.b->getInt32(0),
+                           cg.b->getInt32(3)});
+                fenceAfterImageWrite(t, tk);
+            }
+            cg.imageStoreFwd.push_back({cg.b->GetInsertBlock(), t,
+                                        fwdCoordStore, value});
+        };
+        const MGLExpr *storeIdxE = nullptr;
+        if (ia && ia->kind == MGL_EXPR_INDEX)
+            storeIdxE = ia->u.index.index;
+        if (storeIdxE) {
+            llvm::Value *index = emitExpr(cg, storeIdxE, mod, locals);
+            if (!index)
+                return true;
+            index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
+            if (!llvm::isa<llvm::ConstantInt>(index)) {
+                const char *imageName =
+                    ia->u.index.object &&
+                            ia->u.index.object->kind == MGL_EXPR_VAR_REF
+                        ? ia->u.index.object->u.var_ref.name
+                        : nullptr;
+                auto ti = imageName ? cg.texArrayValues.find(imageName)
+                                    : cg.texArrayValues.end();
+                if (ti != cg.texArrayValues.end() && !ti->second.empty()) {
+                    storeArrayElementBySwitch(cg, index, ti->second,
+                                              emitWrite);
+                    return (*out = cg.b->getInt32(0), true);
+                }
+            }
+        }
+        emitWrite(tex);
+        return (*out = cg.b->getInt32(0), true);
     }
 
     return false;
