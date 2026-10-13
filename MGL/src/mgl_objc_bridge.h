@@ -44,6 +44,22 @@
 #include <stddef.h>
 #include <string.h>
 
+/* ------------------------------------------------------------- ABI gate --- */
+
+/* mglSend's typed function-pointer cast models the arm64 objc_msgSend ABI:
+ * every argument and the return value travel in registers as the method
+ * signature declares them.  On x86_64 a struct return or a floating-point
+ * return would instead go through hidden _stret / _fpret registers, which the
+ * cast does not model -- so on that ABI the template would need a different
+ * implementation, not a comment.  MGL ships arm64 only (the platform floor is
+ * macOS 26 / Metal 4), so make that a compile-time fact. */
+#if !defined(__arm64__) && !defined(__aarch64__)
+#error "mgl_objc_bridge.h implements the arm64 objc_msgSend ABI only (x86_64 needs _stret/_fpret handling)"
+#endif
+
+static_assert(sizeof(void *) == 8,
+              "the message-send cast assumes 64-bit pointers");
+
 /* `id`, spelled without Objective-C.  Struct name must stay `objc_object` so
  * that runtime functions returning `id` need no cast at all. */
 typedef struct objc_object *MGLObjectId;
