@@ -1626,6 +1626,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
  * `if`.  Keep the comma form. */
 static bool emitCallTextureQuery(Codegen &cg, const MGLExpr *e,
                                  const char *name, llvm::Value **out);
+static bool emitCallConstructors(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out);
 static bool emitCallTexelFetch(
     Codegen &cg, const MGLExpr *e, const char *name,
     const MGLIRModule *mod, const std::map<std::string, MType> &locals,
@@ -7047,383 +7051,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (emitCallGeometryStream(cg, e, name, mod, locals, &handled))
                 return handled;
         }
-        /* User struct constructors: S(a,b,...) and S[](…).  Must run before
-         * the generic array-ctor path so element type stays a struct. */
         {
-            auto sit = cg.structTypes.find(name);
-            if (sit != cg.structTypes.end()) {
-                const MGLIRType *st = sit->second;
-                if (e->u.call.is_array_ctor) {
-                    uint32_t n = e->u.call.arg_count;
-                    llvm::Type *eltTy = llvmTypeFromIR(st, *cg.ctx);
-                    llvm::Value *res = llvm::UndefValue::get(
-                        llvm::ArrayType::get(eltTy, n ? n : 1u));
-                    for (uint32_t a = 0; a < n; a++) {
-                        llvm::Value *arg =
-                            emitExpr(cg, e->u.call.args[a], mod, locals);
-                        if (!arg) return nullptr;
-                        if (arg->getType() != eltTy)
-                            arg = cg.b->CreateBitCast(arg, eltTy);
-                        res = cg.b->CreateInsertValue(res, arg, a);
-                    }
-                    return res;
-                }
-                if (e->u.call.arg_count != st->member_count) {
-                    cg.err = 1;
-                    cg.errmsg = std::string("codegen: constructor '") + name +
-                                "' expects " +
-                                std::to_string(st->member_count) +
-                                " argument(s)";
-                    return nullptr;
-                }
-                llvm::Type *sty = llvmTypeFromIR(st, *cg.ctx);
-                llvm::Value *res = llvm::UndefValue::get(sty);
-                for (uint32_t a = 0; a < e->u.call.arg_count; a++) {
-                    llvm::Value *arg =
-                        emitExpr(cg, e->u.call.args[a], mod, locals);
-                    if (!arg) return nullptr;
-                    llvm::Type *want =
-                        llvmTypeFromIR(st->members[a], *cg.ctx);
-                    if (arg->getType() != want) {
-                        if (arg->getType()->isIntOrIntVectorTy() ||
-                            arg->getType()->isFPOrFPVectorTy())
-                            arg = coerceScalar(
-                                cg, arg, typeFromIR(st->members[a]).scalar);
-                        else
-                            arg = cg.b->CreateBitCast(arg, want);
-                    }
-                    res = cg.b->CreateInsertValue(res, arg, a);
-                }
-                return res;
-            }
-        }
-        /* Array constructors: int[](a,b,...) / vecN[](...). Must run before
-         * scalar `int`/`float` constructors — those share the same callee
-         * name and would reject multi-arg array forms. */
-        if (e->u.call.is_array_ctor) {
-            llvm::Value *res = llvm::UndefValue::get(llvmType(
-                exprType(cg, e, mod, locals), *cg.ctx));
-            if (e->u.call.arg_count == 0) return res;
-            MType et = exprType(cg, e, mod, locals);
-            et.arr = 0;
-            llvm::Type *eltTy = llvmType(et, *cg.ctx);
-            for (uint32_t a = 0; a < e->u.call.arg_count; a++) {
-                llvm::Value *arg = emitExpr(cg, e->u.call.args[a], mod, locals);
-                if (!arg) return nullptr;
-                if (arg->getType() != eltTy) {
-                    if (arg->getType()->isIntOrIntVectorTy() ||
-                        arg->getType()->isFPOrFPVectorTy())
-                        arg = coerceScalar(cg, arg, et.scalar);
-                    else
-                        arg = cg.b->CreateBitCast(arg, eltTy);
-                }
-                res = cg.b->CreateInsertValue(res, arg, a);
-            }
-            return res;
-        }
-        /* Scalar constructors / conversions.
-         * `double` maps to float (AGX has no FP64; capability probes often
-         * leave unused `double` temps). */
-        if (strcmp(name, "float") == 0 || strcmp(name, "double") == 0 ||
-            strcmp(name, "int") == 0 || strcmp(name, "uint") == 0 ||
-            strcmp(name, "bool") == 0) {
-            if (e->u.call.arg_count != 1) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: constructor '") + name +
-                            "' expects 1 argument";
-                return nullptr;
-            }
-            llvm::Value *arg = emitExpr(cg, e->u.call.args[0], mod, locals);
-            if (!arg) return nullptr;
-            /* GLSL 4.60 §5.4.2: scalar(vec) / scalar(mat) take the first
-             * component.  coerceScalar preserves vector shape, so peel
-             * here — otherwise float(vec4) stays <4 x float> and a later
-             * store into float* fails Metal materializeAll. */
-            if (auto *fvt = llvm::dyn_cast<llvm::FixedVectorType>(
-                    arg->getType())) {
-                (void)fvt;
-                arg = cg.b->CreateExtractElement(
-                    arg, llvm::ConstantInt::get(
-                             llvm::Type::getInt32Ty(*cg.ctx), 0));
-            } else if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
-                           arg->getType())) {
-                llvm::Value *col0 = cg.b->CreateExtractValue(arg, 0);
-                if (col0->getType()->isVectorTy())
-                    arg = cg.b->CreateExtractElement(
-                        col0, llvm::ConstantInt::get(
-                                  llvm::Type::getInt32Ty(*cg.ctx), 0));
-                else
-                    arg = col0;
-                (void)arrTy;
-            }
-            MGLIRScalar want = (name[0] == 'f' || name[0] == 'd')
-                             ? MGLIR_SCALAR_FLOAT
-                             : name[0] == 'u' ? MGLIR_SCALAR_UINT
-                             : name[0] == 'b' ? MGLIR_SCALAR_BOOL
-                                              : MGLIR_SCALAR_INT;
-            /* Scalar conversions need the source's signedness too: `float(x)`
-             * on an unsigned x must use UIToFP (SIToFP would yield a negative
-             * float for x >= 2^31).  The argument expression's scalar still
-             * describes the peeled component when the argument is a vector or
-             * matrix (scalar(vec) takes component 0 of the same element type). */
-            return coerceScalar(cg, arg, want,
-                                exprType(cg, e->u.call.args[0], mod,
-                                         locals).scalar);
-        }
-        /* Vector constructors: [i]uvec/bvec/vec2..4. */
-        const char *vn = name;
-        MGLIRScalar velt = MGLIR_SCALAR_FLOAT;
-        uint32_t vlanes = 0;
-        if (strncmp(vn, "ivec", 4) == 0 || strncmp(vn, "uvec", 4) == 0 ||
-            strncmp(vn, "bvec", 4) == 0) {
-            velt = vn[0] == 'i' ? MGLIR_SCALAR_INT
-                 : vn[0] == 'u' ? MGLIR_SCALAR_UINT
-                                : MGLIR_SCALAR_BOOL;
-            vn += 4;
-        } else if (strncmp(vn, "vec", 3) == 0) {
-            vn += 3;
-        } else {
-            vn = nullptr;
-        }
-        if (vn && vn[0] >= '2' && vn[0] <= '4' && vn[1] == '\0') {
-            vlanes = (uint32_t)(vn[0] - '0');
-            llvm::Type *eltTy = llvmScalar(velt, *cg.ctx);
-            llvm::Type *vt = llvm::FixedVectorType::get(eltTy, vlanes);
-            llvm::Value *res = llvm::Constant::getNullValue(vt);
-            /* Source signedness, refreshed per constructor argument below.
-             * coerceScalar cannot recover it from the LLVM value (i32 has no
-             * signedness), so the vector-constructor path must pass it: a
-             * `vec4(someUvec4)` has to convert with UIToFP, otherwise every
-             * component >= 2^31 becomes negative (CTS texture_repeat_mode's
-             * `color = vec4(ci)/255.0` reads back as 0 instead of 255). */
-            MGLIRScalar ctorSrcScalar = MGLIR_SCALAR_VOID;
-            auto coerceComp = [&](llvm::Value *x) -> llvm::Value * {
-                if (velt == MGLIR_SCALAR_BOOL) {
-                    if (x->getType()->isFloatingPointTy())
-                        return cg.b->CreateFCmpUNE(
-                            x, llvm::ConstantFP::get(x->getType(), 0.0));
-                    if (x->getType()->isIntegerTy(1))
-                        return x;
-                    return cg.b->CreateICmpNE(
-                        x, llvm::Constant::getNullValue(x->getType()));
-                }
-                return coerceScalar(cg, x, velt, ctorSrcScalar);
-            };
-            auto insertComp = [&](llvm::Value *x, uint32_t slot) {
-                x = coerceComp(x);
-                return cg.b->CreateInsertElement(
-                    res, x,
-                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx),
-                                           slot));
-            };
-            uint32_t slot = 0;
-            for (uint32_t a = 0; a < e->u.call.arg_count && slot < vlanes;
-                 a++) {
-                llvm::Value *arg = emitExpr(cg, e->u.call.args[a], mod, locals);
-                if (!arg) return nullptr;
-                ctorSrcScalar =
-                    exprType(cg, e->u.call.args[a], mod, locals).scalar;
-                if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
-                        arg->getType())) {
-                    /* Matrix: column-major component stream (GLSL 4.60 §5.4.2). */
-                    uint32_t ncols = (uint32_t)arrTy->getNumElements();
-                    llvm::Type *colElt = arrTy->getElementType();
-                    uint32_t nrows = 1;
-                    if (auto *cv = llvm::dyn_cast<llvm::FixedVectorType>(colElt))
-                        nrows = (uint32_t)cv->getNumElements();
-                    for (uint32_t c = 0; c < ncols && slot < vlanes; c++) {
-                        llvm::Value *col = cg.b->CreateExtractValue(arg, c);
-                        if (col->getType()->isVectorTy()) {
-                            for (uint32_t r = 0; r < nrows && slot < vlanes;
-                                 r++, slot++) {
-                                llvm::Value *x = cg.b->CreateExtractElement(
-                                    col,
-                                    llvm::ConstantInt::get(
-                                        llvm::Type::getInt32Ty(*cg.ctx), r));
-                                res = insertComp(x, slot);
-                            }
-                        } else {
-                            res = insertComp(col, slot++);
-                        }
-                    }
-                } else if (!arg->getType()->isVectorTy()) {
-                    /* Single scalar argument broadcasts (GLSL 4.60 5.4.2);
-                     * otherwise one component per scalar. */
-                    if (e->u.call.arg_count == 1) {
-                        llvm::Value *s = coerceComp(arg);
-                        for (uint32_t lane = 0; lane < vlanes; lane++)
-                            res = cg.b->CreateInsertElement(
-                                res, s,
-                                llvm::ConstantInt::get(
-                                    llvm::Type::getInt32Ty(*cg.ctx), lane));
-                        return res;
-                    }
-                    res = insertComp(arg, slot++);
-                } else {
-                    llvm::FixedVectorType *argTy =
-                        llvm::cast<llvm::FixedVectorType>(arg->getType());
-                    uint32_t argLanes = (uint32_t)argTy->getElementCount()
-                                                    .getFixedValue();
-                    for (uint32_t lane = 0;
-                         lane < argLanes && slot < vlanes; lane++, slot++) {
-                        llvm::Value *x = cg.b->CreateExtractElement(
-                            arg, llvm::ConstantInt::get(
-                                     llvm::Type::getInt32Ty(*cg.ctx), lane));
-                        res = insertComp(x, slot);
-                    }
-                }
-            }
-            return res;
-        }
-        /* Matrix constructors: mat2..mat4 / matCxR. */
-        uint32_t mcols = 0, mrows = 0;
-        if (strncmp(name, "mat", 3) == 0) {
-            const char *m = name + 3;
-            if (m[0] >= '2' && m[0] <= '4' && m[1] == '\0') {
-                mcols = mrows = (uint32_t)(m[0] - '0');
-            } else if (m[0] >= '2' && m[0] <= '4' && m[1] == 'x' &&
-                       m[2] >= '2' && m[2] <= '4' && m[3] == '\0') {
-                mcols = (uint32_t)(m[0] - '0');
-                mrows = (uint32_t)(m[2] - '0');
-            }
-        }
-        if (mcols) {
-            llvm::Type *colTy = llvm::FixedVectorType::get(
-                llvm::Type::getFloatTy(*cg.ctx), mrows);
-            llvm::Type *arrTy = llvm::ArrayType::get(colTy, mcols);
-            llvm::Value *arr = llvm::UndefValue::get(arrTy);
-            if (e->u.call.arg_count == 1) {
-                llvm::Value *s = emitExpr(cg, e->u.call.args[0], mod, locals);
-                if (!s) return nullptr;
-                if (s->getType()->isArrayTy()) {
-                    /* matNxN(matMxM) with M<N: embed the smaller matrix in
-                     * the upper-left, identity on the remaining diagonal. */
-                    llvm::ArrayType *sa = llvm::cast<llvm::ArrayType>(
-                        s->getType());
-                    llvm::Type *se = sa->getElementType();
-                    uint32_t sc = (uint32_t)sa->getNumElements();
-                    uint32_t sr = 0;
-                    if (auto *sv = llvm::dyn_cast<llvm::FixedVectorType>(se))
-                        sr = (uint32_t)sv->getNumElements();
-                    else
-                        sr = 1;
-                    if (sc > mcols || sr > mrows) {
-                        cg.err = 1;
-                        cg.errmsg = std::string("codegen: constructor '") +
-                                    name + "' embeds a larger matrix";
-                        return nullptr;
-                    }
-                    for (uint32_t c = 0; c < mcols; c++) {
-                        llvm::Value *col = llvm::UndefValue::get(colTy);
-                        for (uint32_t r = 0; r < mrows; r++) {
-                            llvm::Value *x;
-                            if (c < sc && r < sr) {
-                                x = cg.b->CreateExtractElement(
-                                    cg.b->CreateExtractValue(s, c),
-                                    llvm::ConstantInt::get(
-                                        llvm::Type::getInt32Ty(*cg.ctx), r));
-                            } else {
-                                x = (r == c)
-                                    ? llvm::ConstantFP::get(
-                                          llvm::Type::getFloatTy(*cg.ctx), 1.0)
-                                    : llvm::ConstantFP::get(
-                                          llvm::Type::getFloatTy(*cg.ctx), 0.0);
-                            }
-                            col = cg.b->CreateInsertElement(col, x,
-                                llvm::ConstantInt::get(
-                                    llvm::Type::getInt32Ty(*cg.ctx), r));
-                        }
-                        arr = cg.b->CreateInsertValue(arr, col, c);
-                    }
-                    return arr;
-                }
-                /* matN(f): diagonal scale. */
-                s = coerceScalar(cg, s, MGLIR_SCALAR_FLOAT);
-                for (uint32_t c = 0; c < mcols; c++) {
-                    llvm::Value *col = llvm::UndefValue::get(colTy);
-                    for (uint32_t r = 0; r < mrows; r++) {
-                        llvm::Value *x = (r == c) ? s
-                            : llvm::ConstantFP::get(
-                                  llvm::Type::getFloatTy(*cg.ctx), 0.0);
-                        col = cg.b->CreateInsertElement(col, x,
-                            llvm::ConstantInt::get(
-                                llvm::Type::getInt32Ty(*cg.ctx), r));
-                    }
-                    arr = cg.b->CreateInsertValue(arr, col, c);
-                }
-            } else {
-                /* GLSL 4.60 §5.4.2: scalars/vectors/matrices fill
-                 * column-major until cols*rows components are set. */
-                uint32_t need = mcols * mrows;
-                llvm::SmallVector<llvm::Value *, 16> comps;
-                for (uint32_t a = 0;
-                     a < e->u.call.arg_count && comps.size() < need; a++) {
-                    llvm::Value *arg = emitExpr(cg, e->u.call.args[a],
-                                                mod, locals);
-                    if (!arg) return nullptr;
-                    auto pushf = [&](llvm::Value *x) {
-                        comps.push_back(
-                            coerceScalar(cg, x, MGLIR_SCALAR_FLOAT));
-                    };
-                    if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
-                            arg->getType())) {
-                        uint32_t ncols = (uint32_t)arrTy->getNumElements();
-                        llvm::Type *colElt = arrTy->getElementType();
-                        uint32_t nrows = 1;
-                        if (auto *cv =
-                                llvm::dyn_cast<llvm::FixedVectorType>(colElt))
-                            nrows = (uint32_t)cv->getNumElements();
-                        for (uint32_t oc = 0;
-                             oc < ncols && comps.size() < need; oc++) {
-                            llvm::Value *ocol =
-                                cg.b->CreateExtractValue(arg, oc);
-                            if (ocol->getType()->isVectorTy()) {
-                                for (uint32_t r = 0;
-                                     r < nrows && comps.size() < need; r++) {
-                                    pushf(cg.b->CreateExtractElement(
-                                        ocol,
-                                        llvm::ConstantInt::get(
-                                            llvm::Type::getInt32Ty(*cg.ctx),
-                                            r)));
-                                }
-                            } else {
-                                pushf(ocol);
-                            }
-                        }
-                    } else if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(
-                                   arg->getType())) {
-                        uint32_t lanes =
-                            (uint32_t)vt->getNumElements();
-                        for (uint32_t lane = 0;
-                             lane < lanes && comps.size() < need; lane++) {
-                            pushf(cg.b->CreateExtractElement(
-                                arg,
-                                llvm::ConstantInt::get(
-                                    llvm::Type::getInt32Ty(*cg.ctx), lane)));
-                        }
-                    } else {
-                        pushf(arg);
-                    }
-                }
-                if (comps.size() < need) {
-                    cg.err = 1;
-                    cg.errmsg = std::string("codegen: constructor '") +
-                                name + "' component mismatch";
-                    return nullptr;
-                }
-                uint32_t k = 0;
-                for (uint32_t c = 0; c < mcols; c++) {
-                    llvm::Value *col = llvm::UndefValue::get(colTy);
-                    for (uint32_t r = 0; r < mrows; r++, k++) {
-                        col = cg.b->CreateInsertElement(
-                            col, comps[k],
-                            llvm::ConstantInt::get(
-                                llvm::Type::getInt32Ty(*cg.ctx), r));
-                    }
-                    arr = cg.b->CreateInsertValue(arr, col, c);
-                }
-            }
-            return arr;
+            llvm::Value *handled = nullptr;
+            if (emitCallConstructors(cg, e, name, mod, locals, &handled))
+                return handled;
         }
         /* Math builtins (sema-typed subset).  All float args are coerced;
          * integer variants (abs/min/max/clamp) use icmp selects. */
@@ -11407,6 +11038,394 @@ static bool emitCallTexelFetch(
                 cg, arrayIndex, *texArray, empty, vecTy, doFetchVec), true);
         }
         return (*out = doFetchVec(tex, nullptr), true);
+    }
+
+    return false;
+}
+
+/* Lifted out of emitExpr's MGL_EXPR_CALL case. */
+static bool emitCallConstructors(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out)
+{
+    /* User struct constructors: S(a,b,...) and S[](…).  Must run before
+     * the generic array-ctor path so element type stays a struct. */
+    {
+        auto sit = cg.structTypes.find(name);
+        if (sit != cg.structTypes.end()) {
+            const MGLIRType *st = sit->second;
+            if (e->u.call.is_array_ctor) {
+                uint32_t n = e->u.call.arg_count;
+                llvm::Type *eltTy = llvmTypeFromIR(st, *cg.ctx);
+                llvm::Value *res = llvm::UndefValue::get(
+                    llvm::ArrayType::get(eltTy, n ? n : 1u));
+                for (uint32_t a = 0; a < n; a++) {
+                    llvm::Value *arg =
+                        emitExpr(cg, e->u.call.args[a], mod, locals);
+                    if (!arg) return true;
+                    if (arg->getType() != eltTy)
+                        arg = cg.b->CreateBitCast(arg, eltTy);
+                    res = cg.b->CreateInsertValue(res, arg, a);
+                }
+                return (*out = res, true);
+            }
+            if (e->u.call.arg_count != st->member_count) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: constructor '") + name +
+                            "' expects " +
+                            std::to_string(st->member_count) +
+                            " argument(s)";
+                return true;
+            }
+            llvm::Type *sty = llvmTypeFromIR(st, *cg.ctx);
+            llvm::Value *res = llvm::UndefValue::get(sty);
+            for (uint32_t a = 0; a < e->u.call.arg_count; a++) {
+                llvm::Value *arg =
+                    emitExpr(cg, e->u.call.args[a], mod, locals);
+                if (!arg) return true;
+                llvm::Type *want =
+                    llvmTypeFromIR(st->members[a], *cg.ctx);
+                if (arg->getType() != want) {
+                    if (arg->getType()->isIntOrIntVectorTy() ||
+                        arg->getType()->isFPOrFPVectorTy())
+                        arg = coerceScalar(
+                            cg, arg, typeFromIR(st->members[a]).scalar);
+                    else
+                        arg = cg.b->CreateBitCast(arg, want);
+                }
+                res = cg.b->CreateInsertValue(res, arg, a);
+            }
+            return (*out = res, true);
+        }
+    }
+    /* Array constructors: int[](a,b,...) / vecN[](...). Must run before
+     * scalar `int`/`float` constructors — those share the same callee
+     * name and would reject multi-arg array forms. */
+    if (e->u.call.is_array_ctor) {
+        llvm::Value *res = llvm::UndefValue::get(llvmType(
+            exprType(cg, e, mod, locals), *cg.ctx));
+        if (e->u.call.arg_count == 0) return (*out = res, true);
+        MType et = exprType(cg, e, mod, locals);
+        et.arr = 0;
+        llvm::Type *eltTy = llvmType(et, *cg.ctx);
+        for (uint32_t a = 0; a < e->u.call.arg_count; a++) {
+            llvm::Value *arg = emitExpr(cg, e->u.call.args[a], mod, locals);
+            if (!arg) return true;
+            if (arg->getType() != eltTy) {
+                if (arg->getType()->isIntOrIntVectorTy() ||
+                    arg->getType()->isFPOrFPVectorTy())
+                    arg = coerceScalar(cg, arg, et.scalar);
+                else
+                    arg = cg.b->CreateBitCast(arg, eltTy);
+            }
+            res = cg.b->CreateInsertValue(res, arg, a);
+        }
+        return (*out = res, true);
+    }
+    /* Scalar constructors / conversions.
+     * `double` maps to float (AGX has no FP64; capability probes often
+     * leave unused `double` temps). */
+    if (strcmp(name, "float") == 0 || strcmp(name, "double") == 0 ||
+        strcmp(name, "int") == 0 || strcmp(name, "uint") == 0 ||
+        strcmp(name, "bool") == 0) {
+        if (e->u.call.arg_count != 1) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: constructor '") + name +
+                        "' expects 1 argument";
+            return true;
+        }
+        llvm::Value *arg = emitExpr(cg, e->u.call.args[0], mod, locals);
+        if (!arg) return true;
+        /* GLSL 4.60 §5.4.2: scalar(vec) / scalar(mat) take the first
+         * component.  coerceScalar preserves vector shape, so peel
+         * here — otherwise float(vec4) stays <4 x float> and a later
+         * store into float* fails Metal materializeAll. */
+        if (auto *fvt = llvm::dyn_cast<llvm::FixedVectorType>(
+                arg->getType())) {
+            (void)fvt;
+            arg = cg.b->CreateExtractElement(
+                arg, llvm::ConstantInt::get(
+                         llvm::Type::getInt32Ty(*cg.ctx), 0));
+        } else if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
+                       arg->getType())) {
+            llvm::Value *col0 = cg.b->CreateExtractValue(arg, 0);
+            if (col0->getType()->isVectorTy())
+                arg = cg.b->CreateExtractElement(
+                    col0, llvm::ConstantInt::get(
+                              llvm::Type::getInt32Ty(*cg.ctx), 0));
+            else
+                arg = col0;
+            (void)arrTy;
+        }
+        MGLIRScalar want = (name[0] == 'f' || name[0] == 'd')
+                         ? MGLIR_SCALAR_FLOAT
+                         : name[0] == 'u' ? MGLIR_SCALAR_UINT
+                         : name[0] == 'b' ? MGLIR_SCALAR_BOOL
+                                          : MGLIR_SCALAR_INT;
+        /* Scalar conversions need the source's signedness too: `float(x)`
+         * on an unsigned x must use UIToFP (SIToFP would yield a negative
+         * float for x >= 2^31).  The argument expression's scalar still
+         * describes the peeled component when the argument is a vector or
+         * matrix (scalar(vec) takes component 0 of the same element type). */
+        return (*out = coerceScalar(cg, arg, want,
+                            exprType(cg, e->u.call.args[0], mod,
+                                     locals).scalar), true);
+    }
+    /* Vector constructors: [i]uvec/bvec/vec2..4. */
+    const char *vn = name;
+    MGLIRScalar velt = MGLIR_SCALAR_FLOAT;
+    uint32_t vlanes = 0;
+    if (strncmp(vn, "ivec", 4) == 0 || strncmp(vn, "uvec", 4) == 0 ||
+        strncmp(vn, "bvec", 4) == 0) {
+        velt = vn[0] == 'i' ? MGLIR_SCALAR_INT
+             : vn[0] == 'u' ? MGLIR_SCALAR_UINT
+                            : MGLIR_SCALAR_BOOL;
+        vn += 4;
+    } else if (strncmp(vn, "vec", 3) == 0) {
+        vn += 3;
+    } else {
+        vn = nullptr;
+    }
+    if (vn && vn[0] >= '2' && vn[0] <= '4' && vn[1] == '\0') {
+        vlanes = (uint32_t)(vn[0] - '0');
+        llvm::Type *eltTy = llvmScalar(velt, *cg.ctx);
+        llvm::Type *vt = llvm::FixedVectorType::get(eltTy, vlanes);
+        llvm::Value *res = llvm::Constant::getNullValue(vt);
+        /* Source signedness, refreshed per constructor argument below.
+         * coerceScalar cannot recover it from the LLVM value (i32 has no
+         * signedness), so the vector-constructor path must pass it: a
+         * `vec4(someUvec4)` has to convert with UIToFP, otherwise every
+         * component >= 2^31 becomes negative (CTS texture_repeat_mode's
+         * `color = vec4(ci)/255.0` reads back as 0 instead of 255). */
+        MGLIRScalar ctorSrcScalar = MGLIR_SCALAR_VOID;
+        auto coerceComp = [&](llvm::Value *x) -> llvm::Value * {
+            if (velt == MGLIR_SCALAR_BOOL) {
+                if (x->getType()->isFloatingPointTy())
+                    return cg.b->CreateFCmpUNE(
+                        x, llvm::ConstantFP::get(x->getType(), 0.0));
+                if (x->getType()->isIntegerTy(1))
+                    return x;
+                return cg.b->CreateICmpNE(
+                    x, llvm::Constant::getNullValue(x->getType()));
+            }
+            return coerceScalar(cg, x, velt, ctorSrcScalar);
+        };
+        auto insertComp = [&](llvm::Value *x, uint32_t slot) {
+            x = coerceComp(x);
+            return cg.b->CreateInsertElement(
+                res, x,
+                llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx),
+                                       slot));
+        };
+        uint32_t slot = 0;
+        for (uint32_t a = 0; a < e->u.call.arg_count && slot < vlanes;
+             a++) {
+            llvm::Value *arg = emitExpr(cg, e->u.call.args[a], mod, locals);
+            if (!arg) return true;
+            ctorSrcScalar =
+                exprType(cg, e->u.call.args[a], mod, locals).scalar;
+            if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
+                    arg->getType())) {
+                /* Matrix: column-major component stream (GLSL 4.60 §5.4.2). */
+                uint32_t ncols = (uint32_t)arrTy->getNumElements();
+                llvm::Type *colElt = arrTy->getElementType();
+                uint32_t nrows = 1;
+                if (auto *cv = llvm::dyn_cast<llvm::FixedVectorType>(colElt))
+                    nrows = (uint32_t)cv->getNumElements();
+                for (uint32_t c = 0; c < ncols && slot < vlanes; c++) {
+                    llvm::Value *col = cg.b->CreateExtractValue(arg, c);
+                    if (col->getType()->isVectorTy()) {
+                        for (uint32_t r = 0; r < nrows && slot < vlanes;
+                             r++, slot++) {
+                            llvm::Value *x = cg.b->CreateExtractElement(
+                                col,
+                                llvm::ConstantInt::get(
+                                    llvm::Type::getInt32Ty(*cg.ctx), r));
+                            res = insertComp(x, slot);
+                        }
+                    } else {
+                        res = insertComp(col, slot++);
+                    }
+                }
+            } else if (!arg->getType()->isVectorTy()) {
+                /* Single scalar argument broadcasts (GLSL 4.60 5.4.2);
+                 * otherwise one component per scalar. */
+                if (e->u.call.arg_count == 1) {
+                    llvm::Value *s = coerceComp(arg);
+                    for (uint32_t lane = 0; lane < vlanes; lane++)
+                        res = cg.b->CreateInsertElement(
+                            res, s,
+                            llvm::ConstantInt::get(
+                                llvm::Type::getInt32Ty(*cg.ctx), lane));
+                    return (*out = res, true);
+                }
+                res = insertComp(arg, slot++);
+            } else {
+                llvm::FixedVectorType *argTy =
+                    llvm::cast<llvm::FixedVectorType>(arg->getType());
+                uint32_t argLanes = (uint32_t)argTy->getElementCount()
+                                                .getFixedValue();
+                for (uint32_t lane = 0;
+                     lane < argLanes && slot < vlanes; lane++, slot++) {
+                    llvm::Value *x = cg.b->CreateExtractElement(
+                        arg, llvm::ConstantInt::get(
+                                 llvm::Type::getInt32Ty(*cg.ctx), lane));
+                    res = insertComp(x, slot);
+                }
+            }
+        }
+        return (*out = res, true);
+    }
+    /* Matrix constructors: mat2..mat4 / matCxR. */
+    uint32_t mcols = 0, mrows = 0;
+    if (strncmp(name, "mat", 3) == 0) {
+        const char *m = name + 3;
+        if (m[0] >= '2' && m[0] <= '4' && m[1] == '\0') {
+            mcols = mrows = (uint32_t)(m[0] - '0');
+        } else if (m[0] >= '2' && m[0] <= '4' && m[1] == 'x' &&
+                   m[2] >= '2' && m[2] <= '4' && m[3] == '\0') {
+            mcols = (uint32_t)(m[0] - '0');
+            mrows = (uint32_t)(m[2] - '0');
+        }
+    }
+    if (mcols) {
+        llvm::Type *colTy = llvm::FixedVectorType::get(
+            llvm::Type::getFloatTy(*cg.ctx), mrows);
+        llvm::Type *arrTy = llvm::ArrayType::get(colTy, mcols);
+        llvm::Value *arr = llvm::UndefValue::get(arrTy);
+        if (e->u.call.arg_count == 1) {
+            llvm::Value *s = emitExpr(cg, e->u.call.args[0], mod, locals);
+            if (!s) return true;
+            if (s->getType()->isArrayTy()) {
+                /* matNxN(matMxM) with M<N: embed the smaller matrix in
+                 * the upper-left, identity on the remaining diagonal. */
+                llvm::ArrayType *sa = llvm::cast<llvm::ArrayType>(
+                    s->getType());
+                llvm::Type *se = sa->getElementType();
+                uint32_t sc = (uint32_t)sa->getNumElements();
+                uint32_t sr = 0;
+                if (auto *sv = llvm::dyn_cast<llvm::FixedVectorType>(se))
+                    sr = (uint32_t)sv->getNumElements();
+                else
+                    sr = 1;
+                if (sc > mcols || sr > mrows) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: constructor '") +
+                                name + "' embeds a larger matrix";
+                    return true;
+                }
+                for (uint32_t c = 0; c < mcols; c++) {
+                    llvm::Value *col = llvm::UndefValue::get(colTy);
+                    for (uint32_t r = 0; r < mrows; r++) {
+                        llvm::Value *x;
+                        if (c < sc && r < sr) {
+                            x = cg.b->CreateExtractElement(
+                                cg.b->CreateExtractValue(s, c),
+                                llvm::ConstantInt::get(
+                                    llvm::Type::getInt32Ty(*cg.ctx), r));
+                        } else {
+                            x = (r == c)
+                                ? llvm::ConstantFP::get(
+                                      llvm::Type::getFloatTy(*cg.ctx), 1.0)
+                                : llvm::ConstantFP::get(
+                                      llvm::Type::getFloatTy(*cg.ctx), 0.0);
+                        }
+                        col = cg.b->CreateInsertElement(col, x,
+                            llvm::ConstantInt::get(
+                                llvm::Type::getInt32Ty(*cg.ctx), r));
+                    }
+                    arr = cg.b->CreateInsertValue(arr, col, c);
+                }
+                return (*out = arr, true);
+            }
+            /* matN(f): diagonal scale. */
+            s = coerceScalar(cg, s, MGLIR_SCALAR_FLOAT);
+            for (uint32_t c = 0; c < mcols; c++) {
+                llvm::Value *col = llvm::UndefValue::get(colTy);
+                for (uint32_t r = 0; r < mrows; r++) {
+                    llvm::Value *x = (r == c) ? s
+                        : llvm::ConstantFP::get(
+                              llvm::Type::getFloatTy(*cg.ctx), 0.0);
+                    col = cg.b->CreateInsertElement(col, x,
+                        llvm::ConstantInt::get(
+                            llvm::Type::getInt32Ty(*cg.ctx), r));
+                }
+                arr = cg.b->CreateInsertValue(arr, col, c);
+            }
+        } else {
+            /* GLSL 4.60 §5.4.2: scalars/vectors/matrices fill
+             * column-major until cols*rows components are set. */
+            uint32_t need = mcols * mrows;
+            llvm::SmallVector<llvm::Value *, 16> comps;
+            for (uint32_t a = 0;
+                 a < e->u.call.arg_count && comps.size() < need; a++) {
+                llvm::Value *arg = emitExpr(cg, e->u.call.args[a],
+                                            mod, locals);
+                if (!arg) return true;
+                auto pushf = [&](llvm::Value *x) {
+                    comps.push_back(
+                        coerceScalar(cg, x, MGLIR_SCALAR_FLOAT));
+                };
+                if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
+                        arg->getType())) {
+                    uint32_t ncols = (uint32_t)arrTy->getNumElements();
+                    llvm::Type *colElt = arrTy->getElementType();
+                    uint32_t nrows = 1;
+                    if (auto *cv =
+                            llvm::dyn_cast<llvm::FixedVectorType>(colElt))
+                        nrows = (uint32_t)cv->getNumElements();
+                    for (uint32_t oc = 0;
+                         oc < ncols && comps.size() < need; oc++) {
+                        llvm::Value *ocol =
+                            cg.b->CreateExtractValue(arg, oc);
+                        if (ocol->getType()->isVectorTy()) {
+                            for (uint32_t r = 0;
+                                 r < nrows && comps.size() < need; r++) {
+                                pushf(cg.b->CreateExtractElement(
+                                    ocol,
+                                    llvm::ConstantInt::get(
+                                        llvm::Type::getInt32Ty(*cg.ctx),
+                                        r)));
+                            }
+                        } else {
+                            pushf(ocol);
+                        }
+                    }
+                } else if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(
+                               arg->getType())) {
+                    uint32_t lanes =
+                        (uint32_t)vt->getNumElements();
+                    for (uint32_t lane = 0;
+                         lane < lanes && comps.size() < need; lane++) {
+                        pushf(cg.b->CreateExtractElement(
+                            arg,
+                            llvm::ConstantInt::get(
+                                llvm::Type::getInt32Ty(*cg.ctx), lane)));
+                    }
+                } else {
+                    pushf(arg);
+                }
+            }
+            if (comps.size() < need) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: constructor '") +
+                            name + "' component mismatch";
+                return true;
+            }
+            uint32_t k = 0;
+            for (uint32_t c = 0; c < mcols; c++) {
+                llvm::Value *col = llvm::UndefValue::get(colTy);
+                for (uint32_t r = 0; r < mrows; r++, k++) {
+                    col = cg.b->CreateInsertElement(
+                        col, comps[k],
+                        llvm::ConstantInt::get(
+                            llvm::Type::getInt32Ty(*cg.ctx), r));
+                }
+                arr = cg.b->CreateInsertValue(arr, col, c);
+            }
+        }
+        return (*out = arr, true);
     }
 
     return false;
