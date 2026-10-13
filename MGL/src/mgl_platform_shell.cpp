@@ -984,7 +984,7 @@ void mglPlatformShellGpuCaptureStart(void *renderer)
                                         "mglCaptureDescriptorForDevice:outputPath:"),
                              (MGLObjectId)mglRendererBackendGetDevice(
                                  ivars ? ivars->_backend : NULL),
-                             mglNewUTF8String(getenv("MGL_GPU_CAPTURE")));
+                             mglAutoreleasedUTF8String(getenv("MGL_GPU_CAPTURE")));
     MGLObjectId capErr = NULL;
     if (desc && mglSend<signed char>(r, MGL_SEL(s_selStartCapture,
                                                 "mglStartCaptureWithDescriptor:error:"),
@@ -2105,12 +2105,12 @@ static void mglShellCreateAndBind(MGLObjectId self, SEL cmd, GLMContext glm_ctx,
     (void)mglSend<void>(view,
                         MGL_SEL(s_selAddObserverForKeyPath,
                                 "addObserver:forKeyPath:options:context:"),
-                        self, mglNewUTF8String("bounds"), (unsigned long)0,
+                        self, mglAutoreleasedUTF8String("bounds"), (unsigned long)0,
                         s_kvoViewGeometryContext);
     (void)mglSend<void>(view,
                         MGL_SEL(s_selAddObserverForKeyPath,
                                 "addObserver:forKeyPath:options:context:"),
-                        self, mglNewUTF8String("window"),
+                        self, mglAutoreleasedUTF8String("window"),
                         (unsigned long)kMGLKVOOptionInitial,
                         s_kvoViewGeometryContext);
 
@@ -2279,7 +2279,7 @@ static void mglShellObserveValueForKeyPath(MGLObjectId self, SEL cmd,
         if (keyPath &&
             mglSend<signed char>(keyPath,
                                  MGL_SEL(s_selIsEqualToString, "isEqualToString:"),
-                                 mglNewUTF8String("window"))) {
+                                 mglAutoreleasedUTF8String("window"))) {
             (void)mglSend<void>(self, MGL_SEL(s_selMglUpdateWindowObserver,
                                               "mglUpdateWindowNotificationObserver"));
         }
@@ -2403,12 +2403,12 @@ static void mglShellDealloc(MGLObjectId self, SEL cmd)
             (void)mglSend<void>(view,
                                 MGL_SEL(s_selRemoveObserverForKeyPath,
                                         "removeObserver:forKeyPath:context:"),
-                                self, mglNewUTF8String("bounds"),
+                                self, mglAutoreleasedUTF8String("bounds"),
                                 s_kvoViewGeometryContext);
             (void)mglSend<void>(view,
                                 MGL_SEL(s_selRemoveObserverForKeyPath,
                                         "removeObserver:forKeyPath:context:"),
-                                self, mglNewUTF8String("window"),
+                                self, mglAutoreleasedUTF8String("window"),
                                 s_kvoViewGeometryContext);
         }
         /* Detach window notifications without the lazy re-wiring path. */

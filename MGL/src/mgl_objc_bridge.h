@@ -82,7 +82,7 @@ static inline SEL mglCachedSel(SEL *slot, const char *name)
 
 /* ---------------------------------------------------------- ownership --- */
 
-/* __bridge_transfer id -> hand a +1 to C. */
+/* __bridge_retained id -> hand a +1 to C (CFBridgingRetain). */
 static inline void *mglBridgingRetain(MGLObjectId object)
 {
     return object ? (void *)mglSend<MGLObjectId>(object, sel_registerName("retain"))
@@ -115,20 +115,28 @@ static inline MGLObjectId mglAutoreleaseObject(MGLObjectId object)
 
 /* ------------------------------------------------------------ strings --- */
 
-static inline MGLObjectId mglNewUTF8String(const char *utf8)
+/* NSString from a NUL-terminated UTF-8 C string.  The result is *autoreleased*
+ * (borrowed), not +1: `stringWithUTF8String:` is the autoreleasing convenience
+ * constructor, so the name must not say `New`/`Create`.  Do not release the
+ * result, and do not keep it past the enclosing autorelease pool. */
+static inline MGLObjectId mglAutoreleasedUTF8String(const char *utf8)
 {
     return utf8 ? mglSend<MGLObjectId>((MGLObjectId)objc_getClass("NSString"),
                                        sel_registerName("stringWithUTF8String:"), utf8)
                 : NULL;
 }
 
+/* Borrowed NUL-terminated UTF-8 bytes owned by `string`: valid as long as the
+ * string is, and (for an autoreleased string) until its pool drains.  Never
+ * free the result. */
 static inline const char *mglUTF8String(MGLObjectId string)
 {
     if (!string) {
         return NULL;
     }
-    MGLObjectId utf8 = mglSend<MGLObjectId>(string, sel_registerName("UTF8String"));
-    return utf8 ? (const char *)utf8 : NULL;
+    const char *utf8 = mglSend<const char *>(string,
+                                            sel_registerName("UTF8String"));
+    return utf8;
 }
 
 /* --------------------------------------------------------- pools / ivars --- */
@@ -190,6 +198,11 @@ MGLObjectId mglTakeCaughtException(void);
 void mglFillCaughtException(MGLObjectId exception,
                             char *name_out, size_t name_cap,
                             char *reason_out, size_t reason_cap);
+/* Both return borrowed UTF-8 bytes taken from the object's -description (the
+ * second is that same call on the recorded exception; nil becomes "(null)").
+ * The bytes belong to an autoreleased NSString, so they stay valid only until
+ * the enclosing autorelease pool drains -- copy them instead of holding them
+ * (mglFillCaughtException is the copying variant). */
 const char *mglObjectDescriptionUTF8(MGLObjectId object);
 const char *mglCaughtExceptionDescription(MGLObjectId exception);
 
