@@ -1126,6 +1126,24 @@ static uint32_t air_reflect_attrib_location(const char *name,
     return UINT32_MAX;
 }
 
+/* Every failure path in the reflection body reports its reason through these
+ * two helpers rather than spelling out the "err may be NULL" guard again at
+ * each site (39 of them, 23 sharing the "out of memory" literal).
+ * reflect_set_error is for the paths that still own scratch to free,
+ * reflect_fail for the paths that report and return in one step. */
+static void reflect_set_error(char *err, size_t errCap, const char *msg)
+{
+    if (err && errCap) {
+        snprintf(err, errCap, "%s", msg);
+    }
+}
+
+static int reflect_fail(char *err, size_t errCap, const char *msg)
+{
+    reflect_set_error(err, errCap, msg);
+    return -1;
+}
+
 /* Reflection body.  Every failure path returns -1 with the reason already in
  * `err`; releasing the partially-built resource lists is the wrapper's job,
  * so no path here has to remember the teardown.  The individual paths still
@@ -1198,17 +1216,13 @@ static int mglAirReflectModuleImpl(
              * emitting the resources below (and AIR codegen). */
             if (air_u32_add(ssboCount, air_uniform_block_element_count(t),
                             &ssboCount) != 0) {
-                if (err && errCap)
-                    snprintf(err, errCap, "SSBO slot count overflow");
-                return -1;
+                return reflect_fail(err, errCap, "SSBO slot count overflow");
             }
         } else if ((q & MGL_AST_Q_UNIFORM) && !s->block_name &&
                    air_symbol_is_ubo(s)) {
             if (air_u32_add(uboSlotCount, air_uniform_block_element_count(t),
                             &uboSlotCount) != 0) {
-                if (err && errCap)
-                    snprintf(err, errCap, "UBO slot count overflow");
-                return -1;
+                return reflect_fail(err, errCap, "UBO slot count overflow");
             }
         } else if ((q & MGL_AST_Q_UNIFORM) &&
                    base_t && base_t->kind != MGLIR_TYPE_SAMPLER &&
@@ -1234,19 +1248,14 @@ static int mglAirReflectModuleImpl(
                   stage == MGL_STAGE_FRAGMENT) ? hasPlain : 0));
     uint32_t ubo_binding = 0;
     if (air_u32_add(ssbo_binding, ssboCount, &ubo_binding) != 0) {
-        if (err && errCap) snprintf(err, errCap, "buffer slot count overflow");
-        return -1;
+        return reflect_fail(err, errCap, "buffer slot count overflow");
     }
     uint32_t ac_binding = 0;
     uint32_t ac_end = 0;
     if (air_u32_add(ubo_binding, uboSlotCount, &ac_binding) != 0 ||
         air_u32_add(ac_binding, acCount, &ac_end) != 0 ||
         (acCount > 0u && ac_end > MAX_BINDABLE_BUFFERS)) {
-        if (err && errCap) {
-            snprintf(err, errCap,
-                     "atomic counter Metal slots exceed MAX_BINDABLE_BUFFERS");
-        }
-        return -1;
+        return reflect_fail(err, errCap, "atomic counter Metal slots exceed MAX_BINDABLE_BUFFERS");
     }
 
     /* Sampler / image Metal texture slots must match AIR metadata order
@@ -1274,9 +1283,7 @@ static int mglAirReflectModuleImpl(
                         s->location != UINT32_MAX ? s->location : UINT32_MAX;
                     if (!push_resource(&lists[_SAMPLED_IMAGE_RES], s, t, location,
                                        texture_binding, stage)) {
-                        if (err && errCap)
-                            snprintf(err, errCap, "out of memory");
-                        return -1;
+                        return reflect_fail(err, errCap, "out of memory");
                     }
                     if (lists[_SAMPLED_IMAGE_RES].count == 0)
                         continue;
@@ -1320,9 +1327,7 @@ static int mglAirReflectModuleImpl(
                     if (!air_push_opaque_leaves(&lists[_SAMPLED_IMAGE_RES], s, t,
                                                 s->name, &texture_binding,
                                                 &sampler_binding, stage, 0)) {
-                        if (err && errCap)
-                            snprintf(err, errCap, "out of memory");
-                        return -1;
+                        return reflect_fail(err, errCap, "out of memory");
                     }
                 }
             } else {
@@ -1331,9 +1336,7 @@ static int mglAirReflectModuleImpl(
                         s->location != UINT32_MAX ? s->location : UINT32_MAX;
                     if (!push_resource(&lists[_STORAGE_IMAGE_RES], s, t, location,
                                        texture_binding, stage)) {
-                        if (err && errCap)
-                            snprintf(err, errCap, "out of memory");
-                        return -1;
+                        return reflect_fail(err, errCap, "out of memory");
                     }
                     if (lists[_STORAGE_IMAGE_RES].count == 0)
                         continue;
@@ -1367,9 +1370,7 @@ static int mglAirReflectModuleImpl(
                     if (!air_push_opaque_leaves(&lists[_STORAGE_IMAGE_RES], s, t,
                                                 s->name, &texture_binding,
                                                 NULL, stage, 1)) {
-                        if (err && errCap)
-                            snprintf(err, errCap, "out of memory");
-                        return -1;
+                        return reflect_fail(err, errCap, "out of memory");
                     }
                 }
             }
@@ -1435,8 +1436,7 @@ static int mglAirReflectModuleImpl(
             if (base_t && base_t->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
                 if (!push_resource(&lists[_ATOMIC_COUNTER_RES], s, t, location,
                                    ac_binding++, stage)) {
-                    if (err && errCap)
-                        snprintf(err, errCap, "out of memory");
+                    reflect_set_error(err, errCap, "out of memory");
                     free(agg_types);
                     free(agg_names);
                     return -1;
@@ -1472,8 +1472,7 @@ static int mglAirReflectModuleImpl(
                 GLuint block_count = air_uniform_block_element_count(t);
                 if (!push_resource(&lists[_UNIFORM_BUFFER_RES], s, block_type,
                                    location, ubo_binding, stage)) {
-                    if (err && errCap)
-                        snprintf(err, errCap, "out of memory");
+                    reflect_set_error(err, errCap, "out of memory");
                     free(agg_types);
                     free(agg_names);
                     return -1;
@@ -1484,8 +1483,7 @@ static int mglAirReflectModuleImpl(
                     &lists[_UNIFORM_BUFFER_RES].list[
                         lists[_UNIFORM_BUFFER_RES].count - 1];
                 if (apply_block_interface_name(last, t, s->name) != 0) {
-                    if (err && errCap)
-                        snprintf(err, errCap, "out of memory");
+                    reflect_set_error(err, errCap, "out of memory");
                     free(agg_types);
                     free(agg_names);
                     return -1;
@@ -1498,8 +1496,7 @@ static int mglAirReflectModuleImpl(
                     last->ubo_array_bindings = (GLuint *)calloc(
                         block_count, sizeof(*last->ubo_array_bindings));
                     if (!last->ubo_array_bindings) {
-                        if (err && errCap)
-                            snprintf(err, errCap, "out of memory");
+                        reflect_set_error(err, errCap, "out of memory");
                         free(agg_types);
                         free(agg_names);
                         return -1;
@@ -1523,7 +1520,7 @@ static int mglAirReflectModuleImpl(
              * the packed aggregate.  Struct/array-of-struct are expanded to
              * GL leaf names (`s.a`, `s[0].b`) below when emitting agg. */
             if (agg_count == UINT32_MAX) {
-                if (err && errCap) snprintf(err, errCap, "too many uniforms");
+                reflect_set_error(err, errCap, "too many uniforms");
                 free(agg_types);
                 free(agg_names);
                 return -1;
@@ -1531,7 +1528,7 @@ static int mglAirReflectModuleImpl(
             size_t agg_type_bytes = 0;
             if (air_size_mul((size_t)agg_count + 1u,
                              sizeof(MGLIRType *), &agg_type_bytes) != 0) {
-                if (err && errCap) snprintf(err, errCap, "uniform metadata overflow");
+                reflect_set_error(err, errCap, "uniform metadata overflow");
                 free(agg_types);
                 free(agg_names);
                 return -1;
@@ -1539,7 +1536,7 @@ static int mglAirReflectModuleImpl(
             MGLIRType **nt = (MGLIRType **)realloc(agg_types,
                                                     agg_type_bytes);
             if (!nt) {
-                if (err && errCap) snprintf(err, errCap, "out of memory");
+                reflect_set_error(err, errCap, "out of memory");
                 free(agg_types);
                 free(agg_names);
                 return -1;
@@ -1548,7 +1545,7 @@ static int mglAirReflectModuleImpl(
             size_t agg_name_bytes = 0;
             if (air_size_mul((size_t)agg_count + 1u,
                              sizeof(const char *), &agg_name_bytes) != 0) {
-                if (err && errCap) snprintf(err, errCap, "uniform metadata overflow");
+                reflect_set_error(err, errCap, "uniform metadata overflow");
                 free(agg_types);
                 free(agg_names);
                 return -1;
@@ -1556,7 +1553,7 @@ static int mglAirReflectModuleImpl(
             const char **nn = (const char **)realloc(agg_names,
                                                       agg_name_bytes);
             if (!nn) {
-                if (err && errCap) snprintf(err, errCap, "out of memory");
+                reflect_set_error(err, errCap, "out of memory");
                 free(agg_types);
                 free(agg_names);
                 return -1;
@@ -1576,8 +1573,7 @@ static int mglAirReflectModuleImpl(
             const MGLIRType *res_type = block_type ? block_type : t;
             if (!push_resource(&lists[_STORAGE_BUFFER_RES], s, res_type,
                                location, ssbo_binding, stage)) {
-                if (err && errCap)
-                    snprintf(err, errCap, "out of memory");
+                reflect_set_error(err, errCap, "out of memory");
                 free(agg_types);
                 free(agg_names);
                 return -1;
@@ -1588,8 +1584,7 @@ static int mglAirReflectModuleImpl(
                 &lists[_STORAGE_BUFFER_RES].list[
                     lists[_STORAGE_BUFFER_RES].count - 1];
             if (apply_block_interface_name(ssbo_last, t, s->name) != 0) {
-                if (err && errCap)
-                    snprintf(err, errCap, "out of memory");
+                reflect_set_error(err, errCap, "out of memory");
                 free(agg_types);
                 free(agg_names);
                 return -1;
@@ -1602,8 +1597,7 @@ static int mglAirReflectModuleImpl(
                 ssbo_last->ubo_array_bindings = (GLuint *)calloc(
                     block_count, sizeof(*ssbo_last->ubo_array_bindings));
                 if (!ssbo_last->ubo_array_bindings) {
-                    if (err && errCap)
-                        snprintf(err, errCap, "out of memory");
+                    reflect_set_error(err, errCap, "out of memory");
                     free(agg_types);
                     free(agg_names);
                     return -1;
@@ -1645,8 +1639,7 @@ static int mglAirReflectModuleImpl(
             if (!push_resource(&lists[_STAGE_INPUT_RES], s, t, location, 0,
                                stage) ||
                 !air_apply_io_query_name(&lists[_STAGE_INPUT_RES], mod, s)) {
-                if (err && errCap)
-                    snprintf(err, errCap, "out of memory");
+                reflect_set_error(err, errCap, "out of memory");
                 free(agg_types);
                 free(agg_names);
                 return -1;
@@ -1695,8 +1688,7 @@ static int mglAirReflectModuleImpl(
             if (!push_resource(&lists[_STAGE_OUTPUT_RES], s, t, location, 0,
                                stage) ||
                 !air_apply_io_query_name(&lists[_STAGE_OUTPUT_RES], mod, s)) {
-                if (err && errCap)
-                    snprintf(err, errCap, "out of memory");
+                reflect_set_error(err, errCap, "out of memory");
                 free(agg_types);
                 free(agg_names);
                 return -1;
@@ -1737,9 +1729,7 @@ static int mglAirReflectModuleImpl(
                 free(leaves);
                 free(agg_types);
                 free(agg_names);
-                if (err && errCap)
-                    snprintf(err, errCap, "uniform layout overflow or invalid type");
-                return -1;
+                return reflect_fail(err, errCap, "uniform layout overflow or invalid type");
             }
             uint32_t aligned_off = 0;
             if (air_u32_add(off, ty->layout.alignment - 1u, &aligned_off) != 0) {
@@ -1750,9 +1740,7 @@ static int mglAirReflectModuleImpl(
                 free(leaves);
                 free(agg_types);
                 free(agg_names);
-                if (err && errCap)
-                    snprintf(err, errCap, "uniform aggregate size overflow");
-                return -1;
+                return reflect_fail(err, errCap, "uniform aggregate size overflow");
             }
             off = aligned_off & ~(ty->layout.alignment - 1u);
             const MGLIRType *st = air_uniform_block_type(ty);
@@ -1773,9 +1761,7 @@ static int mglAirReflectModuleImpl(
                             free(leaves);
                             free(agg_types);
                             free(agg_names);
-                            if (err && errCap)
-                                snprintf(err, errCap, "out of memory");
-                            return -1;
+                            return reflect_fail(err, errCap, "out of memory");
                         }
                         uint32_t element_offset = 0;
                         if (air_u32_mul(el, stride, &element_offset) != 0 ||
@@ -1788,9 +1774,7 @@ static int mglAirReflectModuleImpl(
                             free(leaves);
                             free(agg_types);
                             free(agg_names);
-                            if (err && errCap)
-                                snprintf(err, errCap, "uniform aggregate size overflow");
-                            return -1;
+                            return reflect_fail(err, errCap, "uniform aggregate size overflow");
                         }
                         if (air_block_flatten(ty->elem_type,
                                               element_offset, epath,
@@ -1805,9 +1789,7 @@ static int mglAirReflectModuleImpl(
                             free(leaves);
                             free(agg_types);
                             free(agg_names);
-                            if (err && errCap)
-                                snprintf(err, errCap, "out of memory");
-                            return -1;
+                            return reflect_fail(err, errCap, "out of memory");
                         }
                         free(epath);
                     }
@@ -1822,9 +1804,7 @@ static int mglAirReflectModuleImpl(
                     free(leaves);
                     free(agg_types);
                     free(agg_names);
-                    if (err && errCap)
-                        snprintf(err, errCap, "out of memory");
-                    return -1;
+                    return reflect_fail(err, errCap, "out of memory");
                 }
             } else if (ty->kind == MGLIR_TYPE_ARRAY && ty->aoa_dim_count > 1) {
                 /* Default-block AOA uses the same std140 array_stride as
@@ -1838,9 +1818,7 @@ static int mglAirReflectModuleImpl(
                     free(leaves);
                     free(agg_types);
                     free(agg_names);
-                    if (err && errCap)
-                        snprintf(err, errCap, "out of memory");
-                    return -1;
+                    return reflect_fail(err, errCap, "out of memory");
                 }
             } else {
                 if (leaf_count == leaf_cap) {
@@ -1852,9 +1830,7 @@ static int mglAirReflectModuleImpl(
                         free(leaves);
                         free(agg_types);
                         free(agg_names);
-                        if (err && errCap)
-                            snprintf(err, errCap, "too many uniform members");
-                        return -1;
+                        return reflect_fail(err, errCap, "too many uniform members");
                     }
                     uint32_t ncap = leaf_cap ? leaf_cap * 2u : 8u;
                     size_t leaf_bytes = 0;
@@ -1867,9 +1843,7 @@ static int mglAirReflectModuleImpl(
                         free(leaves);
                         free(agg_types);
                         free(agg_names);
-                        if (err && errCap)
-                            snprintf(err, errCap, "uniform metadata overflow");
-                        return -1;
+                        return reflect_fail(err, errCap, "uniform metadata overflow");
                     }
                     SpirvUBOMember *nl = (SpirvUBOMember *)realloc(
                         leaves, leaf_bytes);
@@ -1881,9 +1855,7 @@ static int mglAirReflectModuleImpl(
                         free(leaves);
                         free(agg_types);
                         free(agg_names);
-                        if (err && errCap)
-                            snprintf(err, errCap, "out of memory");
-                        return -1;
+                        return reflect_fail(err, errCap, "out of memory");
                     }
                     leaves = nl;
                     leaf_cap = ncap;
@@ -1905,9 +1877,7 @@ static int mglAirReflectModuleImpl(
                     free(leaves);
                     free(agg_types);
                     free(agg_names);
-                    if (err && errCap)
-                        snprintf(err, errCap, "out of memory");
-                    return -1;
+                    return reflect_fail(err, errCap, "out of memory");
                 }
                 u->gl_type = mglAirGLTypeFromIR(ty);
                 u->offset = off;
@@ -1933,9 +1903,7 @@ static int mglAirReflectModuleImpl(
                 free(leaves);
                 free(agg_types);
                 free(agg_names);
-                if (err && errCap)
-                    snprintf(err, errCap, "uniform aggregate size overflow");
-                return -1;
+                return reflect_fail(err, errCap, "uniform aggregate size overflow");
             }
         }
         for (uint32_t m = 0; m < leaf_count; m++)
@@ -1952,9 +1920,7 @@ static int mglAirReflectModuleImpl(
             free(leaves);
             free(agg_types);
             free(agg_names);
-            if (err && errCap)
-                snprintf(err, errCap, "out of memory");
-            return -1;
+            return reflect_fail(err, errCap, "out of memory");
         }
         agg.ubo_members = leaves;
         agg.ubo_member_count = leaf_count;
@@ -1973,9 +1939,7 @@ static int mglAirReflectModuleImpl(
             free(leaves);
             free(agg_types);
             free(agg_names);
-            if (err && errCap)
-                snprintf(err, errCap, "too many uniform resources");
-            return -1;
+            return reflect_fail(err, errCap, "too many uniform resources");
         }
         size_t resource_bytes = 0;
         if (air_size_mul((size_t)l->count + 1u,
@@ -1988,9 +1952,7 @@ static int mglAirReflectModuleImpl(
             free(leaves);
             free(agg_types);
             free(agg_names);
-            if (err && errCap)
-                snprintf(err, errCap, "uniform metadata overflow");
-            return -1;
+            return reflect_fail(err, errCap, "uniform metadata overflow");
         }
         MGLShaderResource *nl = (MGLShaderResource *)realloc(
             l->list, resource_bytes);
@@ -2003,9 +1965,7 @@ static int mglAirReflectModuleImpl(
             free(leaves);
             free(agg_types);
             free(agg_names);
-            if (err && errCap)
-                snprintf(err, errCap, "out of memory");
-            return -1;
+            return reflect_fail(err, errCap, "out of memory");
         }
         l->list = nl;
         l->list[l->count++] = agg;
@@ -2022,8 +1982,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         char *err, size_t errCap)
 {
     if (!mod || !lists) {
-        if (err && errCap) snprintf(err, errCap, "bad args");
-        return -1;
+        return reflect_fail(err, errCap, "bad args");
     }
     int rc = mglAirReflectModuleImpl(mod, stage, attrib_names, lists, err,
                                      errCap);
