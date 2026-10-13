@@ -1626,6 +1626,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
  * `if`.  Keep the comma form. */
 static bool emitCallTextureQuery(Codegen &cg, const MGLExpr *e,
                                  const char *name, llvm::Value **out);
+static bool emitCallDerivativeBuiltins(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out);
 static bool emitCallConstructors(
     Codegen &cg, const MGLExpr *e, const char *name,
     const MGLIRModule *mod, const std::map<std::string, MType> &locals,
@@ -7056,68 +7060,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (emitCallConstructors(cg, e, name, mod, locals, &handled))
                 return handled;
         }
-        /* Math builtins (sema-typed subset).  All float args are coerced;
-         * integer variants (abs/min/max/clamp) use icmp selects. */
         {
-            if (strcmp(name, "dFdx") == 0 || strcmp(name, "dFdy") == 0 ||
-                strcmp(name, "dFdxFine") == 0 || strcmp(name, "dFdyFine") == 0 ||
-                strcmp(name, "dFdxCoarse") == 0 ||
-                strcmp(name, "dFdyCoarse") == 0 ||
-                strcmp(name, "fwidth") == 0 || strcmp(name, "fwidthFine") == 0 ||
-                strcmp(name, "fwidthCoarse") == 0) {
-                if (e->u.call.arg_count != 1) {
-                    cg.err = 1;
-                    cg.errmsg = std::string("codegen: '") + name +
-                                "' expects 1 argument";
-                    return nullptr;
-                }
-                llvm::Value *v = emitExpr(cg, e->u.call.args[0], mod, locals);
-                if (!v) return nullptr;
-                llvm::Type *et = v->getType();
-                const int is_y = (strstr(name, "dFdy") != nullptr);
-                const int is_fwidth = (strncmp(name, "fwidth", 6) == 0);
-                if (is_fwidth) {
-                    llvm::Value *dx;
-                    llvm::Value *dy;
-                    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(et)) {
-                        uint32_t n = (uint32_t)vt->getNumElements();
-                        std::string fnx =
-                            std::string("air.dfdx.v") + std::to_string(n) + "f32";
-                        std::string fny =
-                            std::string("air.dfdy.v") + std::to_string(n) + "f32";
-                        dx = callAirFn(cg, fnx.c_str(), et, {v});
-                        dy = callAirFn(cg, fny.c_str(), et, {v});
-                    } else {
-                        dx = callAirFn(cg, "air.dfdx.f32", et, {v});
-                        dy = callAirFn(cg, "air.dfdy.f32", et, {v});
-                    }
-                    if (!dx || !dy) return nullptr;
-                    llvm::Value *adx = cg.b->CreateIntrinsic(
-                        llvm::Intrinsic::fabs, {et}, {dx});
-                    llvm::Value *ady = cg.b->CreateIntrinsic(
-                        llvm::Intrinsic::fabs, {et}, {dy});
-                    return cg.b->CreateFAdd(adx, ady);
-                }
-                if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(et)) {
-                    uint32_t n = (uint32_t)vt->getNumElements();
-                    std::string fn = is_y
-                        ? std::string("air.dfdy.v") + std::to_string(n) + "f32"
-                        : std::string("air.dfdx.v") + std::to_string(n) + "f32";
-                    return callAirFn(cg, fn.c_str(), et, {v});
-                }
-                return callAirFn(cg, is_y ? "air.dfdy.f32" : "air.dfdx.f32",
-                                 et, {v});
-            }
-            if (strcmp(name, "interpolateAtCentroid") == 0 ||
-                strcmp(name, "interpolateAtSample") == 0 ||
-                strcmp(name, "interpolateAtOffset") == 0) {
-                llvm::Value *interp = emitInterpolateAtBuiltin(cg, e, name, mod,
-                                                               locals);
-                if (interp || cg.err)
-                    return interp;
-            }
-            llvm::Value *mb = emitMatrixBuiltin(cg, e, name, mod, locals);
-            if (mb) return mb;
+            llvm::Value *handled = nullptr;
+            if (emitCallDerivativeBuiltins(cg, e, name, mod, locals, &handled))
+                return handled;
         }
         {
             llvm::Value *mb = emitMathBuiltin(cg, e, name, mod, locals);
@@ -11426,6 +11372,79 @@ static bool emitCallConstructors(
             }
         }
         return (*out = arr, true);
+    }
+
+    return false;
+}
+
+/* Lifted out of emitExpr's MGL_EXPR_CALL case. */
+static bool emitCallDerivativeBuiltins(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out)
+{
+    /* Math builtins (sema-typed subset).  All float args are coerced;
+     * integer variants (abs/min/max/clamp) use icmp selects. */
+    {
+        if (strcmp(name, "dFdx") == 0 || strcmp(name, "dFdy") == 0 ||
+            strcmp(name, "dFdxFine") == 0 || strcmp(name, "dFdyFine") == 0 ||
+            strcmp(name, "dFdxCoarse") == 0 ||
+            strcmp(name, "dFdyCoarse") == 0 ||
+            strcmp(name, "fwidth") == 0 || strcmp(name, "fwidthFine") == 0 ||
+            strcmp(name, "fwidthCoarse") == 0) {
+            if (e->u.call.arg_count != 1) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: '") + name +
+                            "' expects 1 argument";
+                return true;
+            }
+            llvm::Value *v = emitExpr(cg, e->u.call.args[0], mod, locals);
+            if (!v) return true;
+            llvm::Type *et = v->getType();
+            const int is_y = (strstr(name, "dFdy") != nullptr);
+            const int is_fwidth = (strncmp(name, "fwidth", 6) == 0);
+            if (is_fwidth) {
+                llvm::Value *dx;
+                llvm::Value *dy;
+                if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(et)) {
+                    uint32_t n = (uint32_t)vt->getNumElements();
+                    std::string fnx =
+                        std::string("air.dfdx.v") + std::to_string(n) + "f32";
+                    std::string fny =
+                        std::string("air.dfdy.v") + std::to_string(n) + "f32";
+                    dx = callAirFn(cg, fnx.c_str(), et, {v});
+                    dy = callAirFn(cg, fny.c_str(), et, {v});
+                } else {
+                    dx = callAirFn(cg, "air.dfdx.f32", et, {v});
+                    dy = callAirFn(cg, "air.dfdy.f32", et, {v});
+                }
+                if (!dx || !dy) return true;
+                llvm::Value *adx = cg.b->CreateIntrinsic(
+                    llvm::Intrinsic::fabs, {et}, {dx});
+                llvm::Value *ady = cg.b->CreateIntrinsic(
+                    llvm::Intrinsic::fabs, {et}, {dy});
+                return (*out = cg.b->CreateFAdd(adx, ady), true);
+            }
+            if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(et)) {
+                uint32_t n = (uint32_t)vt->getNumElements();
+                std::string fn = is_y
+                    ? std::string("air.dfdy.v") + std::to_string(n) + "f32"
+                    : std::string("air.dfdx.v") + std::to_string(n) + "f32";
+                return (*out = callAirFn(cg, fn.c_str(), et, {v}), true);
+            }
+            return (*out = callAirFn(cg, is_y ? "air.dfdy.f32" : "air.dfdx.f32",
+                             et, {v}), true);
+        }
+        if (strcmp(name, "interpolateAtCentroid") == 0 ||
+            strcmp(name, "interpolateAtSample") == 0 ||
+            strcmp(name, "interpolateAtOffset") == 0) {
+            llvm::Value *interp = emitInterpolateAtBuiltin(cg, e, name, mod,
+                                                           locals);
+            if (interp || cg.err)
+                return (*out = interp, true);
+        }
+        llvm::Value *mb = emitMatrixBuiltin(cg, e, name, mod, locals);
+        if (mb) return (*out = mb, true);
     }
 
     return false;
