@@ -574,12 +574,37 @@ static AttrExpansion attrExpansion(const MType &t)
     return e;
 }
 
-/* True for the one shape whose arguments are neither an array's elements nor a
- * matrix's columns: an array of matrices, whose arguments are element-major
- * columns.  Callers reassemble it by building `cols` columns per element. */
-static bool attrIsMatrixArray(const MType &t)
+/* True for the one shape whose per-location arguments are neither an array's
+ * elements nor a matrix's columns: an array of matrices, whose arguments are
+ * element-major columns.  Callers reassemble it by building `cols` columns
+ * per element.  Shared by the attribute, varying and record flatteners. */
+static bool isMatrixArray(const MType &t)
 {
     return t.isArray() && t.arr > 0 && t.isMatrix() && t.cols > 0;
+}
+
+/* Metal stage-out / interface expansion of one varying: how many locations it
+ * occupies and the interface type of a single one.  Same rule as
+ * attrExpansion -- a matrix contributes one location per column, an array one
+ * per element, an array of matrices cols per element -- with the integer
+ * float-carrier transform the stage needs applied to the per-location type.
+ * `count` mirrors varyingLocationSpan, which is also what advances the
+ * interface tags (varyingIfaceTag takes one linear index), so the record, the
+ * argument and the metadata sides cannot disagree. */
+struct VaryingExpansion {
+    uint32_t count = 1;
+    MType fieldType;
+};
+
+static VaryingExpansion varyingExpansion(const MType &t, bool carrierStage)
+{
+    VaryingExpansion e;
+    e.count = varyingLocationSpan(t);
+    MType loc = controlPointLocationType(t);
+    if (varyingUsesFloatCarrier(loc, carrierStage))
+        loc = floatCarrierType(loc);
+    e.fieldType = loc;
+    return e;
 }
 
 /* Reassemble a control-point member from the per-location fields emitted by
@@ -13970,37 +13995,21 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         for (VarSym &v : syms) {
             if (v.kind == VarSym::VARYING) {
                 if (!isTessCapture) {
-                    /* Metal stage-out structs forbid array members
-                     * ("field of illegal type 'float4[N]'"), so array
-                     * varyings are flattened into per-element scalar
-                     * fields; assembleReturn and the metadata emit one
-                     * entry per element with element-specific interface
-                     * names (name_elmN) on both stages. */
-                    if (v.type.isArray()) {
-                        MType el = v.type;
-                        el.arr = 0;
-                        if (varyingUsesFloatCarrier(el, ifaceGs))
-                            el = floatCarrierType(el);
-                        for (uint32_t i = 0; i < (uint32_t)v.type.arr; i++)
-                            retElems.push_back(llvmType(el, ctx));
-                    } else if (v.type.isMatrix()) {
-                        /* Metal forbids matrix stage-out members; emit one
-                         * vector field per column (GL location = base+c). */
-                        MType col = matrixColumnType(v.type);
-                        if (varyingUsesFloatCarrier(col, ifaceGs))
-                            col = floatCarrierType(col);
-                        for (uint32_t c = 0; c < v.type.cols; c++)
-                            retElems.push_back(llvmType(col, ctx));
+                    /* Metal stage-out structs forbid array and matrix members
+                     * ("field of illegal type 'float4[N]'"), so both are
+                     * flattened to one field per location; assembleReturn and
+                     * the metadata emit one entry per location with
+                     * location-ordered interface names (name_elmN) on both
+                     * stages.  A scalar uint keeps its two-lane split. */
+                    if (uintUsesSplitFloatCarrier(v.type, ifaceGs)) {
+                        MType lane = floatCarrierType(v.type);
+                        retElems.push_back(llvmType(lane, ctx));
+                        retElems.push_back(llvmType(lane, ctx));
                     } else {
-                        MType outTy = v.type;
-                        if (uintUsesSplitFloatCarrier(outTy, ifaceGs)) {
-                            retElems.push_back(llvmType(floatCarrierType(outTy), ctx));
-                            retElems.push_back(llvmType(floatCarrierType(outTy), ctx));
-                        } else {
-                            if (varyingUsesFloatCarrier(outTy, ifaceGs))
-                                outTy = floatCarrierType(outTy);
-                            retElems.push_back(llvmType(outTy, ctx));
-                        }
+                        const VaryingExpansion ve =
+                            varyingExpansion(v.type, ifaceGs);
+                        for (uint32_t i = 0; i < ve.count; i++)
+                            retElems.push_back(llvmType(ve.fieldType, ctx));
                     }
                 }
                 varyings.push_back(&v);
@@ -14587,7 +14596,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                 continue;
             }
             llvm::Value *agg = llvm::UndefValue::get(llvmType(ex.aggType, ctx));
-            if (attrIsMatrixArray(v.type)) {
+            if (isMatrixArray(v.type)) {
                 /* Array of matrices: element-major columns, so `cols`
                  * arguments make one element and the elements make the array. */
                 const MType col = matrixColumnType(v.type);
@@ -14732,7 +14741,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     }
     for (VarSym &v : syms) {
         if (isVS && isCapture && v.kind == VarSym::ATTR &&
-            attrIsMatrixArray(v.type)) {
+            isMatrixArray(v.type)) {
             /* Array of matrices: its arguments are element-major columns, which
              * is neither the "array of elements" nor the "matrix of columns"
              * shape the flattened paths below handle (see attrExpansion). */
@@ -16167,7 +16176,23 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                             cg.lvalues.count(var->name)
                                 ? cg.lvalues[var->name]
                                 : llvm::UndefValue::get(llvmType(var->type, ctx));
-                        if (var->type.isArray()) {
+                        if (isMatrixArray(var->type)) {
+                            /* Element-major columns: one record field per
+                             * column, matching retElems (see
+                             * varyingExpansion). */
+                            for (uint32_t element = 0;
+                                 element < (uint32_t)var->type.arr; element++) {
+                                llvm::Value *mat = base;
+                                if (base->getType()->isArrayTy())
+                                    mat = b.CreateExtractValue(base, element);
+                                for (uint32_t c = 0; c < var->type.cols; c++) {
+                                    llvm::Value *col = mat;
+                                    if (mat->getType()->isArrayTy())
+                                        col = b.CreateExtractValue(mat, c);
+                                    rec = b.CreateInsertValue(rec, col, ri++);
+                                }
+                            }
+                        } else if (var->type.isArray()) {
                             /* Flattened record: one field per element,
                              * matching retElems construction. */
                             uint32_t n = (uint32_t)var->type.arr;
@@ -17540,69 +17565,36 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                 llvm::MDString::get(ctx, "mgl_viewport_index")}));
         }
         for (VarSym *v : varyings) {
-            if (v->type.isArray()) {
-                /* Flattened (Metal forbids array stage-out members): one
-                 * vertex_output per element with the element-specific
-                 * interface name; the FS side emits the identical tags. */
-                MType el = v->type;
-                el.arr = 0;
-                uint32_t n = (uint32_t)v->type.arr;
-                for (uint32_t k = 0; k < n; k++) {
-                    std::string elName = varyingIfaceTag(*v, k, ifaceGs);
-                    MType outTy = varyingUsesFloatCarrier(el, ifaceGs)
-                        ? floatCarrierType(el) : el;
-                    outNodes.push_back(llvm::MDNode::get(ctx, {
-                        llvm::MDString::get(ctx, "air.vertex_output"),
-                        llvm::MDString::get(ctx,
-                                            airGenerated(elName, outTy)),
-                        llvm::MDString::get(ctx, "air.arg_type_name"),
-                        llvm::MDString::get(ctx, mslTypeName(outTy)),
-                        llvm::MDString::get(ctx, "air.arg_name"),
-                        llvm::MDString::get(ctx, elName)}));
-                }
-            } else if (v->type.isMatrix()) {
-                MType col = matrixColumnType(v->type);
-                for (uint32_t c = 0; c < v->type.cols; c++) {
-                    std::string colName = varyingIfaceTag(*v, c, ifaceGs);
-                    MType outTy = varyingUsesFloatCarrier(col, ifaceGs)
-                        ? floatCarrierType(col) : col;
-                    outNodes.push_back(llvm::MDNode::get(ctx, {
-                        llvm::MDString::get(ctx, "air.vertex_output"),
-                        llvm::MDString::get(ctx,
-                                            airGenerated(colName, outTy)),
-                        llvm::MDString::get(ctx, "air.arg_type_name"),
-                        llvm::MDString::get(ctx, mslTypeName(outTy)),
-                        llvm::MDString::get(ctx, "air.arg_name"),
-                        llvm::MDString::get(ctx, colName)}));
-                }
-            } else {
+            /* Flattened (Metal forbids array and matrix stage-out members): one
+             * vertex_output per location, with the location-ordered interface
+             * name the FS side recomputes from the same rule (varyingExpansion).
+             * A scalar uint keeps its two-lane split. */
+            if (uintUsesSplitFloatCarrier(v->type, ifaceGs)) {
                 std::string tag = varyingIfaceTag(*v, 0, ifaceGs);
-                if (uintUsesSplitFloatCarrier(v->type, ifaceGs)) {
-                    MType outTy = floatCarrierType(v->type);
+                MType outTy = floatCarrierType(v->type);
+                outNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::MDString::get(ctx, "air.vertex_output"),
+                    llvm::MDString::get(ctx, airGenerated(tag + "_lo", outTy)),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, mslTypeName(outTy)),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, tag + "_lo")}));
+                outNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::MDString::get(ctx, "air.vertex_output"),
+                    llvm::MDString::get(ctx, airGenerated(tag + "_hi", outTy)),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, mslTypeName(outTy)),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, tag + "_hi")}));
+            } else {
+                const VaryingExpansion ve = varyingExpansion(v->type, ifaceGs);
+                for (uint32_t k = 0; k < ve.count; k++) {
+                    std::string tag = varyingIfaceTag(*v, k, ifaceGs);
                     outNodes.push_back(llvm::MDNode::get(ctx, {
                         llvm::MDString::get(ctx, "air.vertex_output"),
-                        llvm::MDString::get(ctx,
-                            airGenerated(tag + "_lo", outTy)),
+                        llvm::MDString::get(ctx, airGenerated(tag, ve.fieldType)),
                         llvm::MDString::get(ctx, "air.arg_type_name"),
-                        llvm::MDString::get(ctx, mslTypeName(outTy)),
-                        llvm::MDString::get(ctx, "air.arg_name"),
-                        llvm::MDString::get(ctx, tag + "_lo")}));
-                    outNodes.push_back(llvm::MDNode::get(ctx, {
-                        llvm::MDString::get(ctx, "air.vertex_output"),
-                        llvm::MDString::get(ctx,
-                            airGenerated(tag + "_hi", outTy)),
-                        llvm::MDString::get(ctx, "air.arg_type_name"),
-                        llvm::MDString::get(ctx, mslTypeName(outTy)),
-                        llvm::MDString::get(ctx, "air.arg_name"),
-                        llvm::MDString::get(ctx, tag + "_hi")}));
-                } else {
-                    MType outTy = varyingUsesFloatCarrier(v->type, ifaceGs)
-                        ? floatCarrierType(v->type) : v->type;
-                    outNodes.push_back(llvm::MDNode::get(ctx, {
-                        llvm::MDString::get(ctx, "air.vertex_output"),
-                        llvm::MDString::get(ctx, airGenerated(tag, outTy)),
-                        llvm::MDString::get(ctx, "air.arg_type_name"),
-                        llvm::MDString::get(ctx, mslTypeName(outTy)),
+                        llvm::MDString::get(ctx, mslTypeName(ve.fieldType)),
                         llvm::MDString::get(ctx, "air.arg_name"),
                         llvm::MDString::get(ctx, tag)}));
                 }
