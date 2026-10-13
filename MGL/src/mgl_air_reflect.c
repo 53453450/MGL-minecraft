@@ -1670,9 +1670,17 @@ static int mglAirReflectModuleImpl(
             bool tess_out = (stage == MGL_STAGE_TESS_CONTROL ||
                              stage == MGL_STAGE_TESS_EVALUATION);
             const MGLIRType *span_t = t;
-            /* Per-vertex TCS/TES outputs are sized by patch vertices; codegen
-             * strips that dimension before assigning slots. */
-            if (tess_out && !(q & MGL_AST_Q_PATCH) &&
+            /* A TCS per-vertex output array *is* the invocation axis: the
+             * frontend requires it to exist and to be sized by
+             * layout(vertices), and codegen consumes it as the record index
+             * instead of as locations.  A TES output is plain per-vertex
+             * storage, so an array there is a real array -- one location per
+             * element -- which is what mgl_air_varsym.cpp (its TES-output
+             * branch does not strip) and gl_element_array_size below (whose
+             * per-vertex list has TES inputs but no TES outputs) both assume.
+             * Stripping it here made the location counter disagree with both
+             * and the next output overlapped the array. */
+            if (stage == MGL_STAGE_TESS_CONTROL && !(q & MGL_AST_Q_PATCH) &&
                 span_t->kind == MGLIR_TYPE_ARRAY && span_t->elem_type) {
                 span_t = span_t->elem_type;
             }
