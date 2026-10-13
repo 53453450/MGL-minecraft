@@ -583,28 +583,35 @@ static bool isMatrixArray(const MType &t)
     return t.isArray() && t.arr > 0 && t.isMatrix() && t.cols > 0;
 }
 
-/* Metal stage-out / interface expansion of one varying: how many locations it
- * occupies and the interface type of a single one.  Same rule as
+/* Metal stage-out / stage_in / interface expansion of one varying: how many
+ * locations it occupies and the interface type of a single one.  Same rule as
  * attrExpansion -- a matrix contributes one location per column, an array one
- * per element, an array of matrices cols per element -- with the integer
- * float-carrier transform the stage needs applied to the per-location type.
- * `count` mirrors varyingLocationSpan, which is also what advances the
- * interface tags (varyingIfaceTag takes one linear index), so the record, the
- * argument and the metadata sides cannot disagree. */
+ * per element, an array of matrices cols per element -- which is also what
+ * advances the interface tags (varyingIfaceTag takes one linear index), so the
+ * record, the argument and the metadata sides cannot disagree. */
 struct VaryingExpansion {
     uint32_t count = 1;
     MType fieldType;
 };
 
-static VaryingExpansion varyingExpansion(const MType &t, bool carrierStage)
+static VaryingExpansion varyingExpansion(const MType &t)
 {
     VaryingExpansion e;
     e.count = varyingLocationSpan(t);
-    MType loc = controlPointLocationType(t);
-    if (varyingUsesFloatCarrier(loc, carrierStage))
-        loc = floatCarrierType(loc);
-    e.fieldType = loc;
+    e.fieldType = controlPointLocationType(t);
     return e;
+}
+
+/* The float carrier AGX needs for an integer varying (a raw int stage_in or
+ * stage_out is misread).  Kept apart from varyingExpansion because the
+ * consumers disagree on who applies it: the record and the interface metadata
+ * carry the transformed type, the FS metadata emitter applies it itself (it
+ * also needs the pre-carrier type to pick `air.flat`) and stage_in consumption
+ * decodes it back. */
+static MType varyingFieldType(const MType &fieldType, bool carrierStage)
+{
+    return varyingUsesFloatCarrier(fieldType, carrierStage)
+        ? floatCarrierType(fieldType) : fieldType;
 }
 
 /* Reassemble a control-point member from the per-location fields emitted by
@@ -13006,7 +13013,25 @@ llvm::Value *assembleReturn(Codegen &cg) {
                 llvm::Value *base = cg.lvalues.count(var->name)
                     ? cg.lvalues[var->name]
                     : llvm::UndefValue::get(llvmType(var->type, *cg.ctx));
-                if (var->type.isArray()) {
+                if (isMatrixArray(var->type)) {
+                    /* Element-major columns: one return field per column,
+                     * matching retElems (see varyingExpansion). */
+                    MType colTy = matrixColumnType(var->type);
+                    for (uint32_t element = 0;
+                         element < (uint32_t)var->type.arr; element++) {
+                        llvm::Value *mat = base;
+                        if (base->getType()->isArrayTy())
+                            mat = cg.b->CreateExtractValue(base, element);
+                        for (uint32_t c = 0; c < var->type.cols; c++) {
+                            llvm::Value *col = mat;
+                            if (mat->getType()->isArrayTy())
+                                col = cg.b->CreateExtractValue(mat, c);
+                            if (varyingUsesFloatCarrier(colTy, cg.has_gs))
+                                col = encodeFloatCarrier(cg, col, colTy.scalar);
+                            ret = cg.b->CreateInsertValue(ret, col, ri++);
+                        }
+                    }
+                } else if (var->type.isArray()) {
                     /* Flattened: one return field per element. */
                     uint32_t n = (uint32_t)var->type.arr;
                     for (uint32_t k = 0; k < n; k++) {
@@ -14006,10 +14031,11 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                         retElems.push_back(llvmType(lane, ctx));
                         retElems.push_back(llvmType(lane, ctx));
                     } else {
-                        const VaryingExpansion ve =
-                            varyingExpansion(v.type, ifaceGs);
+                        const VaryingExpansion ve = varyingExpansion(v.type);
+                        const MType fieldTy =
+                            varyingFieldType(ve.fieldType, ifaceGs);
                         for (uint32_t i = 0; i < ve.count; i++)
-                            retElems.push_back(llvmType(ve.fieldType, ctx));
+                            retElems.push_back(llvmType(fieldTy, ctx));
                     }
                 }
                 varyings.push_back(&v);
@@ -14224,30 +14250,19 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     }
     for (VarSym &v : syms) {
         if (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING) {
-            if (v.type.isArray()) {
-                /* Flattened stage-in: N scalar params (Metal forbids array
-                 * stage-in members; the setup binds one arg per element). */
-                MType el = v.type;
-                el.arr = 0;
-                MType iface = varyingUsesFloatCarrier(v.type, has_gs)
-                    ? floatCarrierType(el) : el;
-                for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
-                    paramTys.push_back(llvmType(iface, ctx));
-            } else if (v.type.isMatrix()) {
-                MType col = matrixColumnType(v.type);
-                if (varyingUsesFloatCarrier(col, has_gs))
-                    col = floatCarrierType(col);
-                for (uint32_t c = 0; c < v.type.cols; c++)
-                    paramTys.push_back(llvmType(col, ctx));
+            if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
+                /* A scalar uint stage-in splits into two exact float lanes. */
+                MType lane = floatCarrierType(v.type);
+                paramTys.push_back(llvmType(lane, ctx));
+                paramTys.push_back(llvmType(lane, ctx));
             } else {
-                if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
-                    paramTys.push_back(llvmType(floatCarrierType(v.type), ctx));
-                    paramTys.push_back(llvmType(floatCarrierType(v.type), ctx));
-                } else {
-                    paramTys.push_back(llvmType(
-                        varyingUsesFloatCarrier(v.type, has_gs)
-                            ? floatCarrierType(v.type) : v.type, ctx));
-                }
+                /* Flattened stage-in: one argument per location (Metal forbids
+                 * array and matrix stage-in members; the setup binds one arg
+                 * per location, see varyingExpansion). */
+                const VaryingExpansion ve = varyingExpansion(v.type);
+                const MType argTy = varyingFieldType(ve.fieldType, has_gs);
+                for (uint32_t k = 0; k < ve.count; k++)
+                    paramTys.push_back(llvmType(argTy, ctx));
             }
         }
     }
@@ -14449,14 +14464,12 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                      imageCount;
             for (VarSym &v : syms)
                 if (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING) {
+                    /* Mirror the stage_in argument list above one-for-one; a
+                     * scalar uint is the only two-argument shape. */
                     if (uintUsesSplitFloatCarrier(v.type, has_gs))
                         bufIdx += 2;
-                    else if (v.type.isArray() && v.type.arr > 0)
-                        bufIdx += (uint32_t)v.type.arr;
-                    else if (v.type.isMatrix() && v.type.cols > 0)
-                        bufIdx += (uint32_t)v.type.cols;
                     else
-                        bufIdx += 1;
+                        bufIdx += varyingExpansion(v.type).count;
                 }
             if (usesFragmentClipDistance)
                 bufIdx += activeClipCount;
@@ -14598,11 +14611,15 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             llvm::Value *agg = llvm::UndefValue::get(llvmType(ex.aggType, ctx));
             if (isMatrixArray(v.type)) {
                 /* Array of matrices: element-major columns, so `cols`
-                 * arguments make one element and the elements make the array. */
-                const MType col = matrixColumnType(v.type);
+                 * arguments make one element and the elements make the array.
+                 * `matTy` is the matrix type (llvmType gives [cols x vec]) so
+                 * the nested insertvalue types line up. */
+                MType matTy = ex.aggType;
+                matTy.arr = 0;
                 for (uint32_t element = 0; element < (uint32_t)v.type.arr;
                      element++) {
-                    llvm::Value *mat = llvm::UndefValue::get(llvmType(col, ctx));
+                    llvm::Value *mat =
+                        llvm::UndefValue::get(llvmType(matTy, ctx));
                     for (uint32_t c = 0; c < v.type.cols; c++)
                         mat = cg.b->CreateInsertValue(mat, fn->getArg(argSlot++),
                                                       c);
@@ -14746,11 +14763,13 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
              * is neither the "array of elements" nor the "matrix of columns"
              * shape the flattened paths below handle (see attrExpansion). */
             const AttrExpansion ex = attrExpansion(v.type);
-            const MType col = matrixColumnType(v.type);
+            MType matTy = ex.aggType;
+            matTy.arr = 0;
             llvm::Value *agg = llvm::UndefValue::get(llvmType(ex.aggType, ctx));
             for (uint32_t element = 0; element < (uint32_t)v.type.arr;
                  element++) {
-                llvm::Value *mat = llvm::UndefValue::get(llvmType(col, ctx));
+                llvm::Value *mat =
+                    llvm::UndefValue::get(llvmType(matTy, ctx));
                 for (uint32_t c = 0; c < v.type.cols; c++)
                     mat = cg.b->CreateInsertValue(mat, fn->getArg(argSlot++), c);
                 agg = cg.b->CreateInsertValue(agg, mat, element);
@@ -14760,7 +14779,33 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         }
         if ((isVS && isCapture && v.kind == VarSym::ATTR) ||
             (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING)) {
-            if (v.type.isArray() && v.type.arr > 0) {
+            if (isMatrixArray(v.type)) {
+                /* Array of matrices: element-major columns (see
+                 * varyingExpansion).  A varying column decodes the integer
+                 * float carrier its stage_in argument rode in on. */
+                const VaryingExpansion ve = varyingExpansion(v.type);
+                MType matTy = v.type;
+                matTy.arr = 0;
+                const bool carrier =
+                    varyingUsesFloatCarrier(ve.fieldType, has_gs);
+                llvm::Type *colTy = llvmType(ve.fieldType, ctx);
+                llvm::Value *agg =
+                    llvm::UndefValue::get(llvmType(v.type, ctx));
+                for (uint32_t element = 0; element < (uint32_t)v.type.arr;
+                     element++) {
+                    llvm::Value *mat =
+                        llvm::UndefValue::get(llvmType(matTy, ctx));
+                    for (uint32_t c = 0; c < v.type.cols; c++) {
+                        llvm::Value *arg = fn->getArg(argSlot++);
+                        if (carrier)
+                            arg = decodeFloatCarrier(cg, arg,
+                                                     ve.fieldType.scalar, colTy);
+                        mat = cg.b->CreateInsertValue(mat, arg, c);
+                    }
+                    agg = cg.b->CreateInsertValue(agg, mat, element);
+                }
+                cg.lvalues[v.name] = agg;
+            } else if (v.type.isArray() && v.type.arr > 0) {
                 /* Flattened stage-in: N scalar args assembled into a
                  * single aggregate lvalue so the read paths (readIndexChain
                  * / swizzles) keep working unchanged. */
@@ -17222,29 +17267,21 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             if (v.kind != VarSym::VARYING) continue;
             const bool forceFlat = v.isFlat;
             const bool noPersp = v.isNoPerspective;
-            if (v.type.isArray()) {
-                /* Flattened: one fragment_input per element, each with the
-                 * element-specific interface name (matches the VS side). */
-                MType el = v.type;
-                el.arr = 0;
-                uint32_t n = (uint32_t)v.type.arr;
-                for (uint32_t k = 0; k < n; k++) {
-                    std::string elName = varyingIfaceTag(v, k, has_gs);
-                    emitFSVarying(elName, el, mArgSlot++, forceFlat, noPersp);
-                }
-            } else if (v.type.isMatrix()) {
-                MType col = matrixColumnType(v.type);
-                for (uint32_t c = 0; c < v.type.cols; c++) {
-                    std::string colName = varyingIfaceTag(v, c, has_gs);
-                    emitFSVarying(colName, col, mArgSlot++, forceFlat, noPersp);
-                }
-            } else {
+            if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
                 std::string tag = varyingIfaceTag(v, 0, has_gs);
-                if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
-                    emitFSVarying(tag + "_lo", v.type, mArgSlot++, true);
-                    emitFSVarying(tag + "_hi", v.type, mArgSlot++, true);
-                } else {
-                    emitFSVarying(tag, v.type, mArgSlot++, forceFlat, noPersp);
+                emitFSVarying(tag + "_lo", v.type, mArgSlot++, true);
+                emitFSVarying(tag + "_hi", v.type, mArgSlot++, true);
+            } else {
+                /* Flattened: one fragment_input per location, with the
+                 * location-ordered interface name the VS side computes from the
+                 * same rule (varyingExpansion).  The carrier stays
+                 * emitFSVarying's job -- it also needs the pre-carrier type to
+                 * decide whether the input is `air.flat`. */
+                const VaryingExpansion ve = varyingExpansion(v.type);
+                for (uint32_t k = 0; k < ve.count; k++) {
+                    std::string tag = varyingIfaceTag(v, k, has_gs);
+                    emitFSVarying(tag, ve.fieldType, mArgSlot++, forceFlat,
+                                  noPersp);
                 }
             }
         }
@@ -17587,14 +17624,15 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                     llvm::MDString::get(ctx, "air.arg_name"),
                     llvm::MDString::get(ctx, tag + "_hi")}));
             } else {
-                const VaryingExpansion ve = varyingExpansion(v->type, ifaceGs);
+                const VaryingExpansion ve = varyingExpansion(v->type);
+                const MType outTy = varyingFieldType(ve.fieldType, ifaceGs);
                 for (uint32_t k = 0; k < ve.count; k++) {
                     std::string tag = varyingIfaceTag(*v, k, ifaceGs);
                     outNodes.push_back(llvm::MDNode::get(ctx, {
                         llvm::MDString::get(ctx, "air.vertex_output"),
-                        llvm::MDString::get(ctx, airGenerated(tag, ve.fieldType)),
+                        llvm::MDString::get(ctx, airGenerated(tag, outTy)),
                         llvm::MDString::get(ctx, "air.arg_type_name"),
-                        llvm::MDString::get(ctx, mslTypeName(ve.fieldType)),
+                        llvm::MDString::get(ctx, mslTypeName(outTy)),
                         llvm::MDString::get(ctx, "air.arg_name"),
                         llvm::MDString::get(ctx, tag)}));
                 }
