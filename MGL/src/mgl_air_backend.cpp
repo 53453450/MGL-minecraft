@@ -1626,6 +1626,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
  * `if`.  Keep the comma form. */
 static bool emitCallTextureQuery(Codegen &cg, const MGLExpr *e,
                                  const char *name, llvm::Value **out);
+static bool emitCallUserFunction(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out);
 static bool emitCallDerivativeBuiltins(
     Codegen &cg, const MGLExpr *e, const char *name,
     const MGLIRModule *mod, const std::map<std::string, MType> &locals,
@@ -8387,502 +8391,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (emitCallSsboAtomic(cg, e, name, mod, locals, &handled))
                 return handled;
         }
-        /* User-defined function call. */
-        if (cg.userFns || cg.userFnDecls) {
-            const MGLIRSymbol *chosen = nullptr;
-            if (mod) {
-                int best_max = 0, best_sum = 0, best_exact = -1;
-                std::vector<MType> argt(e->u.call.arg_count);
-                for (uint32_t i = 0; i < e->u.call.arg_count; i++)
-                    argt[i] = exprType(cg, e->u.call.args[i], mod, locals);
-                for (uint32_t si = 0; si < mod->symbol_count; si++) {
-                    const MGLIRSymbol *fs = mod->symbols[si];
-                    if (!fs || !fs->is_function || !fs->name ||
-                        strcmp(fs->name, name) != 0 ||
-                        fs->param_count != e->u.call.arg_count)
-                        continue;
-                    int maxr = 0, sum = 0, exact = 0, ok = 1;
-                    for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
-                        int r = mtypeConvRank(
-                            argt[i],
-                            fs->param_types ? fs->param_types[i] : nullptr);
-                        if (r < 0) {
-                            ok = 0;
-                            break;
-                        }
-                        if (r == 0) exact++;
-                        sum += r;
-                        if (r > maxr) maxr = r;
-                    }
-                    if (!ok) continue;
-                    int better = !chosen || maxr < best_max ||
-                                 (maxr == best_max && sum < best_sum) ||
-                                 (maxr == best_max && sum == best_sum &&
-                                  exact > best_exact);
-                    if (better) {
-                        chosen = fs;
-                        best_max = maxr;
-                        best_sum = sum;
-                        best_exact = exact;
-                    }
-                }
-            }
-            std::string key = chosen
-                ? userFnKey(name, chosen->param_count, chosen->param_types)
-                : userFnKey(name, e->u.call.arg_count, nullptr);
-            /* Prefer inlining when a decl is registered in userFnDecls
-             * (GS/TCS/compute always; any stage when a param is out/inout
-             * so by-value LLVM calls cannot lose write-back). */
-            if (cg.userFnDecls) {
-                auto dit = cg.userFnDecls->find(key);
-                if (dit == cg.userFnDecls->end())
-                    dit = cg.userFnDecls->find(
-                        userFnKey(name, e->u.call.arg_count, nullptr));
-                if (dit != cg.userFnDecls->end() && dit->second &&
-                    dit->second->body) {
-                    MGLDecl *fd = dit->second;
-                    std::map<std::string, MType> ilocals = locals;
-                    std::map<std::string, llvm::Value *> saved;
-                    std::map<std::string, const MGLIRType *> savedIR;
-                    /* Caller array allocas (arrayMem) outrank lvalues in
-                     * varValue.  Hide them while a same-named param is
-                     * bound so isOk(vec3 a,…) is not read as main's
-                     * float[3] a (CTS arrays.unnamed_parameter.*_fragment). */
-                    std::map<std::string, llvm::Value *> savedArrMem;
-                    std::map<std::string, llvm::Type *> savedArrMemTypes;
-                    /* Inner decls (CTS `bool result` vs caller `vec4 result`)
-                     * must not clobber the caller's SSA map. */
-                    std::map<std::string, llvm::Value *> callerLvalues =
-                        cg.lvalues;
-                    std::map<std::string, const MGLIRType *> callerIR =
-                        cg.localIRTypes;
-                    std::set<std::string> wroteBack;
-                    std::set<std::string> localsBeforeCall;
-                    for (const auto &kv : ilocals)
-                        localsBeforeCall.insert(kv.first);
-                    for (uint32_t a = 0; a < fd->param_count &&
-                                        a < e->u.call.arg_count; a++) {
-                        MGLDecl *pd = fd->params[a];
-                        if (!pd || !pd->name) continue;
-                        llvm::Value *av =
-                            emitExpr(cg, e->u.call.args[a], mod, locals);
-                        if (!av) return nullptr;
-                        MType pt;
-                        pt.scalar = (MGLIRScalar)(pd->type ? pd->type->base
-                                                           : MGL_AST_TYPE_FLOAT);
-                        if (pd->type && pd->type->vec_size)
-                            pt.vec = pd->type->vec_size;
-                        if (pd->type && pd->type->mat_cols > 1) {
-                            pt.cols = pd->type->mat_cols;
-                            pt.rows = pd->type->mat_rows;
-                        }
-                        if (pd->array_count > 0 && pd->array_dims)
-                            pt.arr = pd->array_dims[0];
-                        if (pd->type &&
-                            pd->type->base != MGL_AST_TYPE_STRUCT &&
-                            pd->type->base != MGL_AST_TYPE_SAMPLER &&
-                            pd->type->base != MGL_AST_TYPE_IMAGE &&
-                            !pt.isArray())
-                            av = coerceScalar(cg, av, pt.scalar);
-                        if (cg.lvalues.count(pd->name))
-                            saved[pd->name] = cg.lvalues[pd->name];
-                        cg.lvalues[pd->name] = av;
-                        ilocals[pd->name] = pt;
-                        if (cg.arrayMem.count(pd->name)) {
-                            savedArrMem[pd->name] = cg.arrayMem[pd->name];
-                            cg.arrayMem.erase(pd->name);
-                        }
-                        if (cg.arrayMemTypes.count(pd->name)) {
-                            savedArrMemTypes[pd->name] =
-                                cg.arrayMemTypes[pd->name];
-                            cg.arrayMemTypes.erase(pd->name);
-                        }
-                        if (pd->type &&
-                            pd->type->base == MGL_AST_TYPE_STRUCT &&
-                            pd->type->name) {
-                            auto sit =
-                                cg.structTypes.find(pd->type->name);
-                            if (sit != cg.structTypes.end()) {
-                                auto irit =
-                                    cg.localIRTypes.find(pd->name);
-                                if (irit != cg.localIRTypes.end())
-                                    savedIR[pd->name] = irit->second;
-                                cg.localIRTypes[pd->name] = sit->second;
-                            }
-                        }
-                    }
-                    int savedErr = cg.err;
-                    bool savedInline = cg.inliningHelper;
-                    llvm::Value *savedRet = cg.inlineRetVal;
-                    llvm::BasicBlock *savedExit = cg.inlineExitBB;
-                    llvm::PHINode *savedPhi = cg.inlineRetPhi;
-                    auto savedExitSnaps = cg.inlineExitSnaps;
-                    cg.inliningHelper = true;
-                    cg.inlineRetVal = nullptr;
-                    cg.inlineExitBB = nullptr;
-                    cg.inlineRetPhi = nullptr;
-                    cg.inlineExitSnaps.clear();
-                    cg.err = 0;
-                    emitStmt(cg, fd->body, mod, &ilocals);
-                    if (cg.inlineExitBB) {
-                        llvm::BasicBlock *cur = cg.b->GetInsertBlock();
-                        bool fellThrough = cur && !cur->getTerminator();
-                        if (fellThrough) {
-                            if (cg.inlineRetPhi)
-                                cg.inlineRetPhi->addIncoming(
-                                    llvm::UndefValue::get(
-                                        cg.inlineRetPhi->getType()),
-                                    cur);
-                            cg.b->CreateBr(cg.inlineExitBB);
-                        }
-                        /* Merge the live values at the exit.  A return edge may
-                         * originate inside a nested loop/if, so a value merged
-                         * in one of those blocks does not dominate the exit --
-                         * handing the caller that block-local value produced
-                         * "Instruction does not dominate all uses!".  Build a
-                         * phi whenever the edges disagree; a value carried
-                         * identically by every edge already dominates the exit,
-                         * so it is left as is.  Mirrors BreakCtx::snaps. */
-                        if (cg.err != 1) {
-                            std::set<std::string> names;
-                            for (const auto &s : cg.inlineExitSnaps)
-                                for (const auto &kv : s.second)
-                                    names.insert(kv.first);
-                            if (fellThrough)
-                                for (const auto &kv : cg.lvalues)
-                                    names.insert(kv.first);
-                            unsigned nEdges =
-                                (unsigned)cg.inlineExitSnaps.size() +
-                                (fellThrough ? 1u : 0u);
-                            for (const auto &n : names) {
-                                if (nEdges == 0u) break;
-                                llvm::Type *ty = nullptr;
-                                llvm::Value *first = nullptr;
-                                unsigned present = 0, mismatch = 0;
-                                auto observe = [&](llvm::Value *v) {
-                                    if (!v) return;
-                                    if (!ty) {
-                                        ty = v->getType();
-                                        first = v;
-                                        present = 1;
-                                        return;
-                                    }
-                                    present++;
-                                    if (v->getType() != ty || v != first)
-                                        mismatch++;
-                                };
-                                for (const auto &s : cg.inlineExitSnaps) {
-                                    auto it = s.second.find(n);
-                                    observe(it != s.second.end() ? it->second
-                                                                 : nullptr);
-                                }
-                                if (fellThrough) {
-                                    auto it = cg.lvalues.find(n);
-                                    observe(it != cg.lvalues.end() ? it->second
-                                                                   : nullptr);
-                                }
-                                /* Uniform across every edge -> it dominates the
-                                 * exit already; only (re)build on disagreement
-                                 * (including a name present on some edges only,
-                                 * which enters as undef on the rest). */
-                                if (!ty || (present == nEdges && mismatch == 0))
-                                    continue;
-                                auto *phi = llvm::PHINode::Create(
-                                    ty, nEdges, n, cg.inlineExitBB);
-                                for (const auto &s : cg.inlineExitSnaps) {
-                                    auto it = s.second.find(n);
-                                    llvm::Value *v =
-                                        (it != s.second.end() &&
-                                         it->second->getType() == ty)
-                                            ? it->second
-                                            : llvm::UndefValue::get(ty);
-                                    phi->addIncoming(v, s.first);
-                                }
-                                if (fellThrough) {
-                                    auto it = cg.lvalues.find(n);
-                                    llvm::Value *v =
-                                        (it != cg.lvalues.end() &&
-                                         it->second->getType() == ty)
-                                            ? it->second
-                                            : llvm::UndefValue::get(ty);
-                                    phi->addIncoming(v, cur);
-                                }
-                                cg.lvalues[n] = phi;
-                            }
-                        }
-                        cg.b->SetInsertPoint(cg.inlineExitBB);
-                    }
-                    llvm::Value *ret = cg.inlineRetPhi
-                        ? (llvm::Value *)cg.inlineRetPhi
-                        : cg.inlineRetVal;
-                    cg.inliningHelper = savedInline;
-                    cg.inlineRetVal = savedRet;
-                    cg.inlineExitBB = savedExit;
-                    cg.inlineRetPhi = savedPhi;
-                    cg.inlineExitSnaps = savedExitSnaps;
-                    /* GLSL out/inout: write the final param value back to
-                     * the caller's lvalue argument before unshadowing. */
-                    for (uint32_t a = 0; a < fd->param_count &&
-                                        a < e->u.call.arg_count; a++) {
-                        MGLDecl *pd = fd->params[a];
-                        if (!pd || !pd->name) continue;
-                        if (!(pd->qualifiers & MGL_AST_Q_OUT)) continue;
-                        const MGLExpr *arg = e->u.call.args[a];
-                        if (!arg) continue;
-                        auto pit = cg.lvalues.find(pd->name);
-                        if (pit == cg.lvalues.end()) continue;
-                        if (arg->kind == MGL_EXPR_VAR_REF &&
-                            arg->u.var_ref.name) {
-                            cg.lvalues[arg->u.var_ref.name] = pit->second;
-                            wroteBack.insert(arg->u.var_ref.name);
-                            storeStageOut(cg, arg->u.var_ref.name,
-                                          pit->second);
-                            continue;
-                        }
-                        const MGLExpr *rootE = arg;
-                        while (rootE &&
-                               (rootE->kind == MGL_EXPR_INDEX ||
-                                rootE->kind == MGL_EXPR_MEMBER)) {
-                            rootE = (rootE->kind == MGL_EXPR_INDEX)
-                                ? rootE->u.index.object
-                                : rootE->u.member.object;
-                        }
-                        if (!rootE || rootE->kind != MGL_EXPR_VAR_REF ||
-                            !rootE->u.var_ref.name ||
-                            !cg.lvalues.count(rootE->u.var_ref.name)) {
-                            cg.err = 1;
-                            cg.errmsg =
-                                "codegen: out/inout argument writeback "
-                                "unsupported for this lvalue";
-                            break;
-                        }
-                        llvm::Value *nv = updateIndexPath(
-                            cg, arg, cg.lvalues[rootE->u.var_ref.name],
-                            pit->second, mod, locals);
-                        if (!nv) {
-                            cg.err = 1;
-                            if (cg.errmsg.empty())
-                                cg.errmsg =
-                                    "codegen: out/inout argument "
-                                    "writeback failed";
-                            break;
-                        }
-                        cg.lvalues[rootE->u.var_ref.name] = nv;
-                        wroteBack.insert(rootE->u.var_ref.name);
-                        storeStageOut(cg, rootE->u.var_ref.name, nv);
-                    }
-                    for (uint32_t a = 0; a < fd->param_count; a++) {
-                        MGLDecl *pd = fd->params[a];
-                        if (!pd || !pd->name) continue;
-                        auto sit = saved.find(pd->name);
-                        if (sit != saved.end())
-                            cg.lvalues[pd->name] = sit->second;
-                        else
-                            cg.lvalues.erase(pd->name);
-                        auto iit = savedIR.find(pd->name);
-                        if (iit != savedIR.end())
-                            cg.localIRTypes[pd->name] = iit->second;
-                        else if (pd->type &&
-                                 pd->type->base == MGL_AST_TYPE_STRUCT)
-                            cg.localIRTypes.erase(pd->name);
-                    }
-                    for (const auto &kv : savedArrMem)
-                        cg.arrayMem[kv.first] = kv.second;
-                    for (const auto &kv : savedArrMemTypes)
-                        cg.arrayMemTypes[kv.first] = kv.second;
-                    /* Callee locals that shadow a name (e.g. bool result vs
-                     * out vec4 result) must restore the caller SSA.  Shader
-                     * globals — including freestanding temps like Ambient
-                     * and stage outs like color — share storage across the
-                     * call and must keep the callee's writes (CTS
-                     * buffer_objects.triangles lighting). */
-                    std::set<std::string> calleeLocalNames;
-                    for (const auto &kv : ilocals) {
-                        if (!localsBeforeCall.count(kv.first))
-                            calleeLocalNames.insert(kv.first);
-                    }
-                    auto isSharedAcrossCall = [&](const std::string &n) {
-                        const MGLIRSymbol *s = findSymbol(mod, n.c_str());
-                        if (s && !s->is_function) return true;
-                        /* Stage I/O builtins are not IR symbols but must
-                         * keep helper writes (CTS fragdepth.write_in_function). */
-                        return n == "gl_FragDepth" || n == "gl_FragColor" ||
-                               n == "gl_SampleMask" || n == "gl_Position" ||
-                               n == "gl_PointSize" || n == "gl_Layer" ||
-                               n == "gl_ViewportIndex" ||
-                               n == "gl_ClipDistance" ||
-                               n == "gl_CullDistance" ||
-                               n == "gl_TessLevelOuter" ||
-                               n == "gl_TessLevelInner";
-                    };
-                    for (const auto &kv : callerLvalues) {
-                        if (wroteBack.count(kv.first)) continue;
-                        /* Shared stage outs keep the callee write unless a
-                         * same-named callee local shadowed them. */
-                        if (isSharedAcrossCall(kv.first) &&
-                            !calleeLocalNames.count(kv.first))
-                            continue;
-                        if (calleeLocalNames.count(kv.first) ||
-                            !isSharedAcrossCall(kv.first))
-                            cg.lvalues[kv.first] = kv.second;
-                    }
-                    for (auto it = cg.lvalues.begin();
-                         it != cg.lvalues.end();) {
-                        if (callerLvalues.count(it->first) ||
-                            wroteBack.count(it->first) ||
-                            isSharedAcrossCall(it->first))
-                            ++it;
-                        else
-                            it = cg.lvalues.erase(it);
-                    }
-                    for (const auto &kv : callerIR) {
-                        if (wroteBack.count(kv.first)) continue;
-                        if (isSharedAcrossCall(kv.first) &&
-                            !calleeLocalNames.count(kv.first))
-                            continue;
-                        if (calleeLocalNames.count(kv.first) ||
-                            !isSharedAcrossCall(kv.first))
-                            cg.localIRTypes[kv.first] = kv.second;
-                    }
-                    for (auto it = cg.localIRTypes.begin();
-                         it != cg.localIRTypes.end();) {
-                        if (callerIR.count(it->first) ||
-                            wroteBack.count(it->first) ||
-                            isSharedAcrossCall(it->first))
-                            ++it;
-                        else
-                            it = cg.localIRTypes.erase(it);
-                    }
-                    if (cg.err == 1) return nullptr;
-                    /* Helper return ends the inlined body, not the caller. */
-                    if (cg.err == 2) cg.err = savedErr;
-                    MType rt;
-                    rt.scalar = (MGLIRScalar)(fd->type ? fd->type->base
-                                                       : MGL_AST_TYPE_FLOAT);
-                    if (fd->type && fd->type->vec_size)
-                        rt.vec = fd->type->vec_size;
-                    if (fd->type && fd->type->mat_cols > 1) {
-                        rt.cols = fd->type->mat_cols;
-                        rt.rows = fd->type->mat_rows;
-                    }
-                    if (fd->array_count > 0 && fd->array_dims)
-                        rt.arr = fd->array_dims[0];
-                    if (ret) {
-                        if (!rt.isMatrix() && !rt.isArray() &&
-                            !(fd->type &&
-                              fd->type->base == MGL_AST_TYPE_STRUCT))
-                            ret = coerceScalar(cg, ret, rt.scalar);
-                        return ret;
-                    }
-                    return llvm::ConstantInt::get(
-                        llvm::Type::getInt32Ty(*cg.ctx), 0);
-                }
-            }
-            if (!cg.userFns) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: call to '") + name +
-                            "' not implemented in M1";
-                return nullptr;
-            }
-            auto fit = cg.userFns->find(key);
-            if (fit != cg.userFns->end()) {
-                uint64_t hidden = 0;
-                if (cg.userFnHidden) {
-                    auto hit = cg.userFnHidden->find(key);
-                    if (hit != cg.userFnHidden->end())
-                        hidden = hit->second;
-                }
-                if (e->u.call.arg_count + hidden !=
-                    fit->second->arg_size()) {
-                    cg.err = 1;
-                    cg.errmsg = std::string("codegen: function '") + name +
-                                "' expects " +
-                                std::to_string(fit->second->arg_size() -
-                                               hidden) +
-                                " argument(s)";
-                    return nullptr;
-                }
-                std::vector<llvm::Value *> args;
-                for (uint32_t a = 0; a < e->u.call.arg_count; a++) {
-                    llvm::Value *av = nullptr;
-                    llvm::Type *at = fit->second->getArg(a)->getType();
-                    if (at->isPointerTy()) {
-                        llvm::Type *pt = at->getPointerElementType();
-                        if (pt->isStructTy()) {
-                            llvm::StringRef sn = pt->getStructName();
-                            if (!sn.empty() &&
-                                sn.startswith("struct._texture_") &&
-                                e->u.call.args[a]->kind == MGL_EXPR_VAR_REF)
-                                av = samplerTexValue(
-                                    cg, e->u.call.args[a]->u.var_ref.name);
-                        }
-                    }
-                    if (!av) {
-                        av = emitExpr(cg, e->u.call.args[a], mod, locals);
-                        if (!av) return nullptr;
-                        av = coerceScalar(cg, av, scalarFromType(at));
-                    }
-                    args.push_back(av);
-                }
-                for (const auto &kv : cg.uboPtrs)
-                    args.push_back(kv.second);
-                for (const auto &kv : cg.ssboPtrs)
-                    args.push_back(kv.second);
-                for (const auto &kv : cg.acPtrs)
-                    args.push_back(kv.second);
-                if (cg.bufferSizePtr)
-                    args.push_back(cg.bufferSizePtr);
-                if (cg.userFnPassCull)
-                    args.push_back(cg.lvalues["gl_CullDistance"]);
-                if (cg.userFnPassClip)
-                    args.push_back(cg.lvalues["gl_ClipDistance"]);
-                if (cg.isGeometry) {
-                    args.push_back(cg.geometryInputPtr);
-                    args.push_back(cg.geometryOutputPtr);
-                    args.push_back(cg.geometryCountPtr);
-                    args.push_back(cg.geometryGatherPtr);
-                    args.push_back(cg.geometryGatherParamsPtr);
-                    args.push_back(cg.geometryWorkItemId);
-                    args.push_back(cg.geometryPrimitiveId);
-                    args.push_back(cg.geometryInvocationId);
-                }
-                if (cg.isTessControl) {
-                    args.push_back(cg.stageInPtr);
-                    args.push_back(cg.tessFactorPtr);
-                    args.push_back(cg.stageOutPtr);
-                    args.push_back(cg.indirectPtr);
-                    args.push_back(cg.invocationPos);
-                    args.push_back(cg.patchPos);
-                }
-                if (cg.isCompute && cg.threadPos)
-                    args.push_back(cg.threadPos);
-                if (!cg.isGeometry && !cg.isTessControl) {
-                    for (const auto &kv : cg.texValues)
-                        args.push_back(kv.second);
-                    for (const auto &kv : cg.smpValues)
-                        args.push_back(kv.second);
-                    for (const auto &kv : cg.texArrayValues)
-                        for (llvm::Value *tv : kv.second)
-                            args.push_back(tv);
-                    for (const auto &kv : cg.smpArrayValues)
-                        for (llvm::Value *sv : kv.second)
-                            args.push_back(sv);
-                }
-                if (cg.bufferPtr)
-                    args.push_back(cg.bufferPtr);
-                for (const auto &kv : cg.outPtrs)
-                    args.push_back(kv.second);
-                llvm::Value *call = cg.b->CreateCall(fit->second, args);
-                /* Pull stage outputs written by the callee back into the
-                 * caller's SSA map. */
-                for (const auto &kv : cg.outPtrs) {
-                    auto *ai = llvm::dyn_cast<llvm::AllocaInst>(kv.second);
-                    if (!ai) continue;
-                    cg.lvalues[kv.first] =
-                        cg.b->CreateLoad(ai->getAllocatedType(), kv.second);
-                }
-                return call;
-            }
+        {
+            llvm::Value *handled = nullptr;
+            if (emitCallUserFunction(cg, e, name, mod, locals, &handled))
+                return handled;
         }
         return emitCallUnimplemented(cg, e, name, mod);
     }
@@ -11445,6 +10957,513 @@ static bool emitCallDerivativeBuiltins(
         }
         llvm::Value *mb = emitMatrixBuiltin(cg, e, name, mod, locals);
         if (mb) return (*out = mb, true);
+    }
+
+    return false;
+}
+
+/* Lifted out of emitExpr's MGL_EXPR_CALL case. */
+static bool emitCallUserFunction(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out)
+{
+    /* User-defined function call. */
+    if (cg.userFns || cg.userFnDecls) {
+        const MGLIRSymbol *chosen = nullptr;
+        if (mod) {
+            int best_max = 0, best_sum = 0, best_exact = -1;
+            std::vector<MType> argt(e->u.call.arg_count);
+            for (uint32_t i = 0; i < e->u.call.arg_count; i++)
+                argt[i] = exprType(cg, e->u.call.args[i], mod, locals);
+            for (uint32_t si = 0; si < mod->symbol_count; si++) {
+                const MGLIRSymbol *fs = mod->symbols[si];
+                if (!fs || !fs->is_function || !fs->name ||
+                    strcmp(fs->name, name) != 0 ||
+                    fs->param_count != e->u.call.arg_count)
+                    continue;
+                int maxr = 0, sum = 0, exact = 0, ok = 1;
+                for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
+                    int r = mtypeConvRank(
+                        argt[i],
+                        fs->param_types ? fs->param_types[i] : nullptr);
+                    if (r < 0) {
+                        ok = 0;
+                        break;
+                    }
+                    if (r == 0) exact++;
+                    sum += r;
+                    if (r > maxr) maxr = r;
+                }
+                if (!ok) continue;
+                int better = !chosen || maxr < best_max ||
+                             (maxr == best_max && sum < best_sum) ||
+                             (maxr == best_max && sum == best_sum &&
+                              exact > best_exact);
+                if (better) {
+                    chosen = fs;
+                    best_max = maxr;
+                    best_sum = sum;
+                    best_exact = exact;
+                }
+            }
+        }
+        std::string key = chosen
+            ? userFnKey(name, chosen->param_count, chosen->param_types)
+            : userFnKey(name, e->u.call.arg_count, nullptr);
+        /* Prefer inlining when a decl is registered in userFnDecls
+         * (GS/TCS/compute always; any stage when a param is out/inout
+         * so by-value LLVM calls cannot lose write-back). */
+        if (cg.userFnDecls) {
+            auto dit = cg.userFnDecls->find(key);
+            if (dit == cg.userFnDecls->end())
+                dit = cg.userFnDecls->find(
+                    userFnKey(name, e->u.call.arg_count, nullptr));
+            if (dit != cg.userFnDecls->end() && dit->second &&
+                dit->second->body) {
+                MGLDecl *fd = dit->second;
+                std::map<std::string, MType> ilocals = locals;
+                std::map<std::string, llvm::Value *> saved;
+                std::map<std::string, const MGLIRType *> savedIR;
+                /* Caller array allocas (arrayMem) outrank lvalues in
+                 * varValue.  Hide them while a same-named param is
+                 * bound so isOk(vec3 a,…) is not read as main's
+                 * float[3] a (CTS arrays.unnamed_parameter.*_fragment). */
+                std::map<std::string, llvm::Value *> savedArrMem;
+                std::map<std::string, llvm::Type *> savedArrMemTypes;
+                /* Inner decls (CTS `bool result` vs caller `vec4 result`)
+                 * must not clobber the caller's SSA map. */
+                std::map<std::string, llvm::Value *> callerLvalues =
+                    cg.lvalues;
+                std::map<std::string, const MGLIRType *> callerIR =
+                    cg.localIRTypes;
+                std::set<std::string> wroteBack;
+                std::set<std::string> localsBeforeCall;
+                for (const auto &kv : ilocals)
+                    localsBeforeCall.insert(kv.first);
+                for (uint32_t a = 0; a < fd->param_count &&
+                                    a < e->u.call.arg_count; a++) {
+                    MGLDecl *pd = fd->params[a];
+                    if (!pd || !pd->name) continue;
+                    llvm::Value *av =
+                        emitExpr(cg, e->u.call.args[a], mod, locals);
+                    if (!av) return true;
+                    MType pt;
+                    pt.scalar = (MGLIRScalar)(pd->type ? pd->type->base
+                                                       : MGL_AST_TYPE_FLOAT);
+                    if (pd->type && pd->type->vec_size)
+                        pt.vec = pd->type->vec_size;
+                    if (pd->type && pd->type->mat_cols > 1) {
+                        pt.cols = pd->type->mat_cols;
+                        pt.rows = pd->type->mat_rows;
+                    }
+                    if (pd->array_count > 0 && pd->array_dims)
+                        pt.arr = pd->array_dims[0];
+                    if (pd->type &&
+                        pd->type->base != MGL_AST_TYPE_STRUCT &&
+                        pd->type->base != MGL_AST_TYPE_SAMPLER &&
+                        pd->type->base != MGL_AST_TYPE_IMAGE &&
+                        !pt.isArray())
+                        av = coerceScalar(cg, av, pt.scalar);
+                    if (cg.lvalues.count(pd->name))
+                        saved[pd->name] = cg.lvalues[pd->name];
+                    cg.lvalues[pd->name] = av;
+                    ilocals[pd->name] = pt;
+                    if (cg.arrayMem.count(pd->name)) {
+                        savedArrMem[pd->name] = cg.arrayMem[pd->name];
+                        cg.arrayMem.erase(pd->name);
+                    }
+                    if (cg.arrayMemTypes.count(pd->name)) {
+                        savedArrMemTypes[pd->name] =
+                            cg.arrayMemTypes[pd->name];
+                        cg.arrayMemTypes.erase(pd->name);
+                    }
+                    if (pd->type &&
+                        pd->type->base == MGL_AST_TYPE_STRUCT &&
+                        pd->type->name) {
+                        auto sit =
+                            cg.structTypes.find(pd->type->name);
+                        if (sit != cg.structTypes.end()) {
+                            auto irit =
+                                cg.localIRTypes.find(pd->name);
+                            if (irit != cg.localIRTypes.end())
+                                savedIR[pd->name] = irit->second;
+                            cg.localIRTypes[pd->name] = sit->second;
+                        }
+                    }
+                }
+                int savedErr = cg.err;
+                bool savedInline = cg.inliningHelper;
+                llvm::Value *savedRet = cg.inlineRetVal;
+                llvm::BasicBlock *savedExit = cg.inlineExitBB;
+                llvm::PHINode *savedPhi = cg.inlineRetPhi;
+                auto savedExitSnaps = cg.inlineExitSnaps;
+                cg.inliningHelper = true;
+                cg.inlineRetVal = nullptr;
+                cg.inlineExitBB = nullptr;
+                cg.inlineRetPhi = nullptr;
+                cg.inlineExitSnaps.clear();
+                cg.err = 0;
+                emitStmt(cg, fd->body, mod, &ilocals);
+                if (cg.inlineExitBB) {
+                    llvm::BasicBlock *cur = cg.b->GetInsertBlock();
+                    bool fellThrough = cur && !cur->getTerminator();
+                    if (fellThrough) {
+                        if (cg.inlineRetPhi)
+                            cg.inlineRetPhi->addIncoming(
+                                llvm::UndefValue::get(
+                                    cg.inlineRetPhi->getType()),
+                                cur);
+                        cg.b->CreateBr(cg.inlineExitBB);
+                    }
+                    /* Merge the live values at the exit.  A return edge may
+                     * originate inside a nested loop/if, so a value merged
+                     * in one of those blocks does not dominate the exit --
+                     * handing the caller that block-local value produced
+                     * "Instruction does not dominate all uses!".  Build a
+                     * phi whenever the edges disagree; a value carried
+                     * identically by every edge already dominates the exit,
+                     * so it is left as is.  Mirrors BreakCtx::snaps. */
+                    if (cg.err != 1) {
+                        std::set<std::string> names;
+                        for (const auto &s : cg.inlineExitSnaps)
+                            for (const auto &kv : s.second)
+                                names.insert(kv.first);
+                        if (fellThrough)
+                            for (const auto &kv : cg.lvalues)
+                                names.insert(kv.first);
+                        unsigned nEdges =
+                            (unsigned)cg.inlineExitSnaps.size() +
+                            (fellThrough ? 1u : 0u);
+                        for (const auto &n : names) {
+                            if (nEdges == 0u) break;
+                            llvm::Type *ty = nullptr;
+                            llvm::Value *first = nullptr;
+                            unsigned present = 0, mismatch = 0;
+                            auto observe = [&](llvm::Value *v) {
+                                if (!v) return;
+                                if (!ty) {
+                                    ty = v->getType();
+                                    first = v;
+                                    present = 1;
+                                    return;
+                                }
+                                present++;
+                                if (v->getType() != ty || v != first)
+                                    mismatch++;
+                            };
+                            for (const auto &s : cg.inlineExitSnaps) {
+                                auto it = s.second.find(n);
+                                observe(it != s.second.end() ? it->second
+                                                             : nullptr);
+                            }
+                            if (fellThrough) {
+                                auto it = cg.lvalues.find(n);
+                                observe(it != cg.lvalues.end() ? it->second
+                                                               : nullptr);
+                            }
+                            /* Uniform across every edge -> it dominates the
+                             * exit already; only (re)build on disagreement
+                             * (including a name present on some edges only,
+                             * which enters as undef on the rest). */
+                            if (!ty || (present == nEdges && mismatch == 0))
+                                continue;
+                            auto *phi = llvm::PHINode::Create(
+                                ty, nEdges, n, cg.inlineExitBB);
+                            for (const auto &s : cg.inlineExitSnaps) {
+                                auto it = s.second.find(n);
+                                llvm::Value *v =
+                                    (it != s.second.end() &&
+                                     it->second->getType() == ty)
+                                        ? it->second
+                                        : llvm::UndefValue::get(ty);
+                                phi->addIncoming(v, s.first);
+                            }
+                            if (fellThrough) {
+                                auto it = cg.lvalues.find(n);
+                                llvm::Value *v =
+                                    (it != cg.lvalues.end() &&
+                                     it->second->getType() == ty)
+                                        ? it->second
+                                        : llvm::UndefValue::get(ty);
+                                phi->addIncoming(v, cur);
+                            }
+                            cg.lvalues[n] = phi;
+                        }
+                    }
+                    cg.b->SetInsertPoint(cg.inlineExitBB);
+                }
+                llvm::Value *ret = cg.inlineRetPhi
+                    ? (llvm::Value *)cg.inlineRetPhi
+                    : cg.inlineRetVal;
+                cg.inliningHelper = savedInline;
+                cg.inlineRetVal = savedRet;
+                cg.inlineExitBB = savedExit;
+                cg.inlineRetPhi = savedPhi;
+                cg.inlineExitSnaps = savedExitSnaps;
+                /* GLSL out/inout: write the final param value back to
+                 * the caller's lvalue argument before unshadowing. */
+                for (uint32_t a = 0; a < fd->param_count &&
+                                    a < e->u.call.arg_count; a++) {
+                    MGLDecl *pd = fd->params[a];
+                    if (!pd || !pd->name) continue;
+                    if (!(pd->qualifiers & MGL_AST_Q_OUT)) continue;
+                    const MGLExpr *arg = e->u.call.args[a];
+                    if (!arg) continue;
+                    auto pit = cg.lvalues.find(pd->name);
+                    if (pit == cg.lvalues.end()) continue;
+                    if (arg->kind == MGL_EXPR_VAR_REF &&
+                        arg->u.var_ref.name) {
+                        cg.lvalues[arg->u.var_ref.name] = pit->second;
+                        wroteBack.insert(arg->u.var_ref.name);
+                        storeStageOut(cg, arg->u.var_ref.name,
+                                      pit->second);
+                        continue;
+                    }
+                    const MGLExpr *rootE = arg;
+                    while (rootE &&
+                           (rootE->kind == MGL_EXPR_INDEX ||
+                            rootE->kind == MGL_EXPR_MEMBER)) {
+                        rootE = (rootE->kind == MGL_EXPR_INDEX)
+                            ? rootE->u.index.object
+                            : rootE->u.member.object;
+                    }
+                    if (!rootE || rootE->kind != MGL_EXPR_VAR_REF ||
+                        !rootE->u.var_ref.name ||
+                        !cg.lvalues.count(rootE->u.var_ref.name)) {
+                        cg.err = 1;
+                        cg.errmsg =
+                            "codegen: out/inout argument writeback "
+                            "unsupported for this lvalue";
+                        break;
+                    }
+                    llvm::Value *nv = updateIndexPath(
+                        cg, arg, cg.lvalues[rootE->u.var_ref.name],
+                        pit->second, mod, locals);
+                    if (!nv) {
+                        cg.err = 1;
+                        if (cg.errmsg.empty())
+                            cg.errmsg =
+                                "codegen: out/inout argument "
+                                "writeback failed";
+                        break;
+                    }
+                    cg.lvalues[rootE->u.var_ref.name] = nv;
+                    wroteBack.insert(rootE->u.var_ref.name);
+                    storeStageOut(cg, rootE->u.var_ref.name, nv);
+                }
+                for (uint32_t a = 0; a < fd->param_count; a++) {
+                    MGLDecl *pd = fd->params[a];
+                    if (!pd || !pd->name) continue;
+                    auto sit = saved.find(pd->name);
+                    if (sit != saved.end())
+                        cg.lvalues[pd->name] = sit->second;
+                    else
+                        cg.lvalues.erase(pd->name);
+                    auto iit = savedIR.find(pd->name);
+                    if (iit != savedIR.end())
+                        cg.localIRTypes[pd->name] = iit->second;
+                    else if (pd->type &&
+                             pd->type->base == MGL_AST_TYPE_STRUCT)
+                        cg.localIRTypes.erase(pd->name);
+                }
+                for (const auto &kv : savedArrMem)
+                    cg.arrayMem[kv.first] = kv.second;
+                for (const auto &kv : savedArrMemTypes)
+                    cg.arrayMemTypes[kv.first] = kv.second;
+                /* Callee locals that shadow a name (e.g. bool result vs
+                 * out vec4 result) must restore the caller SSA.  Shader
+                 * globals — including freestanding temps like Ambient
+                 * and stage outs like color — share storage across the
+                 * call and must keep the callee's writes (CTS
+                 * buffer_objects.triangles lighting). */
+                std::set<std::string> calleeLocalNames;
+                for (const auto &kv : ilocals) {
+                    if (!localsBeforeCall.count(kv.first))
+                        calleeLocalNames.insert(kv.first);
+                }
+                auto isSharedAcrossCall = [&](const std::string &n) {
+                    const MGLIRSymbol *s = findSymbol(mod, n.c_str());
+                    if (s && !s->is_function) return true;
+                    /* Stage I/O builtins are not IR symbols but must
+                     * keep helper writes (CTS fragdepth.write_in_function). */
+                    return n == "gl_FragDepth" || n == "gl_FragColor" ||
+                           n == "gl_SampleMask" || n == "gl_Position" ||
+                           n == "gl_PointSize" || n == "gl_Layer" ||
+                           n == "gl_ViewportIndex" ||
+                           n == "gl_ClipDistance" ||
+                           n == "gl_CullDistance" ||
+                           n == "gl_TessLevelOuter" ||
+                           n == "gl_TessLevelInner";
+                };
+                for (const auto &kv : callerLvalues) {
+                    if (wroteBack.count(kv.first)) continue;
+                    /* Shared stage outs keep the callee write unless a
+                     * same-named callee local shadowed them. */
+                    if (isSharedAcrossCall(kv.first) &&
+                        !calleeLocalNames.count(kv.first))
+                        continue;
+                    if (calleeLocalNames.count(kv.first) ||
+                        !isSharedAcrossCall(kv.first))
+                        cg.lvalues[kv.first] = kv.second;
+                }
+                for (auto it = cg.lvalues.begin();
+                     it != cg.lvalues.end();) {
+                    if (callerLvalues.count(it->first) ||
+                        wroteBack.count(it->first) ||
+                        isSharedAcrossCall(it->first))
+                        ++it;
+                    else
+                        it = cg.lvalues.erase(it);
+                }
+                for (const auto &kv : callerIR) {
+                    if (wroteBack.count(kv.first)) continue;
+                    if (isSharedAcrossCall(kv.first) &&
+                        !calleeLocalNames.count(kv.first))
+                        continue;
+                    if (calleeLocalNames.count(kv.first) ||
+                        !isSharedAcrossCall(kv.first))
+                        cg.localIRTypes[kv.first] = kv.second;
+                }
+                for (auto it = cg.localIRTypes.begin();
+                     it != cg.localIRTypes.end();) {
+                    if (callerIR.count(it->first) ||
+                        wroteBack.count(it->first) ||
+                        isSharedAcrossCall(it->first))
+                        ++it;
+                    else
+                        it = cg.localIRTypes.erase(it);
+                }
+                if (cg.err == 1) return true;
+                /* Helper return ends the inlined body, not the caller. */
+                if (cg.err == 2) cg.err = savedErr;
+                MType rt;
+                rt.scalar = (MGLIRScalar)(fd->type ? fd->type->base
+                                                   : MGL_AST_TYPE_FLOAT);
+                if (fd->type && fd->type->vec_size)
+                    rt.vec = fd->type->vec_size;
+                if (fd->type && fd->type->mat_cols > 1) {
+                    rt.cols = fd->type->mat_cols;
+                    rt.rows = fd->type->mat_rows;
+                }
+                if (fd->array_count > 0 && fd->array_dims)
+                    rt.arr = fd->array_dims[0];
+                if (ret) {
+                    if (!rt.isMatrix() && !rt.isArray() &&
+                        !(fd->type &&
+                          fd->type->base == MGL_AST_TYPE_STRUCT))
+                        ret = coerceScalar(cg, ret, rt.scalar);
+                    return (*out = ret, true);
+                }
+                return (*out = llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(*cg.ctx), 0), true);
+            }
+        }
+        if (!cg.userFns) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: call to '") + name +
+                        "' not implemented in M1";
+            return true;
+        }
+        auto fit = cg.userFns->find(key);
+        if (fit != cg.userFns->end()) {
+            uint64_t hidden = 0;
+            if (cg.userFnHidden) {
+                auto hit = cg.userFnHidden->find(key);
+                if (hit != cg.userFnHidden->end())
+                    hidden = hit->second;
+            }
+            if (e->u.call.arg_count + hidden !=
+                fit->second->arg_size()) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: function '") + name +
+                            "' expects " +
+                            std::to_string(fit->second->arg_size() -
+                                           hidden) +
+                            " argument(s)";
+                return true;
+            }
+            std::vector<llvm::Value *> args;
+            for (uint32_t a = 0; a < e->u.call.arg_count; a++) {
+                llvm::Value *av = nullptr;
+                llvm::Type *at = fit->second->getArg(a)->getType();
+                if (at->isPointerTy()) {
+                    llvm::Type *pt = at->getPointerElementType();
+                    if (pt->isStructTy()) {
+                        llvm::StringRef sn = pt->getStructName();
+                        if (!sn.empty() &&
+                            sn.startswith("struct._texture_") &&
+                            e->u.call.args[a]->kind == MGL_EXPR_VAR_REF)
+                            av = samplerTexValue(
+                                cg, e->u.call.args[a]->u.var_ref.name);
+                    }
+                }
+                if (!av) {
+                    av = emitExpr(cg, e->u.call.args[a], mod, locals);
+                    if (!av) return true;
+                    av = coerceScalar(cg, av, scalarFromType(at));
+                }
+                args.push_back(av);
+            }
+            for (const auto &kv : cg.uboPtrs)
+                args.push_back(kv.second);
+            for (const auto &kv : cg.ssboPtrs)
+                args.push_back(kv.second);
+            for (const auto &kv : cg.acPtrs)
+                args.push_back(kv.second);
+            if (cg.bufferSizePtr)
+                args.push_back(cg.bufferSizePtr);
+            if (cg.userFnPassCull)
+                args.push_back(cg.lvalues["gl_CullDistance"]);
+            if (cg.userFnPassClip)
+                args.push_back(cg.lvalues["gl_ClipDistance"]);
+            if (cg.isGeometry) {
+                args.push_back(cg.geometryInputPtr);
+                args.push_back(cg.geometryOutputPtr);
+                args.push_back(cg.geometryCountPtr);
+                args.push_back(cg.geometryGatherPtr);
+                args.push_back(cg.geometryGatherParamsPtr);
+                args.push_back(cg.geometryWorkItemId);
+                args.push_back(cg.geometryPrimitiveId);
+                args.push_back(cg.geometryInvocationId);
+            }
+            if (cg.isTessControl) {
+                args.push_back(cg.stageInPtr);
+                args.push_back(cg.tessFactorPtr);
+                args.push_back(cg.stageOutPtr);
+                args.push_back(cg.indirectPtr);
+                args.push_back(cg.invocationPos);
+                args.push_back(cg.patchPos);
+            }
+            if (cg.isCompute && cg.threadPos)
+                args.push_back(cg.threadPos);
+            if (!cg.isGeometry && !cg.isTessControl) {
+                for (const auto &kv : cg.texValues)
+                    args.push_back(kv.second);
+                for (const auto &kv : cg.smpValues)
+                    args.push_back(kv.second);
+                for (const auto &kv : cg.texArrayValues)
+                    for (llvm::Value *tv : kv.second)
+                        args.push_back(tv);
+                for (const auto &kv : cg.smpArrayValues)
+                    for (llvm::Value *sv : kv.second)
+                        args.push_back(sv);
+            }
+            if (cg.bufferPtr)
+                args.push_back(cg.bufferPtr);
+            for (const auto &kv : cg.outPtrs)
+                args.push_back(kv.second);
+            llvm::Value *call = cg.b->CreateCall(fit->second, args);
+            /* Pull stage outputs written by the callee back into the
+             * caller's SSA map. */
+            for (const auto &kv : cg.outPtrs) {
+                auto *ai = llvm::dyn_cast<llvm::AllocaInst>(kv.second);
+                if (!ai) continue;
+                cg.lvalues[kv.first] =
+                    cg.b->CreateLoad(ai->getAllocatedType(), kv.second);
+            }
+            return (*out = call, true);
+        }
     }
 
     return false;
