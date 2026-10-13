@@ -24,6 +24,10 @@
 #include "mgl_backend_handles.h"
 #include "mgl_shader_resource.h"
 
+/* The single MGLBackendLeaseScope definition, shared with the render
+ * translation units (it owns the full GLMContextRec_t + pthread glue). */
+#include "mgl_backend_lease_scope.h"
+
 extern "C" Program *mglResolveProgramForStageFromState(
     GLMContext context, int stage);
 extern "C" void mglRendererPlatformBackendWillDestroy(
@@ -1740,42 +1744,11 @@ extern "C" void mglRendererBackendDestroy(
     delete backend;
 }
 
-namespace {
-
-struct MGLBackendLeaseScope {
-    MGLRendererBackendLease lease{};
-    bool held = false;
-    bool allowed_without_backend = false;
-
-    explicit MGLBackendLeaseScope(GLMContext context)
-    {
-        if (!context) {
-            allowed_without_backend = true;
-            return;
-        }
-        held = mglRendererBackendBeginContext(context, &lease) == 0;
-        if (held) return;
-        if (context->renderer_backend_lock_initialized &&
-            pthread_mutex_lock(&context->renderer_backend_lock) == 0) {
-            allowed_without_backend = context->renderer_backend == nullptr;
-            (void)pthread_mutex_unlock(&context->renderer_backend_lock);
-        } else {
-            allowed_without_backend = context->renderer_backend == nullptr;
-        }
-    }
-
-    bool ok() const { return held || allowed_without_backend; }
-
-    ~MGLBackendLeaseScope()
-    {
-        if (held) mglRendererBackendEnd(&lease);
-    }
-
-    MGLBackendLeaseScope(const MGLBackendLeaseScope &) = delete;
-    MGLBackendLeaseScope &operator=(const MGLBackendLeaseScope &) = delete;
-};
-
-}  // namespace
+/* MGLBackendLeaseScope used to be defined here, in an anonymous namespace.
+ * It now lives in mgl_backend_lease_scope.h (included above) so that the
+ * render translation units (mgl_render.cpp / _command.cpp / _query.cpp) can
+ * share the one implementation instead of carrying a second, subtly
+ * different copy. */
 
 extern "C" void mglRendererBindBuffer(GLMContext context, Buffer *buffer)
 {

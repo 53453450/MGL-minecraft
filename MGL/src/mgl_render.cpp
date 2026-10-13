@@ -198,7 +198,8 @@ void mglRenderWaitForSync(GLMContext glm_ctx, Sync* sync) {
 
 
 void mglRenderFlush(GLMContext glm_ctx, bool finish) {
-    BackendLeaseScope lease(glm_ctx);
+    MGLBackendLeaseScope lease(glm_ctx);
+    if (!lease.ok()) return;
     MGLCommandBufferOwner* command_owner =
         static_cast<MGLCommandBufferOwner*>(rendererOwner(
             glm_ctx, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER));

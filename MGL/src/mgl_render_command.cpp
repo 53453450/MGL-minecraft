@@ -1745,7 +1745,8 @@ int mglRenderCreateIndirectCommandBuffer(
 
 
 void mglRenderInvalidateRenderPass(GLMContext glm_ctx) {
-    BackendLeaseScope lease(glm_ctx);
+    MGLBackendLeaseScope lease(glm_ctx);
+    if (!lease.ok()) return;
     MGLRenderEncoderOwner* render_owner =
         static_cast<MGLRenderEncoderOwner*>(rendererOwner(
             glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER));

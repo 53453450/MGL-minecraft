@@ -14,6 +14,7 @@
 
 #include <objc/runtime.h>
 
+#include "mgl_backend_lease_scope.h"
 #include "mgl_renderer_backend.h"
 
 extern "C" void mglMetalCountRelease(int kind);
@@ -1369,23 +1370,10 @@ inline MGLRendererBackendHandle* rendererBackend(GLMContext context) {
         : nullptr;
 }
 
-struct BackendLeaseScope {
-    MGLRendererBackendLease lease{};
-    bool held = false;
-
-    explicit BackendLeaseScope(GLMContext context)
-    {
-        held = mglRendererBackendBeginContext(context, &lease) == 0;
-    }
-
-    ~BackendLeaseScope()
-    {
-        if (held) mglRendererBackendEnd(&lease);
-    }
-
-    BackendLeaseScope(const BackendLeaseScope&) = delete;
-    BackendLeaseScope& operator=(const BackendLeaseScope&) = delete;
-};
+/* MGLBackendLeaseScope lives in mgl_backend_lease_scope.h (included above),
+ * not here: the backend translation unit needs the same scope, and it cannot
+ * pull in this header's long render-side include chain, so the scope got a
+ * self-contained home that only needs glm_context.h + pthread. */
 
 inline void* rendererOwner(GLMContext context, MGLRendererBackendOwnerKind kind) {
     return mglRendererBackendGetOwner(rendererBackend(context), kind);

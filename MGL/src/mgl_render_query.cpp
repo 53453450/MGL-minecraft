@@ -261,10 +261,13 @@ int mglRenderIsInitialized(void) {
 
 void mglRenderGetSync(GLMContext glm_ctx, Sync* sync) {
     if (!sync) return;
-    BackendLeaseScope lease(glm_ctx);
-
+    /* Drop the previously bridged objects first: this does not touch the
+     * backend, and doing it before the lease test keeps the early-out from
+     * skipping the release. */
     mgl::releaseBridgedObject(&sync->mtl_command_buffer);
     mgl::releaseBridgedObject(&sync->mtl_event);
+    MGLBackendLeaseScope lease(glm_ctx);
+    if (!lease.ok()) return;
     MGLCommandBufferOwner* command_owner =
         static_cast<MGLCommandBufferOwner*>(rendererOwner(
             glm_ctx, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER));
@@ -573,7 +576,8 @@ int mglRenderIsVirtualizedGPU(void) {
 
 void mglRenderBeginSampleQueryCallback(GLMContext glm_ctx,
                                           unsigned int target) {
-    BackendLeaseScope lease(glm_ctx);
+    MGLBackendLeaseScope lease(glm_ctx);
+    if (!lease.ok()) return;
     MGLQueryStateOwner* query_owner =
         static_cast<MGLQueryStateOwner*>(rendererOwner(
             glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY));
@@ -621,7 +625,8 @@ void mglRenderBeginSampleQueryCallback(GLMContext glm_ctx,
 }
 
 uint64_t mglRenderEndSampleQueryCallback(GLMContext glm_ctx) {
-    BackendLeaseScope lease(glm_ctx);
+    MGLBackendLeaseScope lease(glm_ctx);
+    if (!lease.ok()) return 0;
     MGLQueryStateOwner* query_owner =
         static_cast<MGLQueryStateOwner*>(rendererOwner(
             glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY));
@@ -652,7 +657,8 @@ uint64_t mglRenderEndSampleQueryCallback(GLMContext glm_ctx) {
 }
 
 void mglRenderBeginTimerQueryCallback(GLMContext glm_ctx) {
-    BackendLeaseScope lease(glm_ctx);
+    MGLBackendLeaseScope lease(glm_ctx);
+    if (!lease.ok()) return;
     MGLQueryStateOwner* query_owner =
         static_cast<MGLQueryStateOwner*>(rendererOwner(
             glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY));
@@ -662,7 +668,8 @@ void mglRenderBeginTimerQueryCallback(GLMContext glm_ctx) {
 }
 
 uint64_t mglRenderEndTimerQueryCallback(GLMContext glm_ctx) {
-    BackendLeaseScope lease(glm_ctx);
+    MGLBackendLeaseScope lease(glm_ctx);
+    if (!lease.ok()) return 0;
     MGLQueryStateOwner* query_owner =
         static_cast<MGLQueryStateOwner*>(rendererOwner(
             glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY));
