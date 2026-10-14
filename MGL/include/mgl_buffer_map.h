@@ -83,13 +83,16 @@ void *mglBufferCreateConvertedVertexBufferForAttribKind(
 /* Release a reference returned by the function above. */
 void mglBufferReleaseConvertedVertexBuffer(void *buffer);
 
-/* === Copy-on-write snapshot pool: frame-generation gates ================
+/* === Copy-on-write snapshot pool: per-command-buffer generation gates ====
  * MGL note: the two snapshot wrappers that used to live next to these
  * (mglSnapshotSharedDirtyBuffer / mglSnapshotSharedBufferRange) had no caller
  * anywhere in the tree and were dropped with the file; the C++ backend
- * entry points they wrapped are unreferenced now as well. */
-uint64_t mglAdvanceFrameGeneration(void);
-void mglRecordFrameCompleted(uint64_t generation);
+ * entry points they wrapped are unreferenced now as well.
+ * The frame-level mglAdvanceFrameGeneration / mglRecordFrameCompleted wrappers
+ * were dropped for the same reason: the generation is now minted per command
+ * buffer -- mglNoteBufferEncoded tags with the value the accumulating command
+ * buffer will be recorded under, and its own commit records it -- so nothing
+ * calls a frame-boundary advance any more. */
 /* Also declared in mgl_batch_mtl_encode.h / mgl_index_buffer.h. */
 /* single source: mglNoteBufferEncoded (C TUs and the ObjC private headers both
  * resolve it from here; the private copies were duplicates) */

@@ -310,6 +310,15 @@ struct BufferCowPool {
 
 inline std::atomic<uint64_t> gBufferFrameGeneration{0};
 inline std::atomic<uint64_t> gBufferCompletedGeneration{0};
+/* Set by every copy-on-write snapshot tag and consumed by the commit that
+ * submits the command buffer carrying those tags.  Only a tagged command buffer
+ * records a completion and mints the next generation, so a command buffer never
+ * shares its generation with its successor -- a frame-boundary counter could
+ * not express that, because the accumulates before and after the boundary land
+ * in one command buffer yet read two different values and only one of them is
+ * ever recorded -- and a command buffer that snapshots nothing (a bare readback
+ * blit, say) pays no extra completion block. */
+inline std::atomic<bool> gBufferWindowTagged{false};
 
 struct BufferCowSnapshot {
     MTL::Buffer* buffer = nullptr;

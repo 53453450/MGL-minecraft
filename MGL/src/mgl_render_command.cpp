@@ -530,10 +530,45 @@ int mglRenderProcessCommandBufferCompletion(
 }
 
 
+/* Records the copy-on-write buffer generation that the command buffer which
+ * just completed was tagged with, releasing the snapshot slots pinned to it. */
+static void mglBufferGenerationCompletedBody(
+    void *context, const MGLRenderCommandBufferState *state) {
+    (void)state;
+    mglRenderRecordBufferGenerationCompleted((uint64_t)(uintptr_t)context);
+}
+
+/* Pair the generation tagged by the accumulating command buffer with that
+ * command buffer's own completion, then mint the generation for its successor.
+ * Every submit path funnels through here, so the pairing holds for the swap,
+ * the mid-frame flush, the readback and the blit command buffers alike.  Must
+ * run BEFORE commit: Metal asserts when addCompletedHandler: is called on an
+ * already-committed buffer. */
+static void mglRegisterBufferGenerationCompletion(void *command_buffer) {
+    if (!command_buffer ||
+        !mgl::gBufferWindowTagged.exchange(false, std::memory_order_acq_rel)) {
+        return;
+    }
+    const uint64_t generation =
+        mgl::gBufferFrameGeneration.load(std::memory_order_acquire);
+    if (mglRenderAddCommandBufferCompletion(
+            command_buffer, mglBufferGenerationCompletedBody,
+            (void *)(uintptr_t)generation, NULL) != 0) {
+        fprintf(stderr,
+                "MGL ERROR: Failed to register buffer-generation completion\n");
+    }
+    /* The next command buffer must not reuse this generation, or its slots
+     * would be released by this completion while it is still reading them.
+     * Minting before the commit is safe: nothing else tags between here and
+     * the commit. */
+    (void)mglRenderAdvanceBufferGeneration();
+}
+
 int mglRenderCommitCommandBuffer(void* command_buffer) {
     MTL::CommandBuffer* command =
         static_cast<MTL::CommandBuffer*>(command_buffer);
     if (!command) return -1;
+    mglRegisterBufferGenerationCompletion(command_buffer);
     command->commit();
     return 0;
 }
@@ -2255,6 +2290,7 @@ int mglRenderCommitCommandBufferTransaction(MGLCommandBufferOwner * owner_handle
         return -1;
     }
     result_out->completion_registered = recovery ? 1u : 0u;
+    mglRegisterBufferGenerationCompletion(command_buffer);
     try {
         if (submission_handle && *submission_handle &&
             mglRenderCommandBufferSubmissionMatchesBuffer(

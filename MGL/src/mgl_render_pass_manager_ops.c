@@ -4773,14 +4773,6 @@ enum {
     return (ctx != NULL) && ((uintptr_t)ctx >= 0x10000u);
 }
 
-/* Moved out of MGLRenderer.m (it was that file's static, used only here). */
-static void mglPdRecordFrameCommandBufferCompleted(
-    void *context, const MGLRenderCommandBufferState *state)
-{
-    (void)state;
-    mglRecordFrameCompleted((uint64_t)(uintptr_t)context);
-}
-
 /* File-scope twins of the .m's function-local statics. */
 static uint64_t s_pdSwapCallCount = 0;
 static double s_pdSwapLastCallTime = 0.0;
@@ -4854,9 +4846,7 @@ static int mglPdPresentTryBody(void *renderer, void *rawCtx)
 }
 
 typedef struct MglPdCommitSwapCtx_t {
-    MGLRendererStateAreas *areas;
     void *command_buffer;
-    uint64_t committed_generation;
     uint64_t swap_call;
     int trace_swap;
 } MglPdCommitSwapCtx;
@@ -4865,7 +4855,6 @@ typedef struct MglPdCommitSwapCtx_t {
 static int mglPdCommitSwapTryBody(void *renderer, void *rawCtx)
 {
     MglPdCommitSwapCtx *ctx = (MglPdCommitSwapCtx *)rawCtx;
-    MGLCommandState *commandState = ctx->areas->command;
 
     if (ctx->trace_swap) {
         char commandBufferLabel[256] = {0};
@@ -4883,25 +4872,16 @@ static int mglPdCommitSwapTryBody(void *renderer, void *rawCtx)
                     : MGL_PD_CB_ERROR),
             commandBufferLabel[0] ? commandBufferLabel : "(nil)");
     }
-    /* Register the frame-completion handler BEFORE commit:
-     * commitCommandBufferWithAGXRecovery: commits the CB, and Metal asserts if
-     * addCompletedHandler: is called after commit. */
-    if (ctx->command_buffer) {
-        const int completionResult = mglRenderAddCommandBufferCompletion(
-            ctx->command_buffer, mglPdRecordFrameCommandBufferCompleted,
-            (void *)(uintptr_t)ctx->committed_generation, NULL);
-        if (completionResult != 0) {
-            fprintf(stderr,
-                    "MGL ERROR: Failed to register C++ frame completion handler\n");
-        }
-    }
+    /* The copy-on-write buffer generation is paired with this command buffer's
+     * completion by the commit transaction itself, which every submit path
+     * funnels through (see mglRegisterBufferGenerationCompletion).  Registering
+     * it here as well would double-record the same generation. */
     mglRendererCommitCommandBufferWithAGXRecovery(renderer,
                                                   ctx->command_buffer);
     if (ctx->trace_swap) {
         mglTraceLog("MGL TRACE swap.commit.end call=%llu",
                     (unsigned long long)ctx->swap_call);
     }
-    (void)commandState;
     return 1;
 }
 
@@ -5062,16 +5042,6 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
     }
 
     if (shouldPresent) {
-        /* Advance the copy-on-write buffer generation at the frame boundary,
-         * BEFORE any draw is encoded.  mglRenderNoteBufferEncoded tags each
-         * snapshot slot with gBufferFrameGeneration at encode time and the pool
-         * reuses a slot only once that generation has completed; the commit-time
-         * sweep below re-reads the same value.  Advancing here (rather than at
-         * the commit) keeps the encode-time tag and the committed command
-         * buffer's generation identical -- otherwise every encode-time tag is
-         * one generation short and a slot can be rewritten (with the newer CPU
-         * shadow) while the GPU is still reading it, corrupting the draw. */
-        const uint64_t committedGeneration = mglAdvanceFrameGeneration();
         mglRendererFlushDrawBufferLocked(renderer, activeCtx);
 
         if (!mglRenderPassProcessGLStateLocked(renderer, 0)) {
@@ -5250,8 +5220,7 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
                 mglNoteBufferEncoded(boundLists[li]->buffers[mi].buf);
             }
         }
-        MglPdCommitSwapCtx commitCtx = {&areas, commandBufferToCommit,
-                                        committedGeneration, swapCall,
+        MglPdCommitSwapCtx commitCtx = {commandBufferToCommit, swapCall,
                                         traceSwap ? 1 : 0};
         if (!mglPlatformShellGuardedCallCtx(renderer, "command buffer commit",
                                             mglPdCommitSwapTryBody, &commitCtx,

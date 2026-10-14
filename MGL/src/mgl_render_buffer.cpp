@@ -766,11 +766,18 @@ void mglRenderNoteBufferEncoded(Buffer* buffer) {
     if (!pool) return;
     MTL::Buffer* current =
         static_cast<MTL::Buffer*>(buffer->data.mtl_data);
+    /* The generation belongs to the command buffer that is accumulating right
+     * now: the commit which submits it records exactly this value as completed,
+     * and that commit is the only thing that mints the next one.  Tagging with
+     * a frame-boundary counter could not pair the two -- draws encoded before
+     * and after the boundary land in the same command buffer but would read two
+     * different generations, and only one of them is ever recorded. */
     const uint64_t generation =
         mgl::gBufferFrameGeneration.load(std::memory_order_acquire);
     for (mgl::BufferCowSlot& slot : pool->slots) {
         if (slot.buffer == current) {
             slot.lastUseGeneration = generation;
+            mgl::gBufferWindowTagged.store(true, std::memory_order_release);
             return;
         }
     }

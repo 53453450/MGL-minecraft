@@ -10,9 +10,8 @@
 /*
  * mgl_buffer_map.c — MGLRenderer+Buffer.m moved here (P0-1, log 102).
  *
- * Nine category methods, three C helpers they carried, and two of the file's C
- * functions (mglAdvanceFrameGeneration / mglRecordFrameCompleted /
- * mglNoteBufferEncoded) are C now.  What each translation needed:
+ * Nine category methods, three C helpers they carried, and one of the file's C
+ * functions (mglNoteBufferEncoded) are C now.  What each translation needed:
  *
  *   ctx                        -> areas.ctx
  *   MGL_STATE(ctx)             -> mglBufferMapState(&areas) (the dual proxy)
@@ -810,18 +809,9 @@ bool mglRendererMapBuffersToMTL(void *renderer)
 
 /* === copy-on-write snapshot pool ======================================== */
 
-uint64_t mglAdvanceFrameGeneration(void)
-{
-    return mglRenderAdvanceBufferGeneration();
-}
-
-void mglRecordFrameCompleted(uint64_t generation)
-{
-    mglRenderRecordBufferGenerationCompleted(generation);
-}
-
-/* Mark the slot holding buf's current Metal backing as encoded in the current
- * generation, so it is not recycled until that frame's GPU work completes. */
+/* Mark the slot holding buf's current Metal backing as encoded in the
+ * generation reserved by the command buffer accumulating right now, so it is
+ * not recycled until that command buffer's GPU work completes. */
 void mglNoteBufferEncoded(Buffer *buf)
 {
     mglRenderNoteBufferEncoded(buf);
