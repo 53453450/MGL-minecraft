@@ -375,12 +375,21 @@ typedef struct {
 } texture_fn_map_t;
 
 static const texture_fn_map_t s_texture_fn_map[] = {
+    /* Proj-Lod variants — must come before Proj (longer name first) */
+    {"texture1DProjLod",  "textureProjLod"},
+    {"texture2DProjLod",  "textureProjLod"},
+    {"texture3DProjLod",  "textureProjLod"},
     /* Proj variants — must come before non-Proj (longer name first) */
     {"texture1DProj",   "textureProj"},
     {"texture2DProj",   "textureProj"},
     {"texture3DProj",   "textureProj"},
     {"texture2DRect",   "texture"},     /* GL_ARB_texture_rectangle */
-    /* Non-Proj variants */
+    /* Lod variants — must come before non-Lod (longer name first) */
+    {"texture1DLod",    "textureLod"},
+    {"texture2DLod",    "textureLod"},
+    {"texture3DLod",    "textureLod"},
+    {"textureCubeLod",  "textureLod"},
+    /* Non-Proj / non-Lod variants */
     {"texture1D",       "texture"},
     {"texture2D",       "texture"},
     {"texture3D",       "texture"},
@@ -786,6 +795,45 @@ int mgl_translate_legacy_glsl(char *src,
                 sizeof(preamble) - off,
                 "uniform %s %s;\n", m->type, m->name);
         }
+    }
+
+    /* gl_Fog (GLSL 1.10 §7.4) built-in fog parameter uniform.  Injected as
+     * the standard gl_FogParameters struct + a uniform of that type, with the
+     * ORIGINAL gl_ name (the AIR frontend accepts gl_-prefixed user-declared
+     * uniforms), so legacy shaders that read gl_Fog.start / gl_Fog.scale /
+     * gl_Fog.color / ... compile.  Members are only read (never written) by
+     * the shaderpack; an unset uniform defaults to 0. */
+    if (code_uses_identifier(src, "gl_Fog") &&
+        !strstr(src, "gl_FogParameters")) {
+        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
+            "struct gl_FogParameters {\n"
+            "    vec4  color;\n"
+            "    float density;\n"
+            "    float start;\n"
+            "    float end;\n"
+            "    float scale;\n"
+            "};\n"
+            "uniform gl_FogParameters gl_Fog;\n");
+    }
+
+    /* Legacy shadow-sampler lookup functions (GLSL 1.10 §8.8 / the OptiFine
+     * shaderpack idiom).  shadow2D returns a vec4 (the classic built-in
+     * return type); shaderpacks read .x (and, equivalently, .z) as the 0/1
+     * shadow factor, so replicating the comparison into every component is
+     * correct for both accesses.  Two overloads cover sampler2DShadow (the
+     * usual shadowmap type) and sampler2D (OptiFine's COMPOSITE1 shadowtex0). */
+    if ((code_uses_identifier(src, "shadow2D") ||
+         code_uses_identifier(src, "shadow2DProj")) &&
+        !strstr(src, "vec4 shadow2D")) {
+        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
+            "vec4 shadow2D(sampler2DShadow s, vec3 c){ return vec4(texture(s, c)); }\n"
+            "vec4 shadow2D(sampler2D s, vec3 c){ return vec4(texture(s, c.xy)); }\n");
+    }
+    if (code_uses_identifier(src, "shadow2DProj") &&
+        !strstr(src, "vec4 shadow2DProj")) {
+        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
+            "vec4 shadow2DProj(sampler2DShadow s, vec4 c){ return vec4(textureProj(s, c)); }\n"
+            "vec4 shadow2DProj(sampler2D s, vec4 c){ return vec4(textureProj(s, c)); }\n");
     }
 
     /* GLSL 1.10 built-in constants (§7.4): injected verbatim (const int)
