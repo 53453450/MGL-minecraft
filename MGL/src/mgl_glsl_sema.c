@@ -3902,13 +3902,27 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                     continue;
                 }
                 Sym *as = symtab_lookup(tab, arg->u.var_ref.name);
-                if (as && (as->qualifiers & (MGL_AST_Q_CONST |
-                                             MGL_AST_Q_IN |
-                                             MGL_AST_Q_READONLY))) {
-                    sema_error(s, e->line,
-                               "cannot pass '%s' to an out/inout parameter",
-                               arg->u.var_ref.name);
-                    return NULL;
+                if (as) {
+                    uint32_t q = as->qualifiers;
+                    /* GLSL 4.60 §6.1.1: a function parameter (in/out/inout)
+                     * is an l-value and may be passed to an out/inout
+                     * parameter. const/readonly must always be rejected, and a
+                     * *global* `in` qualifier (interface/varying/uniform
+                     * symbols, which carry a module IR symbol, as->ir != NULL)
+                     * must be rejected too. Function parameters never get
+                     * as->ir assigned (see the param-decl paths near :4840
+                     * and :4894), so as->ir == NULL cleanly distinguishes a
+                     * parameter from a global `in`, letting legal in/inout
+                     * parameters through while keeping the illegal cases. */
+                    int disqualified =
+                        (q & (MGL_AST_Q_CONST | MGL_AST_Q_READONLY)) ||
+                        ((q & MGL_AST_Q_IN) && as->ir != NULL);
+                    if (disqualified) {
+                        sema_error(s, e->line,
+                                   "cannot pass '%s' to an out/inout parameter",
+                                   arg->u.var_ref.name);
+                        return NULL;
+                    }
                 }
             }
             return hit->ret_type;
