@@ -5062,6 +5062,16 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
     }
 
     if (shouldPresent) {
+        /* Advance the copy-on-write buffer generation at the frame boundary,
+         * BEFORE any draw is encoded.  mglRenderNoteBufferEncoded tags each
+         * snapshot slot with gBufferFrameGeneration at encode time and the pool
+         * reuses a slot only once that generation has completed; the commit-time
+         * sweep below re-reads the same value.  Advancing here (rather than at
+         * the commit) keeps the encode-time tag and the committed command
+         * buffer's generation identical -- otherwise every encode-time tag is
+         * one generation short and a slot can be rewritten (with the newer CPU
+         * shadow) while the GPU is still reading it, corrupting the draw. */
+        const uint64_t committedGeneration = mglAdvanceFrameGeneration();
         mglRendererFlushDrawBufferLocked(renderer, activeCtx);
 
         if (!mglRenderPassProcessGLStateLocked(renderer, 0)) {
@@ -5227,7 +5237,6 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
 
         void *commandBufferToCommit =
             mglPassManagerDetachCurrentCommandBufferForSubmission(manager);
-        const uint64_t committedGeneration = mglAdvanceFrameGeneration();
         /* Sweep the bound buffer maps so base/attrib/uniform/SSBO buffers that
          * were encoded this frame keep their pool slots pinned for the committed
          * command buffer (copy-on-write snapshot reuse). */
