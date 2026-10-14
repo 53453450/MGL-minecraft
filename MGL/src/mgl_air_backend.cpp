@@ -9720,8 +9720,10 @@ static bool emitCallConstructors(
             llvm::Value *s = emitExpr(cg, e->u.call.args[0], mod, locals);
             if (!s) return true;
             if (s->getType()->isArrayTy()) {
-                /* matNxN(matMxM) with M<N: embed the smaller matrix in
-                 * the upper-left, identity on the remaining diagonal. */
+                /* matCxR(matSxT): copy the upper-left C×R submatrix from the
+                 * argument; the loop fills any out-of-range diagonal entries
+                 * with the identity (GLSL 4.60 §5.4.2).  Source may be
+                 * smaller or larger. */
                 llvm::ArrayType *sa = llvm::cast<llvm::ArrayType>(
                     s->getType());
                 llvm::Type *se = sa->getElementType();
@@ -9731,12 +9733,9 @@ static bool emitCallConstructors(
                     sr = (uint32_t)sv->getNumElements();
                 else
                     sr = 1;
-                if (sc > mcols || sr > mrows) {
-                    cg.err = 1;
-                    cg.errmsg = std::string("codegen: constructor '") +
-                                name + "' embeds a larger matrix";
-                    return true;
-                }
+                /* matCxR(matSxT): take the upper-left C×R submatrix; the loop
+                 * below fills any out-of-range diagonal entries with the
+                 * identity (GLSL 4.60 §5.4.2).  The source may be larger. */
                 for (uint32_t c = 0; c < mcols; c++) {
                     llvm::Value *col = llvm::UndefValue::get(colTy);
                     for (uint32_t r = 0; r < mrows; r++) {

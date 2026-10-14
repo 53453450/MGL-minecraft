@@ -2764,15 +2764,11 @@ static int check_constructor(Sema *s, uint32_t line, const char *tname,
             if (ats[0]->kind == MGLIR_TYPE_SCALAR) {
                 return constructor_scalar_convert(ats[0], t->scalar); /* diagonal */
             }
-            if (ats[0]->kind == MGLIR_TYPE_MATRIX && ats[0]->cols == c &&
-                ats[0]->rows == r) {
-                return 1;
-            }
-            if (ats[0]->kind == MGLIR_TYPE_MATRIX && ats[0]->cols <= c &&
-                ats[0]->rows <= r) {
-                /* matNxN(matMxM) with M<N: embed the smaller matrix in the
-                 * upper-left, identity on the remaining diagonal
-                 * (GLSL 4.60 §5.4.2). */
+            if (ats[0]->kind == MGLIR_TYPE_MATRIX) {
+                /* GLSL 4.60 §5.4.2: a matrix constructed from a matrix copies
+                 * the upper-left C×R submatrix from the argument and fills the
+                 * remaining diagonal with the identity.  Any matrix → any
+                 * matrix is allowed (the source may be larger or smaller). */
                 return 1;
             }
             sema_error(s, line, "constructor 'mat%ux%u' cannot take a single "

@@ -141,31 +141,39 @@ typedef struct MGLParser {
     char errbuf[256];
     uint32_t decl_precision;   /* pending precision qualifier */
     /* Const-int / array-length tables for folding array extents while
-     * parsing (`float[a]`, `float[a+b]`, `float[arr.length()]`). */
-    char const_names[64][64];
-    int64_t const_vals[64];
+     * parsing (`float[a]`, `float[a+b]`, `float[arr.length()]`).
+     * Growable (realloc, doubled) — real shaders exceed the old fixed
+     * 64-slot cap, which hard-failed compilation. */
+    char (*const_names)[64];
+    int64_t *const_vals;
     uint32_t const_count;
-    char array_names[64][64];
-    uint32_t array_lens[64];
+    uint32_t const_cap;
+    char (*array_names)[64];
+    uint32_t *array_lens;
     uint32_t array_count;
+    uint32_t array_cap;
     /* User struct type names (`struct S { ... };`) so local declarations
      * like `S x = { ... };` are recognised as decl statements. */
-    char struct_names[64][64];
+    char (*struct_names)[64];
     uint32_t struct_count;
+    uint32_t struct_cap;
     /* Variable types for folding `.length()` on vectors/matrices and
-     * type-derived array extents such as `(matA * matB).length()`. */
+     * type-derived array extents such as `(matA * matB).length()`.
+     * Growable (realloc, doubled). */
     struct {
         char name[64];
         int vec_size;
         int mat_cols, mat_rows;
         char struct_type[64];
-    } var_types[128];
+    } *var_types;
     uint32_t var_type_count;
-    char member_paths[128][96];
-    int member_vec[128];
-    int member_mat_cols[128];
-    int member_mat_rows[128];
+    uint32_t var_type_cap;
+    char (*member_paths)[96];
+    int *member_vec;
+    int *member_mat_cols;
+    int *member_mat_rows;
     uint32_t member_type_count;
+    uint32_t member_cap;
     int in_struct; /* 1 while parsing `struct { ... }` members */
 } MGLParser;
 
@@ -497,9 +505,17 @@ static void record_const_int(MGLParser *p, const char *name, int64_t value)
             return;
         }
     }
-    if (p->const_count >= 64) {
-        parse_error(p, "too many compile-time constants (limit 64)");
-        return;
+    if (p->const_count >= p->const_cap) {
+        uint32_t nc = p->const_cap ? p->const_cap * 2 : 64;
+        char (*nn)[64] = realloc(p->const_names, nc * sizeof(*nn));
+        int64_t *nv = realloc(p->const_vals, nc * sizeof(*nv));
+        if (!nn || !nv) {
+            parse_error(p, "out of memory tracking constants");
+            return;
+        }
+        p->const_names = nn;
+        p->const_vals = nv;
+        p->const_cap = nc;
     }
     memcpy(p->const_names[p->const_count], name, n + 1);
     p->const_vals[p->const_count++] = value;
@@ -528,9 +544,15 @@ static void record_var_type(MGLParser *p, const char *name,
             return;
         }
     }
-    if (p->var_type_count >= 128) {
-        parse_error(p, "too many tracked variable types (limit 128)");
-        return;
+    if (p->var_type_count >= p->var_type_cap) {
+        uint32_t nc = p->var_type_cap ? p->var_type_cap * 2 : 128;
+        void *nv = realloc(p->var_types, nc * sizeof(*p->var_types));
+        if (!nv) {
+            parse_error(p, "out of memory tracking variable types");
+            return;
+        }
+        p->var_types = nv;
+        p->var_type_cap = nc;
     }
     memcpy(p->var_types[p->var_type_count].name, name, n + 1);
     p->var_types[p->var_type_count].vec_size = t->vec_size;
@@ -562,9 +584,21 @@ static void record_member_type(MGLParser *p, const char *path,
             return;
         }
     }
-    if (p->member_type_count >= 128) {
-        parse_error(p, "too many tracked member types (limit 128)");
-        return;
+    if (p->member_type_count >= p->member_cap) {
+        uint32_t nc = p->member_cap ? p->member_cap * 2 : 128;
+        char (*np)[96] = realloc(p->member_paths, nc * sizeof(*np));
+        int *mv = realloc(p->member_vec, nc * sizeof(*mv));
+        int *mc = realloc(p->member_mat_cols, nc * sizeof(*mc));
+        int *mr = realloc(p->member_mat_rows, nc * sizeof(*mr));
+        if (!np || !mv || !mc || !mr) {
+            parse_error(p, "out of memory tracking member types");
+            return;
+        }
+        p->member_paths = np;
+        p->member_vec = mv;
+        p->member_mat_cols = mc;
+        p->member_mat_rows = mr;
+        p->member_cap = nc;
     }
     memcpy(p->member_paths[p->member_type_count], path, n + 1);
     p->member_vec[p->member_type_count] = t->vec_size;
@@ -804,9 +838,17 @@ static void record_array_len(MGLParser *p, const char *name, uint32_t len)
             return;
         }
     }
-    if (p->array_count >= 64) {
-        parse_error(p, "too many tracked arrays (limit 64)");
-        return;
+    if (p->array_count >= p->array_cap) {
+        uint32_t nc = p->array_cap ? p->array_cap * 2 : 64;
+        char (*nn)[64] = realloc(p->array_names, nc * sizeof(*nn));
+        uint32_t *nl = realloc(p->array_lens, nc * sizeof(*nl));
+        if (!nn || !nl) {
+            parse_error(p, "out of memory tracking arrays");
+            return;
+        }
+        p->array_names = nn;
+        p->array_lens = nl;
+        p->array_cap = nc;
     }
     memcpy(p->array_names[p->array_count], name, n + 1);
     p->array_lens[p->array_count++] = len;
@@ -825,9 +867,15 @@ static void record_struct_name(MGLParser *p, const char *name)
             return;
         }
     }
-    if (p->struct_count >= 64) {
-        parse_error(p, "too many struct type names (limit 64)");
-        return;
+    if (p->struct_count >= p->struct_cap) {
+        uint32_t nc = p->struct_cap ? p->struct_cap * 2 : 64;
+        char (*nn)[64] = realloc(p->struct_names, nc * sizeof(*nn));
+        if (!nn) {
+            parse_error(p, "out of memory tracking struct type names");
+            return;
+        }
+        p->struct_names = nn;
+        p->struct_cap = nc;
     }
     memcpy(p->struct_names[p->struct_count], name, n + 1);
     p->struct_count++;
@@ -3495,6 +3543,38 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
 
     MGLParser p;
     memset(&p, 0, sizeof(p));
+
+    /* Allocate the growable tracking tables.  Initial caps match the old
+     * fixed sizes; the record_* helpers double them on overflow. */
+    p.const_cap = 64;
+    p.const_names = calloc(p.const_cap, sizeof(*p.const_names));
+    p.const_vals = calloc(p.const_cap, sizeof(*p.const_vals));
+    p.array_cap = 64;
+    p.array_names = calloc(p.array_cap, sizeof(*p.array_names));
+    p.array_lens = calloc(p.array_cap, sizeof(*p.array_lens));
+    p.struct_cap = 64;
+    p.struct_names = calloc(p.struct_cap, sizeof(*p.struct_names));
+    p.var_type_cap = 128;
+    p.var_types = calloc(p.var_type_cap, sizeof(*p.var_types));
+    p.member_cap = 128;
+    p.member_paths = calloc(p.member_cap, sizeof(*p.member_paths));
+    p.member_vec = calloc(p.member_cap, sizeof(*p.member_vec));
+    p.member_mat_cols = calloc(p.member_cap, sizeof(*p.member_mat_cols));
+    p.member_mat_rows = calloc(p.member_cap, sizeof(*p.member_mat_rows));
+    if (!p.const_names || !p.const_vals || !p.array_names || !p.array_lens ||
+        !p.struct_names || !p.var_types || !p.member_paths || !p.member_vec ||
+        !p.member_mat_cols || !p.member_mat_rows) {
+        free(p.const_names); free(p.const_vals);
+        free(p.array_names); free(p.array_lens);
+        free(p.struct_names);
+        free(p.var_types);
+        free(p.member_paths); free(p.member_vec);
+        free(p.member_mat_cols); free(p.member_mat_rows);
+        token_stream_free(&ts);
+        free(tu);
+        return NULL;
+    }
+
     p.ts = &ts;
     p.tu = tu;
 
@@ -3584,6 +3664,17 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
         tu->decls = decls;
         tu->decls[tu->decl_count++] = d;
     }
+
+    free(p.const_names);
+    free(p.const_vals);
+    free(p.array_names);
+    free(p.array_lens);
+    free(p.struct_names);
+    free(p.var_types);
+    free(p.member_paths);
+    free(p.member_vec);
+    free(p.member_mat_cols);
+    free(p.member_mat_rows);
 
     token_stream_free(&ts);
     return tu;
