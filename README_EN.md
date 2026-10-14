@@ -1,3 +1,6 @@
+Language: [中文](README.md) | English
+
+
 # MGL - Metal-GL
 
 [![License](https://img.shields.io/badge/License-LGPL--3.0--only-blue.svg)](LICENSE)
@@ -40,11 +43,13 @@ components remain under their own licenses.
 
 **Prerequisites:**
 
-- macOS 26 or newer
+- macOS 26 or newer (Metal 4 SDK; `make verify-toolchain` checks this)
 - Xcode Command Line Tools
 - Homebrew
-- CMake
-- LLVM 15 (`brew install llvm@15`; `make lib` links `-lLLVM-15`)
+- `make install-pkgdeps` installs `llvm@15`, `cmake`, and `glm`
+  - LLVM 15: `make lib` links `-lLLVM-15`
+  - CMake: required by GLFW and `make gtest`
+  - glm: convenience headers for optional host-side tools
 - GoogleTest for AIR unit tests (`make gtest`, clones into `~/googletest` by default) 
 
 ---
@@ -54,11 +59,8 @@ components remain under their own licenses.
 ### 1. Clone the repository
 
 ```bash
-
 git clone https://github.com/53453450/MGL-minecraft.git
-
 cd MGL-minecraft
-
 ```
 
 ### 2. Build dependencies
@@ -88,7 +90,8 @@ or pulled from upstream and is always used for the build.
 ### 3. Build MGL
 
 ```bash
-cd MGL-minecraft
+# Return to the repository root
+cd ..
 make
 ```
 
@@ -121,23 +124,21 @@ Point them to the built libraries so they can take over rendering.
 ```
 MGL-minecraft/
 ├── MGL/
-│   ├── include/                 # OpenGL API, GLM, and MGL value-state headers
-│   ├── src/
-│   │   ├── mgl_air_backend.cpp  # GLSL frontend/MGLIR to AIR LLVM bitcode
-│   │   ├── mgl_air_loader.cpp   # AIR/metallib function and pipeline loading
-│   │   ├── mgl_render.cpp       # Sole Metal-cpp implementation TU and C ABI
-│   │   ├── mgl_render.h         # Opaque/value-state facade; no MTL::* types
-│   │   ├── mgl_renderer_backend.cpp # Owner, cache, and transaction lifetime
-│   │   ├── mgl_renderer_backend.h   # Backend handle C facade
-│   │   ├── mgl_metal.h          # Metal-cpp include/implementation boundary
-│   │   ├── MGLPlatformRendererShell.m # NSView/CAMetalLayer/device/drawable shell
-│   │   ├── MGLRenderer*.m       # OpenGL semantic orchestration and C ABI calls
-│   │   ├── mgl_aux_assets.*     # Generated precompiled auxiliary metallib table
-│   │   └── *.c/*.m/*.cpp        # GL state, resources, AIR ABI, and utilities
+│   ├── include/                 # OpenGL API, GLMContext, and MGL C ABI headers
+│   ├── src/                     # Engine: C state machine + C++ (no .m / .mm)
+│   │   ├── gl_core.c / gl_es.c / glm_dispatch.c / glm_context.c
+│   │   ├── mgl_glsl_*.c / mgl_ir.c / mgl_air_*.cpp   # GLSL → MGLIR → AIR
+│   │   ├── mgl_renderer_entries.c / mgl_draw_entry.c # GL semantic entry points
+│   │   ├── mgl_draw_issue.cpp / mgl_draw_encode.cpp  # tess / GS / draw orchestration
+│   │   ├── mgl_render.cpp                            # Sole Metal-cpp implementation TU
+│   │   ├── mgl_renderer_backend.cpp                  # Owner, cache, and transaction
+│   │   ├── mgl_platform_shell.cpp                    # AppKit / CAMetalLayer platform shell
+│   │   ├── mgl_objc_bridge.h                         # C++ wrappers around libobjc / objc_msgSend
+│   │   └── mgl_aux_assets.*                          # Precompiled auxiliary metallib table
 │   └── aux_shaders/             # Build-time compiled embedded helper shaders
 ├── external/
 │   ├── metal-cpp/               # Apple's official header-only Metal C++ bindings
-│   ├── glfw/                    # Local modified checkout; never updated upstream
+│   ├── glfw/                    # Local modified GLFW checkout (still contains Cocoa .m)
 │   ├── OpenGL-Registry/         # Khronos OpenGL registry
 │   └── ezxml/                   # XML parsing dependency
 ├── test_legacy_compat/          # GLSL compatibility, AIR, smoke, and gtest tests
@@ -147,7 +148,7 @@ MGL-minecraft/
 ├── benchmark/                   # Performance test tools
 ├── spec_parser/                 # Specification parsing helper (verify-codegen)
 ├── scripts/                     # Asset, regression, trace, and benchmark scripts
-├── docs/                        # Architecture review (ARCHITECTURE_REVIEW.md)
+├── docs/                        # Architecture and spec reviews
 ├── MGL_Golden_Images/           # Image regression baselines
 ├── TestImages/                  # Test texture assets
 ├── config.mk.example            # Local SDK/toolchain configuration template
@@ -160,6 +161,8 @@ MGL-minecraft/
 ├── LICENSE-GPL-3.0-only         # GPL 3.0 text incorporated by LGPL 3.0
 └── LICENSING.md                 # License scope and commit boundary notice
 ```
+
+Production code under `MGL/src` is C or C++ only. AppKit / CAMetalLayer access lives in `mgl_platform_shell.cpp`: classes are registered with the ObjC runtime at load, and messages go through `objc_msgSend`. There is no `.m` in the MGL engine. The GLFW fork still has Cocoa `.m` files; that is the window library, not the engine.
 
 ## Core Modules
 
@@ -211,15 +214,26 @@ processGLState(ctx, true);
   and command-buffer transactions.
 - `mgl_renderer_backend.cpp` owns backend handles, caches, completion, and temporary
   resource lifetime.
-- `MGLPlatformRendererShell.m` is the only Objective-C platform boundary that owns
-  `NSView`, `CAMetalLayer`, drawables, and device initialization.
-- `MGLRenderer*.m` retains OpenGL state and semantic orchestration and calls the backend
-  through value-state and opaque C interfaces.
+- `mgl_platform_shell.cpp` is the platform shell. It owns `NSView`, `CAMetalLayer`,
+  drawables, and device initialization, talking to AppKit through libobjc rather than
+  an Objective-C source file.
+- OpenGL state and semantic orchestration live in C (`mgl_renderer_entries.c`,
+  `mgl_draw_entry.c`, and related files) and call the backend through value-state and
+  opaque handles.
 
 Core call path:
 
 ```text
-MGLRenderer*.m (GL semantics)
+OpenGL API (gl_core.c / glm_dispatch.c)
+        |
+        v
+C state machine (state / buffers / textures / program / ...)
+        |
+        v
+C renderer entries (mgl_renderer_entries.c / mgl_draw_entry.c)
+        |
+        v
+C++ issue / encode (mgl_draw_issue.cpp / mgl_draw_encode.cpp)
         | value-state / opaque handle
         v
 mgl_renderer_backend.cpp (owners, caches, transactions)
@@ -228,7 +242,7 @@ mgl_renderer_backend.cpp (owners, caches, transactions)
 mgl_render.cpp (Metal-cpp) ---> Metal queue / encoder / resource
         ^
         | device, layer, drawable
-MGLPlatformRendererShell.m (AppKit/CAMetalLayer)
+mgl_platform_shell.cpp (C++ / libobjc -> AppKit / CAMetalLayer)
 ```
 
 ## Debugging and Repro Cases
@@ -266,6 +280,28 @@ MGL_TRACE_LOG=1 MGL_TRACE_LOG_DRAW=1 MGL_TRACE_LOG_PROGRAMS=91,92
 ```
 
 After launch, look for `mgl-trace-<pid>.log` next to the MGL dylib.
+
+### MGL_MIP_DIAG
+
+Set `MGL_MIP_DIAG=1` to report the sampled texture's actual mip chain and sampler
+state. This is for diagnosing mipmap-related visual artifacts.
+
+It is independent of `MGL_TRACE_LOG`: per-binding trace lines are too dense, and
+frame rate drops too far to see view-dependent defects. Output uses the normal log
+path with the `MGL MIP_DIAG` prefix, and it only prints when state changes — silent
+while the picture is stable, a burst of logs when something flips.
+
+Three records:
+
+| Record | Trigger | Purpose |
+|------|--------|------|
+| `MIP_DIAG texture` | Texture bind | Whether GL and Metal mip counts match, `mipmapped`/`genmipmaps` flags, `mtlTex` pointer changes (a new pointer means the texture was rebuilt) |
+| `MIP_DIAG frag` | Fragment sampler resolve | Immediate-mode filter, LOD clamp, `BASE_LEVEL`/`MAX_LEVEL`; whether the render target is sampled through a Y-flip copy (`viaCopy`), copy mip count, dirty mip mask, and version |
+| `MIP_DIAG snapshot` | Deferred batch replay | The per-draw sampler actually submitted to Metal when deferred batching is on; this overrides the `frag` record above |
+
+```bash
+MGL_MIP_DIAG=1
+```
 
 ## Acknowledgements
 

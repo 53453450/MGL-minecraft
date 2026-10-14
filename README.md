@@ -33,11 +33,13 @@ Language: 中文 | [English](README_EN.md)
 
 **前置**: 
 
-- macOS 26 或更新版本
+- macOS 26 或更新版本（Metal 4 SDK；`make verify-toolchain` 会检查）
 - Xcode Command Line Tools
 - Homebrew
-- CMake
-- LLVM 15（`brew install llvm@15`；`make lib` 会链接 `-lLLVM-15`）
+- `make install-pkgdeps` 安装 `llvm@15`、`cmake`、`glm`
+  - LLVM 15：`make lib` 链接 `-lLLVM-15`
+  - CMake：GLFW 与 `make gtest` 需要
+  - glm：可选的 host-side 工具头文件
 - 跑 AIR gtest 时还需要 GoogleTest（`make gtest`，默认克隆到 `~/googletest`）
 
 ## 快速开始
@@ -103,23 +105,21 @@ make
 ```
 MGL-minecraft/
 ├── MGL/
-│   ├── include/                 # OpenGL API、GLM 和 MGL value-state 头文件
-│   ├── src/
-│   │   ├── mgl_air_backend.cpp  # GLSL frontend/MGLIR 到 AIR LLVM bitcode
-│   │   ├── mgl_air_loader.cpp   # AIR/metallib function 与 pipeline 加载
-│   │   ├── mgl_render.cpp       # 唯一 Metal-cpp implementation TU 和 C ABI
-│   │   ├── mgl_render.h         # 不暴露 MTL::* 的 opaque/value-state 接口
-│   │   ├── mgl_renderer_backend.cpp # renderer owner、cache 和 transaction 生命周期
-│   │   ├── mgl_renderer_backend.h   # backend handle 的 C facade
-│   │   ├── mgl_metal.h          # Metal-cpp include/implementation boundary
-│   │   ├── MGLPlatformRendererShell.m # NSView/CAMetalLayer/device/drawable 平台壳
-│   │   ├── MGLRenderer*.m       # OpenGL 语义编排与 backend C ABI 调用
-│   │   ├── mgl_aux_assets.*     # 生成的预编译辅助 metallib 字节表
-│   │   └── *.c/*.m/*.cpp        # GL 状态、资源、AIR ABI 和工具模块
+│   ├── include/                 # OpenGL API、GLMContext 与 MGL C ABI 头文件
+│   ├── src/                     # 引擎实现：C 状态机 + C++（无 .m / .mm）
+│   │   ├── gl_core.c / gl_es.c / glm_dispatch.c / glm_context.c
+│   │   ├── mgl_glsl_*.c / mgl_ir.c / mgl_air_*.cpp   # GLSL → MGLIR → AIR
+│   │   ├── mgl_renderer_entries.c / mgl_draw_entry.c # GL 语义入口
+│   │   ├── mgl_draw_issue.cpp / mgl_draw_encode.cpp  # tess / GS / draw 编排
+│   │   ├── mgl_render.cpp                            # 唯一 Metal-cpp implementation TU
+│   │   ├── mgl_renderer_backend.cpp                  # owner、cache、transaction
+│   │   ├── mgl_platform_shell.cpp                    # AppKit / CAMetalLayer 平台壳
+│   │   ├── mgl_objc_bridge.h                         # libobjc / objc_msgSend 的 C++ 封装
+│   │   └── mgl_aux_assets.*                          # 预编译辅助 metallib 字节表
 │   └── aux_shaders/             # 构建期编译并嵌入的辅助 Metal shader
 ├── external/
 │   ├── metal-cpp/               # Apple 官方 header-only Metal C++ bindings
-│   ├── glfw/                    # 本仓库维护的本地 GLFW 分支，不从远端更新
+│   ├── glfw/                    # 本仓库维护的本地 GLFW 分支（仍含 Cocoa .m）
 │   ├── OpenGL-Registry/         # Khronos OpenGL registry
 │   └── ezxml/                   # XML 解析依赖
 ├── test_legacy_compat/          # GLSL 兼容、AIR、Metal-cpp smoke 和 gtest
@@ -128,8 +128,8 @@ MGL-minecraft/
 ├── test_mgl/                    # 本地功能测试
 ├── benchmark/                   # 性能测试工具
 ├── spec_parser/                 # 规范解析辅助（verify-codegen）
-├── scripts/                     # 资产生成、回归、trace、benchmark；objc_zero.sh / objc_renderer_loc.sh 度量 ObjC 清零进度
-├── docs/                        # 架构审查与 ObjC 清零 TODO（ARCHITECTURE_REVIEW.md / OBJC_CATEGORY_DISMANTLE_TODO.md / OBJC_LLVM_JOINT_AUDIT_2026-09-14.md）
+├── scripts/                     # 资产生成、回归、trace、benchmark
+├── docs/                        # 架构与规格审查
 ├── MGL_Golden_Images/           # 图像回归基准
 ├── TestImages/                  # 测试纹理素材
 ├── config.mk.example            # 本地 SDK/toolchain 配置模板
@@ -142,6 +142,8 @@ MGL-minecraft/
 ├── LICENSE-GPL-3.0-only         # LGPL 3.0 引用的 GPL 3.0 全文
 └── LICENSING.md                 # 许可证范围与提交边界说明
 ```
+
+`MGL/src` 生产代码全部是 C 或 C++。与 AppKit / CAMetalLayer 的交互集中在 `mgl_platform_shell.cpp`：类在 load 时用 ObjC runtime 注册，消息发送走 `objc_msgSend`，不编译任何 `.m`。GLFW fork 的 Cocoa `.m` 属于窗口库，不是 MGL 引擎。
 
 ## 核心模块说明
 
@@ -192,15 +194,24 @@ processGLState(ctx, true);
   transaction。
 - `mgl_renderer_backend.cpp` 持有 renderer backend handle、owner、cache、completion
   和 temporary-resource 生命周期。
-- `MGLPlatformRendererShell.m` 是唯一持有 `NSView`、`CAMetalLayer`、drawable 和
-  device 初始化的 Objective-C 平台边界。
-- `MGLRenderer*.m` 保留 OpenGL 状态与语义编排，通过纯 C value-state/opaque handle
-  调用 backend，不直接实现 Metal 路径。
+- `mgl_platform_shell.cpp` 是平台壳：持有 `NSView`、`CAMetalLayer`、drawable 和
+  device 初始化，经 libobjc 调用 AppKit，而不是 Objective-C 源文件。
+- OpenGL 状态与语义编排在 C 层（`mgl_renderer_entries.c`、`mgl_draw_entry.c` 等），
+  通过 value-state / opaque handle 进入 backend，不直接实现 Metal 路径。
 
 核心调用关系：
 
 ```text
-MGLRenderer*.m（GL 语义）
+OpenGL API（gl_core.c / glm_dispatch.c）
+        │
+        ▼
+C 状态机（state / buffers / textures / program / …）
+        │
+        ▼
+C renderer 入口（mgl_renderer_entries.c / mgl_draw_entry.c）
+        │
+        ▼
+C++ issue / encode（mgl_draw_issue.cpp / mgl_draw_encode.cpp）
         │ value-state / opaque handle
         ▼
 mgl_renderer_backend.cpp（owner、cache、transaction）
@@ -209,7 +220,7 @@ mgl_renderer_backend.cpp（owner、cache、transaction）
 mgl_render.cpp（Metal-cpp） ───> Metal command queue / encoder / resource
         ▲
         │ device、layer、drawable
-MGLPlatformRendererShell.m（AppKit/CAMetalLayer）
+mgl_platform_shell.cpp（C++ / libobjc → AppKit / CAMetalLayer）
 ```
 
 ## 调试
