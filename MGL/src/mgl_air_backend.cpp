@@ -15817,6 +15817,17 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         if (!gv) break;
         cg.lvalues[d->name] = gv;
         locals[d->name] = gt;
+        /* Register the folded global's IR type as well.  exprIRType() treats a
+         * name that is present in `locals` as a shadowing local and then ONLY
+         * consults cg.localIRTypes (a miss yields nullptr).  Without this entry
+         * a struct-typed global has no visible IR type, so its member reads
+         * miss the struct-field path and fall onto the swizzle path, failing
+         * with "member '…' of a non-vector value is not supported".  Iris's
+         * CommonTransformer lowers `gl_Fog` to exactly such a global
+         * (`iris_FogParameters iris_Fog = iris_FogParameters(…);`), so every
+         * shader that reads `gl_Fog.<member>` (deferred1/composite fog) hit
+         * this. */
+        cg.localIRTypes[d->name] = gs->type;
     }
     if (isTCS) {
         cg.lvalues["gl_TessLevelOuter"] = llvm::UndefValue::get(
