@@ -33,6 +33,7 @@
  */
 
 #include "mgl_sync.h"
+#include "mgl_texture_plan.h" /* MGL_TEXTURE_MS_PLANE_STRIDE */
 #include "mgl_render_api_command.h"
 #include "mgl_render_api_texture.h"
 #include "mgl_render_api_lifecycle.h"
@@ -66,7 +67,8 @@ MGLMetalAttachmentSubresource mglMetalAttachmentSubresourceForAttachment(const F
                    1, (uint32_t)attachment->textarget) > 1u) {
             /* Emulated as texture2d_array with flat = layer * 8 + sample.
              * FBO attaches one GL layer at the base sample plane. */
-            subresource.slice = (uint32_t)attachment->layer * 8u;
+            subresource.slice =
+                (uint32_t)attachment->layer * MGL_TEXTURE_MS_PLANE_STRIDE;
     } else if (mglRenderTextureTargetIs3D((uint32_t)attachment->textarget)) {
             subresource.depthPlane = attachment->layer;
     }

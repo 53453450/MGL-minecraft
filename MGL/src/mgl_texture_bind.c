@@ -38,6 +38,7 @@
 #include "glm_context.h"         /* GLMContext, before the type headers that need it */
 #include "mgl_texture_upload_ops.h"
 #include "mgl_texture_bind.h"
+#include "mgl_texture_plan.h" /* MGL_TEXTURE_MS_PLANE_STRIDE */
 #include "mgl_renderer_ports.h"  /* state areas + creation/upload ports */
 #include "mgl_render_api_texture.h"
 #include "mgl_render_pass_manager_ops.h" /* mglRendererEndRenderEncodingLocked */
@@ -166,7 +167,7 @@ static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
         tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
     if ((root_ms || view_ms) &&
         info.texture_type == MGLTextureType2DArray && slice_len > 0u) {
-        const uint64_t stride = 8u;
+        const uint64_t stride = MGL_TEXTURE_MS_PLANE_STRIDE;
         if (root_target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ||
             root_target == GL_TEXTURE_2D_MULTISAMPLE) {
             slice_loc = (uint64_t)tex->view_min_layer * stride;

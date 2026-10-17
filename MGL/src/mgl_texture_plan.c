@@ -156,7 +156,7 @@ int mglRenderEmulateMSAsArray(uint32_t tex_type, uint32_t samples, uint64_t dept
      * (flat = layer * 8 + sample).  Non-array MS is one logical layer so the
      * store is always 8 planes — needed for TextureView MS→MS_ARRAY where the
      * view exposes layer count via array_length/8. */
-    const uint64_t kMsPlaneStride = 8u;
+    const uint64_t kMsPlaneStride = MGL_TEXTURE_MS_PLANE_STRIDE;
     uint32_t sc = 1u;
     uint64_t d = 1u;
     uint64_t arr = 1u;

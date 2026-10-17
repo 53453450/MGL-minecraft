@@ -17,6 +17,7 @@
  */
 
 #include "mgl_readback_policy.h"
+#include "mgl_texture_plan.h" /* MGL_TEXTURE_MS_PLANE_STRIDE */
 
 #include "glcorearb.h"
 
@@ -564,7 +565,9 @@ int mglRenderTargetStorageYFlipped(int is_render_target, uint32_t write_version)
 }
 
 uint32_t mglRenderMSAAArrayLayerStride(int layered, uint32_t textarget) {
-    return layered && textarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ? 8u : 1u;
+    return layered && textarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY
+               ? MGL_TEXTURE_MS_PLANE_STRIDE
+               : 1u;
 }
 
 int mglRenderGetTexImagePlan(

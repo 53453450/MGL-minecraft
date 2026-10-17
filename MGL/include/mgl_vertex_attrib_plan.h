@@ -67,8 +67,8 @@ typedef struct MGLVertexAttribBufferPlanInput {
 
 /* Append one BufferMap entry per distinct attribute stream to `buffer_map`
  * (starting at buffer_map->count) and stamp each entry's attribute_mask with
- * the attributes it serves.  Attributes that share a buffer object (same name
- * and target) and the same stride/divisor are grouped into one entry whose
+ * the attributes it serves.  Attributes that share a buffer object and the
+ * same stride/divisor are grouped into one entry whose
  * buffer_base_index is the Metal vertex buffer slot; per-attribute offsets stay
  * in the vertex descriptor.  Returns 0 on success, -1 when the map has no room
  * for the first entry.  `buffer_map` must be non-NULL. */

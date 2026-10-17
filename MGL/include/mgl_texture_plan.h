@@ -40,6 +40,11 @@ enum {
     MGL_TEXTURE_USAGE_SHADER_ATOMIC = 0x20u,
 };
 
+/* A multisample texture is stored as a 2D array with this many planes per
+ * layer (flat index = layer * stride + sample), the stride AIR's texelFetch and
+ * textureSize for sampler2DMS[Array] assume. */
+#define MGL_TEXTURE_MS_PLANE_STRIDE 8u
+
 typedef struct MGLTexturePlanInput {
     /* The target's plan (mglRenderTextureTargetPlan): the Metal texture type
      * before any promotion, face count and the 1D backing flags. */

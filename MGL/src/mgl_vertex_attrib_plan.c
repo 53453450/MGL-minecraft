@@ -134,11 +134,12 @@ int mglRenderPlanVertexAttribBuffers(BufferMapList *buffer_map,
         {
             bool found_buffer = false;
 
-            /* Find an already-mapped entry with the same buffer.  Name and
-             * target are compared (not pointers), and offset is intentionally
-             * NOT compared: attributes sharing the same VBO/stride/divisor are
-             * grouped into one Metal buffer slot with per-attribute offsets
-             * expressed through the vertex descriptor. */
+            /* Find an already-mapped entry with the same buffer object (one
+             * GL name is one object, so identity is the pointer), and offset
+             * is intentionally NOT compared: attributes sharing the same
+             * VBO/stride/divisor are grouped into one Metal buffer slot with
+             * per-attribute offsets expressed through the vertex descriptor.
+             * The plan never reads the buffer itself. */
             for (int map = vao_buffer_start;
                  (found_buffer == false) && map < (int)buffer_map->count;
                  map++) {
@@ -146,8 +147,7 @@ int mglRenderPlanVertexAttribBuffers(BufferMapList *buffer_map,
                 if (!map_buffer) {
                     continue;
                 }
-                if ((map_buffer->name == gl_buffer->name) &&
-                    (map_buffer->target == gl_buffer->target)) {
+                if (map_buffer == gl_buffer) {
                     bool compatibleStream = true;
                     for (GLuint prevAttrib = 0; prevAttrib < MAX_ATTRIBS;
                          prevAttrib++) {
