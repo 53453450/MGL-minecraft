@@ -16,7 +16,10 @@
 #include "mgl_texture_binding_resolve.h"
 #include "mgl_texture_compat.h"    /* mglTextureUnitForSampledResource */
 #include "mgl_program_resource.h"  /* mglShaderStageName */
-#include "mgl_render.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_values.h"
+#include "mgl_binding_policy.h"
 #include "glm_limits.h"            /* TEX_OBJ_RES_NAME */
 
 #include <stdio.h>

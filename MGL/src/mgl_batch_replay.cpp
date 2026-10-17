@@ -18,7 +18,14 @@
 #include "mgl_batch_issue.h"
 #include "mgl_batch_mtl_encode.h"
 
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+
+#include "mgl_render_api_binding.h"
+
+#include "mgl_render_api_pixel.h"
+
+#include "mgl_render_api_draw.h"
+#include "mgl_binding_policy.h"
 #include "mgl_types_texture.h"
 #include "mgl_vertex_attrib_query.h"
 #include "mgl_vertex_format.h"

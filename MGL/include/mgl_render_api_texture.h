@@ -3,16 +3,359 @@
 #define MGL_RENDER_API_TEXTURE_H
 
 /* Declarations for the texture slice of the renderer facade.
- * Value layouts live in mgl_render.h. Standalone include pulls
- * mgl_render_fwd.h (incomplete types) instead of the full facade. */
+ * Value layouts are defined here; types of other subsystems that are only
+ * passed by pointer are incomplete (mgl_render_fwd.h). */
 
-#ifndef MGL_RENDER_H
 #include "mgl_render_fwd.h"
-#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+typedef struct MGLRenderTextureInfo_t {
+    uint32_t pixel_format;
+    uint32_t texture_type;
+    uint64_t width;
+    uint64_t height;
+    uint64_t depth;
+    uint64_t mipmap_level_count;
+    uint64_t array_length;
+    uint64_t usage;
+    uint32_t storage_mode;
+    uint64_t sample_count;
+} MGLRenderTextureInfo;
+
+typedef struct MGLRenderTextureDescriptorState_t {
+    uint32_t texture_type;
+    uint32_t pixel_format;
+    uint64_t width;
+    uint64_t height;
+    uint64_t depth;
+    uint64_t mipmap_level_count;
+    uint64_t sample_count;
+    uint64_t array_length;
+    uint64_t resource_options;
+    uint64_t usage;
+    uint32_t cpu_cache_mode;
+    uint32_t storage_mode;
+    uint32_t hazard_tracking_mode;
+    uint32_t compression_type;
+    uint32_t placement_sparse_page_size;
+    uint32_t allow_gpu_optimized_contents;
+    uint32_t swizzle_red;
+    uint32_t swizzle_green;
+    uint32_t swizzle_blue;
+    uint32_t swizzle_alpha;
+    uint32_t has_swizzle;
+} MGLRenderTextureDescriptorState;
+
+int mglRenderCreateTextureViewRange(
+    void *texture,
+    uint32_t pixel_format,
+    uint32_t texture_type,
+    uint64_t level_location,
+    uint64_t level_length,
+    uint64_t slice_location,
+    uint64_t slice_length,
+    int use_swizzle,
+    uint32_t swizzle_red,
+    uint32_t swizzle_green,
+    uint32_t swizzle_blue,
+    uint32_t swizzle_alpha,
+    void **texture_view_out);
+
+/* CPU-visible texture transfer facade. use_slice selects Metal's
+ * slice/bytesPerImage overload; region values are passed explicitly so the
+ * C ABI does not expose MTLRegion. */
+int mglRenderTextureReplaceRegion(void *texture,
+                                     uint64_t x,
+                                     uint64_t y,
+                                     uint64_t z,
+                                     uint64_t width,
+                                     uint64_t height,
+                                     uint64_t depth,
+                                     uint64_t level,
+                                     uint64_t slice,
+                                     const void *bytes,
+                                     uint64_t bytes_per_row,
+                                     uint64_t bytes_per_image,
+                                     int use_slice);
+
+int mglRenderTextureGetBytes(void *texture,
+                                void *bytes,
+                                uint64_t bytes_per_row,
+                                uint64_t bytes_per_image,
+                                uint64_t x,
+                                uint64_t y,
+                                uint64_t z,
+                                uint64_t width,
+                                uint64_t height,
+                                uint64_t depth,
+                                uint64_t level,
+                                uint64_t slice,
+                                int use_slice);
+
+/* GL texture creation target + sample count -> Metal descriptor shape.
+ * The value result keeps Metal enums behind uint32_t and carries the legacy
+ * upload/completeness flags that must stay consistent with the chosen type.
+ * GL_TEXTURE_BUFFER is handled by its dedicated buffer-texture path before
+ * this helper is called. */
+typedef struct MGLRenderTextureTargetPlan_t {
+    uint32_t texture_type;
+    uint32_t num_faces;
+    uint32_t is_array;
+    uint32_t texture_1d_backed_by_2d;
+    uint32_t texture_1d_array_backed_by_2d_array;
+} MGLRenderTextureTargetPlan;
+
+/* GL subimage coordinates -> Metal upload subresource plan.  In
+ * particular, GL_TEXTURE_1D_ARRAY stores its first layer/count in
+ * yoffset/height, while the Metal 2D-array backing needs slice/arrayLength
+ * with origin.y=0 and height=1.  The result is pure value state; no MTL type
+ * crosses the C ABI. */
+typedef struct MGLRenderTextureSubUploadPlan_t {
+    uint64_t destination_base_slice;
+    uint64_t destination_x;
+    uint64_t destination_y;
+    uint64_t destination_z;
+    uint64_t copy_width;
+    uint64_t copy_height;
+    uint64_t copy_depth;
+    uint64_t layer_count;
+    uint64_t source_layer_stride;
+} MGLRenderTextureSubUploadPlan;
+
+int mglRenderTextureSubUploadPlan(
+    uint32_t gl_target,
+    uint32_t texture_type,
+    uint64_t requested_slice,
+    uint64_t xoffset,
+    uint64_t yoffset,
+    uint64_t zoffset,
+    uint64_t width,
+    uint64_t height,
+    uint64_t depth,
+    uint64_t source_bytes_per_row,
+    uint64_t source_bytes_per_image,
+    MGLRenderTextureSubUploadPlan *plan_out);
+
+/* MGLPixelFormat ABI value -> shader-visible texture
+ * data kind.  Keep the C ABI backend-neutral; the numeric results mirror
+ * MGLTextureDataKind without exposing that ObjC enum here. */
+#ifndef MGL_RENDER_TEXTURE_DATA_KIND_UNKNOWN
+#define MGL_RENDER_TEXTURE_DATA_KIND_UNKNOWN 0u
+#define MGL_RENDER_TEXTURE_DATA_KIND_FLOAT   1u
+#define MGL_RENDER_TEXTURE_DATA_KIND_SINT    2u
+#define MGL_RENDER_TEXTURE_DATA_KIND_UINT    3u
+#define MGL_RENDER_TEXTURE_DATA_KIND_DEPTH   4u
+#endif
+
+/* Selects the CPU-to-GPU upload route without touching Metal objects.
+ * texture_type and storage_mode use the stable MTLTextureType and
+ * MTLStorageMode ABI values.
+ *   - Non-private 1D/1DArray textures use REPLACE_1D.
+ *   - 3D textures affected by the AGX slice-copy issue reject private storage;
+ *     other 3D textures use REPLACE_3D with tightly packed depth planes.
+ *   - Other texture shapes use BLIT to preserve GPU ordering. */
+#define MGL_RENDER_TEXTURE_UPLOAD_ROUTE_BLIT          0
+
+#define MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_1D    1
+
+#define MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_3D    2
+
+#define MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REJECT        3
+
+/* Complete value-state plan for a full texture-level/slice upload.  This
+ * centralizes the layout normalization that used to live around the ObjC
+ * replaceRegion/blit branches.  A REJECT route is a valid plan; malformed
+ * dimensions/strides and staging allocations above 512 MiB return -1. */
+typedef struct MGLRenderTextureUploadPlan_t {
+    uint32_t route;
+    uint32_t replace_region_dimension; /* 1, 2, or 3; 0 for blit/reject */
+    uint32_t replace_use_slice;
+    uint32_t requires_repack;
+    uint64_t normalized_height;
+    uint64_t normalized_depth;
+    uint64_t upload_rows;
+    uint64_t expected_bytes_per_image;
+    uint64_t normalized_bytes_per_image;
+    uint64_t copy_depth;
+    uint64_t buffer_size;
+    uint64_t destination_slice;
+    uint64_t destination_level;
+} MGLRenderTextureUploadPlan;
+
+int mglRenderBuildTextureUploadPlan(
+    uint32_t gl_target,
+    uint32_t texture_type,
+    uint32_t storage_mode,
+    uint32_t pixel_format,
+    int has_agx_3d_copy_bug,
+    uint64_t width,
+    uint64_t height,
+    uint64_t depth,
+    uint64_t bytes_per_row,
+    uint64_t bytes_per_image,
+    uint64_t destination_level,
+    uint64_t destination_slice,
+    MGLRenderTextureUploadPlan *plan_out);
+
+uint64_t mglRenderExpectedArrayLayers(uint32_t gl_target, int32_t depth);
+
+int mglRenderPrefer1DOverDefault2D(uint32_t expected_type, uint32_t active_target);
+
+int mglRenderPreferMSOr1DArrayOver2DArray(uint32_t expected_type,
+                                          uint32_t active_target);
+
+int mglRenderExpectedTypeIsCube(uint32_t expected_type);
+
+uint64_t mglRenderFallbackSampledCacheKey(uint32_t texture_type, uint32_t data_kind);
+
+uint32_t mglRenderAGXCompatiblePixelFormat(uint32_t pixel_format, int *converted);
+
+int mglRenderPromote1DArrayDepthStencil(uint32_t tex_type, uint32_t pixel_format);
+
+int mglRenderPromoteMipmapped1D(uint32_t tex_type);
+
+int mglRenderPromoteMipmapped1DArray(uint32_t tex_type);
+
+int mglRenderCubeFaceSizeValid(uint64_t width, uint64_t height);
+
+uint32_t mglRenderUploadLevelCount(int mipmapped, int tex_mipmapped,
+                                   uint32_t effective);
+
+int mglRenderEmulateMSAsArray(uint32_t tex_type, uint32_t samples, uint64_t depth,
+                              uint32_t *out_type, uint32_t *sample_count,
+                              uint64_t *array_len, uint64_t *depth_out);
+
+int mglRenderPreferSharedStorage(int needs_cpu, int is_depth_stencil);
+
+void mglRenderApply1DBackingToDesc(int backed_1d, int backed_1d_array,
+                                   uint64_t height, uint32_t *type,
+                                   uint64_t *array_len, uint32_t *height_out);
+
+int mglRenderTraceR8RedUByte(uint32_t internalformat, uint32_t format,
+                             uint32_t type);
+
+uint32_t mglRenderCompletenessCheckFaces(uint32_t target, uint32_t num_faces);
+
+int mglRenderIs3DReupload(uint32_t target, uint32_t depth);
+
+uint32_t mglRenderRepairedDefaultStencilFormat(uint32_t stencil_format);
+
+int mglRenderTargetIsRenderbuffer(uint32_t target);
+
+int mglRenderMSSamplePlaneAdjust(int in_ms_loop, uint32_t target,
+                                 int32_t offset);
+
+int mglRenderFilterIsNearest(uint32_t filter);
+
+uint32_t mglRenderNearestFilter(void);
+
+int mglRenderCubeMapFaceSlice(uint32_t textarget, uint32_t *out);
+
+int mglRenderAttachmentUsesArrayLayer(uint32_t textarget);
+
+int mglRenderPackedDepthStencilFormat(uint32_t internalformat);
+
+/* C1: MGLRenderGetTexImagePlan + mglRenderGetTexImagePlan -> mgl_readback_policy.h */
+
+typedef struct MGLRenderLevelUploadOp_t {
+    uint32_t level;
+    uint32_t kind;          /* 0 = upload op, 1 = short-backing (skip) */
+    uint32_t width;
+    uint32_t height;
+    uint64_t bytes_per_row;
+    uint64_t bytes_per_image;
+    uint64_t copy_depth;
+    uint64_t available_bytes; /* short-backing: bytes available */
+    uint64_t needed_bytes;    /* short-backing: bytes_per_image * copy_depth */
+    const void *data;         /* upload op: borrowed or owned (owns_data) */
+    int owns_data;
+} MGLRenderLevelUploadOp;
+
+/* build the level-upload op list for a single-face
+ * (2D) CPU upload — inlines the has-uploadable CPU-data check, runs
+ * mglRenderTexturePrepareLevelUpload per level and classifies each as
+ * upload op / short-backing / bad.  levels must have level_count entries.
+ * Returns 0 with *op_count_out ops (capacity must hold level_count), or -1
+ * on bad args / capacity overflow.  short-backing ops carry kind=1 with the
+ * have/need bytes; bad levels are counted in *bad_out (skipped silently,
+ * matching the ObjC baseline). */
+int mglRenderBuildLevelUploadOps(
+    const TextureLevel *levels,
+    uint32_t level_count,
+    uint32_t texture_type,
+    uint32_t internal_format,
+    uint32_t pixel_format,
+    MGLRenderLevelUploadOp *ops,
+    uint32_t ops_capacity,
+    uint32_t *op_count_out,
+    uint32_t *short_backing_out,
+    uint32_t *bad_out);
+
+typedef struct MGLRenderLevelUploadPrep_t {
+    const void *data;         /* borrowed or owned */
+    uint64_t bytes_per_row;
+    uint64_t bytes_per_image;
+    uint64_t copy_depth;
+    uint64_t available_bytes;
+    int owns_data;            /* 1: caller must free((void *)data) */
+} MGLRenderLevelUploadPrep;
+
+/* R8 swizzle component + single-channel upload expand.
+ * Resolve mirrors mglResolveR8SwizzledComponent (tex unused).  Create
+ * expands GL_R8 1B/px → RGBA8 via the four swizzle enums; malloc'd
+ * result, NULL on bad args / non-R8 / size cap. */
+uint8_t mglRenderResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red);
+
+/* stored color-component count for an internal format.  Unknown formats → 4. */
+uint32_t mglRenderStoredColorComponents(uint32_t internal_format);
+
+/* Encode and end a complete buffer-to-texture upload blit in C++. The
+ * command buffer retains the encoded resources after this function returns. */
+int mglRenderEncodeTextureUpload(void *command_buffer,
+                                    void *source_buffer,
+                                    uint64_t source_offset,
+                                    uint64_t source_bytes_per_row,
+                                    uint64_t source_bytes_per_image,
+                                    uint64_t source_width,
+                                    uint64_t source_height,
+                                    uint64_t source_depth,
+                                    void *destination_texture,
+                                    uint64_t destination_slice,
+                                    uint64_t destination_level,
+                                    uint64_t destination_x,
+                                    uint64_t destination_y,
+                                    uint64_t destination_z);
+
+/* Multi-slice form used by array-texture subimages.  Arithmetic and resource
+ * extents are validated before a single blit encoder is opened, so a bad
+ * range cannot leave a partially encoded layer prefix.  flip_y writes source
+ * row r to Metal row mip_height-1-(destination_y+r). */
+int mglRenderEncodeTextureUploadLayers(
+    void *command_buffer,
+    void *source_buffer,
+    uint64_t source_offset,
+    uint64_t source_bytes_per_row,
+    uint64_t source_bytes_per_image,
+    uint64_t source_layer_stride,
+    uint64_t source_width,
+    uint64_t source_height,
+    uint64_t source_depth,
+    void *destination_texture,
+    uint64_t destination_base_slice,
+    uint64_t layer_count,
+    uint64_t destination_level,
+    uint64_t destination_x,
+    uint64_t destination_y,
+    uint64_t destination_z,
+    int flip_y);
+
+int mglRenderEncodeTextureUploadLayersForCommandBufferOwner(MGLCommandBufferOwner *command_buffer_owner, void *source_buffer, uint64_t source_offset, uint64_t source_bytes_per_row, uint64_t source_bytes_per_image, uint64_t source_layer_stride, uint64_t source_width, uint64_t source_height, uint64_t source_depth, void *destination_texture, uint64_t destination_base_slice, uint64_t layer_count, uint64_t destination_level, uint64_t destination_x, uint64_t destination_y, uint64_t destination_z, int flip_y);
+
+int mglRenderEncodePackedDepthStencilUploadForCommandBufferOwner(MGLCommandBufferOwner *command_buffer_owner, void *source_buffer, uint64_t width, uint64_t height, void *destination_texture, uint64_t destination_slice, uint64_t destination_level, uint64_t destination_x, uint64_t destination_y, int flip_y);
+
 
 /* C++-owned transient upload buffer. The returned buffer is borrowed from
  * the opaque owner; Metal command encoders retain it when a copy command is

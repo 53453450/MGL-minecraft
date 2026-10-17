@@ -29,6 +29,8 @@
 enum { MGL_RENDERER_CB_NOT_ENQUEUED = 0u };
 #include "mgl_renderer_ports.h"  /* state areas (backend) */
 #include "mgl_renderer_backend.h" /* backend copy-back clear entries */
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_binding.h"
 
 void mglClearStageBindingCopyBacks(void *renderer,
                                    MGLStageBindingCopyBackList *copy_backs)

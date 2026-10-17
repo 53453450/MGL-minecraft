@@ -67,6 +67,10 @@ static inline bool mglVboRangeValidationEnabled(void)
 #include "mgl_shader_abi.h"
 #include "mgl_renderer_backend.h"
 #include <string.h>
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_draw.h"
+#include "mgl_render_api_query.h"
 
 /* The Objective-C versions handed these C callers a +1 through
  * (__bridge_retained void *) ...; where the underlying call only lends the

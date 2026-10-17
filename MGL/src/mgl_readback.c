@@ -37,7 +37,9 @@
 #include <stdbool.h>
 #include <stdlib.h> /* calloc / free: scratch readback buffer */
 #include <stddef.h>
-#include "mgl_render.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_pixel.h"
+#include "mgl_render_api_readback.h"
 #include <stdint.h>
 
 bool mglMetalReadbackFormatIsBGRA8Compatible(uint32_t pixelFormat)

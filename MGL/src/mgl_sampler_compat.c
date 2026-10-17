@@ -34,7 +34,8 @@
  */
 
 #include "mgl_sampler_compat.h"
-#include "mgl_render.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_binding_policy.h"
 #include "mgl_trace_log.h"
 #include <string.h>
 

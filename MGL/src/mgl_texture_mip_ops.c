@@ -34,7 +34,13 @@
 #include "mgl_trace_log.h"
 #include "mgl_types_state.h"
 
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+
+#include "mgl_render_api_texture.h"
+
+#include "mgl_render_api_query.h"
+
+#include "mgl_render_api_lifecycle.h"
 
 #include <stdarg.h>
 #include <stdio.h>

@@ -13,7 +13,12 @@
  */
 
 #include "mgl_renderer_ports.h"
-#include "mgl_render.h"           /* command-buffer snapshot, MDI scratch owner */
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_query.h"
+#include "mgl_render_api_lifecycle.h"
 #include "mgl_renderer_backend.h" /* mglRendererBackendGetDevice, sampler cache */
 #include "mgl_texture_sampler.h"  /* mglTextureCreateSamplerForTexParam */
 #include "mgl_batch_public.h"     /* mgl_batch_replay_fill_sampler_params */

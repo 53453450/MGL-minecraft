@@ -12,7 +12,8 @@
 
 #include "mgl_buffer_query.h"
 #include <stdbool.h>
-#include "mgl_render.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
 
 bool mglRendererSameVertexStream(Buffer *lhsBuffer,
                                         GLintptr lhsOffset,

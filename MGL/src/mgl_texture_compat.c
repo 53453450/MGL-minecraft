@@ -11,7 +11,10 @@
 
 
 #include "mgl_texture_compat.h"
-#include "mgl_render.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_pixel.h"
+#include "mgl_render_api_lifecycle.h"
+#include "mgl_binding_policy.h"
 #include "mgl_sampler_compat.h"   /* mglFindSamplerResourceForMetalBinding */
 #include "mgl_metal_ref.h"         /* mglSafeReleaseMetalObj */
 

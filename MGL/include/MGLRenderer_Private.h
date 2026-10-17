@@ -43,7 +43,8 @@
  * Sync, GLMState, MGLBatchPath, MGLDrawBatch, MAX_COLOR_ATTACHMENTS,
  * TEXTURE_UNITS, and GL types (GLenum, GLuint, GLsizei, ...). */
 #include "glm_context.h"
-#include "mgl_render.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
 #include "mgl_renderer_backend.h"
 #import "mgl_capability.h"          // ivar type: MGLCapability
 #import "mgl_texture_compat.h"      // MGLTextureDataKind

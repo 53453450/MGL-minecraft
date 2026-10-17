@@ -3,16 +3,21 @@
 #define MGL_RENDER_API_PIXEL_CONVERT_H
 
 /* Declarations for the pixel_convert slice of the renderer facade.
- * Value layouts live in mgl_render.h. Standalone include pulls
- * mgl_render_fwd.h (incomplete types) instead of the full facade. */
+ * Value layouts are defined here; types of other subsystems that are only
+ * passed by pointer are incomplete (mgl_render_fwd.h). */
 
-#ifndef MGL_RENDER_H
 #include "mgl_render_fwd.h"
-#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+uint32_t mglRenderSRGBPixelFormat(uint32_t pixel_format);
+
+int mglRenderCPUFormatTypeForInternalFormat(uint32_t internalformat,
+                                            uint32_t *out_format,
+                                            uint32_t *out_type);
+
 
 int mglRenderPixelFormatIsIntegerColor(uint32_t pixel_format);
 

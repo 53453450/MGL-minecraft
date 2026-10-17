@@ -38,7 +38,9 @@
 #include "mgl_stage_copy_back.h"
 #include "mgl_renderer_ports.h"     /* state areas, isolated buffer, copy-back */
 #include "mgl_renderer_backend.h"   /* program binding sizes/counts, fallback buffer */
-#include "mgl_render.h"             /* snapshot encode, slot + map predicates */
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_readback.h"
 #include "mgl_binding_stage.h"      /* the stage-bind plan API */
 #include "mgl_renderer_binding_ops.h"  /* invalidate-last-bound helpers */
 #include "mgl_shader_resource.h"    /* client binding / metal slot per element */

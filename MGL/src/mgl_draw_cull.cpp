@@ -11,7 +11,8 @@
 #include "mgl_draw_cull.h"
 
 #include "mgl_draw_tess.h"
-#include "mgl_render.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_draw.h"
 #include "mgl_vertex_format.h"   /* mglRenderGLIndexElementSize */
 #include "mgl_index_buffer.h"     /* mglRenderPlanCullDistanceElementRange */
 #include "mgl_shader_abi.h"

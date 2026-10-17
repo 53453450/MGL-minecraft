@@ -38,7 +38,10 @@
 #include "mgl_stage_copy_back.h"
 #include "mgl_renderer_ports.h"     /* state areas + stage-binding host entries */
 #include "mgl_renderer_backend.h"   /* program binding sizes, storage-image texture */
-#include "mgl_render.h"             /* buffer/texture creation, copy encoding */
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
 #include "mgl_buffer_map.h"         /* map entries, dirty update, mglNoteBufferEncoded */
 #include "mgl_buffer_slots.h"       /* mglRuntimeArraySizeBufferIndexForProgram */
 #include "mgl_binding_stage.h"      /* bind plan for a map entry */

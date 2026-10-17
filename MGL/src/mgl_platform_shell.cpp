@@ -44,7 +44,12 @@
 #include "mgl_air_loader.h"           /* MGLRenderPipelineDescriptorState */
 #include "mgl_aux_assets.h"
 #include "mgl_compute_dispatch.h"     /* mglComputeMtlDispatch*Locked */
-#include "mgl_render.h"               /* MGLRenderPipelineBlendState */
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_query.h"
+#include "mgl_render_api_lifecycle.h"
 #include "mgl_render_pass_manager.h"  /* r->_renderPassManager->state */
 #include "mgl_pipeline_cache_state.h" /* MGLPipelineCacheState */
 #include "mgl_renderer_backend.h"

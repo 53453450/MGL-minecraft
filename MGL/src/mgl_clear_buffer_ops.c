@@ -39,6 +39,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
+#include "mgl_pso_format_class.h"
 
 /* The .m's file-local constants this TU needs (values copied verbatim from
  * MGLRenderer.m's enum). */

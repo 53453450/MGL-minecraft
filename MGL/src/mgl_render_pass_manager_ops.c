@@ -58,6 +58,7 @@
 #include <stdlib.h>   /* malloc / realloc / free */
 #include <string.h>   /* memcpy / strlen */
 #include <math.h>     /* lrintf */
+#include "mgl_readback_policy.h"
 
 /* Defined in MGLRenderer.m; declared in the Objective-C
  * MGLRenderer+RenderPass_Private.h. */

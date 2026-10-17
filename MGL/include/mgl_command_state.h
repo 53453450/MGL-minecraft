@@ -22,7 +22,7 @@
 #define MGL_COMMAND_STATE_H
 
 #include "glm_context.h"
-#include "mgl_render.h"
+#include "mgl_render_fwd.h"
 
 #include <stdint.h>
 

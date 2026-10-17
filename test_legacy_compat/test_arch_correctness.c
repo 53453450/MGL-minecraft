@@ -22,7 +22,9 @@
 #include "mgl_air_gs_abi.h"
 #include "mgl_draw_gs.h"
 #include "mgl_draw_tess.h"
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_draw.h"
 #include "mgl_shader_abi.h"
 
 static volatile sig_atomic_t g_got_segv;

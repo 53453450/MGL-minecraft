@@ -20,7 +20,12 @@
 #include "glm_context.h"
 #include "mgl_metal.h"
 #include "mgl_program_resource.h"
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_query.h"
+#include "mgl_render_api_lifecycle.h"
 #include "mgl_backend_handles.h"
 #include "mgl_shader_resource.h"
 

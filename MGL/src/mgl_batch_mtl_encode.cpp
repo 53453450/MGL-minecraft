@@ -16,7 +16,10 @@
  * declared; pull in the canonical dispatch chain first. */
 #include "glm_dispatch.h"
 #include "draw_command.h"
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_draw.h"
+#include "mgl_binding_policy.h"
 
 #include <stddef.h>
 #include <string.h>

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-3.0-only */
 #include "mgl_metal.h"
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_readback.h"
 #include "mgl_air_loader.h"
 #include "mgl_buffer_slots.h"
 #include "mgl_renderer_backend.h"

@@ -26,7 +26,10 @@
 #include "mgl_binding_texture.h" /* sampler materialize plan + logging */
 #include "mgl_texture_sampler.h" /* mglTextureCreateSamplerForTexParam */
 #include "mgl_renderer_ports.h"  /* state areas */
-#include "mgl_render.h"          /* mglRenderGetTextureInfo */
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_lifecycle.h"
 #include "mgl_metal_ref.h"       /* mglSafeReleaseMetalObj */
 #include "mgl_types_state.h"     /* Sampler */
 #include "mgl_sampled_fallback.h" /* mglSampledFallbackTextureForExpectedType */

@@ -3,16 +3,119 @@
 #define MGL_RENDER_API_LIFECYCLE_H
 
 /* Declarations for the lifecycle slice of the renderer facade.
- * Value layouts live in mgl_render.h. Standalone include pulls
- * mgl_render_fwd.h (incomplete types) instead of the full facade. */
+ * Value layouts are defined here; types of other subsystems that are only
+ * passed by pointer are incomplete (mgl_render_fwd.h). */
 
-#ifndef MGL_RENDER_H
 #include "mgl_render_fwd.h"
-#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Releases renderer-owned MTL::* objects, including the retained device.
+ * This operation is idempotent. */
+void mglRenderShutdown(void);
+
+/* Direct renderer entries. Objects passed here carry the +1 bridge reference
+ * owned by the GL state. */
+void mglRenderDeleteMTLObj(GLMContext glm_ctx, void *object);
+
+/* Publish the borrowed runtime owner handles used by direct C++ callbacks. */
+int mglRenderAttachRuntimeOwners(GLMContext glm_ctx, MGLCommandBufferOwner *command_buffer_owner, MGLRenderEncoderOwner *render_encoder_owner, MGLRenderPassStateOwner *render_pass_state_owner);
+
+void mglRenderDetachRuntimeOwners(GLMContext glm_ctx);
+
+const char *mglRenderGLSLTypeName(uint32_t type);
+
+uint32_t mglRenderGLSLMatrixCols(uint32_t type);
+
+uint32_t mglRenderGLSLMatrixRows(uint32_t type);
+
+const char *mglRenderGLSLColumnType(uint32_t rows);
+
+int mglRenderGLSLNeedsFlat(uint32_t type);
+
+typedef struct MGLRenderStencilDescriptorState_t {
+    uint32_t present;
+    uint32_t compare_function;
+    uint32_t read_mask;
+    uint32_t write_mask;
+    uint32_t stencil_failure_operation;
+    uint32_t depth_failure_operation;
+    uint32_t depth_stencil_pass_operation;
+} MGLRenderStencilDescriptorState;
+
+typedef struct MGLRenderDepthStencilDescriptorState_t {
+    uint32_t depth_compare_function;
+    uint32_t depth_write_enabled;
+    MGLRenderStencilDescriptorState front;
+    MGLRenderStencilDescriptorState back;
+} MGLRenderDepthStencilDescriptorState;
+
+/* Read an opaque ObjC depth/stencil descriptor into value-state. The descriptor
+ * object is borrowed and inspected only inside the Metal-cpp implementation TU. */
+int mglRenderDescribeDepthStencilDescriptor(
+    const void *depth_stencil_descriptor,
+    MGLRenderDepthStencilDescriptorState *state_out);
+
+enum {
+    MGL_RENDER_AUX_COMPUTE_SCALED_BLIT = 1,
+    MGL_RENDER_AUX_COMPUTE_MSAA_INTEGER_RESOLVE = 2,
+    MGL_RENDER_AUX_RENDER_SCALED_BLIT = 3,
+    MGL_RENDER_AUX_RENDER_SCALED_DEPTH_BLIT = 4,
+    MGL_RENDER_AUX_RENDER_CLEAR_RECT = 5,
+    MGL_RENDER_AUX_COMPUTE_GS_XFB_SCATTER = 6,
+    MGL_RENDER_AUX_COMPUTE_EMULATED_MS_RESOLVE = 7,
+};
+
+/* Lookup or create a renderer-lifetime auxiliary render PSO. Passing NULL for
+ * both functions performs lookup only and returns 1 on a cache miss. The
+ * descriptor contains the fixed-format blit/clear surface state; functions
+ * are the actual MTLFunction objects compiled by the caller. */
+int mglRenderGetOrCreateAuxRenderPipeline(
+    void *vertex_function,
+    void *fragment_function,
+    uint32_t kind,
+    uint64_t variant,
+    uint32_t color_format,
+    uint32_t depth_format,
+    uint32_t stencil_format,
+    uint32_t color_write_mask,
+    int icb_enabled,
+    uint32_t raster_sample_count,
+    void **pipeline_out,
+    char *err,
+    size_t errcap);
+
+/* Aux render PSO from the precompiled aux shader asset table
+ * (see mgl_aux_assets.h). bytes/size/hash come from an embedded table row;
+ * the C++ side validates size and the FNV-1a hash, loads MTL::Library from the
+ * bytes, resolves the entry functions, and creates the PSO through the same
+ * renderer-lifetime cache as the function-based path. vertex_entry is the
+ * metallib entry name; fragment_entry may be NULL for fragment-less kinds.
+ * On success *pipeline_out is a +1 MTL::RenderPipelineState reference. */
+int mglRenderGetOrCreateAuxRenderPipelineFromMetallib(
+    const unsigned char *bytes,
+    size_t size,
+    uint64_t asset_hash,
+    const char *vertex_entry,
+    const char *fragment_entry,
+    uint32_t kind,
+    uint64_t variant,
+    uint32_t color_format,
+    uint32_t depth_format,
+    uint32_t stencil_format,
+    uint32_t color_write_mask,
+    int icb_enabled,
+    uint32_t raster_sample_count,
+    void **pipeline_out,
+    char *err,
+    size_t errcap);
+
+uint64_t mglXfbAdvanceWriteOffset(uint64_t current, uint64_t written);
+
+int mglRenderAllocateMDIScratch(MGLMDIScratchOwner *owner, uint64_t length, uint64_t alignment, void **buffer_out, uint64_t *offset_out, uint64_t *capacity_out);
+
 
 const char *mglRenderLoadActionName(uint32_t action);
 

@@ -44,6 +44,10 @@
 #include "mgl_types_state.h"        /* mglMarkRendererDirtyBits */
 #include "glm_limits.h"             /* TEXTURE_UNITS */
 #include "glm_context.h"            /* mglRecordActiveComputeShaderQueryDispatch */
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_query.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
 static GLMState *mglComputeDispatchState(const MGLRendererStateAreas *areas,

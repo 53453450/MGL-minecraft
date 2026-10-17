@@ -15,7 +15,7 @@
 
 #include "glm_context.h"
 #include "mgl_render_values.h"
-#include "mgl_render.h"
+#include "mgl_render_fwd.h"
 
 #include <stdbool.h>
 #include <stdint.h>

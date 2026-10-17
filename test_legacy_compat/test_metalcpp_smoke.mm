@@ -29,6 +29,7 @@
 #include "mgl_types_state.h"
 #include "mgl_types_sync.h"
 #include "mgl_sync.h"
+#include "mgl_readback_policy.h"
 
 /* This target exercises the renderer facade without constructing AIR loader
  * objects. Product builds link the real implementation. */

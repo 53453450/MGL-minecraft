@@ -43,7 +43,10 @@
 #include "mgl_stage_buffer_bind.h"   /* the drivers converted in log 129 */
 #include "mgl_renderer_ports.h"      /* state areas */
 #include "mgl_renderer_backend.h"    /* packed current-attrib cache, device */
-#include "mgl_render.h"              /* snapshot encode, binding-state record */
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_pixel.h"
 #include "mgl_binding_stage.h"       /* the attrib plan API */
 #include "mgl_binding_policy.h"      /* kMGLMaxMetalVertexBufferCount helpers */
 #include "mgl_binding_texture.h"     /* mglBindingTextureRateLogHit */

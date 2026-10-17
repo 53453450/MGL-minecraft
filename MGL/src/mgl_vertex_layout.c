@@ -19,7 +19,9 @@
 
 #include "mgl_vertex_layout.h"
 #include "mgl_renderer_ports.h"
-#include "mgl_render.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_query.h"
+#include "mgl_pso_format_class.h"
 #include "mgl_state_compat.h"   /* mglLogRenderStateRepair */
 #include "mgl_draw_tess.h"
 

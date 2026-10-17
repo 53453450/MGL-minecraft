@@ -39,7 +39,7 @@
 #include "mgl_texture_upload_ops.h"
 #include "mgl_texture_bind.h"
 #include "mgl_renderer_ports.h"  /* state areas + creation/upload ports */
-#include "mgl_render.h"          /* mglRender* texture predicates and queries */
+#include "mgl_render_api_texture.h"
 #include "mgl_render_pass_manager_ops.h" /* mglRendererEndRenderEncodingLocked */
 #include "mgl_texture_compat.h"  /* sampled-copy release, swizzle predicate */
 #include "mgl_texture_sampler.h" /* mglTextureCreateSamplerForTexParam */

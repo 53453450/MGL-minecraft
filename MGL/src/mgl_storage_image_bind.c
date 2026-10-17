@@ -34,7 +34,9 @@
 #include "mgl_storage_image_bind.h"
 #include "mgl_renderer_ports.h"   /* state areas, texture bind, restore encoder */
 #include "mgl_renderer_backend.h" /* program binding counts/GL bindings */
-#include "mgl_render.h"           /* resource binding snapshot + owners */
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
 #include "mgl_binding_texture.h"  /* storage-image plan */
 #include "mgl_binding_policy.h"   /* mglRenderResourceMetalSlot */
 #include "mgl_texture_bind.h"     /* mglRendererBindMTLTexture */

@@ -24,7 +24,7 @@
 
 #include "glm_context.h"
 #include "mgl_command_state.h"   /* MGLCommandState */
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
 
 #include <stdbool.h>
 #include <stdint.h>

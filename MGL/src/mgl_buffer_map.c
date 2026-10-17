@@ -36,7 +36,11 @@
 
 #include "mgl_buffer_map.h"
 #include "mgl_renderer_ports.h"        /* state areas */
-#include "mgl_render.h"                /* the mglRender* facade */
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_pixel.h"
+#include "mgl_render_api_draw.h"
+#include "mgl_render_api_query.h"
 #include "mgl_renderer_backend.h"      /* mglRendererGetProgramBindingCount */
 #include "mgl_vertex_attrib_plan.h"    /* mglRenderPlanVertexAttribBuffers */
 #include "mgl_vertex_attrib_query.h"   /* mglRendererGetValidatedVAO */

@@ -35,7 +35,15 @@
 #include "mgl_texture_compat.h"      /* mglMarkTextureLevelRenderTargetWrittenImpl */
 #include "mgl_trace_log.h"
 
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+
+#include "mgl_render_api_binding.h"
+
+#include "mgl_render_api_texture.h"
+
+#include "mgl_render_api_buffer.h"
+
+#include "mgl_render_api_readback.h"
 
 #include <stdio.h>
 #include <string.h>

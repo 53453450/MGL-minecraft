@@ -117,6 +117,7 @@ namespace mgl {
 } // namespace mgl
 
 #include "mgl_render_internal.h"
+#include "mgl_pso_format_class.h"
 
 
 //------------------------------------------------------------------------------------------------

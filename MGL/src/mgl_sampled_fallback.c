@@ -32,7 +32,10 @@
 #include "mgl_sampled_fallback.h"
 #include "mgl_renderer_ports.h"    /* state areas */
 #include "mgl_renderer_backend.h"  /* fallback resource / sampled-texture caches */
-#include "mgl_render.h"            /* texture/buffer creation, region replace */
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_values.h"
 #include "mgl_texture_compat.h"    /* mglTextureDataKindName */
 #include "mgl_region_value.h"      /* mglTextureRegion1D / 2D */
 #include "mgl_gpu_recovery.h"      /* mglPlatformShellGuardedCallCtx (@try/@catch) */

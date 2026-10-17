@@ -18,7 +18,8 @@
 #include "mgl_index_buffer.h"
 #include "mgl_trace_log.h"
 #include "mgl_types_buffer.h"
-#include "mgl_render.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_draw.h"
 #include "mgl_types_program.h"
 
 #include <climits>

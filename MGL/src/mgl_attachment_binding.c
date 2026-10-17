@@ -24,6 +24,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include "mgl_render_api_texture.h"
 
 int mglRendererBindFramebufferTexture(void *renderer, FBOAttachment *attachment,
                                       int is_draw_buffer)

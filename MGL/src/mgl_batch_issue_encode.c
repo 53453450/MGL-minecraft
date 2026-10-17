@@ -7,7 +7,9 @@
 #include "mgl_types_program.h"    /* Program */
 #include "mgl_draw_issue.h"       /* draw host ports: device / cull-distance */
 #include "mgl_env_flag.h"
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_draw.h"
 #include "mgl_draw_encode.h"
 #include "mgl_batch_replay.h"
 #include "mgl_batch_issue.h"

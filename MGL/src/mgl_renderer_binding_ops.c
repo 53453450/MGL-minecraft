@@ -21,6 +21,7 @@
 #include "mgl_size_constants.h"    /* runtime-array size constants */
 #include "mgl_encode_context.h"    /* MGLEncodeContext */
 #include "mgl_batch_public.h"       /* mglBatchBindActiveTexturesToMTL */
+#include "mgl_render_api_binding.h"
 
 static void *mglRendererBindingOwner(void *renderer)
 {

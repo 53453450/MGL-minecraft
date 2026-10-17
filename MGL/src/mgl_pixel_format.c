@@ -34,7 +34,7 @@
 #include <string.h>
 
 #include "mgl_pixel_format.h"
-#include "mgl_render.h"   /* mglRenderBytesPerPixelForInternalFormat */
+#include "mgl_render_api_texture.h"
 #include <stdio.h>
 #include "pixel_utils.h"
 

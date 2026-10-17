@@ -23,7 +23,8 @@
 #define MGL_COMPUTE_DISPATCH_H
 
 #include "glm_context.h"
-#include "mgl_render.h"          /* execution plan, compute plan/result */
+#include "mgl_render_api_command.h"
+#include "mgl_binding_stage.h"
 #include "mgl_types_buffer.h"    /* MGLStageBindingCopyBackList */
 
 #include <stdbool.h>

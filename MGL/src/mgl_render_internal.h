@@ -16,6 +16,12 @@
 
 #include "mgl_backend_lease_scope.h"
 #include "mgl_renderer_backend.h"
+#include "mgl_render_api_lifecycle.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_query.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_draw.h"
 
 extern "C" void mglMetalCountRelease(int kind);
 extern "C" void mglMetalCountCreate(int kind);

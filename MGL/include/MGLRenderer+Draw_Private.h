@@ -37,7 +37,10 @@
 #import "MGLRenderer.h"
 #include "mgl_air_tess_abi.h"
 #include "mgl_air_gs_abi.h"
-#include "mgl_render.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_readback.h"
 #include "mgl_vertex_attrib_binding.h"
 /* Encode target passed explicitly to issue and bind methods (C-safe home). */
 #include "mgl_encode_context.h"

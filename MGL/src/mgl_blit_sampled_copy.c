@@ -16,7 +16,12 @@
 
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_blit_sampled_copy.h"
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_draw.h"
+#include "mgl_render_api_lifecycle.h"
+#include "mgl_pso_format_class.h"
 #include "pixel_utils.h"        /* MGLPixelFormatStencil8 */
 #include "mgl_renderer_ports.h"  /* state areas, ensure-writable command buffer */
 #include "mgl_blit_pipelines.h"  /* scaled copy pipeline / compute pipeline / sampler */

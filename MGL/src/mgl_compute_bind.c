@@ -43,6 +43,10 @@
 #include "mgl_texture_compat.h"    /* mglTextureUnitForSampledResource */
 #include "mgl_shader_resource.h"   /* mglMetalResourceSlot */
 #include "mgl_env_flag.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_readback.h"
+#include "mgl_render_api_texture.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
 static GLMState *mglComputeBindState(const MGLRendererStateAreas *areas)

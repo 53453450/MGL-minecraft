@@ -20,7 +20,10 @@
 
 #include <stdio.h>
 #include "mgl_env_flag.h"
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_pixel.h"
+#include "mgl_render_api_draw.h"
+#include "mgl_render_api_query.h"
 
 static void mglDrawEncodePrimitives(void *renderEncoderOwner,
                                     uint32_t primitiveType,

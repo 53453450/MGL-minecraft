@@ -20,7 +20,8 @@
 
 #include "mgl_renderer_host.h"
 #include "mgl_renderer_ports.h"
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_texture.h"
 #include "mgl_texture_compat.h"
 #include "mgl_rt_sync.h"
 #include "mgl_trace_log.h"

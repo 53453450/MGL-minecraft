@@ -19,7 +19,7 @@
  */
 
 #include "mgl_rt_sync.h"
-#include "mgl_render.h"
+#include "mgl_render_api_texture.h"
 
 /* findTexture is implemented in textures.c and resolves a GL texture name to
  * a Texture *.  Declared here so this module does not need to include the

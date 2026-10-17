@@ -20,7 +20,11 @@
 
 #include "mgl_render_pass_manager.h"
 #include "mgl_draw_buffer.h"   /* mglMetalDrawBufferCount / At, mglRenderEmptyDrawBuffer */
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_readback.h"
+#include "mgl_render_api_query.h"
+#include "mgl_render_api_lifecycle.h"
 
 /* The C++ CommandBufferOwner is the only command-buffer creation path. */
 static void *mglPassManagerCreateCommandBuffer(void **owner, void *command_queue)

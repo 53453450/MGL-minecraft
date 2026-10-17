@@ -35,7 +35,11 @@
 #include "glm_context.h"
 #include "mgl_renderer_ports.h"  /* state areas */
 #include "mgl_blit_pipelines.h"  /* scaled-blit pipeline/sampler + params */
-#include "mgl_render.h"          /* the mglRender* facade */
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_draw.h"
 #include "mgl_sync.h"            /* mglCommandBufferStatusName */
 #include "mgl_trace_log.h"       /* mglTraceLog */
 #include "mgl_metal_ref.h"       /* mglSafeReleaseMetalObj */

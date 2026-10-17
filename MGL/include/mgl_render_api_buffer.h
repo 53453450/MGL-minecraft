@@ -3,16 +3,107 @@
 #define MGL_RENDER_API_BUFFER_H
 
 /* Declarations for the buffer slice of the renderer facade.
- * Value layouts live in mgl_render.h. Standalone include pulls
- * mgl_render_fwd.h (incomplete types) instead of the full facade. */
+ * Value layouts are defined here; types of other subsystems that are only
+ * passed by pointer are incomplete (mgl_render_fwd.h). */
 
-#ifndef MGL_RENDER_H
 #include "mgl_render_fwd.h"
-#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+enum {
+    MGL_RENDER_BUFFER_BOUND = 0,
+    MGL_RENDER_BUFFER_NOT_APPLICABLE = 1,
+    MGL_RENDER_BUFFER_ERROR = -1,
+};
+
+enum {
+    MGL_RENDER_BUFFER_OPERATION_HANDLED = 0,
+    MGL_RENDER_BUFFER_OPERATION_NOT_APPLICABLE = 1,
+    MGL_RENDER_BUFFER_OPERATION_ERROR = -1,
+};
+
+typedef enum MGLRenderVertexConversionKind_t {
+    MGL_RENDER_VERTEX_DOUBLE_TO_FLOAT = 0,
+    MGL_RENDER_VERTEX_INT_TO_FLOAT = 1,
+    MGL_RENDER_VERTEX_FIXED_TO_FLOAT = 2,
+    MGL_RENDER_VERTEX_PACKED_1010102_TO_FLOAT = 3,
+    MGL_RENDER_VERTEX_PACKED_10F11F11F_TO_FLOAT = 4,
+    MGL_RENDER_VERTEX_INTEGER_TO_32 = 5,
+} MGLRenderVertexConversionKind;
+
+typedef struct MGLRenderVertexConversion_t {
+    uint32_t kind;
+    uint32_t component_count;
+    uint32_t source_type;
+    uint32_t normalized;
+    uint32_t destination_signed;
+    int64_t binding_offset;
+    int64_t relative_offset;
+    uint64_t stride;
+} MGLRenderVertexConversion;
+
+typedef struct MGLRenderBufferInfo_t {
+    uint64_t length;
+} MGLRenderBufferInfo;
+
+/* runtime-array-size SSBO sizing constants.  The AIR
+ * backend emits code that reads uint32 byte-sizes from
+ * MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX when a compute shader uses .length()
+ * on an unsized SSBO array.  This fills `out_sizes[out_capacity]` from the
+ * per-buffer {metal_slot, visible_size} pairs, skipping the runtime-size
+ * buffer slot itself and any slot >= max_slot (the ordinary user-buffer table
+ * cap, kMGLMaxMetalUserBufferCount=31).  `out_sizes` is expected to be
+ * zero-initialized by the caller; only claimed slots are written.  Returns
+ * 0 on success, -1 on bad args (NULL out, NULL entries with nonzero count,
+ * out_capacity < max_slot). */
+typedef struct MGLRenderBufferSizeEntry_t {
+    uint32_t metal_slot;      /* Metal buffer argument index */
+    uint64_t visible_size;    /* byte size, truncated to uint32 by the facade */
+} MGLRenderBufferSizeEntry;
+
+int mglRenderBuildRuntimeArraySizes(
+    const MGLRenderBufferSizeEntry *entries,
+    uint32_t entry_count,
+    uint32_t runtime_buffer_index,
+    uint32_t max_slot,
+    uint32_t *out_sizes,
+    uint32_t out_capacity);
+
+int mglRenderCPUPointerUsable(const void *p);
+
+int mglRenderShaderResourceToGLBufferType(int spvc_type);
+
+int mglRenderUsePlainUniformBuffers(int spvc_type);
+
+int mglRenderStructMemberInElementRange(uint32_t member_loc_off,
+                                        uint32_t loc_start, uint32_t loc_end);
+
+int mglRenderBindableLocValid(int32_t loc, uint32_t max);
+
+int mglRenderCPUShadowReadable(const void *cpu, int64_t size);
+
+uint64_t mglRenderClampCopyToStruct(uint64_t dest_off, uint64_t copy_size,
+                                    uint64_t struct_size);
+
+int64_t mglRenderMappedUniformSize(int spvc_type, int64_t bound, int64_t buf_size,
+                                   int64_t offset, uint64_t reflected);
+
+int32_t mglRenderPlainUniformBaseLoc(int32_t uniform_location,
+                                     uint32_t location);
+
+uint32_t mglRenderMemberOffsetInElement(uint32_t offset,
+                                        uint32_t elem_byte_start);
+
+int mglRenderMemberOffsetInStruct(uint32_t offset, uint32_t struct_size);
+
+void mglRenderPlainUniformArrayStrides(const char *name, uint32_t type_bytes,
+                                       int32_t array_stride, uint32_t *src_out,
+                                       uint32_t *elem_out);
+
+int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length);
+
 
 void mglRenderReleaseBufferMetalData(GLMContext glm_ctx, Buffer *buffer);
 

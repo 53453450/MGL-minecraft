@@ -36,7 +36,7 @@
 #define MGLRenderer_Blit_Private_h
 
 #import "MGLRenderer.h"
-#include "mgl_render.h"
+#include "mgl_render_api_texture.h"
 
 /* === Shader parameter structs ===
  * Used by blit/copy/resolve pipelines in MGLRenderer+Blit.m and MGLRenderer.m.

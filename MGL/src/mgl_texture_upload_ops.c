@@ -30,7 +30,15 @@
 #include "mgl_thread_affinity.h"        /* MGL_ASSERT_GL_THREAD */
 #include "mgl_trace_log.h"
 
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+
+#include "mgl_render_api_texture.h"
+
+#include "mgl_render_api_buffer.h"
+
+#include "mgl_render_api_pixel.h"
+
+#include "mgl_render_api_query.h"
 
 #include <dispatch/dispatch.h>
 #include <math.h>

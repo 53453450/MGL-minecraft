@@ -41,7 +41,9 @@
 #include "mgl_frame_activity.h"      /* MGL_PERF_INC / MGL_PERF_ADD */
 #include "mgl_pipeline_cache_path.h" /* archive path (log 203) */
 #include "mgl_pipeline_cache_state.h"
-#include "mgl_render.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_query.h"
+#include "mgl_render_api_lifecycle.h"
 #include "mgl_shader_abi.h" /* MGL_AIR_CODEGEN_EPOCH (archive invalidation) */
 #include "mgl_types_state.h"
 

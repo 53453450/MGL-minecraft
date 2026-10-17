@@ -32,6 +32,9 @@
 
 #include <mach/mach_vm.h>
 #include "mgl_render_pass_manager_ops.h"
+#include "mgl_readback_policy.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
 #include "mgl_gpu_recovery.h"
 #include "mgl_attachment_binding.h"  /* FBO attachment bind */
 #include <mach/mach_init.h>
@@ -360,6 +363,11 @@ static struct {
 } s_mglEnvCache[MGL_ENV_CACHE_CAPACITY];
 
 #include "mgl_env_flag.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_query.h"
+#include "mgl_render_api_pixel.h"
+#include "mgl_render_api_draw.h"
+#include "mgl_pso_format_class.h"
 
 static int mglEnvFlagEnabledCached(const char *name, int default_on)
 {

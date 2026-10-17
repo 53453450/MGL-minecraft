@@ -20,7 +20,7 @@
 #ifndef MGL_TESS_COMPUTE_OPS_H
 #define MGL_TESS_COMPUTE_OPS_H
 
-#include "mgl_render.h"   /* MGLRenderComputeExecutionPlan */
+#include "mgl_render_api_command.h"
 
 #include <stdbool.h>
 #include <stddef.h>

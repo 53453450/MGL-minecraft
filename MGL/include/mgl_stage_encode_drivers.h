@@ -32,7 +32,7 @@
 
 #include "glm_context.h"         /* GLMContext */
 #include "mgl_encode_context.h"  /* MGLEncodeContext */
-#include "mgl_render.h"          /* MGLRenderBindingSnapshot */
+#include "mgl_render_fwd.h"
 #include "mgl_types_buffer.h"    /* MAX_BINDABLE_BUFFERS */
 #include "mgl_types_program.h"   /* Program */
 

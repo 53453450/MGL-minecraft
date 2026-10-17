@@ -27,7 +27,9 @@
 #include "glm_context.h"
 #include "mgl_renderer_ports.h"        /* state areas */
 #include "mgl_renderer_backend.h"      /* size-constant cache + device */
-#include "mgl_render.h"                /* the mglRender* facade */
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_buffer.h"
 #include "mgl_buffer_slots.h"          /* MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX */
 #include "mgl_renderer_binding_ops.h"     /* record last bound buffer */
 #include "mgl_frame_activity.h"        /* MGL_PERF_INC */

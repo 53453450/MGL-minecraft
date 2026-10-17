@@ -8,7 +8,9 @@
 #include "mgl_texture_compat.h"   /* mglTraceTextureLevelSummary */
 #include "mgl_vertex_attrib_query.h" /* mglRendererGetValidatedVAO */
 #include "mgl_safety.h"           /* mglObjectPointerLooksPlausible */
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
 #include "mgl_batch_rt_mark.h"
 #include "mgl_sync.h"             /* mglLoadActionName / mglStoreActionName */
 #include <stdio.h>

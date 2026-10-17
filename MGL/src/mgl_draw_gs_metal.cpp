@@ -18,7 +18,12 @@
 #include "mgl_compute_pipeline_cache.h"
 #include "mgl_draw_encode.h"
 #include "mgl_draw_tess.h"
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_readback.h"
+#include "mgl_render_api_query.h"
+#include "mgl_render_api_lifecycle.h"
 #include "mgl_shader_abi.h"
 #include "mgl_types_buffer.h"
 

@@ -37,6 +37,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include "mgl_render_api_query.h"
 
 /* The .m's static MGLSafeArchivePathComponent, in C. */
 static void mglPcpSanitize(const char *value, char *out, size_t cap)

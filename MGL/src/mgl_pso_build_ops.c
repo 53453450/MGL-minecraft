@@ -34,7 +34,15 @@
 #include "mgl_vertex_format.h"    /* mgl*DescriptorSignatureFromState */
 #include "mgl_vertex_layout.h"    /* mglRendererUpdateBlendStateCache */
 
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+
+#include "mgl_render_api_binding.h"
+
+#include "mgl_render_api_texture.h"
+
+#include "mgl_render_api_query.h"
+
+#include "mgl_render_api_lifecycle.h"
 
 #include <stdio.h>
 #include <stdlib.h>   /* getenv (MGL_TOPO_TRACE) */

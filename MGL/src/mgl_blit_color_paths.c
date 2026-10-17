@@ -51,6 +51,7 @@
 #include "mgl_metal_ref.h"         /* metal reference helpers */
 #include "mgl_texture_bind.h"      /* mglRendererBindMTLTexture */
 #include "mgl_texture_readback_clear.h" /* pending FBO depth clear */
+#include "mgl_pso_format_class.h"
 
 /* Repeated from MGLRenderer+Blit_Private.h (an Objective-C header a .c file
  * cannot include): the MSAA-integer-resolve compute parameters. */

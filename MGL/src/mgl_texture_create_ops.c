@@ -25,7 +25,12 @@
 #include "mgl_trace_log.h"
 #include "mgl_region_value.h"
 
-#include "mgl_render.h"
+#include "mgl_render_api_texture.h"
+
+#include "mgl_render_api_buffer.h"
+
+#include "mgl_render_api_pixel.h"
+#include "mgl_render_values.h"
 
 #include <stdio.h>
 #include <stdlib.h>

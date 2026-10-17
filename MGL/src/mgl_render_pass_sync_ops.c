@@ -55,7 +55,24 @@
 #include "mgl_trace_log.h"
 
 
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+
+
+#include "mgl_render_api_binding.h"
+
+
+#include "mgl_render_api_texture.h"
+
+
+#include "mgl_render_api_draw.h"
+
+
+#include "mgl_render_api_query.h"
+
+
+#include "mgl_render_api_lifecycle.h"
+#include "mgl_binding_policy.h"
+#include "mgl_pso_format_class.h"
 #include "mgl_draw_support.h"
 
 #include <stdio.h>

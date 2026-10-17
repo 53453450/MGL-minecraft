@@ -13,7 +13,7 @@
  */
 
 #include "mgl_batch_restore.h"
-#include "mgl_render.h"          /* mglRestoreProgramPipelinePair, sync names */
+#include "mgl_render_api_binding.h"
 #include "hash_table.h"          /* searchHashTable */
 #include "mgl_types_state.h"     /* mglInvalidateStateHashCachesForDirtyBits */
 #include <assert.h>

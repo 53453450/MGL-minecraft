@@ -40,6 +40,9 @@
 #include "mgl_draw_buffer.h"
 #include "mgl_rt_sync.h"
 #include "mgl_texture_compat.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
 
 /* Defined in MGLRenderer+Draw.m (C linkage); the ObjC private header declares
  * it, so C declares it here. */

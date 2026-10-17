@@ -1,8 +1,9 @@
 /*
  * SPDX-License-Identifier: LGPL-3.0-only
  *
- * Incomplete types for mgl_render_api_*.h when included without the facade.
- * Full layouts stay in mgl_render.h / mgl_render_internal.h.
+ * Incomplete types shared by the mgl_render_api_*.h facades.  A facade defines
+ * the full layout of its own subsystem; types it only passes by pointer come
+ * from here.
  */
 
 #ifndef MGL_RENDER_FWD_H
@@ -91,6 +92,7 @@ typedef struct MGLRenderPipelineDescriptorState
     MGLRenderPipelineDescriptorState;
 typedef struct MGLRenderReadTextureRegionClip_t
     MGLRenderReadTextureRegionClip;
+typedef struct MGLRenderReplayBatch_t MGLRenderReplayBatch;
 typedef struct MGLRenderResourceBindingSnapshot_t
     MGLRenderResourceBindingSnapshot;
 typedef struct MGLRenderScaledBlitUVs_t MGLRenderScaledBlitUVs;

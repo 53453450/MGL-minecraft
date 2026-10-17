@@ -16,7 +16,8 @@
 #include "mgl_renderer_ports.h"
 #include "mgl_render_pass_manager_ops.h"  /* mglRendererEndRenderEncodingLocked */
 #include "mgl_draw_support.h"          /* mglDrawEmulatedMSColor0Texture, … */
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_texture.h"
 #include "mgl_metal_ref.h"
 #include "mgl_sync.h"                  /* mglMetalAttachmentSubresourceForAttachment */
 #include "mgl_texture_compat.h"        /* mglMarkTextureLevelRenderTargetWrittenImpl */

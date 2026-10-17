@@ -1,6 +1,11 @@
 /* SPDX-License-Identifier: LGPL-3.0-only */
 #include "mgl_metal.h"
-#include "mgl_render.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_pixel.h"
+#include "mgl_render_api_readback.h"
+#include "mgl_render_api_lifecycle.h"
 #include "mgl_render_pixel.h"
 extern "C" {
 #include "pixel_utils.h"

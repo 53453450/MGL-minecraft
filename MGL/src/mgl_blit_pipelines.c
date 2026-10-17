@@ -21,7 +21,12 @@
 #include "mgl_blit_pipelines.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_draw_issue.h"          /* mglDrawHostDevice */
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_query.h"
+#include "mgl_render_api_lifecycle.h"
+#include "mgl_pso_format_class.h"
 #include "mgl_metal_ref.h"           /* mglReleaseMetalObjNoNull */
 #include "mgl_batch_public.h"          /* mgl_batch_icb_support_indirect_command_buffers */
 #include "mgl_aux_assets.h"

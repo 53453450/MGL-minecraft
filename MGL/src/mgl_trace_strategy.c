@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include "mgl_render_api_binding.h"
 
 /* === Fragment texture trace binding === */
 

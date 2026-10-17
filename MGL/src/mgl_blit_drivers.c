@@ -59,6 +59,7 @@
 #include "mgl_blit_sampled_copy.h" /* mglBlitUpdateGLSampledRenderTargetCopy */
 #include "mgl_trace_log.h"         /* mglTraceLog */
 #include "mgl_types_state.h"       /* GL boolean helper */
+#include "mgl_pso_format_class.h"
 
 /* Declared next to its definition in the Objective-C
  * MGLRenderer+Blit_Private.h; repeated here for the C twin below. */

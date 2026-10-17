@@ -29,7 +29,12 @@
 #include "mgl_draw_tess.h"    /* mglDrawHostRunVertexCaptureIndexed */
 #include "mgl_draw_mode.h"    /* mglRenderDrawModeProducesPolygons */
 #include "mgl_renderer_ports.h"   /* state areas, mglRendererProcessBuffer */
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_draw.h"
+#include "mgl_render_api_query.h"
+#include "mgl_pso_format_class.h"
 #include "mgl_state_compat.h"     /* mglLogRenderStateRepair */
 #include "error.h"                /* mglDispatchError */
 
