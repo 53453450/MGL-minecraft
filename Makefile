@@ -890,6 +890,20 @@ $(build_dir)/test_render_pass_load_store_plan: test_legacy_compat/test_render_pa
 test-render-pass-load-store: $(build_dir)/test_render_pass_load_store_plan
 	$(build_dir)/test_render_pass_load_store_plan
 
+$(build_dir)/test_buffer_layout: test_legacy_compat/test_buffer_layout.c \
+	MGL/src/mgl_buffer_layout.c MGL/include/mgl_buffer_layout.h
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_buffer_layout.c \
+		MGL/src/mgl_buffer_layout.c \
+		-o $@
+
+test-buffer-layout: $(build_dir)/test_buffer_layout
+	$(build_dir)/test_buffer_layout
+
 $(build_dir)/test_texture_plan: test_legacy_compat/test_texture_plan.c \
 	MGL/src/mgl_texture_plan.c MGL/include/mgl_texture_plan.h
 	@mkdir -p $(dir $@)
@@ -1124,7 +1138,7 @@ $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
 	MGL/src/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
-	MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
+	MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/mgl_glsl_sema.c \
 	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 	MGL/src/mgl_ir.c MGL/src/mgl_env_flag.c
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -gfull -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
@@ -1133,7 +1147,7 @@ $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 		MGL/src/mgl_legacy_compat.c \
 		MGL/src/mgl_frontend_session.c \
-		MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
+		MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/mgl_glsl_sema.c \
 		MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 		MGL/src/mgl_ir.c MGL/src/mgl_env_flag.c \
 		-o $@
@@ -1143,7 +1157,7 @@ test-mglair: $(build_dir)/test_mglair
 
 # MC-style shader repro: anonymous std140 UBO blocks + samplers through the
 # AIR backend.  C sources build as C (they are not valid C++).
-MCREPRO_CSRC := MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
+MCREPRO_CSRC := MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/mgl_glsl_sema.c \
 	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c \
 	MGL/src/mgl_legacy_compat.c MGL/src/mgl_frontend_session.c MGL/src/mgl_env_flag.c
 MCREPRO_COBJ := $(patsubst MGL/src/%.c,$(build_dir)/mcrepro_%.o,$(MCREPRO_CSRC))
@@ -1267,7 +1281,7 @@ $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
 	MGL/src/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
-	MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
+	MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/mgl_glsl_sema.c \
 	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 	MGL/src/mgl_ir.c MGL/src/mgl_env_flag.c \
 	$(GTEST_STAMP)
@@ -1275,7 +1289,7 @@ $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 		test_legacy_compat/test_mglair_gtest.cpp \
 		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 		MGL/src/mgl_legacy_compat.c MGL/src/mgl_frontend_session.c \
-		MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
+		MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/mgl_glsl_sema.c \
 		MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 		MGL/src/mgl_ir.c MGL/src/mgl_env_flag.c \
 		-x none $(GTEST_LIBS) -o $@
@@ -1347,6 +1361,7 @@ test-all:
 	$(MAKE) build_dir=$(build_dir) test-blit-plan
 	$(MAKE) build_dir=$(build_dir) test-render-pass-attachment-plan
 	$(MAKE) build_dir=$(build_dir) test-texture-plan
+	$(MAKE) build_dir=$(build_dir) test-buffer-layout
 	$(MAKE) build_dir=$(build_dir) test-binding-stage
 	$(MAKE) build_dir=$(build_dir) test-geometry-gather
 	$(MAKE) build_dir=$(build_dir) test-validate-arrays-early
@@ -1367,7 +1382,7 @@ test-all:
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
 	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-batch-path test-batch-hazard test-batch-icb test-batch-restore test-batch-issue test-process-gl-state-plan test-binding-stage test-geometry-gather test-validate-arrays-early test-tess-air test-benchmark \
 	test-buffer-plan test-reference-query test-per-vertex-signature test-render-pass-clear-plan \
-	test-render-pass-load-store test-blit-plan test-render-pass-attachment-plan test-texture-plan \
+	test-render-pass-load-store test-blit-plan test-render-pass-attachment-plan test-texture-plan test-buffer-layout \
 	test-legacy-compat test-mglir test-mgl-air-type test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-air-loader-cache test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \

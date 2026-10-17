@@ -76,6 +76,7 @@
 #include "mgl_air_reflect.h"
 #include "mgl_buffer_slots.h"
 #include "mgl_shader_abi.h"
+#include "mgl_buffer_layout.h"
 #include "glm_limits.h" /* MAX_ATTRIBS: attrib_names contract size */
 #include "mgl_air_gs_abi.h"
 #include "mgl_air_tess_abi.h"
@@ -14029,7 +14030,6 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
      * record buffer stays bound at slot 29 for the partner read. */
     const bool usesTesVertexCull =
         isTESVertex && sourceUsesCullDistance;
-    const uint32_t userBufferLocationBase = isTES ? 1u : 0u;
     if (isVS || isTES) {
         /* retElems always carries the output record (capture variants
          * write it to the XFB buffer). */
@@ -14184,6 +14184,29 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         /* Array / matrix attributes occupy one Metal/GL location per
          * element or column so glVertexAttribPointer(base+i) matches. */
         attrCount += varyingLocationSpan(v.type);
+    }
+    /* Where the stage's buffers sit in the Metal argument table.  Reflection
+     * derives the slots the renderer binds from the same layout
+     * (mgl_buffer_layout.h), so the two cannot drift.  The atomic-counter limit
+     * is reflection's to enforce at link; here only an unrepresentable slot
+     * number fails. */
+    MGLBufferSlotLayout slotLayout;
+    {
+        MGLBufferSlotCounts slotCounts;
+        memset(&slotCounts, 0, sizeof(slotCounts));
+        slotCounts.stage = stage;
+        slotCounts.attr_slots = attrCount;
+        slotCounts.has_plain_pack = hasBuffer ? 1 : 0;
+        slotCounts.ssbo_slots = ssboCount;
+        slotCounts.ubo_slots = uboCount;
+        slotCounts.atomic_counter_slots = acCount;
+        slotCounts.atomic_counter_limit = UINT32_MAX;
+        if (mglBufferSlotLayoutBuild(&slotCounts, &slotLayout) !=
+            MGL_BUFFER_LAYOUT_OK) {
+            if (err_buf && err_cap)
+                snprintf(err_buf, err_cap, "buffer slot count overflow");
+            return -1;
+        }
     }
     llvm::StructType *texTy2d =
         llvm::StructType::create(ctx, "struct._texture_2d_t");
@@ -16621,7 +16644,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, bufferSize)),
             llvm::MDString::get(ctx, "air.location_index"),
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                i32, userBufferLocationBase)),
+                i32, slotLayout.plain_base)),
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 1)),
             llvm::MDString::get(ctx, "air.read"),
             llvm::MDString::get(ctx, "air.address_space"),
@@ -16643,8 +16666,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         /* location_index matches reflection (attrs + plain pack reserved).
          * LLVM arg index still skips attrs/pack only on VS/TES/kernel —
          * FS keeps SSBOs as leading args. */
-        uint32_t loc =
-            plainBufMetalSlots + attrCount + userBufferLocationBase;
+        uint32_t loc = slotLayout.ssbo_base;
         uint32_t ssboArg = (isCapture ? 1 : 0) +
                            ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
                            (isCapture ? 0 : attrCount);
@@ -16694,9 +16716,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
          * bound the UBO at reflected slot 0 while the tess-capture
          * metallib read slot 1 — VS UBO reads failed whenever GS/tess
          * capture ran without vertex attributes (420pack binding_uniform). */
-        uint32_t loc =
-            plainBufMetalSlots +
-            ssboCount + attrCount + userBufferLocationBase;
+        uint32_t loc = slotLayout.ubo_base;
         uint32_t uboArg = (isCapture ? 1 : 0) +
                           ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
                           ssboCount + (isCapture ? 0 : attrCount);
@@ -16740,9 +16760,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     }
     /* Atomic counter buffers: one device buffer per atomic_uint instance. */
     {
-        uint32_t loc =
-            plainBufMetalSlots +
-            ssboCount + uboCount + attrCount + userBufferLocationBase;
+        uint32_t loc = slotLayout.atomic_counter_base;
         uint32_t acArg = (isCapture ? 1 : 0) +
                          ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
                          ssboCount + uboCount + (isCapture ? 0 : attrCount);

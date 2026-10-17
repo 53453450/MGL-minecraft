@@ -18,6 +18,7 @@
  */
 
 #include "mgl_air_reflect.h"
+#include "mgl_buffer_layout.h"
 
 #include <GL/glcorearb.h>
 
@@ -1173,8 +1174,6 @@ static int mglAirReflectModuleImpl(
      * exporter must mirror that so the renderer's Metal slots match the
      * air.location_index values the metallib actually declares. */
     int isVS = (stage == MGL_STAGE_VERTEX);
-    uint32_t user_buffer_base =
-        (stage == MGL_STAGE_TESS_EVALUATION) ? 1u : 0u;
     uint32_t attrCount = 0, ssboCount = 0, uboSlotCount = 0, acCount = 0, hasPlain = 0;
     for (uint32_t i = 0; i < mod->symbol_count; i++) {
         const MGLIRSymbol *s = mod->symbols[i];
@@ -1232,31 +1231,30 @@ static int mglAirReflectModuleImpl(
             hasPlain = 1;
         }
     }
-    /* Plain-uniform pack occupies one Metal buffer slot ahead of SSBOs
-     * on every stage that emits hasBuffer (VS/FS/CS/TCS/TES/GS).  Fragment
-     * used to start SSBOs at 0 while the pack also claimed slot 0, so
-     * FS SSBO stores silently hit the wrong buffer.  TCS is isKernel and
-     * also emits the pack (mgl_air_backend plainBufMetalSlots); omitting
-     * it here left CTS basic-atomic-case2 writing SSBO at reflected
-     * slot 0 while the metallib read/wrote slot 1. */
-    uint32_t ssbo_binding = user_buffer_base +
-        (isVS ? (hasPlain + attrCount)
-              : ((stage == MGL_STAGE_COMPUTE ||
-                  stage == MGL_STAGE_TESS_CONTROL ||
-                  stage == MGL_STAGE_TESS_EVALUATION ||
-                  stage == MGL_STAGE_GEOMETRY ||
-                  stage == MGL_STAGE_FRAGMENT) ? hasPlain : 0));
-    uint32_t ubo_binding = 0;
-    if (air_u32_add(ssbo_binding, ssboCount, &ubo_binding) != 0) {
-        return reflect_fail(err, errCap, "buffer slot count overflow");
-    }
-    uint32_t ac_binding = 0;
-    uint32_t ac_end = 0;
-    if (air_u32_add(ubo_binding, uboSlotCount, &ac_binding) != 0 ||
-        air_u32_add(ac_binding, acCount, &ac_end) != 0 ||
-        (acCount > 0u && ac_end > MAX_BINDABLE_BUFFERS)) {
+    /* Where the stage's buffers sit in the Metal argument table: the AIR
+     * backend declares the same slots from the same layout
+     * (mgl_buffer_layout.h). */
+    MGLBufferSlotCounts slotCounts;
+    memset(&slotCounts, 0, sizeof(slotCounts));
+    slotCounts.stage = stage;
+    slotCounts.attr_slots = attrCount;
+    slotCounts.has_plain_pack = hasPlain ? 1 : 0;
+    slotCounts.ssbo_slots = ssboCount;
+    slotCounts.ubo_slots = uboSlotCount;
+    slotCounts.atomic_counter_slots = acCount;
+    slotCounts.atomic_counter_limit = MAX_BINDABLE_BUFFERS;
+    MGLBufferSlotLayout slotLayout;
+    const int slotLayoutStatus =
+        mglBufferSlotLayoutBuild(&slotCounts, &slotLayout);
+    if (slotLayoutStatus == MGL_BUFFER_LAYOUT_ATOMIC_EXCEEDS) {
         return reflect_fail(err, errCap, "atomic counter Metal slots exceed MAX_BINDABLE_BUFFERS");
     }
+    if (slotLayoutStatus != MGL_BUFFER_LAYOUT_OK) {
+        return reflect_fail(err, errCap, "buffer slot count overflow");
+    }
+    uint32_t ssbo_binding = slotLayout.ssbo_base;
+    uint32_t ubo_binding = slotLayout.ubo_base;
+    uint32_t ac_binding = slotLayout.atomic_counter_base;
 
     /* Sampler / image Metal texture slots must match AIR metadata order
      * (sampled textures first, then storage images) — not GLSL declaration
@@ -1932,7 +1930,7 @@ static int mglAirReflectModuleImpl(
         agg.uniform_location = -1;   /* assigned by the link pass per stage */
         agg.location = UINT32_MAX;   /* let the link pass assign locations */
         agg.gl_binding = 0;
-        agg.binding = user_buffer_base;
+        agg.binding = slotLayout.plain_base;
         MGLShaderResourceList *l = &lists[_UNIFORM_CONSTANT_RES];
         if (l->count == UINT32_MAX) {
             free((void *)agg.name);
