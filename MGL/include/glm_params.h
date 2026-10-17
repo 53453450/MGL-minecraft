@@ -35,6 +35,12 @@
 
 #include "glm_limits.h"
 
+/* GL 4.6 minimum for GL_MAX_SAMPLES and the other sample-count limits, and the
+ * largest count Metal exposes (MTLDevice supportsTextureSampleCount: is probed
+ * for 2..32). */
+#define MGL_GL_MIN_SAMPLES 4u
+#define MGL_GL_MAX_SAMPLES 32u
+
 /* GL spec minimum required attribute stack depth */
 #define MGL_ATTRIB_STACK_DEPTH 16
 

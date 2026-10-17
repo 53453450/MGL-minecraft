@@ -267,6 +267,18 @@ void mglRecordActiveComputeShaderQueryDispatch(GLMContext ctx,
 
 void MGLsetCurrentContext(GLMContext ctx);
 void destroyGLMContext(GLMContext ctx);
+
+/* Set every GL_MAX_*_SAMPLES limit from the backend device's largest
+ * multisample count (floored at the GL 4.6 minimum).  Called once the backend
+ * has published its capability snapshot; glm_params.c cannot know it earlier
+ * because the context is created before the device. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+void mglApplyBackendSampleLimits(GLMContext ctx, uint64_t max_sample_count);
+#ifdef __cplusplus
+}
+#endif
 /* GL error query.  Owned here so error.h / mgl.h stop duplicating it; it is
  * part of the context surface every GL TU includes anyway. */
 GLenum  mglGetError(GLMContext ctx);

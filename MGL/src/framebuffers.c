@@ -1365,7 +1365,7 @@ static GLuint mglFramebufferAttachmentSamples(GLMContext ctx, FBOAttachment *att
 static GLuint mglRenderbufferStorageSamples(GLMContext ctx, GLsizei samples)
 {
     GLuint sample_count = samples > 0 ? (GLuint)samples : 0u;
-    GLuint sample_limit = 4u;
+    GLuint sample_limit = MGL_GL_MIN_SAMPLES;
 
     if (ctx) {
         GLuint fb_limit = STATE(var).max_framebuffer_samples;
@@ -1386,7 +1386,7 @@ static GLenum mglRenderbufferStorageValidationError(GLMContext ctx, GLsizei samp
     }
 
     if (samples > 0 && ctx) {
-        GLuint max_samples = STATE(var).max_samples ? STATE(var).max_samples : 4u;
+        GLuint max_samples = STATE(var).max_samples ? STATE(var).max_samples : MGL_GL_MIN_SAMPLES;
         if ((GLuint)samples > max_samples) {
             return GL_INVALID_OPERATION;
         }

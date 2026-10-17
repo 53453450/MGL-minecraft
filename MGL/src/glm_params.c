@@ -76,13 +76,13 @@ static void mglApplyES32Limits(GLMContext glm_ctx)
     v->max_draw_buffers = MAX_COLOR_ATTACHMENTS;
     v->max_color_attachments = MAX_COLOR_ATTACHMENTS;
     glm_ctx->active_state->max_color_attachments = MAX_COLOR_ATTACHMENTS;
-    v->max_samples = 4;
-    v->max_image_samples = 4;
-    v->max_color_texture_samples = 4;
-    v->max_depth_texture_samples = 4;
-    v->max_integer_samples = 4;
+    v->max_samples = MGL_GL_MIN_SAMPLES;
+    v->max_image_samples = MGL_GL_MIN_SAMPLES;
+    v->max_color_texture_samples = MGL_GL_MIN_SAMPLES;
+    v->max_depth_texture_samples = MGL_GL_MIN_SAMPLES;
+    v->max_integer_samples = MGL_GL_MIN_SAMPLES;
     v->max_sample_mask_words = 1;
-    v->max_framebuffer_samples = 4;
+    v->max_framebuffer_samples = MGL_GL_MIN_SAMPLES;
     v->max_uniform_buffer_bindings = MAX_BINDABLE_BUFFERS;
     v->max_uniform_block_size = 16384;
     v->max_vertex_uniform_blocks = 14;
@@ -677,7 +677,7 @@ apply_gl46_defaults:
     /* image_units[] is TEXTURE_UNITS-sized; raise past the GL minimum (8) so
      * capability probes that declare ~10 images (KHR-GL46.gl_spirv) can link. */
     glm_ctx->active_state->var.max_image_units = 16;
-    glm_ctx->active_state->var.max_image_samples = 4;
+    glm_ctx->active_state->var.max_image_samples = MGL_GL_MIN_SAMPLES;
     glm_ctx->active_state->var.max_vertex_image_uniforms = 16;
     glm_ctx->active_state->var.max_tess_control_image_uniforms = 16;
     glm_ctx->active_state->var.max_tess_evaluation_image_uniforms = 16;
@@ -707,7 +707,9 @@ apply_gl46_defaults:
     glm_ctx->active_state->var.min_program_texture_gather_offset = (GLuint)-8; /* -8 as unsigned */
     glm_ctx->active_state->var.max_program_texture_gather_offset = 7;
     glm_ctx->active_state->var.max_shader_storage_block_size = 134217728; /* 128 MB */
-    glm_ctx->active_state->var.max_samples = 4;
+    /* GL 4.6 minimum.  mglApplyBackendSampleLimits replaces this with the
+     * device's actual limit once the Metal backend exists. */
+    glm_ctx->active_state->var.max_samples = MGL_GL_MIN_SAMPLES;
     glm_ctx->active_state->var.max_image_samples =
         glm_ctx->active_state->var.max_samples;
     glm_ctx->active_state->var.min_fragment_interpolation_offset = -0.5f;
@@ -735,22 +737,22 @@ apply_gl46_defaults:
     if (glm_ctx->active_state->var.max_framebuffer_layers < 2048) {
         glm_ctx->active_state->var.max_framebuffer_layers = 2048;
     }
-    if (glm_ctx->active_state->var.max_framebuffer_samples < 4) {
-        glm_ctx->active_state->var.max_framebuffer_samples = 4;
+    if (glm_ctx->active_state->var.max_framebuffer_samples < MGL_GL_MIN_SAMPLES) {
+        glm_ctx->active_state->var.max_framebuffer_samples = MGL_GL_MIN_SAMPLES;
     }
 
-    /* Ensure texture sample limits meet minimums.  Apple Silicon Metal
-     * devices only support sampleCount up to 4 (verified on M4 via
-     * supportsTextureSampleCount:); advertising 8 causes Metal validation
-     * assertion failures when the app actually allocates 8x MSAA textures. */
-    if (glm_ctx->active_state->var.max_color_texture_samples < 4) {
-        glm_ctx->active_state->var.max_color_texture_samples = 4;
+    /* Ensure texture sample limits meet the GL minimum.  The ceiling comes
+     * from the Metal device (mglApplyBackendSampleLimits): Apple Silicon only
+     * supports sampleCount up to 4, and advertising 8 makes Metal validation
+     * assert when the app allocates 8x MSAA textures. */
+    if (glm_ctx->active_state->var.max_color_texture_samples < MGL_GL_MIN_SAMPLES) {
+        glm_ctx->active_state->var.max_color_texture_samples = MGL_GL_MIN_SAMPLES;
     }
-    if (glm_ctx->active_state->var.max_depth_texture_samples < 4) {
-        glm_ctx->active_state->var.max_depth_texture_samples = 4;
+    if (glm_ctx->active_state->var.max_depth_texture_samples < MGL_GL_MIN_SAMPLES) {
+        glm_ctx->active_state->var.max_depth_texture_samples = MGL_GL_MIN_SAMPLES;
     }
-    if (glm_ctx->active_state->var.max_integer_samples < 4) {
-        glm_ctx->active_state->var.max_integer_samples = 4;
+    if (glm_ctx->active_state->var.max_integer_samples < MGL_GL_MIN_SAMPLES) {
+        glm_ctx->active_state->var.max_integer_samples = MGL_GL_MIN_SAMPLES;
     }
     if (glm_ctx->active_state->var.max_sample_mask_words < 1) {
         glm_ctx->active_state->var.max_sample_mask_words = 1;
@@ -991,4 +993,22 @@ apply_gl46_defaults:
     }
     if (OpenGL) dlclose(OpenGL);
     if (libGL) dlclose(libGL);
+}
+
+void mglApplyBackendSampleLimits(GLMContext glm_ctx, uint64_t max_sample_count)
+{
+    if (!glm_ctx || !glm_ctx->active_state) return;
+
+    GLuint limit = max_sample_count > MGL_GL_MAX_SAMPLES
+                       ? MGL_GL_MAX_SAMPLES
+                       : (GLuint)max_sample_count;
+    if (limit < MGL_GL_MIN_SAMPLES) limit = MGL_GL_MIN_SAMPLES;
+
+    GLMState *state = glm_ctx->active_state;
+    state->var.max_samples = limit;
+    state->var.max_image_samples = limit;
+    state->var.max_color_texture_samples = limit;
+    state->var.max_depth_texture_samples = limit;
+    state->var.max_integer_samples = limit;
+    state->var.max_framebuffer_samples = limit;
 }

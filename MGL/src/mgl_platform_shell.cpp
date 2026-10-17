@@ -1995,6 +1995,7 @@ static void mglShellCreateAndBind(MGLObjectId self, SEL cmd, GLMContext glm_ctx,
      * capability queries + driver bug markers).  Replaces scattered
      * `containsString:@"AGX"` checks and hardcoded constants. */
     MGLCapabilityInit(&ivars->_core.capability, (void *)device);
+    mglApplyBackendSampleLimits(glm_ctx, ivars->_core.capability.maxSampleCount);
 
     /* PROPER AGX VIRTUALIZATION DETECTION: Maintain Metal functionality with virtualization compatibility */
     signed char isVirtualized = ivars->_core.capability.isVirtualized;
