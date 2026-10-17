@@ -305,3 +305,65 @@ int mglRenderPassAttachmentsMatch(const MGLRenderPassAttachmentMatchInput *in) {
     }
     return 1;
 }
+
+int mglRenderPassPlanFormatCompat(const MGLRenderPassFormatCompatInput *in,
+                                  MGLRenderPassFormatCompat *out) {
+    if (!in || !out) {
+        return -1;
+    }
+    const uint32_t invalid = 0u; /* MGLPixelFormatInvalid */
+    out->color_mismatch = in->pipeline_color0 != invalid &&
+                          in->pass_color0 != invalid &&
+                          in->pipeline_color0 != in->pass_color0;
+    out->depth_mismatch = in->pipeline_depth != in->pass_depth;
+    out->stencil_mismatch = in->pipeline_stencil != in->pass_stencil;
+    return 0;
+}
+
+static int mglRenderPassDrawSlotUsable(const MGLRenderPassDrawSlotInput *in,
+                                       uint32_t index) {
+    if (index >= in->max_attachments || index >= 32u) {
+        return 0;
+    }
+    const uint32_t bit = 1u << index;
+    if ((in->attached_bitfield & bit) == 0u) {
+        return 0;
+    }
+    return !in->require_texture || (in->texture_bitfield & bit) != 0u;
+}
+
+int mglRenderPassPlanDrawSlotAttachment(const MGLRenderPassDrawSlotInput *in,
+                                        MGLRenderPassDrawSlotChoice *out) {
+    if (!in || !out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    if (in->draw_buffer_resolved &&
+        mglRenderPassDrawSlotUsable(in, in->resolved_index)) {
+        out->present = 1;
+        out->attachment_index = in->resolved_index;
+    } else if (in->draw_buffer_is_none &&
+               mglRenderPassDrawSlotUsable(in, in->slot)) {
+        out->present = 1;
+        out->attachment_index = in->slot;
+    }
+    return 0;
+}
+
+void mglRenderPassPlanFillSubresourceEntry(
+    MGLRenderPassAttachmentMatchEntry *entry, const void *actual_texture,
+    const void *expected_texture, int gate, int has_snapshot,
+    MGLRenderPassSubresource snapshot_sub, MGLRenderPassSubresource fbo_sub) {
+    MGLRenderPassSubresource actual_sub = {0u, 0u, 0u};
+    MGLRenderPassSubresource expected_sub = {0u, 0u, 0u};
+    int compare = 0;
+    if (gate) {
+        compare = has_snapshot ? 1 : 0;
+        if (has_snapshot) {
+            actual_sub = snapshot_sub;
+        }
+        expected_sub = fbo_sub;
+    }
+    mglRenderPassFillMatchEntry(entry, actual_texture, expected_texture, 0,
+                                compare, actual_sub, expected_sub);
+}

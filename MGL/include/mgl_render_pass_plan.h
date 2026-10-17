@@ -179,6 +179,62 @@ typedef struct MGLRenderPassAttachmentMatchInput {
 /* 1 = the persistent pass covers exactly this framebuffer. */
 int mglRenderPassAttachmentsMatch(const MGLRenderPassAttachmentMatchInput *in);
 
+/* ---- P4: format compatibility, draw-slot attachment, subresource entry ---- */
+
+/* A cached pipeline can only run in a pass whose attachment formats agree
+ * with the ones it was built for.  Formats are MGLPixelFormat values;
+ * MGLPixelFormatInvalid (0) means "no attachment". */
+typedef struct MGLRenderPassFormatCompatInput {
+    uint32_t pipeline_color0, pipeline_depth, pipeline_stencil;
+    uint32_t pass_color0, pass_depth, pass_stencil;
+} MGLRenderPassFormatCompatInput;
+
+typedef struct MGLRenderPassFormatCompat {
+    int color_mismatch;
+    int depth_mismatch;
+    int stencil_mismatch;
+} MGLRenderPassFormatCompat;
+
+/* Color mismatches only when both sides have a color attachment and the
+ * formats differ (a pipeline with no color target runs in any pass, and the
+ * other way round).  Depth and stencil mismatch whenever the formats differ,
+ * which also covers one side having an attachment the other lacks; both sides
+ * absent agree.  Returns 0, or -1 for a NULL argument. */
+int mglRenderPassPlanFormatCompat(const MGLRenderPassFormatCompatInput *in,
+                                  MGLRenderPassFormatCompat *out);
+
+/* Which framebuffer color attachment feeds draw-buffer position `slot`.
+ * GL maps fragment location i to draw_buffers[i] and Metal keeps color(i), so
+ * a GL_NONE hole in the draw buffers still occupies Metal slot `slot`: when the
+ * draw buffer names no usable attachment, COLOR_ATTACHMENT<slot> is used if it
+ * is attached. */
+typedef struct MGLRenderPassDrawSlotInput {
+    int draw_buffer_resolved;   /* the draw buffer names a color attachment */
+    uint32_t resolved_index;    /* that attachment's index, when resolved */
+    int draw_buffer_is_none;    /* the draw buffer is GL_NONE */
+    uint32_t slot;              /* draw-buffer position (= Metal color slot) */
+    uint32_t max_attachments;   /* color attachment count (<= 32) */
+    uint32_t attached_bitfield; /* framebuffer color_attachment_bitfield */
+    int require_texture;        /* 1: an attachment also needs a texture */
+    uint32_t texture_bitfield;  /* bit k: attachment k has a texture */
+} MGLRenderPassDrawSlotInput;
+
+typedef struct MGLRenderPassDrawSlotChoice {
+    int present;
+    uint32_t attachment_index; /* valid when present */
+} MGLRenderPassDrawSlotChoice;
+
+int mglRenderPassPlanDrawSlotAttachment(const MGLRenderPassDrawSlotInput *in,
+                                        MGLRenderPassDrawSlotChoice *out);
+
+/* Match entry for a user-framebuffer attachment (never "required").  When
+ * `gate` holds the pass-state subresource is compared with the framebuffer's:
+ * only if the pass state has a snapshot of the attachment. */
+void mglRenderPassPlanFillSubresourceEntry(
+    MGLRenderPassAttachmentMatchEntry *entry, const void *actual_texture,
+    const void *expected_texture, int gate, int has_snapshot,
+    MGLRenderPassSubresource snapshot_sub, MGLRenderPassSubresource fbo_sub);
+
 #ifdef __cplusplus
 }
 #endif

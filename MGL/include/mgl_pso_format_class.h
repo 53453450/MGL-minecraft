@@ -64,8 +64,6 @@ int mglRenderColorFormatNeedsFallback(uint32_t format);
 uint32_t mglRenderDefaultColorPixelFormat(void);
 uint32_t mglRenderColorFormatOrBGRA(uint32_t format);
 int mglRenderPipelineFormatCompatible(uint32_t cached, uint32_t built);
-int mglRenderPipelinePassColorMismatch(uint32_t pipeline, uint32_t pass);
-int mglRenderPipelinePassAttachmentMismatch(uint32_t pipeline, uint32_t pass);
 int mglRenderSkipInvalidColorAttachment(uint32_t format);
 int mglRenderPixelFormatIsInvalid(uint32_t format);
 uint32_t mglRenderInvalidPixelFormat(void);

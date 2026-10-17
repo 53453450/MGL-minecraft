@@ -581,15 +581,15 @@ int mglRenderPassEnsureRasterEncoderForDraw(void *renderer)
         rpStencilFormat = textureInfo.pixel_format;
     }
 
-    const int colorMismatch =
-        (areas.pipeline_cache->pipelineColor0Format != 0u &&
-         rpColor0Format != 0u &&
-         areas.pipeline_cache->pipelineColor0Format != rpColor0Format);
-    const int depthMismatch =
-        (areas.pipeline_cache->pipelineDepthFormat != rpDepthFormat);
-    const int stencilMismatch =
-        (areas.pipeline_cache->pipelineStencilFormat != rpStencilFormat);
-    if (colorMismatch || depthMismatch || stencilMismatch) {
+    const MGLRenderPassFormatCompatInput formatInput = {
+        (uint32_t)areas.pipeline_cache->pipelineColor0Format,
+        (uint32_t)areas.pipeline_cache->pipelineDepthFormat,
+        (uint32_t)areas.pipeline_cache->pipelineStencilFormat,
+        rpColor0Format, rpDepthFormat, rpStencilFormat};
+    MGLRenderPassFormatCompat formatCompat;
+    if (mglRenderPassPlanFormatCompat(&formatInput, &formatCompat) != 0 ||
+        formatCompat.color_mismatch || formatCompat.depth_mismatch ||
+        formatCompat.stencil_mismatch) {
         return 0;
     }
     if (mglRenderSetRenderPipelineStateForOwner(
@@ -664,6 +664,33 @@ static void *mglRenderPassTextureFromSnapshot(
             state, attachmentKind, colorIndex);
     return attachment && attachment->texture
         ? attachment->texture : NULL;
+}
+
+/* Match entry for a user-framebuffer attachment.  The pass-state side comes
+ * from `snapshot`, the framebuffer side from the attachment's Metal
+ * subresource; the comparison rule itself is the plan's. */
+static void mglRenderPassFillUserFboEntry(
+    MGLRenderPassAttachmentMatchEntry *entry, void *actual, void *expected,
+    int gate, const MGLRenderPassAttachmentState *snapshot,
+    const FBOAttachment *attachment)
+{
+    MGLRenderPassSubresource snapshotSub = {0u, 0u, 0u};
+    MGLRenderPassSubresource fboSub = {0u, 0u, 0u};
+    if (gate) {
+        MGLMetalAttachmentSubresource subresource =
+            mglMetalAttachmentSubresourceForAttachment(attachment);
+        fboSub = (MGLRenderPassSubresource){subresource.level,
+                                            subresource.slice,
+                                            subresource.depthPlane};
+        if (snapshot) {
+            snapshotSub = (MGLRenderPassSubresource){snapshot->level,
+                                                     snapshot->slice,
+                                                     snapshot->depth_plane};
+        }
+    }
+    mglRenderPassPlanFillSubresourceEntry(entry, actual, expected, gate,
+                                          snapshot != NULL, snapshotSub,
+                                          fboSub);
 }
 
 /* -mglRenderPassMatchesFramebufferImpl:name: is C now (log 169).  Its three
@@ -774,17 +801,23 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
             continue;
         }
         const GLenum drawBuffer = mglMetalDrawBufferAt(ctx, i);
-        int drawSlotPresent =
+        /* Same choice configureUserFBO makes: GL_NONE keeps Metal slot i
+         * occupied.  This path does not look at the attachment textures. */
+        MGLRenderPassDrawSlotInput slotInput = {0};
+        slotInput.draw_buffer_resolved =
             mglMetalResolveFboDrawAttachmentIndex(ctx, drawBuffer,
-                                                  &attachmentIndex) &&
-            attachmentIndex < MAX_COLOR_ATTACHMENTS &&
-            ((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) != 0u;
-        if (!drawSlotPresent &&
-            mglRenderDrawBufferIsNone((uint32_t)drawBuffer) &&
-            ((fbo->color_attachment_bitfield >> i) & 1u) != 0u) {
-            /* Match configureUserFBO: GL_NONE keeps Metal slot i occupied. */
-            attachmentIndex = i;
-            drawSlotPresent = 1;
+                                                  &attachmentIndex) ? 1 : 0;
+        slotInput.resolved_index = attachmentIndex;
+        slotInput.draw_buffer_is_none =
+            mglRenderDrawBufferIsNone((uint32_t)drawBuffer);
+        slotInput.slot = i;
+        slotInput.max_attachments = MAX_COLOR_ATTACHMENTS;
+        slotInput.attached_bitfield = fbo->color_attachment_bitfield;
+        MGLRenderPassDrawSlotChoice slotChoice = {0};
+        (void)mglRenderPassPlanDrawSlotAttachment(&slotInput, &slotChoice);
+        const int drawSlotPresent = slotChoice.present;
+        if (drawSlotPresent) {
+            attachmentIndex = slotChoice.attachment_index;
         }
         FBOAttachment *attachment = drawSlotPresent ? &fbo->color_attachments[attachmentIndex] : NULL;
         Texture *tex = drawSlotPresent ? mglRendererAttachmentTextureFor(ctx, attachment) : NULL;
@@ -802,31 +835,13 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
 
         void * actual = mglRenderPassTextureFromSnapshot(
             &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot);
-        MGLRenderPassSubresource actualSub = {0u, 0u, 0u};
-        MGLRenderPassSubresource expectedSub = {0u, 0u, 0u};
-        int compareSubresource = 0;
-        if (attachment && actual) {
-            const MGLRenderPassAttachmentState *snapshot =
-                mglRenderPassAttachmentStateFromSnapshot(
-                    &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
-                    colorSlot);
-            MGLMetalAttachmentSubresource subresource =
-                mglMetalAttachmentSubresourceForAttachment(attachment);
-            compareSubresource = snapshot ? 1 : 0;
-            if (snapshot) {
-                actualSub = (MGLRenderPassSubresource){snapshot->level,
-                                                       snapshot->slice,
-                                                       snapshot->depth_plane};
-            }
-            expectedSub = (MGLRenderPassSubresource){subresource.level,
-                                                     subresource.slice,
-                                                     subresource.depthPlane};
-        }
         MGLRenderPassAttachmentMatchEntry slotEntry;
-        mglRenderPassFillMatchEntry(&slotEntry,
-                                    actual,
-                                    expected, 0,
-                                    compareSubresource, actualSub, expectedSub);
+        mglRenderPassFillUserFboEntry(
+            &slotEntry, actual, expected, attachment != NULL && actual != NULL,
+            mglRenderPassAttachmentStateFromSnapshot(
+                &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                colorSlot),
+            attachment);
         MGLRenderPassAttachmentMatchInput slotMatch = {0};
         slotMatch.identity_ok = 1;
         slotMatch.entries = &slotEntry;
@@ -864,30 +879,13 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
     void * actualDepth = mglRenderPassTextureFromSnapshot(
         &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
     {
-        MGLRenderPassSubresource actualSub = {0u, 0u, 0u};
-        MGLRenderPassSubresource expectedSub = {0u, 0u, 0u};
-        int compareSubresource = 0;
-        if (fbo->depth.texture && expectedDepth) {
-            const MGLRenderPassAttachmentState *snapshot =
-                mglRenderPassAttachmentStateFromSnapshot(
-                    &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
-            MGLMetalAttachmentSubresource subresource =
-                mglMetalAttachmentSubresourceForAttachment(&fbo->depth);
-            compareSubresource = snapshot ? 1 : 0;
-            if (snapshot) {
-                actualSub = (MGLRenderPassSubresource){snapshot->level,
-                                                       snapshot->slice,
-                                                       snapshot->depth_plane};
-            }
-            expectedSub = (MGLRenderPassSubresource){subresource.level,
-                                                     subresource.slice,
-                                                     subresource.depthPlane};
-        }
         MGLRenderPassAttachmentMatchEntry entry;
-        mglRenderPassFillMatchEntry(&entry,
-                                    actualDepth,
-                                    expectedDepth, 0,
-                                    compareSubresource, actualSub, expectedSub);
+        mglRenderPassFillUserFboEntry(
+            &entry, actualDepth, expectedDepth,
+            fbo->depth.texture != NULL && expectedDepth != NULL,
+            mglRenderPassAttachmentStateFromSnapshot(
+                &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0),
+            &fbo->depth);
         MGLRenderPassAttachmentMatchInput entryMatch = {0};
         entryMatch.identity_ok = 1;
         entryMatch.entries = &entry;
@@ -911,30 +909,13 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
     void * actualStencil = mglRenderPassTextureFromSnapshot(
         &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0);
     {
-        MGLRenderPassSubresource actualSub = {0u, 0u, 0u};
-        MGLRenderPassSubresource expectedSub = {0u, 0u, 0u};
-        int compareSubresource = 0;
-        if (fbo->stencil.texture && expectedStencil) {
-            const MGLRenderPassAttachmentState *snapshot =
-                mglRenderPassAttachmentStateFromSnapshot(
-                    &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0);
-            MGLMetalAttachmentSubresource subresource =
-                mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
-            compareSubresource = snapshot ? 1 : 0;
-            if (snapshot) {
-                actualSub = (MGLRenderPassSubresource){snapshot->level,
-                                                       snapshot->slice,
-                                                       snapshot->depth_plane};
-            }
-            expectedSub = (MGLRenderPassSubresource){subresource.level,
-                                                     subresource.slice,
-                                                     subresource.depthPlane};
-        }
         MGLRenderPassAttachmentMatchEntry entry;
-        mglRenderPassFillMatchEntry(&entry,
-                                    actualStencil,
-                                    expectedStencil, 0,
-                                    compareSubresource, actualSub, expectedSub);
+        mglRenderPassFillUserFboEntry(
+            &entry, actualStencil, expectedStencil,
+            fbo->stencil.texture != NULL && expectedStencil != NULL,
+            mglRenderPassAttachmentStateFromSnapshot(
+                &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0),
+            &fbo->stencil);
         MGLRenderPassAttachmentMatchInput entryMatch = {0};
         entryMatch.identity_ok = 1;
         entryMatch.entries = &entry;
@@ -1057,19 +1038,27 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
          * (writeMask=0) or later locations land on the wrong attachment /
          * nowhere.  Prefer COLOR_ATTACHMENTi when present. */
         const GLenum drawBuffer = mglMetalDrawBufferAt(ctx, (GLuint)i);
-        int haveAttachment = 0;
-        if (mglMetalResolveFboDrawAttachmentIndex(ctx, drawBuffer,
-                                                  &attachmentIndex) &&
-            attachmentIndex < MAX_COLOR_ATTACHMENTS &&
-            (fbo->color_attachment_bitfield & (1u << attachmentIndex)) &&
-            fbo->color_attachments[attachmentIndex].texture) {
-            haveAttachment = 1;
-        } else if (mglRenderDrawBufferIsNone((uint32_t)drawBuffer) &&
-                   (GLuint)i < MAX_COLOR_ATTACHMENTS &&
-                   (fbo->color_attachment_bitfield & (1u << i)) &&
-                   fbo->color_attachments[i].texture) {
-            attachmentIndex = (GLuint)i;
-            haveAttachment = 1;
+        MGLRenderPassDrawSlotInput slotInput = {0};
+        slotInput.draw_buffer_resolved =
+            mglMetalResolveFboDrawAttachmentIndex(ctx, drawBuffer,
+                                                  &attachmentIndex) ? 1 : 0;
+        slotInput.resolved_index = attachmentIndex;
+        slotInput.draw_buffer_is_none =
+            mglRenderDrawBufferIsNone((uint32_t)drawBuffer);
+        slotInput.slot = (uint32_t)i;
+        slotInput.max_attachments = MAX_COLOR_ATTACHMENTS;
+        slotInput.attached_bitfield = fbo->color_attachment_bitfield;
+        slotInput.require_texture = 1;
+        for (uint32_t k = 0; k < MAX_COLOR_ATTACHMENTS; k++) {
+            if (fbo->color_attachments[k].texture) {
+                slotInput.texture_bitfield |= 1u << k;
+            }
+        }
+        MGLRenderPassDrawSlotChoice slotChoice = {0};
+        (void)mglRenderPassPlanDrawSlotAttachment(&slotInput, &slotChoice);
+        const int haveAttachment = slotChoice.present;
+        if (haveAttachment) {
+            attachmentIndex = slotChoice.attachment_index;
         }
         if (haveAttachment) {
             Texture *tex = mglRendererAttachmentTextureFor(
@@ -4065,9 +4054,17 @@ int mglRenderPassValidateAttachmentsAndPipelineFormats(void *renderer,
      * with a render-pass descriptor, and changing attachments after encoder
      * creation does not make that encoder compatible.  We must instead reject
      * mismatched pipeline/pass combinations and rebuild safely. */
-    if (mglRenderPipelinePassColorMismatch(
-            (uint32_t)areas.pipeline_cache->pipelineColor0Format,
-            currentColor0Format)) {
+    const MGLRenderPassFormatCompatInput formatInput = {
+        (uint32_t)areas.pipeline_cache->pipelineColor0Format,
+        (uint32_t)areas.pipeline_cache->pipelineDepthFormat,
+        (uint32_t)areas.pipeline_cache->pipelineStencilFormat,
+        currentColor0Format, currentDepthFormat, currentStencilFormat};
+    MGLRenderPassFormatCompat formatCompat;
+    if (mglRenderPassPlanFormatCompat(&formatInput, &formatCompat) != 0) {
+        return 0;
+    }
+
+    if (formatCompat.color_mismatch) {
         static uint64_t s_colorFormatMismatchCount = 0;
         s_colorFormatMismatchCount++;
         if (s_colorFormatMismatchCount <= 16 ||
@@ -4085,9 +4082,7 @@ int mglRenderPassValidateAttachmentsAndPipelineFormats(void *renderer,
         return 0;
     }
 
-    if (mglRenderPipelinePassAttachmentMismatch(
-            (uint32_t)areas.pipeline_cache->pipelineDepthFormat,
-            currentDepthFormat)) {
+    if (formatCompat.depth_mismatch) {
         static uint64_t s_depthFormatMismatchCount = 0;
         s_depthFormatMismatchCount++;
         if (s_depthFormatMismatchCount <= 16 ||
@@ -4105,9 +4100,7 @@ int mglRenderPassValidateAttachmentsAndPipelineFormats(void *renderer,
         return 0;
     }
 
-    if (mglRenderPipelinePassAttachmentMismatch(
-            (uint32_t)areas.pipeline_cache->pipelineStencilFormat,
-            currentStencilFormat)) {
+    if (formatCompat.stencil_mismatch) {
         static uint64_t s_stencilFormatMismatchCount = 0;
         s_stencilFormatMismatchCount++;
         if (s_stencilFormatMismatchCount <= 16 ||
