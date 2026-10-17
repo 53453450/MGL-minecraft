@@ -83,6 +83,7 @@ extern void mglClearBufferuiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, c
 extern void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLfloat *value);
 extern void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil);
 #include "mgl_trace_log.h"
+#include "mgl_readback_policy.h" /* mglRenderMSAAArrayLayerStride */
 extern void mglBlitStencilShadow(GLMContext ctx,
                                  GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
                                  GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1);
@@ -4269,3 +4270,26 @@ void mglGetNamedRenderbufferParameteriv(GLMContext ctx, GLuint renderbuffer, GLe
     mglGetRenderbufferParameteriv(ctx, GL_RENDERBUFFER, pname, params);
     STATE(renderbuffer) = saved;
 }
+
+uint32_t mglFramebufferMultisampleLayerStride(const Framebuffer *fbo)
+{
+    if (!fbo) {
+        return 1u;
+    }
+    for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS; i++) {
+        const FBOAttachment *attachment = &fbo->color_attachments[i];
+        const uint32_t stride = mglRenderMSAAArrayLayerStride(
+            attachment->layered ? 1 : 0, (uint32_t)attachment->textarget);
+        if (stride > 1u) {
+            return stride;
+        }
+    }
+    const uint32_t depth_stride = mglRenderMSAAArrayLayerStride(
+        fbo->depth.layered ? 1 : 0, (uint32_t)fbo->depth.textarget);
+    if (depth_stride > 1u) {
+        return depth_stride;
+    }
+    return mglRenderMSAAArrayLayerStride(
+        fbo->stencil.layered ? 1 : 0, (uint32_t)fbo->stencil.textarget);
+}
+

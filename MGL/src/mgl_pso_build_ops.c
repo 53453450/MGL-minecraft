@@ -51,8 +51,6 @@
 /* Objective-C private header declarations restated for C. */
 extern Program *mglResolveProgramFromState(GLMContext ctx);
 extern void mglWriteProgramMSLDump(Program *program, const char *reason);
-extern Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx,
-                                                      const char *where);
 extern GLuint mglRendererSafeFramebufferName(GLMContext ctx);
 
 /* The renderer's alpha-should-be-one guard for the ultimate fallback. */
@@ -192,10 +190,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
         mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     Program *currentFragmentProgram =
         mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
-    VertexArray *currentVAO = state->vao;
-    Framebuffer *currentFBO = mglRendererGetValidatedFramebuffer(
-        ctx, "buildPipelineCacheOnCacheMiss.currentFBO");
-    const GLuint currentFBOName = currentFBO ? currentFBO->name : 0;
+    const GLuint currentFBOName = mglRendererSafeFramebufferName(ctx);
 
     MGLRenderPipelineDescriptorState finalState = *pipelineState;
     int stateFromCache = 0;
@@ -249,7 +244,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
              (s_pipelineCreateBeginCount % 500ull) == 0ull)) {
             fprintf(stderr,
                     "MGL PIPELINE CREATE begin program=%u vao=%p fbo=%u\n",
-                    (unsigned)currentProgramName, (void *)currentVAO,
+                    (unsigned)currentProgramName, (void *)state->vao,
                     (unsigned)currentFBOName);
         }
 
@@ -712,26 +707,11 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
  * framebufferTextureLayer attachments keep their fixed slice. */
 static uint32_t mglPdGeometryPassthroughLayerStride(GLMContext context)
 {
-    if (!context || !context->active_state ||
-        !context->active_state->framebuffer) {
+    if (!context || !context->active_state) {
         return 1u;
     }
-    Framebuffer *fbo = context->active_state->framebuffer;
-    for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS; i++) {
-        const FBOAttachment *attachment = &fbo->color_attachments[i];
-        uint32_t stride = mglRenderMSAAArrayLayerStride(
-            attachment->layered ? 1 : 0, (uint32_t)attachment->textarget);
-        if (stride > 1u) {
-            return stride;
-        }
-    }
-    uint32_t depthStride = mglRenderMSAAArrayLayerStride(
-        fbo->depth.layered ? 1 : 0, (uint32_t)fbo->depth.textarget);
-    if (depthStride > 1u) {
-        return depthStride;
-    }
-    return mglRenderMSAAArrayLayerStride(
-        fbo->stencil.layered ? 1 : 0, (uint32_t)fbo->stencil.textarget);
+    return mglFramebufferMultisampleLayerStride(
+        context->active_state->framebuffer);
 }
 
 /* mglGeometryPipelineFunctionKey() from MGLRenderer+RenderPass.m: the backend
@@ -818,10 +798,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
     Program *currentFragmentProgram =
         mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
     GLuint currentProgramName = mglCurrentRenderProgramKey(ctx);
-    VertexArray *currentVAO = state->vao;
-    Framebuffer *currentFBO = mglRendererGetValidatedFramebuffer(
-        ctx, "processGLState.currentFBO");
-    GLuint currentFBOName = currentFBO ? currentFBO->name : 0;
+    GLuint currentFBOName = mglRendererSafeFramebufferName(ctx);
 
     /* Program-level breaker (independent of render-pass signature) to avoid
      * mismatch storms where color/depth/stencil signatures keep changing. */
@@ -1020,7 +997,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
                      (s_pipelineCacheHitCount % 1000ull) == 0ull)) {
                     fprintf(stderr,
                             "MGL PIPELINE CACHE hit program=%u vao=%p fbo=%u key=%016llx/%016llx/%016llx\n",
-                            (unsigned)currentProgramName, (void *)currentVAO,
+                            (unsigned)currentProgramName, (void *)state->vao,
                             (unsigned)currentFBOName,
                             (unsigned long long)keyWords[0],
                             (unsigned long long)keyWords[5],

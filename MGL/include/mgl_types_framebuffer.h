@@ -88,4 +88,14 @@ static inline int mglFramebufferBindingDirty(const Framebuffer *fbo)
     return fbo && (fbo->dirty_bits & DIRTY_FBO_BINDING) ? 1 : 0;
 }
 
+/* Slices per GL layer when a layered attachment of the framebuffer is an
+ * emulated multisample array (a fixed plane stride), else 1.  NULL = 1. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+uint32_t mglFramebufferMultisampleLayerStride(const Framebuffer *fbo);
+#ifdef __cplusplus
+}
+#endif
+
 #endif /* mgl_types_framebuffer_h */
