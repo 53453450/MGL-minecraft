@@ -38,19 +38,8 @@
 #include "mgl_texture_readback_clear.h"
 #include "mgl_texture_readback_ops.h"
 #include "mgl_texture_upload_ops.h"
+#include "mgl_texture_plan.h"
 
-enum {
-    MGL_TEXTURE_RESOURCE_STORAGE_SHARED = 0u,
-    MGL_TEXTURE_STORAGE_PRIVATE = 2u,
-    MGL_TEXTURE_CPU_CACHE_DEFAULT = 0u,
-    MGL_TEXTURE_CPU_CACHE_WRITE_COMBINED = 1u,
-    MGL_TEXTURE_USAGE_SHADER_READ = 1u,
-    MGL_TEXTURE_USAGE_SHADER_WRITE = 2u,
-    /* Matches MTLTextureUsageShaderAtomic (macOS 14+ / Metal 3.1). */
-    MGL_TEXTURE_USAGE_SHADER_ATOMIC = 0x20u,
-    MGL_TEXTURE_USAGE_RENDER_TARGET = 4u,
-    MGL_TEXTURE_USAGE_PIXEL_FORMAT_VIEW = 16u,
-};
 
 static MGLRegionValue mglRendererCompatRegion(int32_t x, int32_t y,
                                          int32_t width, int32_t height)

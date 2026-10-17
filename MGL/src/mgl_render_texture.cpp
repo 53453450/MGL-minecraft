@@ -222,80 +222,6 @@ int mglRenderSampledTextureViewForBaseLevel(
     return 0;
 }
 
-extern "C"
-int mglRenderTextureTargetPlan(
-    uint32_t gl_target,
-    uint32_t sample_count,
-    MGLRenderTextureTargetPlan* plan_out) {
-    if (!plan_out) return -1;
-    *plan_out = {};
-    plan_out->num_faces = 1u;
-
-    switch (gl_target) {
-        case GL_TEXTURE_1D:
-            plan_out->texture_type = static_cast<uint32_t>(MTL::TextureType2D);
-            plan_out->texture_1d_backed_by_2d = 1u;
-            return 0;
-        case GL_RENDERBUFFER:
-            plan_out->texture_type = static_cast<uint32_t>(
-                sample_count > 1u ? MTL::TextureType2DMultisample
-                                  : MTL::TextureType2D);
-            return 0;
-        case GL_TEXTURE_1D_ARRAY:
-            /* AIR lowers sampler1DArray to texture2d_array, and Metal cannot
-             * view a Texture1DArray as Texture2DArray. */
-            plan_out->texture_type =
-                static_cast<uint32_t>(MTL::TextureType2DArray);
-            plan_out->is_array = 1u;
-            plan_out->texture_1d_array_backed_by_2d_array = 1u;
-            return 0;
-        case GL_TEXTURE_2D:
-        case GL_TEXTURE_RECTANGLE:
-            plan_out->texture_type = static_cast<uint32_t>(MTL::TextureType2D);
-            return 0;
-        case GL_TEXTURE_2D_ARRAY:
-            plan_out->texture_type =
-                static_cast<uint32_t>(MTL::TextureType2DArray);
-            plan_out->is_array = 1u;
-            return 0;
-        case GL_TEXTURE_2D_MULTISAMPLE:
-            plan_out->texture_type =
-                static_cast<uint32_t>(MTL::TextureType2DMultisample);
-            return 0;
-        case GL_TEXTURE_CUBE_MAP:
-        case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
-        case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
-        case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
-        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
-        case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
-        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
-            plan_out->texture_type =
-                static_cast<uint32_t>(MTL::TextureTypeCube);
-            plan_out->num_faces = 6u;
-            return 0;
-        case GL_TEXTURE_CUBE_MAP_ARRAY:
-            plan_out->texture_type =
-                static_cast<uint32_t>(MTL::TextureTypeCubeArray);
-            /* GL stores cube-array levels in faces[0] with depth=cubes*6.
-             * Iterating 6 faces during CPU upload marks the create incomplete
-             * (faces 1-5 empty) and leaves DIRTY_TEXTURE_DATA set — later
-             * binds can fight imageStore results. */
-            plan_out->num_faces = 1u;
-            plan_out->is_array = 1u;
-            return 0;
-        case GL_TEXTURE_3D:
-            plan_out->texture_type = static_cast<uint32_t>(MTL::TextureType3D);
-            return 0;
-        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
-            plan_out->texture_type =
-                static_cast<uint32_t>(MTL::TextureType2DMultisampleArray);
-            plan_out->is_array = 1u;
-            return 0;
-        default:
-            *plan_out = {};
-            return -1;
-    }
-}
 
 extern "C"
 uint32_t mglRenderTextureTypeForShaderResource(
@@ -950,65 +876,9 @@ uint32_t mglRenderFallbackSampledPixelFormat(uint32_t data_kind) {
     }
 }
 
-int mglRenderTextureUsageForAccess(uint32_t gl_access, uint32_t *usage_out) {
-    switch (gl_access) {
-    case GL_READ_ONLY:
-    case GL_WRITE_ONLY:
-    case GL_READ_WRITE:
-        if (usage_out) {
-            *usage_out = MGLTextureUsageShaderRead | MGLTextureUsageShaderWrite;
-        }
-        return 1;
-    default:
-        return 0;
-    }
-}
 
-int mglRenderPixelFormatNeedsShaderAtomic(uint32_t pixel_format) {
-    return pixel_format == 53u /* R32Uint */ || pixel_format == 54u /* R32Sint */
-               ? 1
-               : 0;
-}
 
-int mglRenderTextureArrayDepthForType(uint32_t tex_type, int is_array,
-                                      int ms_emulated, uint64_t width,
-                                      uint64_t height, uint64_t depth,
-                                      uint64_t *array_out, uint64_t *depth_out) {
-    (void)width;
-    uint64_t array_len = 1u;
-    uint64_t d = 1u;
-    if (tex_type == MGLTextureTypeCube) {
-        d = 1u;
-    } else if (tex_type == MGLTextureTypeCubeArray) {
-        array_len = mglRenderExpectedArrayLayers(GL_TEXTURE_CUBE_MAP_ARRAY,
-                                                 (int32_t)depth);
-        d = 1u;
-    } else if (tex_type == MGLTextureType1DArray) {
-        array_len = height < 1u ? 1u : height;
-        d = 1u;
-    } else if (is_array && !ms_emulated) {
-        array_len = depth < 1u ? 1u : depth;
-        d = 1u;
-    } else if (!ms_emulated) {
-        array_len = 1u;
-        d = depth < 1u ? 1u : depth;
-    } else {
-        return 0;
-    }
-    if (array_out) {
-        *array_out = array_len;
-    }
-    if (depth_out) {
-        *depth_out = d;
-    }
-    return 1;
-}
 
-uint32_t mglRenderTextureDescHeight(uint32_t tex_type, uint32_t height) {
-    return tex_type == MGLTextureType1D || tex_type == MGLTextureType1DArray
-               ? 1u
-               : height;
-}
 
 int mglRenderTextureTargetIsBuffer(uint32_t target) {
     return target == GL_TEXTURE_BUFFER ? 1 : 0;

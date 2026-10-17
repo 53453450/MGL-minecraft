@@ -378,6 +378,29 @@ static inline bool mglTextureHasUploadableCPUData(Texture *tex, int numFaces, GL
     return false;
 }
 
+/* Lowest level (over all faces, below `levelCount`) with uploadable CPU data,
+ * or 0xffffffff when there is none.  mglTextureHasUploadableCPUData(tex, f, n)
+ * is exactly "this is < n". */
+static inline GLuint mglTextureFirstUploadableLevel(Texture *tex, int numFaces, GLuint levelCount)
+{
+    GLuint first = 0xffffffffu;
+    if (!tex || numFaces <= 0) {
+        return first;
+    }
+    for (int face = 0; face < numFaces; face++) {
+        if (!tex->faces[face].levels) {
+            continue;
+        }
+        for (GLuint level = 0; level < levelCount && level < first; level++) {
+            if (mglTextureLevelHasUploadableCPUData(&tex->faces[face].levels[level])) {
+                first = level;
+                break;
+            }
+        }
+    }
+    return first;
+}
+
 /* Returns tex->name, or 0 if tex is NULL. */
 static inline GLuint mglTraceTextureName(Texture *tex)
 {

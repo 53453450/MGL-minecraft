@@ -1191,14 +1191,6 @@ int mglRenderRasterizationIsEmpty(
 
 
 
-uint64_t mglRenderExpectedArrayLayers(uint32_t gl_target, int32_t depth) {
-    uint64_t layers = depth > 0 ? (uint64_t)depth : 1u;
-    if (gl_target == GL_TEXTURE_CUBE_MAP_ARRAY && layers >= 6u &&
-        (layers % 6u) == 0u) {
-        layers /= 6u;
-    }
-    return layers;
-}
 
 
 
@@ -1233,133 +1225,22 @@ uint64_t mglRenderFallbackSampledCacheKey(uint32_t texture_type, uint32_t data_k
     return ((uint64_t)texture_type << 8u) | (uint64_t)data_kind;
 }
 
-uint32_t mglRenderAGXCompatiblePixelFormat(uint32_t pixel_format, int *converted) {
-    int conv = 0;
-    switch (pixel_format) {
-    case 40u: /* B5G6R5Unorm */
-    case 41u: /* A1BGR5Unorm */
-    case 43u: /* BGR5A1Unorm */
-    case 160u: /* PVRTC_RGB_2BPP */
-    case 162u: /* PVRTC_RGB_4BPP */
-    case 164u: /* PVRTC_RGBA_2BPP */
-    case 166u: /* PVRTC_RGBA_4BPP */
-        conv = 1;
-        pixel_format = 70u; /* RGBA8Unorm */
-        break;
-    default:
-        break;
-    }
-    if (converted) {
-        *converted = conv;
-    }
-    return pixel_format;
-}
-
-int mglRenderPromote1DArrayDepthStencil(uint32_t tex_type, uint32_t pixel_format) {
-    if (tex_type != MGLTextureType1DArray) {
-        return 0;
-    }
-    switch (pixel_format) {
-    case 250u: /* Depth16Unorm */
-    case 252u: /* Depth32Float */
-    case 253u: /* Stencil8 */
-    case 255u: /* Depth24Unorm_Stencil8 */
-    case 260u: /* Depth32Float_Stencil8 */
-    case 261u: /* X32_Stencil8 */
-    case 262u: /* X24_Stencil8 */
-        return 1;
-    default:
-        return 0;
-    }
-}
 
 
 
-int mglRenderPromoteMipmapped1D(uint32_t tex_type) {
-    return tex_type == MGLTextureType1D ? 1 : 0;
-}
 
-int mglRenderPromoteMipmapped1DArray(uint32_t tex_type) {
-    return tex_type == MGLTextureType1DArray ? 1 : 0;
-}
+
 
 int mglRenderCubeFaceSizeValid(uint64_t width, uint64_t height) {
     return width == height ? 1 : 0;
 }
 
 
-uint32_t mglRenderUploadLevelCount(int mipmapped, int tex_mipmapped,
-                                   uint32_t effective) {
-    return mipmapped && tex_mipmapped ? effective : 1u;
-}
 
 
-int mglRenderEmulateMSAsArray(uint32_t tex_type, uint32_t samples, uint64_t depth,
-                              uint32_t *out_type, uint32_t *sample_count,
-                              uint64_t *array_len, uint64_t *depth_out) {
-    if (tex_type != MGLTextureType2DMultisample &&
-        tex_type != MGLTextureType2DMultisampleArray) {
-        return 0;
-    }
-    /* Fixed stride matches AIR texelFetch / textureSize for sampler2DMSArray
-     * (flat = layer * 8 + sample).  Non-array MS is one logical layer so the
-     * store is always 8 planes — needed for TextureView MS→MS_ARRAY where the
-     * view exposes layer count via array_length/8. */
-    const uint64_t kMsPlaneStride = 8u;
-    uint32_t sc = 1u;
-    uint64_t d = 1u;
-    uint64_t arr = 1u;
-    uint32_t ot = MGLTextureType2DArray;
-    (void)samples;
-    if (tex_type == MGLTextureType2DMultisample) {
-        arr = kMsPlaneStride;
-    } else {
-        uint64_t layers = depth < 1u ? 1u : depth;
-        arr = layers * kMsPlaneStride;
-    }
-    if (out_type) {
-        *out_type = ot;
-    }
-    if (sample_count) {
-        *sample_count = sc;
-    }
-    if (array_len) {
-        *array_len = arr;
-    }
-    if (depth_out) {
-        *depth_out = d;
-    }
-    return 1;
-}
-
-int mglRenderPreferSharedStorage(int needs_cpu, int is_depth_stencil) {
-    return needs_cpu || is_depth_stencil ? 1 : 0;
-}
 
 
-void mglRenderApply1DBackingToDesc(int backed_1d, int backed_1d_array,
-                                   uint64_t height, uint32_t *type,
-                                   uint64_t *array_len, uint32_t *height_out) {
-    if (backed_1d) {
-        if (type) {
-            *type = MGLTextureType2D;
-        }
-        if (height_out) {
-            *height_out = 1u;
-        }
-    }
-    if (backed_1d_array) {
-        if (type) {
-            *type = MGLTextureType2DArray;
-        }
-        if (array_len) {
-            *array_len = height < 1u ? 1u : height;
-        }
-        if (height_out) {
-            *height_out = 1u;
-        }
-    }
-}
+
 
 
 /* C1: binding slot/sampler/stage/plain-uniform policy -> mgl_binding_policy.c */
