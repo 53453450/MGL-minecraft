@@ -67,7 +67,7 @@ static void fApplySkip(void *v, uint32_t b)
 { (void)b; FCtx *c = v; MGLRendererStateAreas areas; mglRendererFillStateAreas(c->r, &areas);
   if (areas.core && areas.core->activeState != c->replay)
       areas.core->activeState = c->replay;
-  c->replay->dirty_bits = 0; MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap); }
+  mglClearAllRendererDirtyBits(c->replay); MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap); }
 static void fSetAbs(void *v, int w)
 { MGLRendererStateAreas areas; mglRendererFillStateAreas(((FCtx *)v)->r, &areas);
   MGLBatchingState *bs = areas.batching;
@@ -313,7 +313,7 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
         mglBatchRestoreStateFromKey(&batch->key, glm_ctx, replay);
     }
     if (areas.core) areas.core->activeState = replay;
-    replay->dirty_bits = 0;
+    mglClearAllRendererDirtyBits(replay);
     const GLuint kFull = mgl_batch_restore_full_dirty_bits();
     GLuint replayDirtyBits = kFull;
     int prevKeyValid = (prevKey != NULL);
@@ -332,8 +332,7 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
     }
     Framebuffer *replayFBO = replay->framebuffer;
     const MGLBatchRestoreFboIn fboIn = {
-        .fbo_binding_dirty =
-            (replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ? 1u : 0u,
+        .fbo_binding_dirty = (uint8_t)mglFramebufferBindingDirty(replayFBO),
         .prev_fbo_differs =
             (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) ? 1u : 0u,
         .has_encoder = mglRenderEncoderOwnerHasCurrent(

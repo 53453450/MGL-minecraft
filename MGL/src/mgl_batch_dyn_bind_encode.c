@@ -58,7 +58,7 @@ static int mglDynVertexEnsure(void *v, const MGLBatchDynVertexStreamPlan *p, voi
                               void **gl, uint64_t *dyn, uint64_t *len)
 {
     MGLDynVertexCtx *c = v; Buffer *buf = p->buffer; if (!buf) return 0;
-    if (buf->data.dirty_bits) {
+    if (mglBufferHasPendingUpdate(buf)) {
         BufferMapList upload = {0}; upload.count = 1; upload.buffers[0].buf = buf;
         if (!mglRenderUpdateDirtyBaseBufferList(c->ctx, &upload, "updateDirtyBaseBufferList:")) return 0;
     }
@@ -172,19 +172,19 @@ static int mglDynSampledResolve(void *v, const MGLBatchSampledTexCandidate *e,
               c->ctx, resource, e->metal_slot, (int)e->stage,
               e->lookup_type ? e->lookup_type : e->expected_type)
         : NULL;
-    void *texture = (tex_obj && tex_obj->mtl_data)
-        ? mglSampledTextureViewForBaseLevel(tex_obj, tex_obj->mtl_data) : NULL;
+    MGLTextureSampledFacts texFacts;
+    mglTextureSampledFacts(tex_obj, &texFacts);
+    void *texture = texFacts.has_mtl
+        ? mglSampledTextureViewForBaseLevel(tex_obj, texFacts.mtl_texture) : NULL;
     MGLRenderTextureInfo info = {0};
     int info_ok = texture && mglRenderGetTextureInfo(texture, &info) == 0;
     Sampler *bound = (unit < TEXTURE_UNITS) ? c->ctx->active_state->texture_samplers[unit] : NULL;
-    void *sampler = NULL;
-    if (bound && !bound->dirty_bits && bound->mtl_data) sampler = bound->mtl_data;
-    else if (tex_obj && tex_obj->params.mtl_data) sampler = tex_obj->params.mtl_data;
+    void *sampler = mglSamplerCleanMtl(bound);
+    if (!sampler) sampler = texFacts.param_sampler_mtl;
     MGLBatchSampledResolveGateIn gin = {
         .unit_ok = (unit < TEXTURE_UNITS && touched[unit]) ? 1 : 0,
-        .has_tex = tex_obj ? 1 : 0, .has_mtl = (tex_obj && tex_obj->mtl_data) ? 1 : 0,
-        .dirty = (tex_obj && tex_obj->dirty_bits) ? 1 : 0,
-        .is_rt = (tex_obj && tex_obj->is_render_target) ? 1 : 0,
+        .has_tex = texFacts.has_tex, .has_mtl = texFacts.has_mtl,
+        .dirty = texFacts.dirty, .is_rt = texFacts.is_rt,
         .info_ok = info_ok, .texture_type = info.texture_type,
         .expected_type = e->expected_type,
         .format_compat = mglTexturePixelFormatCompatibleWithExpectedDataKind(

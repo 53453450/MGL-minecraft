@@ -42,6 +42,23 @@ Texture *mglTextureForSampledResourceForStage(GLMContext ctx,
                                               GLuint metal_binding, int stage,
                                               uint32_t expected_type);
 
+/* What a sampled-resource resolve needs to know about the texture and the
+ * sampler bound to its unit, by value, so the Metal-side encoders do not read
+ * the GL objects' state flags themselves. */
+typedef struct MGLTextureSampledFacts {
+    int has_tex;
+    int has_mtl;                /* the texture has a Metal object */
+    int dirty;                  /* pending level / data / access / param work */
+    int is_rt;                  /* attached to a framebuffer */
+    void *mtl_texture;          /* the Metal object (borrowed) */
+    void *param_sampler_mtl;    /* the texture's own sampler state (borrowed) */
+} MGLTextureSampledFacts;
+
+void mglTextureSampledFacts(const Texture *tex, MGLTextureSampledFacts *out);
+
+/* The sampler object's Metal state when it is up to date, else NULL. */
+void *mglSamplerCleanMtl(const Sampler *sampler);
+
 #ifdef __cplusplus
 }
 #endif

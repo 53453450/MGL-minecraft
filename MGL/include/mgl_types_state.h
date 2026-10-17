@@ -237,6 +237,20 @@ static inline void mglMarkRendererDirtyBits(GLMState *state, GLuint dirty_bits)
     state->dirty_bits |= dirty_bits;
 }
 
+/* The renderer has consumed `dirty_bits`; drop them. */
+static inline void mglClearRendererDirtyBits(GLMState *state, GLuint dirty_bits)
+{
+    if (!state) return;
+    state->dirty_bits &= ~dirty_bits;
+}
+
+/* The renderer has consumed every pending change. */
+static inline void mglClearAllRendererDirtyBits(GLMState *state)
+{
+    if (!state) return;
+    state->dirty_bits = 0;
+}
+
 /* State-key input mutations preserve the renderer's legacy dirty bits and
  * also invalidate every cache domain fed by those bits. */
 static inline void mglMarkStateDirtyBits(GLMState *state, GLuint dirty_bits)

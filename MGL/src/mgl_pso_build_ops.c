@@ -448,8 +448,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
                          recovery->interfaceMismatchRetryAfter)
                             ? recovery->interfaceMismatchBlockedUntil
                             : recovery->interfaceMismatchRetryAfter;
-                    state->dirty_bits &=
-                        ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+                    mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
                     return 0;
                 }
             }
@@ -533,7 +532,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
             mglRenderPassInvalidateCurrentPipelineState(
                 renderer, "pipeline creation exception");
             recovery->pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.25;
-            state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+            mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
             return 0;
         }
 
@@ -613,7 +612,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
             mglRenderPassInvalidateCurrentPipelineState(
                 renderer, "all pipeline fallbacks failed");
             recovery->pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.25;
-            state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+            mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
             return 0;
         }
     }
@@ -627,7 +626,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
         mglRenderPassInvalidateCurrentPipelineState(
             renderer, "pipeline state is nil after creation");
         recovery->pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.10;
-        state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+        mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
         return 0;
     }
 
@@ -840,7 +839,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
                     "MGL WARNING: Program-level mismatch breaker active (program=%u, %.2fs remaining), skipping draw\n",
                     (unsigned)currentProgramName, remaining);
         }
-        state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+        mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
         return 0;
     }
 
@@ -853,7 +852,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
 
         if (retryAppliesToCurrentProgram) {
             if (currentPipelineState) {
-                state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+                mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
                 /* Keep existing pipeline, but do not early-return before
                  * setRenderPipelineState. */
                 skipPipelineBuild = 1;
@@ -886,7 +885,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
         uint32_t builtStencilFormat = mglRenderInvalidPixelFormat();
 
         mglRendererUpdateBlendStateCache(renderer);
-        state->dirty_bits &= ~DIRTY_ALPHA_STATE;
+        mglClearRendererDirtyBits(state, DIRTY_ALPHA_STATE);
         if (getenv("MGL_TOPO_TRACE") != NULL) {
             fprintf(stderr,
                     "MGLTOPO tessCompute=%d active=%d prog=%p topology=%u\n",
@@ -926,7 +925,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
             builtColor0Format == recovery->interfaceMismatchColor0Format &&
             builtDepthFormat == recovery->interfaceMismatchDepthFormat &&
             builtStencilFormat == recovery->interfaceMismatchStencilFormat) {
-            state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+            mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
             return 0;
         }
 
@@ -1087,7 +1086,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
             deferredBufferMapForPipelineBuild = 0;
         }
 
-        state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+        mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
     }
 
     return 1;

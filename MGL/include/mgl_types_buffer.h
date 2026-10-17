@@ -392,4 +392,10 @@ typedef struct BufferMapList_t {
     BufferMap   buffers[MAX_MAPPED_BUFFERS];
 } BufferMapList;
 
+/* The buffer has CPU-side changes the Metal store has not seen yet. */
+static inline int mglBufferHasPendingUpdate(const Buffer *buffer)
+{
+    return buffer && buffer->data.dirty_bits ? 1 : 0;
+}
+
 #endif /* mgl_types_buffer_h */

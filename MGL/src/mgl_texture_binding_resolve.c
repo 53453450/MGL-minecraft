@@ -23,6 +23,7 @@
 #include "glm_limits.h"            /* TEX_OBJ_RES_NAME */
 
 #include <stdio.h>
+#include <string.h>
 
 Texture *mglTextureForSampledResource(GLMContext ctx, MGLShaderResource *sampledResource,
                                        GLuint metalBinding, int stage,
@@ -224,3 +225,28 @@ Texture *mglTextureForSampledResourceForStage(GLMContext ctx, MGLShaderResource 
     GLuint textureUnit = mglTextureUnitForSampledResource(sampledResource, mglResolveProgramForStageFromState(ctx, stage), metalBinding, stage);
     return mglTextureForSampledResource(ctx, sampledResource, metalBinding, stage, expectedType, textureUnit);
 }
+
+void mglTextureSampledFacts(const Texture *tex, MGLTextureSampledFacts *out)
+{
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!tex) {
+        return;
+    }
+    out->has_tex = 1;
+    out->has_mtl = tex->mtl_data ? 1 : 0;
+    out->dirty = tex->dirty_bits ? 1 : 0;
+    out->is_rt = tex->is_render_target ? 1 : 0;
+    out->mtl_texture = tex->mtl_data;
+    out->param_sampler_mtl = tex->params.mtl_data;
+}
+
+void *mglSamplerCleanMtl(const Sampler *sampler)
+{
+    return sampler && !sampler->dirty_bits && sampler->mtl_data
+               ? sampler->mtl_data
+               : NULL;
+}
+

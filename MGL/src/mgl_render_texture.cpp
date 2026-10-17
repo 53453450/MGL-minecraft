@@ -349,19 +349,6 @@ const char* mglRenderTextureDataKindName(uint32_t kind) {
 }
 
 extern "C"
-int mglRenderTextureMinFilterUsesMipmaps(uint32_t min_filter) {
-    switch (min_filter) {
-        case GL_NEAREST_MIPMAP_NEAREST:
-        case GL_LINEAR_MIPMAP_NEAREST:
-        case GL_NEAREST_MIPMAP_LINEAR:
-        case GL_LINEAR_MIPMAP_LINEAR:
-            return 1;
-        default:
-            return 0;
-    }
-}
-
-extern "C"
 int mglRenderMetalLayerPixelFormatIsSupported(uint32_t pixel_format) {
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
         case MTL::PixelFormatBGRA8Unorm:
@@ -373,26 +360,6 @@ int mglRenderMetalLayerPixelFormatIsSupported(uint32_t pixel_format) {
 }
 
 extern "C"
-uint32_t mglRenderLinearPixelFormat(uint32_t pixel_format) {
-    switch (static_cast<MTL::PixelFormat>(pixel_format)) {
-        case MTL::PixelFormatRGBA8Unorm_sRGB:
-            return (uint32_t)MTL::PixelFormatRGBA8Unorm;
-        case MTL::PixelFormatBGRA8Unorm_sRGB:
-            return (uint32_t)MTL::PixelFormatBGRA8Unorm;
-        default:
-            return pixel_format;
-    }
-}
-
-extern "C"
-uint32_t mglRenderEffectiveMTLPixelFormat(uint32_t pixel_format,
-                                            uint32_t srgb_decode_ext) {
-    if (srgb_decode_ext == GL_SKIP_DECODE_EXT) {
-        return mglRenderLinearPixelFormat(pixel_format);
-    }
-    return pixel_format;
-}
-
 int mglRenderTextureUploadRoute(uint32_t texture_type,
                                    uint32_t storage_mode,
                                    int has_agx_3d_copy_bug) {
@@ -788,21 +755,6 @@ int mglRenderTextureNeedsChannelExpansion(uint32_t internal_format,
     }
 }
 
-int mglRenderIsTextureBufferTarget(uint32_t gl_target) {
-    return gl_target == GL_TEXTURE_BUFFER ? 1 : 0;
-}
-
-int mglRenderTextureDimsValid(uint32_t gl_target, int32_t width, int32_t height,
-                              int32_t depth) {
-    if (gl_target == GL_TEXTURE_BUFFER) {
-        return 1;
-    }
-    return width > 0 && height > 0 && width <= 32768 && height <= 32768 &&
-                   depth <= 32768
-               ? 1
-               : 0;
-}
-
 int mglRenderTextureBufferNeedsDirty(int is_tbo, int has_buf, uint32_t buf_dirty) {
     return is_tbo && has_buf && buf_dirty != 0u ? 1 : 0;
 }
@@ -814,13 +766,6 @@ int mglRenderTextureNameIsDefault(uint32_t name) {
 int mglRenderMSTextureUnitIndex(int image_arrayed) {
     return image_arrayed ? _TEXTURE_2D_MULTISAMPLE_ARRAY
                          : _TEXTURE_2D_MULTISAMPLE;
-}
-
-int mglRenderIsMultisampleTextureTarget(uint32_t gl_target) {
-    return gl_target == GL_TEXTURE_2D_MULTISAMPLE ||
-                   gl_target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY
-               ? 1
-               : 0;
 }
 
 int mglRenderRejectDefaultTypedTexture(int typed_is_default, int active_is_real) {
@@ -880,26 +825,6 @@ uint32_t mglRenderFallbackSampledPixelFormat(uint32_t data_kind) {
 
 
 
-int mglRenderTextureTargetIsBuffer(uint32_t target) {
-    return target == GL_TEXTURE_BUFFER ? 1 : 0;
-}
-
-int mglRenderTextureTargetIsArrayOr3D(uint32_t target) {
-    return target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_3D ? 1 : 0;
-}
-
-int mglRenderTextureTargetIs2D(uint32_t target) {
-    return target == GL_TEXTURE_2D ? 1 : 0;
-}
-
-int mglRenderTextureTargetIs3D(uint32_t target) {
-    return target == GL_TEXTURE_3D ? 1 : 0;
-}
-
-int mglRenderImageAccessIsReadOnly(uint32_t access) {
-    return access == GL_READ_ONLY ? 1 : 0;
-}
-
 int mglRenderImageUnitSliceNeedsFlush(int has_tex, int has_view, int layered,
                                       uint32_t target, uint32_t access) {
     return has_tex && has_view && !layered &&
@@ -907,112 +832,6 @@ int mglRenderImageUnitSliceNeedsFlush(int has_tex, int has_view, int layered,
                    !mglRenderImageAccessIsReadOnly(access)
                ? 1
                : 0;
-}
-
-uint32_t mglRenderFallbackPixelFormat(uint32_t mapped, uint32_t internalformat) {
-    if (mapped != 0u) {
-        return mapped;
-    }
-    if (internalformat == GL_DEPTH24_STENCIL8 ||
-        internalformat == GL_DEPTH32F_STENCIL8) {
-        return 260u; /* Depth32Float_Stencil8 */
-    }
-    if (internalformat == GL_DEPTH_COMPONENT ||
-        internalformat == GL_DEPTH_COMPONENT16 ||
-        internalformat == GL_DEPTH_COMPONENT24 ||
-        internalformat == GL_DEPTH_COMPONENT32 ||
-        internalformat == GL_DEPTH_COMPONENT32F) {
-        return 252u; /* Depth32Float */
-    }
-    return 70u; /* RGBA8Unorm */
-}
-
-int mglRenderTextureTargetIsArray(uint32_t target) {
-    return target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_CUBE_MAP_ARRAY
-               ? 1
-               : 0;
-}
-
-uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
-                                                 int *known) {
-    uint32_t bpp = 4u;
-    int ok = 1;
-    switch (internalformat) {
-    case GL_RED:
-    case GL_R8:
-    case GL_R8I:
-    case GL_R8UI:
-        bpp = 1u;
-        break;
-    case GL_RG:
-    case GL_RG8:
-    case GL_RG8I:
-    case GL_RG8UI:
-    case GL_R16:
-    case GL_R16F:
-    case GL_R16I:
-    case GL_R16UI:
-        bpp = 2u;
-        break;
-    case GL_RGB:
-    case GL_RGB8:
-    case GL_RGB8I:
-    case GL_RGB8UI:
-    case GL_SRGB8:
-    case GL_R11F_G11F_B10F:
-    case GL_RGB9_E5:
-        bpp = 3u;
-        break;
-    case GL_RGBA:
-    case GL_RGBA8:
-    case GL_RGBA8I:
-    case GL_RGBA8UI:
-    case GL_RGB10_A2:
-    case GL_RGB10_A2UI:
-    case GL_SRGB8_ALPHA8:
-    case GL_RG16I:
-    case GL_RG16UI:
-    case GL_R32I:
-    case GL_R32UI:
-    case GL_R32F:
-    case GL_DEPTH24_STENCIL8:
-        bpp = 4u;
-        break;
-    case GL_DEPTH32F_STENCIL8:
-        bpp = 5u;
-        break;
-    case GL_RGBA16:
-    case GL_RGBA16F:
-    case GL_RG32I:
-    case GL_RG32UI:
-    case GL_RG32F:
-    case GL_RGBA16I:
-    case GL_RGBA16UI:
-        bpp = 8u;
-        break;
-    case GL_RGB16:
-    case GL_RGB16F:
-        bpp = 6u;
-        break;
-    case GL_RGB32F:
-    case GL_RGB32I:
-    case GL_RGB32UI:
-        bpp = 12u;
-        break;
-    case GL_RGBA32F:
-    case GL_RGBA32I:
-    case GL_RGBA32UI:
-        bpp = 16u;
-        break;
-    default:
-        ok = 0;
-        bpp = 4u;
-        break;
-    }
-    if (known) {
-        *known = ok;
-    }
-    return bpp;
 }
 
 uint32_t mglRenderMetalPixelFormatBytesPerPixel(uint32_t pixel_format) {
@@ -1151,10 +970,6 @@ int mglRenderPixelFormatIsDepthOrStencil(uint32_t pixel_format) {
     }
 }
 
-int mglRenderSamplerUnitExplicit(uint32_t flag) {
-    return flag == GL_TRUE ? 1 : 0;
-}
-
 int mglRenderPrefer1DSampler(uint32_t image_dim, int arrayed) {
     return image_dim == MGL_IMAGE_DIM_1D && !arrayed ? 1 : 0;
 }
@@ -1163,53 +978,9 @@ int mglRenderPrefer1DArraySampler(uint32_t image_dim, int arrayed) {
     return image_dim == MGL_IMAGE_DIM_1D && arrayed ? 1 : 0;
 }
 
-int mglRenderTextureTargetIs1D(uint32_t target) {
-    return target == GL_TEXTURE_1D ? 1 : 0;
-}
-
-int mglRenderTextureTargetIsMSOr2DArray(uint32_t target) {
-    return mglRenderIsMultisampleTextureTarget(target) ||
-                   target == GL_TEXTURE_2D_ARRAY
-               ? 1
-               : 0;
-}
-
-void mglRenderMarkTextureLevelWritten(uint8_t *ever_written,
-                                      uint8_t *has_initialized,
-                                      uint8_t *suspicious_zero) {
-    if (ever_written) {
-        *ever_written = (uint8_t)GL_TRUE;
-    }
-    if (has_initialized) {
-        *has_initialized = (uint8_t)GL_TRUE;
-    }
-    if (suspicious_zero) {
-        *suspicious_zero = (uint8_t)GL_FALSE;
-    }
-}
-
-int mglRenderImageAccessWritable(uint32_t access) {
-    return access == GL_WRITE_ONLY || access == GL_READ_WRITE ? 1 : 0;
-}
-
-uint32_t mglRenderSamplerObjectTarget(void) {
-    return GL_TEXTURE_2D;
-}
-
 int mglRenderPixelFormatIsUnorm8Color(uint32_t pixel_format) {
     return mglRenderReadbackPixelFormatIsRGBA8(pixel_format) ||
            mglRenderReadbackPixelFormatIsBGRA8(pixel_format);
-}
-
-int mglRenderTextureTargetIsCubeMap(uint32_t target) {
-    return target == GL_TEXTURE_CUBE_MAP ? 1 : 0;
-}
-
-int mglRenderTextureNeedsArrayLengthCheck(uint32_t target) {
-    return mglRenderTextureTargetIsArray(target) ||
-                   target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY
-               ? 1
-               : 0;
 }
 
 int mglRenderTextureTargetIsLayeredUpload(uint32_t target) {
@@ -1218,10 +989,6 @@ int mglRenderTextureTargetIsLayeredUpload(uint32_t target) {
                    mglRenderTextureTargetIs3D(target)
                ? 1
                : 0;
-}
-
-int mglRenderTextureTargetIs1DArray(uint32_t target) {
-    return target == GL_TEXTURE_1D_ARRAY ? 1 : 0;
 }
 
 extern "C"
@@ -1306,26 +1073,6 @@ int mglRenderSetComputeSampler(void* compute_encoder,
         static_cast<MTL::ComputeCommandEncoder*>(compute_encoder);
     if (!encoder) return -1;
     encoder->setSamplerState(static_cast<MTL::SamplerState*>(sampler), index);
-    return 0;
-}
-
-int mglRenderTextureSampleParams(uint32_t target, int32_t samples,
-                                 uint32_t *num_samples,
-                                 uint32_t *sample_buffers) {
-    if (!num_samples || !sample_buffers) {
-        return -1;
-    }
-    *num_samples = 1u;
-    *sample_buffers = 0u;
-    if (target == GL_TEXTURE_2D_MULTISAMPLE ||
-        target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ||
-        target == GL_RENDERBUFFER) {
-        if (samples > 0 || target == GL_TEXTURE_2D_MULTISAMPLE ||
-            target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
-            *sample_buffers = 1u;
-            *num_samples = samples > 0 ? (uint32_t)samples : 1u;
-        }
-    }
     return 0;
 }
 

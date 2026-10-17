@@ -80,4 +80,12 @@ typedef struct Framebuffer_t {
     char *debug_label;
 } Framebuffer;
 
+/* The framebuffer's attachment binding changed since the render pass last
+ * looked (DIRTY_FBO_BINDING).  A predicate rather than the flag so the Metal
+ * side need not know the dirty-bit layout. */
+static inline int mglFramebufferBindingDirty(const Framebuffer *fbo)
+{
+    return fbo && (fbo->dirty_bits & DIRTY_FBO_BINDING) ? 1 : 0;
+}
+
 #endif /* mgl_types_framebuffer_h */
