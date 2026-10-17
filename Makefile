@@ -890,6 +890,20 @@ $(build_dir)/test_render_pass_load_store_plan: test_legacy_compat/test_render_pa
 test-render-pass-load-store: $(build_dir)/test_render_pass_load_store_plan
 	$(build_dir)/test_render_pass_load_store_plan
 
+$(build_dir)/test_buffer_slots: test_legacy_compat/test_buffer_slots.c \
+	MGL/src/mgl_buffer_slots.c MGL/include/mgl_buffer_slots.h
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANG) -Wall -Wextra -Werror -Wno-unused-parameter -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_buffer_slots.c \
+		MGL/src/mgl_buffer_slots.c \
+		-o $@
+
+test-buffer-slots: $(build_dir)/test_buffer_slots
+	$(build_dir)/test_buffer_slots
+
 $(build_dir)/test_buffer_layout: test_legacy_compat/test_buffer_layout.c \
 	MGL/src/mgl_buffer_layout.c MGL/include/mgl_buffer_layout.h
 	@mkdir -p $(dir $@)
@@ -1362,6 +1376,7 @@ test-all:
 	$(MAKE) build_dir=$(build_dir) test-render-pass-attachment-plan
 	$(MAKE) build_dir=$(build_dir) test-texture-plan
 	$(MAKE) build_dir=$(build_dir) test-buffer-layout
+	$(MAKE) build_dir=$(build_dir) test-buffer-slots
 	$(MAKE) build_dir=$(build_dir) test-binding-stage
 	$(MAKE) build_dir=$(build_dir) test-geometry-gather
 	$(MAKE) build_dir=$(build_dir) test-validate-arrays-early
@@ -1382,7 +1397,7 @@ test-all:
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
 	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-batch-path test-batch-hazard test-batch-icb test-batch-restore test-batch-issue test-process-gl-state-plan test-binding-stage test-geometry-gather test-validate-arrays-early test-tess-air test-benchmark \
 	test-buffer-plan test-reference-query test-per-vertex-signature test-render-pass-clear-plan \
-	test-render-pass-load-store test-blit-plan test-render-pass-attachment-plan test-texture-plan test-buffer-layout \
+	test-render-pass-load-store test-blit-plan test-render-pass-attachment-plan test-texture-plan test-buffer-layout test-buffer-slots \
 	test-legacy-compat test-mglir test-mgl-air-type test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-air-loader-cache test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \

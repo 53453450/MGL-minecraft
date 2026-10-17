@@ -166,6 +166,46 @@ typedef struct MGLSamplerWrapSlot {
     int32_t border[4];
 } MGLSamplerWrapSlot;
 
+/* What the reserved-slot policy needs to know about one stage of a linked
+ * program, by value.  mglBufferSlotFactsFromProgram is the only place that
+ * reads the Program; mglBufferSlotConflicts and mglBufferSlotCheckResource are
+ * pure and are what the link gate and the unit test use. */
+typedef struct MGLBufferSlotFacts {
+    int stage;                         /* GL stage index (_VERTEX_SHADER ...), -1 = none */
+    uint32_t runtime_array_size_slot;  /* where this stage's hidden size table lives */
+    int needs_runtime_array_size_buffer;
+    int stage_has_samplers;
+    int uses_point_size_params;        /* VS */
+    int uses_shader_draw_params;       /* VS */
+    int uses_cull_distance;            /* VS */
+    int vertex_has_stage_inputs;       /* the program's vertex stage has inputs */
+    int tess_eval_render_vertex;       /* TES */
+    int tess_eval_compute;             /* TES */
+    int gs_compute_route;              /* GS */
+    int uses_frag_coord_params;        /* FS */
+} MGLBufferSlotFacts;
+
+enum {
+    MGL_BUFFER_SLOT_OK = 0,
+    MGL_BUFFER_SLOT_EXCEEDS_LIMIT = 1, /* past the user slot limit */
+    MGL_BUFFER_SLOT_RESERVED = 2       /* collides with an internal buffer */
+};
+
+struct Program_t;
+void mglBufferSlotFactsFromProgram(const struct Program_t *program, int stage,
+                                   MGLBufferSlotFacts *out);
+
+/* GL_TRUE when `slot` is taken by an internal buffer of the stage described by
+ * `facts`. */
+GLboolean mglBufferSlotConflicts(const MGLBufferSlotFacts *facts, GLuint slot);
+
+/* Check a reflected resource's slots [binding, binding + element_count): the
+ * first one that passes the limit or hits a reserved buffer decides
+ * the result, and *bad_slot (when non-NULL) is that slot. */
+int mglBufferSlotCheckResource(const MGLBufferSlotFacts *facts,
+                               uint32_t binding, uint32_t element_count,
+                               uint32_t *bad_slot);
+
 /* Returns GL_TRUE if `slot` is reserved by MGL for the given shader `stage`
  * and therefore MUST NOT be assigned to a GL user buffer (UBO/SSBO/atomic).
  *

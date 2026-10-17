@@ -3287,6 +3287,8 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                 if ((pptr->attached_shader_mask & (1u << stage)) == 0u) {
                     continue;
                 }
+                MGLBufferSlotFacts slot_facts;
+                mglBufferSlotFactsFromProgram(pptr, stage, &slot_facts);
                 for (size_t type_index = 0;
                      type_index < sizeof(buffer_resource_types) /
                                       sizeof(buffer_resource_types[0]) &&
@@ -3303,57 +3305,36 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                         GLuint element_count =
                             mglStageBufferResourceElementCount(resource_type,
                                                                resource);
-                        if (element_count == 0u) {
-                            element_count = 1u;
+                        uint32_t bad_slot = 0u;
+                        const int slot_status = mglBufferSlotCheckResource(
+                            &slot_facts, resource->binding, element_count,
+                            &bad_slot);
+                        if (slot_status == MGL_BUFFER_SLOT_OK) {
+                            continue;
                         }
-                        for (GLuint element = 0; element < element_count;
-                             element++) {
-                            uint64_t slot64 = (uint64_t)resource->binding +
-                                              (uint64_t)element;
-                            if (slot64 > UINT32_MAX) {
-                                fprintf(stderr,
-                                        "MGL LINK ERROR: program %u %s %s '%s' "
-                                        "Metal buffer slot overflows uint32\n",
-                                        pptr->name,
-                                        mglShaderStageName(stage),
-                                        mglMGLShaderResourceTypeName(resource_type),
-                                        resource->name ? resource->name : "(null)");
-                                binding_error = true;
-                                break;
-                            }
-                            GLuint slot = (GLuint)slot64;
-                            if (slot >= kMGLMaxMetalUserBufferCount) {
-                                fprintf(stderr,
-                                        "MGL LINK ERROR: program %u %s %s '%s' "
-                                        "Metal buffer slot %u exceeds user slot "
-                                        "limit [0, %u)\n",
-                                        pptr->name,
-                                        mglShaderStageName(stage),
-                                        mglMGLShaderResourceTypeName(resource_type),
-                                        resource->name ? resource->name : "(null)",
-                                        slot,
-                                        (unsigned)kMGLMaxMetalUserBufferCount);
-                                binding_error = true;
-                                break;
-                            }
-                            if (!mglBufferSlotConflictsForProgram(pptr, slot,
-                                                                 stage)) {
-                                continue;
-                            }
+                        const char *resource_name =
+                            resource->name ? resource->name : "(null)";
+                        if (slot_status == MGL_BUFFER_SLOT_EXCEEDS_LIMIT) {
+                            fprintf(stderr,
+                                    "MGL LINK ERROR: program %u %s %s '%s' "
+                                    "Metal buffer slot %u exceeds user slot "
+                                    "limit [0, %u)\n",
+                                    pptr->name, mglShaderStageName(stage),
+                                    mglMGLShaderResourceTypeName(resource_type),
+                                    resource_name, bad_slot,
+                                    (unsigned)kMGLMaxMetalUserBufferCount);
+                        } else {
                             const char *reserved =
-                                mglBufferSlotReservedName(slot);
+                                mglBufferSlotReservedName(bad_slot);
                             fprintf(stderr,
                                     "MGL LINK ERROR: program %u %s %s '%s' "
                                     "Metal buffer slot %u conflicts with %s\n",
-                                    pptr->name,
-                                    mglShaderStageName(stage),
+                                    pptr->name, mglShaderStageName(stage),
                                     mglMGLShaderResourceTypeName(resource_type),
-                                    resource->name ? resource->name : "(null)",
-                                    slot,
+                                    resource_name, bad_slot,
                                     reserved ? reserved : "an internal buffer");
-                            binding_error = true;
-                            break;
                         }
+                        binding_error = true;
                     }
                 }
             }
