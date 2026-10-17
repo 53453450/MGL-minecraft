@@ -1602,7 +1602,11 @@ int main(int argc, const char *argv[]) {
             float verts[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
             id<MTLBuffer> vbuf = [dev newBufferWithBytes:verts length:36
                                                  options:MTLResourceStorageModeShared];
-            id<MTLBuffer> capBuf = [dev newBufferWithLength:3 * 32
+            /* One record per vertex: the canonical per-vertex record
+             * (MGL_AIR_PER_VERTEX_STRIDE bytes, position first) followed by
+             * one 16-byte slot per varying location, vUV at location 0. */
+            const size_t xfbStride = MGL_AIR_PER_VERTEX_STRIDE + 16u;
+            id<MTLBuffer> capBuf = [dev newBufferWithLength:3 * xfbStride
                                                     options:MTLResourceStorageModeShared];
             id<MTLCommandBuffer> xcb = [cq commandBuffer];
             MTLRenderPassDescriptor *xrp =
@@ -1620,16 +1624,18 @@ int main(int argc, const char *argv[]) {
             [xenc endEncoding];
             [xcb commit];
             [xcb waitUntilCompleted];
-            float *cap = (float *)capBuf.contents;
-            /* 32-byte records (align 16): vertex 1 starts at cap[8].
-             * Records hold the raw shader-written clip position (z=0 for
+            const float *rec1 =
+                (const float *)((const char *)capBuf.contents + xfbStride);
+            const float *uv1 =
+                (const float *)((const char *)rec1 + MGL_AIR_PER_VERTEX_STRIDE);
+            /* Vertex 1 holds the raw shader-written clip position (z=0 for
              * the identity-MVP triangle); the Metal [0,1] depth remap is
              * applied where records feed rasterization, not here. */
-            if (fabsf(cap[8] - 1.0f) > 1e-4f || fabsf(cap[9] - 1.0f) > 1e-4f ||
-                fabsf(cap[10] - 0.0f) > 1e-4f || fabsf(cap[11] - 1.0f) > 1e-4f ||
-                fabsf(cap[12] - 1.0f) > 1e-4f || fabsf(cap[13]) > 1e-4f) {
+            if (fabsf(rec1[0] - 1.0f) > 1e-4f || fabsf(rec1[1] - 1.0f) > 1e-4f ||
+                fabsf(rec1[2] - 0.0f) > 1e-4f || fabsf(rec1[3] - 1.0f) > 1e-4f ||
+                fabsf(uv1[0] - 1.0f) > 1e-4f || fabsf(uv1[1]) > 1e-4f) {
                 fprintf(stderr, "XFB_VALUE_FAIL: pos=(%f,%f,%f,%f) uv=(%f,%f)\n",
-                        cap[8], cap[9], cap[10], cap[11], cap[12], cap[13]);
+                        rec1[0], rec1[1], rec1[2], rec1[3], uv1[0], uv1[1]);
                 return 1;
             }
             printf("XFB_OK\n");
