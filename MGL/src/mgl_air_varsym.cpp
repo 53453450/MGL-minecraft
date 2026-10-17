@@ -103,6 +103,11 @@ void collectStageVarSyms(const MGLIRModule *mod, const MGLTranslationUnit *tu,
             (s->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
             continue;
         }
+        /* An inactive sampler takes no Metal texture/sampler argument; the
+         * reflection pass skips the same symbols so the slot numbers match. */
+        if (s->unreferenced_sampler) {
+            continue;
+        }
         VarSym v;
         v.name = s->name;
         v.type = typeFromIR(s->type);

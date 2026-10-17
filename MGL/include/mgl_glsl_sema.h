@@ -71,6 +71,10 @@ typedef struct MGLIRSymbol {
     uint32_t index;             /* layout(index=N) dual-source, UINT32_MAX unspecified */
     uint32_t component;         /* layout(component), 0 if unspecified */
     int statically_used;        /* referenced in any function body */
+    /* 1 = a uniform sampler that nothing reachable from main() reads (GL 4.6
+     * §7.6: such a uniform is inactive).  Set by mglGLSLSemanticCheck; 0 for
+     * every other symbol and whenever the shader has no main() to start from. */
+    int unreferenced_sampler;
     int32_t  stream;            /* GS output stream, -1 if unspecified (0) */
     uint32_t offset;            /* block member offset / -1 */
     char *block_name;           /* owning anonymous block, or NULL */

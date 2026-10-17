@@ -1270,6 +1270,10 @@ static int mglAirReflectModuleImpl(
             const MGLIRSymbol *s = mod->symbols[i];
             if (!s || s->is_function || !(s->qualifiers & MGL_AST_Q_UNIFORM))
                 continue;
+            /* Inactive sampler: no uniform location, no Metal texture or
+             * sampler slot (the backend skips the same symbols). */
+            if (s->unreferenced_sampler)
+                continue;
             if (s->name && strncmp(s->name, "gl_", 3) == 0 &&
                 s->location == UINT32_MAX)
                 continue;

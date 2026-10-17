@@ -696,12 +696,11 @@ static void mglFrontendRefWalkStmt(const MGLStmt *st, MGLFrontendRefQuery *q)
         mglFrontendRefWalkStmt(st->u.loop.body, q);
         break;
     case MGL_STMT_WHILE:
+    case MGL_STMT_DO_WHILE:
+        /* The parser fills do-while through whilex as well; u.body aliases
+         * whilex.cond, so reading it would walk an expression as a statement. */
         mglFrontendRefWalkExpr(st->u.whilex.cond, q, 1);
         mglFrontendRefWalkStmt(st->u.whilex.body, q);
-        break;
-    case MGL_STMT_DO_WHILE:
-        mglFrontendRefWalkStmt(st->u.body.body, q);
-        mglFrontendRefWalkExpr(st->u.whilex.cond, q, 1);
         break;
     case MGL_STMT_SWITCH:
         mglFrontendRefWalkExpr(st->u.switchx.cond, q, 1);

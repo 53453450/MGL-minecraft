@@ -5819,6 +5819,299 @@ static void analyze_stmt(Sema *s, SymTab *tab, const MGLStmt *st)
 /* Public API                                                          */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Uniform-sampler reachability                                        */
+/* ------------------------------------------------------------------ */
+
+/* Identifier set (open addressing; the table doubles at half load). */
+typedef struct UseNameSet {
+    const char **slots;
+    uint32_t cap;   /* power of two, or 0 */
+    uint32_t count;
+} UseNameSet;
+
+static uint32_t use_name_hash(const char *n)
+{
+    uint32_t h = 2166136261u;
+    for (; *n; n++) {
+        h = (h ^ (uint8_t)*n) * 16777619u;
+    }
+    return h;
+}
+
+static int use_set_has(const UseNameSet *set, const char *name)
+{
+    if (!set->cap) {
+        return 0;
+    }
+    for (uint32_t i = use_name_hash(name) & (set->cap - 1u);; 
+         i = (i + 1u) & (set->cap - 1u)) {
+        if (!set->slots[i]) {
+            return 0;
+        }
+        if (strcmp(set->slots[i], name) == 0) {
+            return 1;
+        }
+    }
+}
+
+/* Returns 1 when added, 0 when already present, -1 on out of memory.  The
+ * set borrows `name` from the AST, which outlives the pass. */
+static int use_set_add(UseNameSet *set, const char *name)
+{
+    if (use_set_has(set, name)) {
+        return 0;
+    }
+    if ((set->count + 1u) * 2u > set->cap) {
+        uint32_t ncap = set->cap ? set->cap * 2u : 64u;
+        const char **ns = (const char **)calloc(ncap, sizeof(*ns));
+        if (!ns) {
+            return -1;
+        }
+        for (uint32_t i = 0; i < set->cap; i++) {
+            if (!set->slots[i]) {
+                continue;
+            }
+            uint32_t j = use_name_hash(set->slots[i]) & (ncap - 1u);
+            while (ns[j]) {
+                j = (j + 1u) & (ncap - 1u);
+            }
+            ns[j] = set->slots[i];
+        }
+        free(set->slots);
+        set->slots = ns;
+        set->cap = ncap;
+    }
+    uint32_t i = use_name_hash(name) & (set->cap - 1u);
+    while (set->slots[i]) {
+        i = (i + 1u) & (set->cap - 1u);
+    }
+    set->slots[i] = name;
+    set->count++;
+    return 1;
+}
+
+typedef struct UseWalk {
+    const MGLTranslationUnit *tu;
+    UseNameSet refs;    /* every identifier read or written */
+    UseNameSet called;  /* user-function names already queued */
+    const MGLDecl **work;
+    uint32_t work_count, work_cap;
+    int oom;
+} UseWalk;
+
+static void use_queue_function(UseWalk *w, const MGLDecl *fn)
+{
+    if (w->work_count == w->work_cap) {
+        uint32_t ncap = w->work_cap ? w->work_cap * 2u : 32u;
+        const MGLDecl **nw =
+            (const MGLDecl **)realloc((void *)w->work, ncap * sizeof(*nw));
+        if (!nw) {
+            w->oom = 1;
+            return;
+        }
+        w->work = nw;
+        w->work_cap = ncap;
+    }
+    w->work[w->work_count++] = fn;
+}
+
+/* Queue every definition of the function `name` (all overloads). */
+static void use_queue_callee(UseWalk *w, const char *name)
+{
+    int added = use_set_add(&w->called, name);
+    if (added < 0) {
+        w->oom = 1;
+        return;
+    }
+    if (added == 0) {
+        return;
+    }
+    for (uint32_t i = 0; i < w->tu->decl_count; i++) {
+        const MGLDecl *d = w->tu->decls[i];
+        if (d && d->body && d->name && strcmp(d->name, name) == 0) {
+            use_queue_function(w, d);
+        }
+    }
+}
+
+static void use_walk_expr(UseWalk *w, const MGLExpr *e)
+{
+    if (!e || w->oom) {
+        return;
+    }
+    switch (e->kind) {
+    case MGL_EXPR_VAR_REF:
+        if (e->u.var_ref.name && use_set_add(&w->refs, e->u.var_ref.name) < 0) {
+            w->oom = 1;
+        }
+        break;
+    case MGL_EXPR_MEMBER:
+        use_walk_expr(w, e->u.member.object);
+        break;
+    case MGL_EXPR_INDEX:
+        use_walk_expr(w, e->u.index.object);
+        use_walk_expr(w, e->u.index.index);
+        break;
+    case MGL_EXPR_CALL:
+        if (e->u.call.name) {
+            use_queue_callee(w, e->u.call.name);
+        }
+        for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
+            use_walk_expr(w, e->u.call.args[i]);
+        }
+        break;
+    case MGL_EXPR_UNARY:
+        use_walk_expr(w, e->u.unary.operand);
+        break;
+    case MGL_EXPR_BINARY:
+        use_walk_expr(w, e->u.binary.lhs);
+        use_walk_expr(w, e->u.binary.rhs);
+        break;
+    case MGL_EXPR_ASSIGN:
+        use_walk_expr(w, e->u.assign.lhs);
+        use_walk_expr(w, e->u.assign.rhs);
+        break;
+    case MGL_EXPR_TERNARY:
+        use_walk_expr(w, e->u.ternary.cond);
+        use_walk_expr(w, e->u.ternary.then);
+        use_walk_expr(w, e->u.ternary.else_);
+        break;
+    case MGL_EXPR_INIT_LIST:
+        for (uint32_t i = 0; i < e->u.init_list.arg_count; i++) {
+            use_walk_expr(w, e->u.init_list.args[i]);
+        }
+        break;
+    case MGL_EXPR_LITERAL:
+        break;
+    default:
+        /* An expression kind this walker does not know cannot be proven free
+         * of sampler reads. */
+        w->oom = 1;
+        break;
+    }
+}
+
+static void use_walk_stmt(UseWalk *w, const MGLStmt *st)
+{
+    if (!st || w->oom) {
+        return;
+    }
+    switch (st->kind) {
+    case MGL_STMT_COMPOUND:
+        for (uint32_t i = 0; i < st->u.compound.count; i++) {
+            use_walk_stmt(w, st->u.compound.stmts[i]);
+        }
+        break;
+    case MGL_STMT_EXPR:
+        use_walk_expr(w, st->u.expr.expr);
+        break;
+    case MGL_STMT_DECL:
+        for (const MGLDecl *d = st->u.decl.decl; d; d = d->next_declarator) {
+            use_walk_expr(w, d->init);
+        }
+        break;
+    case MGL_STMT_IF:
+        use_walk_expr(w, st->u.ifs.cond);
+        use_walk_stmt(w, st->u.ifs.then);
+        use_walk_stmt(w, st->u.ifs.else_);
+        break;
+    case MGL_STMT_FOR:
+        use_walk_stmt(w, st->u.loop.init);
+        use_walk_expr(w, st->u.loop.cond);
+        use_walk_expr(w, st->u.loop.incr);
+        use_walk_stmt(w, st->u.loop.body);
+        break;
+    case MGL_STMT_WHILE:
+    case MGL_STMT_DO_WHILE:
+        use_walk_expr(w, st->u.whilex.cond);
+        use_walk_stmt(w, st->u.whilex.body);
+        break;
+    case MGL_STMT_SWITCH:
+        use_walk_expr(w, st->u.switchx.cond);
+        use_walk_stmt(w, st->u.switchx.body);
+        break;
+    case MGL_STMT_CASE:
+        use_walk_expr(w, st->u.casex.value);
+        break;
+    case MGL_STMT_RETURN:
+        use_walk_expr(w, st->u.ret.value);
+        break;
+    case MGL_STMT_DEFAULT:
+    case MGL_STMT_BREAK:
+    case MGL_STMT_CONTINUE:
+    case MGL_STMT_DISCARD:
+        break;
+    default:
+        w->oom = 1;
+        break;
+    }
+}
+
+static int ir_type_is_sampler_or_array_of(const MGLIRType *t)
+{
+    while (t && t->kind == MGLIR_TYPE_ARRAY) {
+        t = t->elem_type;
+    }
+    return t && t->kind == MGLIR_TYPE_SAMPLER;
+}
+
+/* Flag the uniform samplers that nothing reachable from main() reads.  GL
+ * leaves such a uniform inactive (glGetUniformLocation == -1, absent from the
+ * active-uniform list), and a Metal function has only 16 sampler slots, so a
+ * shader that declares every sampler of a shared header but uses a few must
+ * not claim a slot per declaration.  Anything the walk cannot prove (no
+ * main(), an unknown node kind, out of memory) leaves every flag at 0. */
+static void sema_mark_unreferenced_samplers(const MGLTranslationUnit *tu,
+                                            MGLIRModule *module)
+{
+    const MGLDecl *main_fn = NULL;
+    for (uint32_t i = 0; i < tu->decl_count; i++) {
+        const MGLDecl *d = tu->decls[i];
+        if (d && d->body && d->name && strcmp(d->name, "main") == 0) {
+            main_fn = d;
+            break;
+        }
+    }
+    if (!main_fn) {
+        return;
+    }
+
+    UseWalk w;
+    memset(&w, 0, sizeof(w));
+    w.tu = tu;
+    /* Global initializers run before main(). */
+    for (uint32_t i = 0; i < tu->decl_count; i++) {
+        for (const MGLDecl *d = tu->decls[i]; d; d = d->next_declarator) {
+            if (!d->body) {
+                use_walk_expr(&w, d->init);
+            }
+        }
+    }
+    use_queue_function(&w, main_fn);
+    while (w.work_count > 0 && !w.oom) {
+        const MGLDecl *fn = w.work[--w.work_count];
+        use_walk_stmt(&w, fn->body);
+    }
+
+    if (!w.oom) {
+        for (uint32_t i = 0; i < module->symbol_count; i++) {
+            MGLIRSymbol *sym = module->symbols[i];
+            if (!sym || sym->is_function || !sym->name ||
+                !(sym->qualifiers & MGL_AST_Q_UNIFORM) ||
+                !ir_type_is_sampler_or_array_of(sym->type)) {
+                continue;
+            }
+            if (!use_set_has(&w.refs, sym->name)) {
+                sym->unreferenced_sampler = 1;
+            }
+        }
+    }
+    free(w.refs.slots);
+    free(w.called.slots);
+    free((void *)w.work);
+}
+
 int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
                          MGLIRModule *module,
                          MGLSemaError **errors, uint32_t *error_count)
@@ -5967,6 +6260,10 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
 
     while (s.aoa_partial_count > 0) {
         aoa_expand_partial(&s, &tab, &s.aoa_partials[0]);
+    }
+
+    if (s.error_count == 0) {
+        sema_mark_unreferenced_samplers(tu, module);
     }
 
     if (errors) {
