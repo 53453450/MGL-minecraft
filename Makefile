@@ -989,6 +989,10 @@ verify-gl-api:
 check-c-duplicates:
 	python3 scripts/check_c_duplicates.py
 
+# Layer boundaries from docs/AUDIT_LAYERING_2026-10-17.md; counts only go down.
+check-layering:
+	python3 scripts/check_layering.py
+
 # Static invariant audit of the C state machine (GLMState + command buffer +
 # batch cluster): MGLStateKey determinism, hot-copy region pinning, single
 # source for DIRTY_* masks, recorder-only batch_count mutation, dual-proxy
@@ -1287,6 +1291,7 @@ test-air:
 test-all:
 	$(MAKE) build_dir=$(build_dir) verify-gl-api
 	$(MAKE) build_dir=$(build_dir) check-c-duplicates
+	$(MAKE) build_dir=$(build_dir) check-layering
 	$(MAKE) build_dir=$(build_dir) test-state-invariants
 	$(MAKE) build_dir=$(build_dir) test-state-dataflow
 	$(MAKE) build_dir=$(build_dir) test-state-snapshot-share
@@ -1334,6 +1339,6 @@ test-all:
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-air-loader-cache test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \
 	test-state-invariants test-state-dataflow test-state-snapshot-share \
-	verify-toolchain check-glfw-selectors check-c-duplicates
+	verify-toolchain check-glfw-selectors check-c-duplicates check-layering
 
 -include $(deps)
