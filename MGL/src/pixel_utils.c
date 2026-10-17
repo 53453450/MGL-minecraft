@@ -2862,9 +2862,15 @@ GLboolean mglIsColorRenderableInternalFormat(GLint internalformat)
          * configs are complete.  SRGB8 stays non-CR (only SRGB8_ALPHA8 is). */
         case GL_RGB8:
             return GL_TRUE;
-        case GL_SRGB8:
-        case GL_RGB16:
+
+        /* RGB16F / RGB16 are stored as RGBA16Float / RGBA16Unorm, which Metal
+         * renders to, and shader packs attach them (Iris colortex formats such
+         * as RGB16F).  Like RGB32F below, a complete framebuffer is allowed
+         * for these non-required formats on desktop GL. */
         case GL_RGB16F:
+        case GL_RGB16:
+            return GL_TRUE;
+        case GL_SRGB8:
         case GL_RGB8I:
         case GL_RGB8UI:
         case GL_RGB16I:
