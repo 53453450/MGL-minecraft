@@ -1244,6 +1244,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_buffer_slots.c \
 	MGL/src/mgl_sync.c \
 	MGL/src/mgl_texture_plan.c MGL/include/mgl_texture_plan.h \
+	MGL/src/mgl_buffer_transient.c \
 	$(METALCPP_C_OBJ)
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-DMGL_PLATFORM_SHELL_SMOKE \
@@ -1253,6 +1254,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_readback_policy.c \
 		MGL/src/mgl_texture_plan.c \
 		MGL/src/mgl_binding_policy.c \
+		MGL/src/mgl_buffer_transient.c \
 		MGL/src/mgl_binding_stage.c \
 		MGL/src/mgl_binding_texture.c \
 		MGL/src/mgl_program_resource.c \

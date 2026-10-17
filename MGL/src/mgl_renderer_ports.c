@@ -147,15 +147,15 @@ int mglRendererProcessBuffer(void *renderer, Buffer *buffer)
         return 0;
     }
 
-    if (buffer->data.mtl_data == NULL) {
+    if (mglBufferMetalStore(buffer) == NULL) {
         /* The bind takes METAL_LOCK, so it stays the shim port. */
         mglRendererBindMTLBuffer(renderer, buffer);
-        if (buffer->data.mtl_data == NULL) {
+        if (mglBufferMetalStore(buffer) == NULL) {
             return 0;
         }
     }
 
-    if (buffer->data.dirty_bits) {
+    if (mglBufferHasPendingUpdate(buffer)) {
         char error[256] = {0};
         int result = mglRenderUpdateDirtyBuffer(buffer, error, sizeof(error));
         if (result != MGL_RENDER_BUFFER_OPERATION_HANDLED) {
@@ -220,7 +220,7 @@ int mglRendererResolveElementBuffer(void *renderer, Buffer *gl_element_buffer,
         return 0;
     }
 
-    void *indexBuffer = gl_element_buffer->data.mtl_data;
+    void *indexBuffer = mglBufferMetalStore(gl_element_buffer);
     if (!indexBuffer) {
         fprintf(stderr,
                 "MGL WARNING: %s skipped because element buffer %u has no Metal buffer\n",

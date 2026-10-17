@@ -11,7 +11,7 @@ C1 MGL/src/tex_param.c 3
 C1 MGL/src/textures.c 93
 C2 MGL/src/mgl_batch_dyn_bind_encode.c 1
 C2 MGL/src/mgl_render_binding.cpp 83
-C2 MGL/src/mgl_render_buffer.cpp 72
+C2 MGL/src/mgl_render_buffer.cpp 60
 C2 MGL/src/mgl_render_command.cpp 4
 C2 MGL/src/mgl_render_draw.cpp 100
 C2 MGL/src/mgl_render_lifecycle.cpp 66

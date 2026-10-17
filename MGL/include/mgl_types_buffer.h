@@ -392,10 +392,56 @@ typedef struct BufferMapList_t {
     BufferMap   buffers[MAX_MAPPED_BUFFERS];
 } BufferMapList;
 
+/* The buffer's Metal object (borrowed), or NULL before it is bound. */
+static inline void *mglBufferMetalStore(const Buffer *buffer)
+{
+    return buffer ? buffer->data.mtl_data : NULL;
+}
+
 /* The buffer has CPU-side changes the Metal store has not seen yet. */
 static inline int mglBufferHasPendingUpdate(const Buffer *buffer)
 {
     return buffer && buffer->data.dirty_bits ? 1 : 0;
 }
+
+/* The Metal store absorbed the CPU range.  A persistently-coherent mapping
+ * keeps its data pending; otherwise the CPU shadow and written range are
+ * dropped so a later GPU-write copy-on-write does not re-apply them. */
+static inline void mglBufferMarkAbsorbedByMetal(Buffer *buffer, int coherent)
+{
+    if (!buffer) return;
+    if (coherent) {
+        buffer->data.dirty_bits = DIRTY_BUFFER_DATA;
+        return;
+    }
+    buffer->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
+    buffer->cpu_shadow_pending = GL_FALSE;
+    buffer->written_min = -1;
+    buffer->written_max = -1;
+}
+
+/* The Metal store was rewritten from the whole CPU copy: nothing is pending. */
+static inline void mglBufferMarkSyncedToMetal(Buffer *buffer)
+{
+    if (!buffer) return;
+    buffer->data.dirty_bits = 0;
+    buffer->cpu_shadow_pending = GL_FALSE;
+    buffer->written_min = -1;
+    buffer->written_max = -1;
+}
+
+/* A backend-made uniform buffer standing in for packed plain uniforms (the
+ * draw path binds Buffer objects).  Create returns a zeroed object with the
+ * GL-visible fields set; Adopt installs a Metal store and returns the handle
+ * it replaces (NULL the first time) for the caller to release. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+Buffer *mglBufferTransientCreate(GLuint name);
+void *mglBufferTransientAdopt(Buffer *buffer, void *mtl_buffer,
+                              size_t padded_size);
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* mgl_types_buffer_h */

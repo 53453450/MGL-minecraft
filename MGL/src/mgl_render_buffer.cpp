@@ -710,7 +710,7 @@ Buffer* mglRenderAcquirePackedStructBuffer(const void* data,
     const size_t index = renderer.packedStructBufferIndex;
     Buffer*& slot = renderer.packedStructBuffers[index];
     if (!slot) {
-        slot = static_cast<Buffer*>(std::calloc(1, sizeof(Buffer)));
+        slot = mglBufferTransientCreate(0xF0000000u | static_cast<GLuint>(index));
         if (!slot) {
             metalBuffer->release();
             if (err && errcap) {
@@ -719,24 +719,11 @@ Buffer* mglRenderAcquirePackedStructBuffer(const void* data,
             }
             return nullptr;
         }
-        slot->name = 0xF0000000u | static_cast<GLuint>(index);
-        slot->target = GL_UNIFORM_BUFFER;
-        slot->usage = GL_STATIC_DRAW;
-        slot->written_min = -1;
-        slot->written_max = -1;
-        slot->transient_batch_buffer = GL_TRUE;
     }
 
-    mgl::releaseBridgedObject(&slot->data.mtl_data);
+    void* previousStore = mglBufferTransientAdopt(slot, metalBuffer, paddedSize);
+    mgl::releaseBridgedObject(&previousStore);
     mglMetalCountCreate(mgl::kMetalKindBuffer);
-    slot->data.mtl_data = metalBuffer;
-    slot->size = static_cast<GLsizeiptr>(paddedSize);
-    slot->data.buffer_data = 0;
-    slot->data.buffer_size = paddedSize;
-    slot->data.dirty_bits = 0;
-    slot->data.mtl_owns_buffer_data = GL_FALSE;
-    slot->has_initialized_data = GL_TRUE;
-    slot->ever_written = GL_TRUE;
 
     renderer.packedStructBufferIndex =
         (index + 1) % mgl::kPackedStructBufferCapacity;
@@ -1055,17 +1042,8 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
             }
         }
 
-        if ((buffer->access_flags & GL_MAP_COHERENT_BIT) != 0) {
-            buffer->data.dirty_bits = DIRTY_BUFFER_DATA;
-        } else {
-            buffer->data.dirty_bits &=
-                ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
-            buffer->cpu_shadow_pending = GL_FALSE;
-            /* CPU range was absorbed into Metal; do not re-apply it on a
-             * later gpu_write_target CoW after shaders overwrite Metal. */
-            buffer->written_min = -1;
-            buffer->written_max = -1;
-        }
+        mglBufferMarkAbsorbedByMetal(
+            buffer, (buffer->access_flags & GL_MAP_COHERENT_BIT) != 0);
         return MGL_RENDER_BUFFER_OPERATION_HANDLED;
     }
 
@@ -1147,11 +1125,7 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
             metalBuffer->storageMode() == MTL::StorageModeManaged) {
             metalBuffer->didModifyRange(NS::Range::Make(0, modifyLength));
         }
-        buffer->data.dirty_bits = 0;
-        buffer->cpu_shadow_pending = GL_FALSE;
-        /* Same as the <4096 path: CPU range absorbed; avoid stale overlay. */
-        buffer->written_min = -1;
-        buffer->written_max = -1;
+        mglBufferMarkSyncedToMetal(buffer);
     }
     return MGL_RENDER_BUFFER_OPERATION_HANDLED;
 }
