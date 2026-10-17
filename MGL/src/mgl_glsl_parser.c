@@ -43,6 +43,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The growable tracking tables are allocated through these so the file also
+ * builds when the C++ test recipes compile it with -x c++ (no implicit
+ * void * conversion there); the cast is the identity in C. */
+#define MGL_P_REALLOC(ptr, bytes) ((__typeof__(ptr))realloc((ptr), (bytes)))
+#define MGL_P_CALLOC(count, field) \
+    ((__typeof__(field))calloc((count), sizeof(*(field))))
+
 static _Atomic uint32_t s_frontend_parse_count;
 static _Atomic uint32_t s_frontend_reuse_count;
 
@@ -507,8 +514,8 @@ static void record_const_int(MGLParser *p, const char *name, int64_t value)
     }
     if (p->const_count >= p->const_cap) {
         uint32_t nc = p->const_cap ? p->const_cap * 2 : 64;
-        char (*nn)[64] = realloc(p->const_names, nc * sizeof(*nn));
-        int64_t *nv = realloc(p->const_vals, nc * sizeof(*nv));
+        char (*nn)[64] = MGL_P_REALLOC(p->const_names, nc * sizeof(*nn));
+        int64_t *nv = MGL_P_REALLOC(p->const_vals, nc * sizeof(*nv));
         if (!nn || !nv) {
             parse_error(p, "out of memory tracking constants");
             return;
@@ -546,7 +553,8 @@ static void record_var_type(MGLParser *p, const char *name,
     }
     if (p->var_type_count >= p->var_type_cap) {
         uint32_t nc = p->var_type_cap ? p->var_type_cap * 2 : 128;
-        void *nv = realloc(p->var_types, nc * sizeof(*p->var_types));
+        __typeof__(p->var_types) nv =
+            MGL_P_REALLOC(p->var_types, nc * sizeof(*p->var_types));
         if (!nv) {
             parse_error(p, "out of memory tracking variable types");
             return;
@@ -586,10 +594,10 @@ static void record_member_type(MGLParser *p, const char *path,
     }
     if (p->member_type_count >= p->member_cap) {
         uint32_t nc = p->member_cap ? p->member_cap * 2 : 128;
-        char (*np)[96] = realloc(p->member_paths, nc * sizeof(*np));
-        int *mv = realloc(p->member_vec, nc * sizeof(*mv));
-        int *mc = realloc(p->member_mat_cols, nc * sizeof(*mc));
-        int *mr = realloc(p->member_mat_rows, nc * sizeof(*mr));
+        char (*np)[96] = MGL_P_REALLOC(p->member_paths, nc * sizeof(*np));
+        int *mv = MGL_P_REALLOC(p->member_vec, nc * sizeof(*mv));
+        int *mc = MGL_P_REALLOC(p->member_mat_cols, nc * sizeof(*mc));
+        int *mr = MGL_P_REALLOC(p->member_mat_rows, nc * sizeof(*mr));
         if (!np || !mv || !mc || !mr) {
             parse_error(p, "out of memory tracking member types");
             return;
@@ -840,8 +848,8 @@ static void record_array_len(MGLParser *p, const char *name, uint32_t len)
     }
     if (p->array_count >= p->array_cap) {
         uint32_t nc = p->array_cap ? p->array_cap * 2 : 64;
-        char (*nn)[64] = realloc(p->array_names, nc * sizeof(*nn));
-        uint32_t *nl = realloc(p->array_lens, nc * sizeof(*nl));
+        char (*nn)[64] = MGL_P_REALLOC(p->array_names, nc * sizeof(*nn));
+        uint32_t *nl = MGL_P_REALLOC(p->array_lens, nc * sizeof(*nl));
         if (!nn || !nl) {
             parse_error(p, "out of memory tracking arrays");
             return;
@@ -869,7 +877,7 @@ static void record_struct_name(MGLParser *p, const char *name)
     }
     if (p->struct_count >= p->struct_cap) {
         uint32_t nc = p->struct_cap ? p->struct_cap * 2 : 64;
-        char (*nn)[64] = realloc(p->struct_names, nc * sizeof(*nn));
+        char (*nn)[64] = MGL_P_REALLOC(p->struct_names, nc * sizeof(*nn));
         if (!nn) {
             parse_error(p, "out of memory tracking struct type names");
             return;
@@ -3547,20 +3555,20 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
     /* Allocate the growable tracking tables.  Initial caps match the old
      * fixed sizes; the record_* helpers double them on overflow. */
     p.const_cap = 64;
-    p.const_names = calloc(p.const_cap, sizeof(*p.const_names));
-    p.const_vals = calloc(p.const_cap, sizeof(*p.const_vals));
+    p.const_names = MGL_P_CALLOC(p.const_cap, p.const_names);
+    p.const_vals = MGL_P_CALLOC(p.const_cap, p.const_vals);
     p.array_cap = 64;
-    p.array_names = calloc(p.array_cap, sizeof(*p.array_names));
-    p.array_lens = calloc(p.array_cap, sizeof(*p.array_lens));
+    p.array_names = MGL_P_CALLOC(p.array_cap, p.array_names);
+    p.array_lens = MGL_P_CALLOC(p.array_cap, p.array_lens);
     p.struct_cap = 64;
-    p.struct_names = calloc(p.struct_cap, sizeof(*p.struct_names));
+    p.struct_names = MGL_P_CALLOC(p.struct_cap, p.struct_names);
     p.var_type_cap = 128;
-    p.var_types = calloc(p.var_type_cap, sizeof(*p.var_types));
+    p.var_types = MGL_P_CALLOC(p.var_type_cap, p.var_types);
     p.member_cap = 128;
-    p.member_paths = calloc(p.member_cap, sizeof(*p.member_paths));
-    p.member_vec = calloc(p.member_cap, sizeof(*p.member_vec));
-    p.member_mat_cols = calloc(p.member_cap, sizeof(*p.member_mat_cols));
-    p.member_mat_rows = calloc(p.member_cap, sizeof(*p.member_mat_rows));
+    p.member_paths = MGL_P_CALLOC(p.member_cap, p.member_paths);
+    p.member_vec = MGL_P_CALLOC(p.member_cap, p.member_vec);
+    p.member_mat_cols = MGL_P_CALLOC(p.member_cap, p.member_mat_cols);
+    p.member_mat_rows = MGL_P_CALLOC(p.member_cap, p.member_mat_rows);
     if (!p.const_names || !p.const_vals || !p.array_names || !p.array_lens ||
         !p.struct_names || !p.var_types || !p.member_paths || !p.member_vec ||
         !p.member_mat_cols || !p.member_mat_rows) {
