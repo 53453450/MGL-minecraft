@@ -76,7 +76,7 @@ static bool mglPdShouldTraceCall(uint64_t count)
 }
 
 /* MGL_STATE(ctx) twin. */
-static GLMState *mglPdStateOf(const MGLRendererStateAreas *areas)
+static GLMState *mglPdStateOf(const MGLRendererStateView *areas)
 {
     if (areas->core && areas->core->activeState) {
         return areas->core->activeState;
@@ -399,8 +399,8 @@ static uint64_t mglPdMaxU64(uint64_t a, uint64_t b) { return a > b ? a : b; }
 /* -checkDrawBufferSize: */
 int mglRenderPassCheckDrawBufferSize(void *renderer, unsigned int index)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     const MGLSizeValue drawableSize =
         mglPlatformShellApplyPendingDrawableSize(renderer);
 
@@ -420,8 +420,8 @@ int mglRenderPassCheckDrawBufferSize(void *renderer, unsigned int index)
 /* -configureDefaultFramebufferAttachmentsLocked */
 int mglRenderPassConfigureDefaultFramebufferAttachments(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
@@ -446,8 +446,7 @@ int mglRenderPassConfigureDefaultFramebufferAttachments(void *renderer)
     if (!mglRenderPassCheckDrawBufferSize(renderer, mgl_drawbuffer)) {
         (void)mglRendererBackendClearDefaultDrawBuffer(areas.backend,
                                                       mgl_drawbuffer);
-        areas.core->drawBuffers[mgl_drawbuffer].width = 0;
-        areas.core->drawBuffers[mgl_drawbuffer].height = 0;
+        mglRendererSetDefaultDrawBufferSize(renderer, mgl_drawbuffer, 0u, 0u);
     }
 
     /* attach color buffer */
@@ -564,18 +563,17 @@ int mglRenderPassConfigureDefaultFramebufferAttachments(void *renderer)
 
     mglPdSetPersistentDimensions(commandState, mglPdTextureInfo(texture).width,
                                  mglPdTextureInfo(texture).height);
-    areas.core->drawBuffers[mgl_drawbuffer].width =
-        (GLuint)mglPdTextureInfo(texture).width;
-    areas.core->drawBuffers[mgl_drawbuffer].height =
-        (GLuint)mglPdTextureInfo(texture).height;
+    mglRendererSetDefaultDrawBufferSize(
+        renderer, mgl_drawbuffer, (GLuint)mglPdTextureInfo(texture).width,
+        (GLuint)mglPdTextureInfo(texture).height);
     return 1;
 }
 
 /* -ensureTransientDepthForDefaultFramebufferLocked */
 void mglRenderPassEnsureTransientDepthForDefaultFramebuffer(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
@@ -664,8 +662,8 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
     unsigned int *outFboColorClearMask,
     unsigned int *outFboColorAttachment0ClearMask)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
@@ -882,8 +880,8 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
 /* -configureDefaultFramebufferLoadStoreActionsLocked */
 void mglRenderPassConfigureDefaultFramebufferLoadStoreActions(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
 
@@ -965,8 +963,8 @@ void mglRenderPassLogClearResolve(
     unsigned int fboStencilClearMaskBefore, unsigned int defaultClearMask,
     struct Framebuffer_t *fboRaw)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
@@ -1077,8 +1075,8 @@ void mglRenderPassLogClearResolve(
 /* -newRenderEncoderLockedWithReason: */
 static int mglPdNewRenderEncoderBody(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;

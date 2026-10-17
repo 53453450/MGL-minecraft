@@ -153,7 +153,7 @@ static void mglBcEndBlitEncoder(void *encoder)
 
 static void mglBcEndRenderEncodingPort(void *renderer);
 
-static void *mglBcCommandBufferOwner(const MGLRendererStateAreas *areas)
+static void *mglBcCommandBufferOwner(const MGLRendererStateView *areas)
 {
     return areas->command ? areas->command->currentCommandBufferOwner : NULL;
 }
@@ -188,7 +188,7 @@ static MGLRenderPassAttachmentState mglBcRenderPassAttachment(
 
 /* The .m statics took the pass manager but only ever used its command-buffer
  * owner, so the twin takes the owner directly (re-read at each use). */
-static void *mglBcCreateRenderEncoder(const MGLRendererStateAreas *areas,
+static void *mglBcCreateRenderEncoder(const MGLRendererStateView *areas,
                                       const MGLRenderPassState *state)
 {
     if (!state) {
@@ -287,8 +287,8 @@ bool mglBlitResolveIntegerMultisampleTexture(void *renderer, void *source_textur
                                              MGLSizeValue size,
                                              const char *reason)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     if (!source_texture || !dest_texture ||
         mglBcTextureInfo(source_texture).sample_count <= 1u ||
@@ -358,8 +358,8 @@ bool mglBlitResolveIntegerMultisampleTexture(void *renderer, void *source_textur
 
 void mglBlitDirectColorWithState(void *renderer, const MGLBlitColorState *st)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     Framebuffer *drawfbo = st->drawfbo;
     FBOAttachment *draw_fbo_attachment = st->drawFBOAttachment;
@@ -428,7 +428,7 @@ void mglBlitDirectColorWithState(void *renderer, const MGLBlitColorState *st)
                       draw_subresource.depthPlane));
     mglBcEndBlitEncoder(blit_command_encoder);
     if (drawfbo == NULL) {
-        areas.core->defaultDrawableWrittenSinceLastSwap = 1;
+        mglRendererSetDefaultDrawableWritten(renderer, 1);
     }
     if (draw_texture_object && draw_fbo_attachment) {
         /* The ObjC header wraps this in a macro with __FILE__/__LINE__; the C
@@ -455,8 +455,8 @@ void mglBlitDirectColorWithState(void *renderer, const MGLBlitColorState *st)
 
 bool mglBlitIntegerColorWithState(void *renderer, const MGLBlitColorState *st)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     void *readtexid = st->readtexid;
     void *drawtexid = st->drawtexid;
@@ -627,7 +627,7 @@ static int mglBlitNearestRange(GLint s0, GLint s1, GLint d0, GLint d1,
  * stencil goes through a staging buffer of (destination columns x source
  * rows): one copy per destination column gathers its source column, then one
  * copy per destination row writes its source row back. */
-static void mglBlitScaledStencil(void *renderer, MGLRendererStateAreas *areas,
+static void mglBlitScaledStencil(void *renderer, MGLRendererStateView *areas,
                                  void *src, void *dst,
                                  const MGLRenderTextureInfo *src_info,
                                  const MGLRenderTextureInfo *dst_info,
@@ -701,8 +701,8 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                                GLint dst_x0, GLint dst_y0, GLint dst_x1,
                                GLint dst_y1, GLbitfield mask, GLenum filter)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     GLbitfield depth_stencil_mask =
         (GLbitfield)mglRenderClearMaskDepthStencilBits((uint32_t)mask);
@@ -1159,8 +1159,8 @@ void *mglBlitResolvedReadbackTexture(void *renderer, void *source_texture,
                                      size_t source_depth_plane,
                                      const char *reason)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     if (!source_texture || mglBcTextureInfo(source_texture).sample_count <= 1u) {
         if (source_texture) {
@@ -1257,8 +1257,8 @@ void *mglBlitResolvedReadbackTexture(void *renderer, void *source_texture,
 void *mglBlitDepthFloatTextureForReadback(void *renderer, void *source_texture,
                                           const char *reason)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     if (!source_texture || mglBcTextureInfo(source_texture).sample_count > 1u ||
         !mglRenderPixelFormatIsPackedDepthStencil(

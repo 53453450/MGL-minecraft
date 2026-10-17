@@ -136,8 +136,8 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
         return 0;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *cs = areas.command;
 
     /* Copy the full GL mip chain of the RT (capped to the source's
@@ -659,8 +659,8 @@ int mglBlitFlipRenderTargetStorageForFirstWrite(void *renderer, Texture *tex)
      * the flipped store so sampling sees GL row order again. */
     tex->mtl_render_target_write_version = 1u;
     tex->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     if (!mglBlitUpdateGLSampledRenderTargetCopy(renderer, tex, tex->mtl_data,
                                                 "rt_first_write_flip") ||
         mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(
@@ -692,8 +692,8 @@ int mglBlitUnflipRenderTargetStorageForImageAccess(void *renderer, Texture *tex)
         return 1;
     }
     mglRendererEndRenderEncodingLocked(renderer);
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     if (!mglBlitUpdateGLSampledRenderTargetCopy(renderer, tex, tex->mtl_data,
                                                 "rt_image_unflip") ||
         mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(
@@ -717,8 +717,8 @@ int mglBlitUnflipRenderTargetStorageForImageAccess(void *renderer, Texture *tex)
 void mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer(
     void *renderer, Framebuffer *fbo, const char *reason)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     if (!areas.ctx || !fbo) {
         return;

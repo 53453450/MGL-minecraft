@@ -21,7 +21,7 @@
  *                                                              mglSbStage* calls
  *
  * `self`, `ctx`, `_backend`, `_bindingStateOwner` and `_tessellation` arrive
- * through MGLRendererStateAreas; `(__bridge id)` becomes the plain handle.
+ * through MGLRendererStateView; `(__bridge id)` becomes the plain handle.
  *
  * OWNERSHIP (the rule of log 128): every `id` local of the methods was an ARC
  * retain.  The only such local here is `isolated`, and the port that replaces
@@ -238,8 +238,8 @@ bool mglBindingStateBindStageBufferMapEntries(
         return false;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *binding_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
 
@@ -528,8 +528,8 @@ void mglBindingStateBindStageFallbackBuffers(
         return;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *binding_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
 

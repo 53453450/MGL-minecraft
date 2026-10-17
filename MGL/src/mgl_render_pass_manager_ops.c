@@ -337,7 +337,7 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
     /* An active render encoder means work was encoded into the current command
      * buffer, so the flush must not skip the commit. */
     if (areas.batching) {
-        areas.batching->currentCommandBufferHasWork = 1u;
+        mglRendererSetCommandBufferHasWork(renderer, 1);
     }
 
     Framebuffer *endedFramebuffer = cs->renderPassFramebuffer;
@@ -2419,7 +2419,7 @@ int mglRenderPassNewCommandBufferLocked(void *renderer)
      * does not immediately allocate and release another one.  Unmarked current
      * buffers still follow the ordinary fresh-rotate path. */
     if (mglPassManagerConsumeTransactionCreatedCurrentCommandBuffer(manager)) {
-        areas.batching->currentCommandBufferHasWork = 0;
+        mglRendererSetCommandBufferHasWork(renderer, 0);
         return 1;
     }
 
@@ -2963,7 +2963,7 @@ void mglRenderPassFlushCommandBufferLocked(void *renderer, int finish)
      * having work so the commit below is not skipped. */
     if (mglRenderEncoderOwnerHasCurrent(
             commandState->currentRenderEncoderOwner) == 1) {
-        areas.batching->currentCommandBufferHasWork = 1;
+        mglRendererSetCommandBufferHasWork(renderer, 1);
     }
 
     mglRendererEndRenderEncodingLocked(renderer);
@@ -5060,11 +5060,9 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
         if (areas.gpu_recovery_command_owner &&
             mglRenderCommandRecoveryTakeResetRequest(
                 *areas.gpu_recovery_command_owner) == 1) {
-            atomic_store_explicit(&areas.core->deviceResetRequested, true,
-                                  memory_order_release);
+            mglRendererRequestDeviceReset(renderer);
         }
-        if (atomic_exchange_explicit(&areas.core->deviceResetRequested, false,
-                                     memory_order_acquire)) {
+        if (mglRendererConsumeDeviceReset(renderer)) {
             mglRendererResetMetalState(renderer);
         }
 
@@ -5267,7 +5265,7 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
                     "MGL ERROR: Failed to create post-swap command buffer\n");
             return;
         }
-        areas.core->defaultDrawableWrittenSinceLastSwap = 0;
+        mglRendererSetDefaultDrawableWritten(renderer, 0);
         mglMarkRendererDirtyBits(areas.ctx->active_state,
                                  DIRTY_FBO | DIRTY_RENDER_STATE);
         const double swapElapsedUs = (mglTraceClockNS() - swapStartNS) / 1000.0;

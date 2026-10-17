@@ -288,6 +288,91 @@ typedef struct MGLRendererStateAreas {
 
 void mglRendererFillStateAreas(void *renderer, MGLRendererStateAreas *areas_out);
 
+/* === Setter ports ===========================================================
+ * The few fields a driver changes in the renderer's state, one narrow function
+ * each, so the drivers that only read can hold the read-only view below. */
+void mglRendererSetCommandBufferHasWork(void *renderer, int has_work);
+void mglRendererRequestDeviceReset(void *renderer);
+/* Returns 1 (and clears the request) when a device reset was requested. */
+int mglRendererConsumeDeviceReset(void *renderer);
+void mglRendererSetDefaultDrawableWritten(void *renderer, int written);
+void mglRendererSetLastDrawPrimitiveMode(void *renderer, uint32_t mode);
+void mglRendererSetActiveState(void *renderer, GLMState *state);
+void mglRendererSetTraceReplayIdentity(void *renderer, uint64_t flush_id,
+                                       uint32_t batch_index);
+void mglRendererSetDefaultDrawBufferSize(void *renderer, uint32_t draw_buffer,
+                                         uint32_t width, uint32_t height);
+
+/* === Read-only view of the same state ======================================
+ * Most drivers only look at the renderer's state.  They take this view, whose
+ * records are const and which carries none of the cache bridges, so a write
+ * through it does not compile.  A driver that must change state keeps the
+ * areas above and does so through the owner it names (render pass state
+ * setters, mglMarkRendererDirtyBits, ...).  `binding_state_owner` and
+ * `gpu_recovery_command_owner` are slot ADDRESSES like in the areas; read the
+ * slot at the point of use. */
+typedef struct MGLRendererStateView {
+    const MGLRendererCoreState *core;
+    void *backend;
+    void *render_pass_manager;
+    GLMContext ctx;
+    const MGLBatchingState *batching;
+    const MGLCommandState *command;
+    const MGLPipelineCacheState *pipeline_cache;
+    void *const *binding_state_owner;
+    void *const *gpu_recovery_command_owner;
+    const MGLGPURecoveryState *gpu_recovery;
+    const MGLTessellationState *tessellation;
+    const MGLGeometryState *geometry;
+    int32_t tess_native_tes_active;
+    void *tess_native_tes_program;
+    uint32_t tess_tcs_output_stride;
+    uint32_t tess_cull_capture_first_instance;
+    uint32_t tess_cull_capture_instance_stride;
+    void *drawable;
+    void *query_state_owner;
+    uint32_t gpu_interface_mismatch_blocked_program;
+    double gpu_interface_mismatch_blocked_until;
+    int32_t mssample_forced_id;
+    void *layer;
+    int32_t swap_interval;
+} MGLRendererStateView;
+
+static inline void mglRendererFillStateView(void *renderer,
+                                            MGLRendererStateView *view_out)
+{
+    MGLRendererStateAreas areas;
+    mglRendererFillStateAreas(renderer, &areas);
+    view_out->core = areas.core;
+    view_out->backend = areas.backend;
+    view_out->render_pass_manager = areas.render_pass_manager;
+    view_out->ctx = areas.ctx;
+    view_out->batching = areas.batching;
+    view_out->command = areas.command;
+    view_out->pipeline_cache = areas.pipeline_cache;
+    view_out->binding_state_owner = areas.binding_state_owner;
+    view_out->gpu_recovery_command_owner = areas.gpu_recovery_command_owner;
+    view_out->gpu_recovery = areas.gpu_recovery;
+    view_out->tessellation = areas.tessellation;
+    view_out->geometry = areas.geometry;
+    view_out->tess_native_tes_active = areas.tess_native_tes_active;
+    view_out->tess_native_tes_program = areas.tess_native_tes_program;
+    view_out->tess_tcs_output_stride = areas.tess_tcs_output_stride;
+    view_out->tess_cull_capture_first_instance =
+        areas.tess_cull_capture_first_instance;
+    view_out->tess_cull_capture_instance_stride =
+        areas.tess_cull_capture_instance_stride;
+    view_out->drawable = areas.drawable;
+    view_out->query_state_owner = areas.query_state_owner;
+    view_out->gpu_interface_mismatch_blocked_program =
+        areas.gpu_interface_mismatch_blocked_program;
+    view_out->gpu_interface_mismatch_blocked_until =
+        areas.gpu_interface_mismatch_blocked_until;
+    view_out->mssample_forced_id = areas.mssample_forced_id;
+    view_out->layer = areas.layer;
+    view_out->swap_interval = areas.swap_interval;
+}
+
 /* The Metal layer facts the encoder-state block needs, in one call: whether
  * there is a layer, the drawable size it reports, and its frame size.  Both
  * sizes come back as plain C values so the caller never sees CGSize/NSRect

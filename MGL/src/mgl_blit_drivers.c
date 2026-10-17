@@ -13,7 +13,7 @@
  *
  * Mechanical translation: `self` becomes the renderer handle, `_device` /
  * `_renderPassManager->state.currentCommandBufferOwner` / `_batching` arrive
- * through MGLRendererStateAreas, `NSInteger`/`NSUInteger`/`BOOL`/`YES`/`NO`/`nil`
+ * through MGLRendererStateView, `NSInteger`/`NSUInteger`/`BOOL`/`YES`/`NO`/`nil`
  * become int64_t/size_t/int/1/0/NULL, `NSLog` becomes fprintf on the same sink,
  * and the two `@try/@catch` blocks around the Metal calls become the existing
  * shell guarded call (mgl_gpu_recovery.h) — the C-side home of that frame.
@@ -171,7 +171,7 @@ static void mglBdReplaceTextureRegion(void *texture, MGLRegionValue region,
 }
 
 /* The command record's current command buffer (read at the point of use). */
-static void *mglBdCommandBufferOwner(const MGLRendererStateAreas *areas)
+static void *mglBdCommandBufferOwner(const MGLRendererStateView *areas)
 {
     return areas->command ? areas->command->currentCommandBufferOwner : NULL;
 }
@@ -207,8 +207,8 @@ bool mglBlitResolveMsaaSource(void *renderer, void **read_texid_ptr,
                               Texture *read_texture_object,
                               int *out_did_msaa_resolve)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     void *read_texid = *read_texid_ptr;
     MGLMetalAttachmentSubresource read_subresource = *read_subresource_ptr;
@@ -454,8 +454,8 @@ bool mglBlitReadTextureRegion(void *renderer, void *texture,
                               void *bytes, size_t bytes_per_row,
                               size_t bytes_per_image, const char *reason)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     size_t depth = region.size.depth > 1u ? (size_t)region.size.depth : 1u;
     if (!texture || !bytes || bytes_per_row == 0 || bytes_per_image == 0 ||
@@ -486,7 +486,7 @@ bool mglBlitReadTextureRegion(void *renderer, void *texture,
     /* A blit encoder is now active on the current CB.  Mark it as having
      * work so flushCommandBuffer:YES below does not skip the commit. */
     if (areas.batching) {
-        areas.batching->currentCommandBufferHasWork = 1;
+        mglRendererSetCommandBufferHasWork(renderer, 1);
     }
 
     MglBdReadBlitCtx blit_ctx = {
@@ -568,8 +568,8 @@ bool mglBlitCopyImageSubDataCpuToCpu(
     GLsizei depth)
 {
     (void)glm_ctx;
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     /* Rendered storage holds rows the CPU level lacks, Y-flipped. */
     if (mglRenderTargetStorageYFlipped(src_tex->is_render_target ? 1 : 0,
@@ -974,8 +974,8 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
     size_t slice, size_t level, int64_t xoffset, int64_t yoffset, int64_t x,
     int64_t y, size_t width, size_t height)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     if (!glm_ctx || !tex || !dest_texture || width == 0u || height == 0u) {
         return false;
@@ -1259,8 +1259,8 @@ bool mglBlitCopyImageSubDataFormatConversion(
      * memcpy of pixel data, so format reinterpretation is OK.  This path has
      * proper render pass synchronization, which the blit path lacks for
      * renderbuffer sources. */
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLRendererCoreState *core = areas.core;
     if (mglBdTextureInfo(src_texture).pixel_format ==
         mglBdTextureInfo(dst_texture).pixel_format) {
@@ -1520,7 +1520,7 @@ typedef struct {
     size_t row_bytes;
     size_t image_bytes;
     void *staging;
-    MGLRendererStateAreas areas;
+    MGLRendererStateView areas;
     MGLRendererCoreState *core;
     int early_exit;
 } MglBd3DReadCtx;
@@ -1579,7 +1579,7 @@ static int mglBd3DReadGuarded(void *renderer, void *ctx_raw)
                     c->early_exit = 1;
                     return 1;
                 }
-                c->areas.batching->currentCommandBufferHasWork = 1;
+                mglRendererSetCommandBufferHasWork(c->renderer, 1);
                 mglBdCopyTextureToBuffer(
                     read_encoder, c->src_texture, src_slice,
                     (size_t)c->src_level, slice_region.origin, slice_region.size,
@@ -1686,8 +1686,8 @@ bool mglBlitCopyImageSubDataPostBlitReadback(
      * metal_data_authoritative flag, which causes "modified contents outside
      * of copied region" / "wrong layer" errors when non-blitted regions of the
      * same level have stale Metal data. */
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLRendererCoreState *core = areas.core;
 
     int readback_done = 0;
@@ -2092,8 +2092,8 @@ static void mglBdPushCpuShadowRegionToMetalSource(
         return;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     size_t copy_width = mglBdMaxSize((size_t)width, 1u);
     size_t copy_height = mglBdMaxSize((size_t)height, 1u);
@@ -2284,8 +2284,8 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_te
         return;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     /* The CPU-to-CPU path is C now (log 135). */
     if (mglBlitCopyImageSubDataCpuToCpu(
@@ -2789,8 +2789,8 @@ bool mglBlitFramebufferScaledColorWithState(void *renderer,
     double scaled_dst_metal_y = st->scaledDstMetalY;
     int needs_scaled_blit = st->needsScaledBlit;
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLRendererCoreState *core = areas.core;
 
     if (!needs_scaled_blit) {
@@ -2983,8 +2983,8 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
                                 GLint dst_x0, GLint dst_y0, GLint dst_x1,
                                 GLint dst_y1, GLbitfield mask, GLenum filter)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     if (!glm_ctx || ((uintptr_t)glm_ctx < 0x1000)) {
         fprintf(stderr,
@@ -3639,8 +3639,8 @@ void *mglBlitFreshGLSampledRenderTargetCopyForSampling(
     GLuint program_name, GLuint binding, GLuint unit, uint32_t expected_type,
     uint32_t expected_kind)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     if (!tex || !source || !mglTextureCanUseGLSampledRenderTargetCopy(tex)) {
         return NULL;

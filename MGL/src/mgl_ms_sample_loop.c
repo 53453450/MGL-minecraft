@@ -131,8 +131,8 @@ void mglRendererBroadcastEmulatedMSSamplePlanesAfterDrawIfNeeded(void *renderer,
         return;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs) {
         return;

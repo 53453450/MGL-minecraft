@@ -116,8 +116,8 @@ extern uint32_t mtlPixelFormatForGLTex(Texture *tex);
 static const MGLCapability *mglUpCapability(void *renderer)
 {
     static MGLCapability fallback;
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     return areas.core ? &areas.core->capability : &fallback;
 }
 
@@ -253,8 +253,8 @@ int mglTextureCopyUploadWithDedicatedCommandBuffer(
     void *texture, uint64_t destinationSlice, uint64_t destinationLevel,
     MGLOriginValue destinationOrigin, int flipY, const char *reason)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *commandState = areas.command;
 
     MGL_ASSERT_GL_THREAD();
@@ -299,7 +299,7 @@ int mglTextureCopyUploadWithDedicatedCommandBuffer(
             return 0;
         }
         if (areas.batching) {
-            areas.batching->currentCommandBufferHasWork = 1;
+            mglRendererSetCommandBufferHasWork(renderer, 1);
         }
 
         return 1;
@@ -387,8 +387,8 @@ static int mglUpUploadPackedDepthStencil(void *renderer, void *texture,
                                          uint64_t slice, uint64_t x,
                                          uint64_t y, int flipY)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     const uint64_t texelBytes =
         internalformat == GL_DEPTH32F_STENCIL8 ? 5u : 4u;
     if (!bytes || width == 0 || height == 0 ||
@@ -452,7 +452,7 @@ static int mglUpUploadPackedDepthStencil(void *renderer, void *texture,
                 areas.command->currentCommandBufferOwner, stagingBuffer, width,
                 height, texture, slice, level, x, y, flipY) == 0;
         if (uploaded && areas.batching) {
-            areas.batching->currentCommandBufferHasWork = 1;
+            mglRendererSetCommandBufferHasWork(renderer, 1);
         }
     }
     mglRenderDestroyTextureStagingOwner(&stagingOwner);
@@ -473,8 +473,8 @@ int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
                                  uint64_t height, uint64_t depth, uint64_t level,
                                  uint64_t slice, int flipY)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     if (!texture || !bytes || bytesPerRow == 0 || bytesPerImage == 0 ||
         width == 0) {
@@ -1890,8 +1890,8 @@ void mglTextureFillSafeInitialContents(void *renderer, void *texture,
                      * port runs each attempt through the shell's guarded call and
                      * keeps the same catch logic (rule 58 (b)). */
                     char safeFillFailure[256] = {0};
-                    MGLRendererStateAreas safeAreas;
-                    mglRendererFillStateAreas(renderer, &safeAreas);
+                    MGLRendererStateView safeAreas;
+                    mglRendererFillStateView(renderer, &safeAreas);
                     /* The outer @try's prologue logs (they used to sit inside
                      * that block; the C port runs the attempt through the
                      * shell's guard instead, so they are emitted first). */
@@ -2926,8 +2926,8 @@ static int mglUpCreateTextureBody(void *renderer, void *rawCtx)
  * which is why the move is a pure translation. */
 void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGL_ASSERT_GL_THREAD();
     mglMetalCountCreate(MGLMetalKindTexture);
@@ -3225,8 +3225,8 @@ int mglTextureSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
     if (!renderer) {
         return 0;
     }
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     void *device = mglRendererBackendGetDevice(areas.backend);
     (void)ctx;
@@ -3385,8 +3385,8 @@ int mglTextureSubImageBytes(void *renderer, GLMContext glm_ctx,
     if (!renderer) {
         return 0;
     }
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     void *device = mglRendererBackendGetDevice(areas.backend);
     (void)ctx;
@@ -3646,8 +3646,8 @@ void mglTextureTraceSampledReadback(void *renderer, void *texture, Texture *glTe
     if (!renderer) {
         return;
     }
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *device = mglRendererBackendGetDevice(areas.backend);
     void *commandQueue = mglRendererBackendGetCommandQueue(areas.backend);
     if (!texture || !device || !commandQueue) {
@@ -3833,8 +3833,8 @@ static int mglUpFallbackBody(void *renderer, void *rawCtx)
 {
     MglUpFallbackCtx *fallback = (MglUpFallbackCtx *)rawCtx;
     Texture *tex = fallback->tex;
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *device = mglRendererBackendGetDevice(areas.backend);
     (void)device;
     {

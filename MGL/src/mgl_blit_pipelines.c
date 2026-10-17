@@ -165,7 +165,7 @@ static void *mglBlitCreateDepthStencilState(
 
 void *mglBlitScaledSamplerForFilter(void *renderer, uint32_t filter)
 {
-    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas; mglRendererFillStateView(renderer, &areas);
     int wantsNearest = mglRenderFilterIsNearest(filter) != 0;
     MGLRendererBackendBlitCacheKind cacheKind = wantsNearest
         ? MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER
@@ -194,7 +194,7 @@ void *mglBlitScaledSamplerForFilter(void *renderer, uint32_t filter)
 
 void *mglBlitScaledPipelineForPixelFormat(void *renderer, uint32_t pixelFormat)
 {
-    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas; mglRendererFillStateView(renderer, &areas);
     pixelFormat = mglRenderColorFormatOrBGRA(pixelFormat);
 
     uint64_t variant = (uint64_t)pixelFormat;
@@ -232,7 +232,7 @@ void *mglBlitScaledPipelineForPixelFormat(void *renderer, uint32_t pixelFormat)
 
 void *mglBlitScaledDepthPipelineForPixelFormat(void *renderer, uint32_t pixelFormat)
 {
-    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas; mglRendererFillStateView(renderer, &areas);
     if (mglRenderPixelFormatIsInvalid(pixelFormat)) {
         return NULL;
     }
@@ -268,7 +268,7 @@ void *mglBlitScaledDepthPipelineForPixelFormat(void *renderer, uint32_t pixelFor
 
 void *mglBlitScaledComputePipelineForPixelFormat(void *renderer, uint32_t pixelFormat)
 {
-    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas; mglRendererFillStateView(renderer, &areas);
     pixelFormat = mglRenderColorFormatOrBGRA(pixelFormat);
 
     MGLTextureDataKind dataKind = mglTextureDataKindForPixelFormat(pixelFormat);
@@ -308,7 +308,7 @@ void *mglBlitScaledComputePipelineForPixelFormat(void *renderer, uint32_t pixelF
 
 void *mglBlitMsaaIntegerResolvePipeline(void *renderer, int signedInteger)
 {
-    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas; mglRendererFillStateView(renderer, &areas);
     const char *entryName = signedInteger
         ? "mgl_msaa_resolve_int" : "mgl_msaa_resolve_uint";
     void *cached = mglBlitLookupAuxComputePipeline(
@@ -333,7 +333,7 @@ void *mglBlitMsaaIntegerResolvePipeline(void *renderer, int signedInteger)
 
 void *mglBlitEmulatedMsResolvePipeline(void *renderer)
 {
-    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas; mglRendererFillStateView(renderer, &areas);
     void *cached = mglBlitLookupAuxComputePipeline(
         MGL_RENDER_AUX_COMPUTE_EMULATED_MS_RESOLVE, 0u);
     if (cached) return cached;
@@ -360,7 +360,7 @@ void *mglBlitClearRectPipeline(void *renderer, uint32_t colorFormat,
                               uint32_t depthFormat, uint32_t stencilFormat,
                               uint32_t colorWriteMask, int writesDepth)
 {
-    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas; mglRendererFillStateView(renderer, &areas);
     const int writesColor = colorWriteMask != MGLColorWriteMaskNone;
     if (mglRenderPixelFormatIsInvalid(stencilFormat) &&
         !mglRenderClearRectPipelineReady(writesColor ? 1 : 0, colorFormat,
@@ -402,7 +402,7 @@ void *mglBlitClearRectPipeline(void *renderer, uint32_t colorFormat,
 void *mglBlitClearIntegerPipeline(void *renderer, uint32_t colorFormat,
                                   uint32_t colorWriteMask)
 {
-    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas; mglRendererFillStateView(renderer, &areas);
     MGLTextureDataKind dataKind = mglTextureDataKindForPixelFormat(colorFormat);
     if (dataKind != MGLTextureDataKindUint && dataKind != MGLTextureDataKindSint) {
         return NULL;
@@ -436,7 +436,7 @@ void *mglBlitClearIntegerPipeline(void *renderer, uint32_t colorFormat,
 
 void *mglBlitClearRectDepthState(void *renderer)
 {
-    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas; mglRendererFillStateView(renderer, &areas);
     void *cached = mglRendererBackendGetBlitCachedObject(
         areas.backend, MGL_RENDERER_BACKEND_BLIT_CACHE_CLEAR_DEPTH_STATE);
     if (cached) {

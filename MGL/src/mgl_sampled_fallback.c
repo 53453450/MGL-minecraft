@@ -130,8 +130,8 @@ static int mglSfCreateBufferTextureGuarded(void *renderer, void *ctx_raw)
 /* -fallbackSampledTexture */
 void *mglSampledFallbackTexture(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     void *cached = mglRendererBackendGetFallbackResource(
         areas.backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE);
@@ -179,8 +179,8 @@ void *mglSampledFallbackTexture(void *renderer)
 /* -fallbackCubeSampledTexture */
 void *mglSampledFallbackCubeTexture(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     void *cached = mglRendererBackendGetFallbackResource(
         areas.backend, MGL_RENDERER_BACKEND_FALLBACK_CUBE_SAMPLED_TEXTURE);
@@ -230,8 +230,8 @@ void *mglSampledFallbackCubeTexture(void *renderer)
 /* -fallbackTextureBufferSampledTexture */
 void *mglSampledFallbackTextureBuffer(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     void *cached_texture = mglRendererBackendGetFallbackResource(
         areas.backend, MGL_RENDERER_BACKEND_FALLBACK_SINT_TEXTURE_BUFFER);
@@ -339,8 +339,8 @@ void *mglSampledFallbackTextureForExpectedType(void *renderer,
         return NULL;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     uint32_t texture_type = mglRenderFallbackSampledTextureType(expected_type);
     if (mglRenderExpectedTypeIsTextureBuffer(texture_type)) {

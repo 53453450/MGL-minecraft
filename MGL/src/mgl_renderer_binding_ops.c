@@ -25,8 +25,8 @@
 
 static void *mglRendererBindingOwner(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     return areas.binding_state_owner ? *areas.binding_state_owner : NULL;
 }
 
@@ -68,7 +68,7 @@ void mglRendererBindingInvalidateLastBoundFragmentBufferAtIndex(
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C; the argument is the caller's
  * context, exactly as the method's MGL_STATE(glm_ctx) was. */
-static GLMState *mglRendererBindingDerivedState(const MGLRendererStateAreas *areas,
+static GLMState *mglRendererBindingDerivedState(const MGLRendererStateView *areas,
                                              GLMContext glm_ctx)
 {
     if (areas->core && areas->core->activeState) {
@@ -80,8 +80,8 @@ static GLMState *mglRendererBindingDerivedState(const MGLRendererStateAreas *are
 bool mglRendererSyncResourceBindingsForContext(
     void *renderer, GLMContext glm_ctx, const MGLResourceSyncWork *done)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMState *state = mglRendererBindingDerivedState(&areas, glm_ctx);
 
     if (!done || !done->mappedBuffers) {

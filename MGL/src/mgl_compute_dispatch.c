@@ -50,7 +50,7 @@
 #include "mgl_render_api_buffer.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
-static GLMState *mglComputeDispatchState(const MGLRendererStateAreas *areas,
+static GLMState *mglComputeDispatchState(const MGLRendererStateView *areas,
                                          GLMContext context)
 {
     if (areas->core && areas->core->activeState) {
@@ -70,8 +70,8 @@ bool mglComputeProcess(void *renderer, void *encoder,
         return false;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglComputeDispatchState(&areas, ctx);
 
@@ -155,8 +155,8 @@ bool mglComputeRunDispatchOrchestrationLocked(
     uint32_t groups_y, uint32_t groups_z, void *indirect_buffer,
     size_t indirect_offset, const char *reason)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMState *state = mglComputeDispatchState(&areas, glm_ctx);
     void *command_buffer_owner =
         areas.command ? areas.command->currentCommandBufferOwner : NULL;
@@ -275,8 +275,7 @@ bool mglComputeRunDispatchOrchestrationLocked(
                 executionError,
                 sizeof(executionError)) != 0) {
             if (executionResult.transaction.device_reset_requested) {
-                atomic_store_explicit(&areas.core->deviceResetRequested, true,
-                                      memory_order_release);
+                mglRendererRequestDeviceReset(renderer);
             }
             fprintf(stderr,
                     "MGL COMPUTE ERROR: C++ %s execution transaction failed: %s\n",
@@ -311,7 +310,7 @@ bool mglComputeRunDispatchOrchestrationLocked(
      * command buffer and flushCommandBufferLocked's empty-CB skip drops it:
      * glFinish then never executes the compute writes (SSBO stores vanish). */
     if (areas.batching) {
-        areas.batching->currentCommandBufferHasWork = 1;
+        mglRendererSetCommandBufferHasWork(renderer, 1);
     }
 
     if (!useExecutionPlan &&
@@ -385,8 +384,8 @@ void mglComputeMtlDispatchLocked(void *renderer, GLMContext glm_ctx,
         return;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMState *state = mglComputeDispatchState(&areas, glm_ctx);
     for (size_t unit = 0; unit < TEXTURE_UNITS; unit++) {
         ImageUnit *imageUnit = &state->image_units[unit];
@@ -416,8 +415,8 @@ void mglComputeMtlDispatchIndirectLocked(void *renderer, GLMContext glm_ctx,
 
     mglPlatformShellSetContext(renderer, glm_ctx);
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMState *state = mglComputeDispatchState(&areas, glm_ctx);
 
     Buffer *glIndirectBuffer = state->buffers[_DISPATCH_INDIRECT_BUFFER];

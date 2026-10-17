@@ -94,7 +94,7 @@ static bool mglSeShouldTraceCall(uint64_t count)
 }
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
-static GLMState *mglSeState(const MGLRendererStateAreas *areas)
+static GLMState *mglSeState(const MGLRendererStateView *areas)
 {
     if (areas->core && areas->core->activeState) {
         return areas->core->activeState;
@@ -283,8 +283,8 @@ static void mglSeFinalizePresentMask(
     const bool *base_binding_present, const bool *attrib_binding_reserved,
     uint64_t bind_call, uint32_t map_count, uint64_t start_clock)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *binding_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
 
@@ -350,8 +350,8 @@ static void mglSeBindPointSizeParams(void *renderer, bool *any_binding_present,
                                      size_t byte_scratch_capacity,
                                      int use_snapshot)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     int needs_point_size_params = 0;
     MGLRenderBindingSnapshot *snap = binding_snapshot;
@@ -420,8 +420,8 @@ static bool mglStageEncodeBindVertexAttributes(
     bool *any_binding_present, const MGLEncodeContext *enc_ctx,
     MGLRenderBindingSnapshot *binding_snapshot, int use_snapshot)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *binding_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
 
@@ -811,8 +811,8 @@ bool mglStageEncodeBindVertexBuffers(void *renderer,
     mglLogLoopHeartbeat("vbind.loop", vbind_call, vbind_start_seconds,
                         &s_vbind_last_call_time, &s_vbind_last_call_count, 0.25);
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *binding_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
 
@@ -999,8 +999,8 @@ bool mglStageEncodeBindFragmentBuffers(void *renderer,
     mglLogLoopHeartbeat("fbind.loop", fbind_call, fbind_start_seconds,
                         &s_fbind_last_call_time, &s_fbind_last_call_count, 0.25);
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *binding_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
 

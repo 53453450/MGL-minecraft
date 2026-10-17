@@ -21,7 +21,7 @@
  *
  * The rules the translation follows are the ones the earlier cuts settled:
  * `self` becomes the renderer handle, `_renderPassManager->state` and the
- * tessellation record arrive through MGLRendererStateAreas, `ctx` is
+ * tessellation record arrive through MGLRendererStateView, `ctx` is
  * `areas.ctx`, `MGL_STATE(ctx)` becomes the C twin below, "[self ...]" becomes
  * the C entry of mgl_renderer_ports.h, and the NSMutableArray of temporaries
  * becomes the handle of mglRendererTemporariesCreate (which is exactly the
@@ -58,7 +58,7 @@
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C (the same twin as
  * mgl_compute_bind.c). */
-static GLMState *mglTessStageBindState(const MGLRendererStateAreas *areas)
+static GLMState *mglTessStageBindState(const MGLRendererStateView *areas)
 {
     if (areas->core && areas->core->activeState) {
         return areas->core->activeState;
@@ -68,13 +68,13 @@ static GLMState *mglTessStageBindState(const MGLRendererStateAreas *areas)
 
 /* The command record the render pass manager publishes. */
 static void *mglTessStageBindCommandBufferOwner(
-    const MGLRendererStateAreas *areas)
+    const MGLRendererStateView *areas)
 {
     return areas->command ? areas->command->currentCommandBufferOwner : NULL;
 }
 
 static void *mglTessStageBindRenderEncoderOwner(
-    const MGLRendererStateAreas *areas)
+    const MGLRendererStateView *areas)
 {
     return areas->command ? areas->command->currentRenderEncoderOwner : NULL;
 }
@@ -218,8 +218,8 @@ bool mglTessPrepareStageBufferBindings(void *renderer,
         return false;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     BufferMapList stage_buffer_map = {0};
     if (!mglRendererMapGLBuffersToMTLBufferMap(renderer, &stage_buffer_map,
@@ -426,8 +426,8 @@ bool mglTessFlushStageBindingInitializationBlit(
         return false;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     MGLRenderBufferCopyEntry copy_entries[kMGLMaxBufferSlots] = {0};
     uint32_t copy_entry_count = 0u;
@@ -517,8 +517,8 @@ bool mglTessPlanTextureBinds(void *renderer, const MGLTessTextureBind *binds,
                              MGLRenderComputeExecutionPlan *plan,
                              void *temporaries)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     if (!binds || !plan || !ctx || !ctx->active_state) {
         return binds == NULL || count == 0u;

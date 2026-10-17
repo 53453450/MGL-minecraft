@@ -10,6 +10,9 @@ Four rules, each a count of offending source lines per file:
   C3  Plan files (*_plan.c) must not include mgl_render_internal.h or use
       `STATE(`.
   C4  GL object type headers must not declare `void *mtl_*` fields.
+  C5  Only the drivers that change renderer state hold MGLRendererStateAreas;
+      everything else takes the read-only MGLRendererStateView.  The count of
+      areas references per file may not grow, and a new file starts at zero.
 
 Comments are ignored.  scripts/layering_baseline.txt records the counts that
 existed when the check was added ("rule path count").  A file may not exceed
@@ -40,7 +43,8 @@ C1_RE = re.compile(r'\bmtl_\w+|MTL::|\bmglSafeReleaseMetalObj\b')
 
 # L3: Metal encoding.
 L3_GLOBS = ['mgl_render_*.cpp', 'mgl_batch_*_encode.c']
-L3_FILES = ['mgl_pso_build_ops.c']
+L3_FILES = ['mgl_pso_build_ops.c', 'mgl_renderer_backend.cpp',
+            'mgl_renderer_ports.c', 'mgl_texture_bind.c']
 C2_RE = re.compile(
     r'->samples\b|->target\b|\bis_render_target\b|\bdirty_bits\b'
     r'|(?<![A-Za-z0-9_])GL_[A-Z]')
@@ -56,6 +60,9 @@ TYPE_HEADERS = [
     'mgl_types_vertex.h',
 ]
 C4_RE = re.compile(r'\bvoid\s*\*\s*mtl_\w+\s*;')
+
+# Renderer state: the mutable areas (see mgl_renderer_ports.h).
+C5_RE = re.compile(r'\bMGLRendererStateAreas\b|\bmglRendererFillStateAreas\b')
 
 COMMENT_RE = re.compile(
     r'/\*.*?\*/|//[^\n]*', re.S)
@@ -82,6 +89,9 @@ def targets():
         yield 'C3', p, C3_RE
     for name in TYPE_HEADERS:
         yield 'C4', INC / name, C4_RE
+    for p in sorted(SRC.iterdir()):
+        if p.suffix in ('.c', '.cpp', '.m', '.mm'):
+            yield 'C5', p, C5_RE
 
 
 def collect():

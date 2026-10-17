@@ -13,6 +13,7 @@
  */
 
 #include "mgl_renderer_ports.h"
+#include <stdatomic.h>
 #include "mgl_render_api_command.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_texture.h"
@@ -293,3 +294,83 @@ void mglRendererBindMTLBuffer(void *renderer, Buffer *buffer)
                 bindError[0] ? bindError : "?");
     }
 }
+
+/* ---- setter ports ---------------------------------------------------------- */
+
+void mglRendererSetCommandBufferHasWork(void *renderer, int has_work)
+{
+    MGLRendererStateAreas areas;
+    mglRendererFillStateAreas(renderer, &areas);
+    if (areas.batching) {
+        areas.batching->currentCommandBufferHasWork = has_work ? 1u : 0u;
+    }
+}
+
+void mglRendererRequestDeviceReset(void *renderer)
+{
+    MGLRendererStateAreas areas;
+    mglRendererFillStateAreas(renderer, &areas);
+    if (areas.core) {
+        atomic_store_explicit(&areas.core->deviceResetRequested, true,
+                              memory_order_release);
+    }
+}
+
+int mglRendererConsumeDeviceReset(void *renderer)
+{
+    MGLRendererStateAreas areas;
+    mglRendererFillStateAreas(renderer, &areas);
+    return areas.core &&
+           atomic_exchange_explicit(&areas.core->deviceResetRequested, false,
+                                    memory_order_acq_rel);
+}
+
+void mglRendererSetDefaultDrawableWritten(void *renderer, int written)
+{
+    MGLRendererStateAreas areas;
+    mglRendererFillStateAreas(renderer, &areas);
+    if (areas.core) {
+        areas.core->defaultDrawableWrittenSinceLastSwap = written ? 1u : 0u;
+    }
+}
+
+void mglRendererSetLastDrawPrimitiveMode(void *renderer, uint32_t mode)
+{
+    MGLRendererStateAreas areas;
+    mglRendererFillStateAreas(renderer, &areas);
+    if (areas.core) {
+        areas.core->lastDrawPrimitiveMode = mode;
+    }
+}
+
+void mglRendererSetActiveState(void *renderer, GLMState *state)
+{
+    MGLRendererStateAreas areas;
+    mglRendererFillStateAreas(renderer, &areas);
+    if (areas.core) {
+        areas.core->activeState = state;
+    }
+}
+
+void mglRendererSetTraceReplayIdentity(void *renderer, uint64_t flush_id,
+                                       uint32_t batch_index)
+{
+    MGLRendererStateAreas areas;
+    mglRendererFillStateAreas(renderer, &areas);
+    if (areas.command) {
+        areas.command->traceReplayFlushId = flush_id;
+        areas.command->traceReplayBatchIndex = batch_index;
+    }
+}
+
+void mglRendererSetDefaultDrawBufferSize(void *renderer, uint32_t draw_buffer,
+                                         uint32_t width, uint32_t height)
+{
+    MGLRendererStateAreas areas;
+    mglRendererFillStateAreas(renderer, &areas);
+    if (areas.core && draw_buffer < _MAX_DRAW_BUFFERS) {
+        areas.core->drawBuffers[draw_buffer].width = width;
+        areas.core->drawBuffers[draw_buffer].height = height;
+    }
+}
+

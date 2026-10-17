@@ -85,7 +85,7 @@ extern int mglRenderVertexBufferIndexForAttribute(GLMContext ctx, GLMState *stat
 
 /* MGL_STATE() from MGLRenderer_Private.h, expressed in C: the core state's
  * active pointer wins, NULL means "the context's own state". */
-static GLMState *mglBufferMapState(const MGLRendererStateAreas *areas)
+static GLMState *mglBufferMapState(const MGLRendererStateView *areas)
 {
     if (areas->core && areas->core->activeState) {
         return areas->core->activeState;
@@ -217,8 +217,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
 bool mglRendererMapGLBuffersToMTLBufferMap(void *renderer,
                                            BufferMapList *buffer_map, int stage)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
 
     static uint64_t s_mapCallCountByStage[8] = {0};
@@ -315,8 +315,8 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
     void *renderer, BufferMapList *buffer_map, int stage, Program *program,
     const MGLStageBufferPlan *stagePlan)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglBufferMapState(&areas);
 
@@ -741,8 +741,8 @@ bool mglRendererMapShaderBufferResourcesToBufferMap(void *renderer,
                                                     BufferMapList *buffer_map,
                                                     int stage)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
 
     /* The cached buffer binding plan is the only mapping path: it caches every
@@ -792,8 +792,8 @@ bool mglRendererMapShaderBufferResourcesToBufferMap(void *renderer,
 
 bool mglRendererMapBuffersToMTL(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMState *state = mglBufferMapState(&areas);
 
     const int vertexStage = areas.tess_native_tes_active
@@ -839,8 +839,8 @@ bool mglRendererUpdateDirtyBuffer(void *renderer, Buffer *ptr)
 bool mglRendererCheckForDirtyBufferData(void *renderer,
                                         BufferMapList *buffer_map_list)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     return mglRenderCheckForDirtyBufferData(areas.ctx, buffer_map_list,
                                             MGL_BUFFER_MAP_WHERE_CHECK_DIRTY);
 }
@@ -848,8 +848,8 @@ bool mglRendererCheckForDirtyBufferData(void *renderer,
 bool mglRendererUpdateDirtyBaseBufferList(void *renderer,
                                           BufferMapList *buffer_map_list)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     return mglRenderUpdateDirtyBaseBufferList(areas.ctx, buffer_map_list,
                                               MGL_BUFFER_MAP_WHERE_UPDATE_DIRTY);
 }
@@ -857,8 +857,8 @@ bool mglRendererUpdateDirtyBaseBufferList(void *renderer,
 int mglRendererGetVertexBufferIndexWithAttributeSet(void *renderer,
                                                     int attribute)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     return mglRenderVertexBufferIndexForAttribute(ctx, mglBufferMapState(&areas),
                                                   attribute,
@@ -906,8 +906,8 @@ static uint64_t mglBmBufferLength(void *buffer)
 void *mglBufferIsolatedStageBinding(void *renderer, const BufferMap *map,
                                     void *source, uint64_t requiredLength)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     (void)areas;
     if (!map || !map->buf || requiredLength == 0) {
         return NULL;

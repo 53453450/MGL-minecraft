@@ -95,7 +95,7 @@ void *mglTextureCreateSamplerForTexParam(const TextureParameter *tex_param,
 
 void *mglTextureFallbackSamplerState(void *renderer)
 {
-    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas; mglRendererFillStateView(renderer, &areas);
     void *cached = mglRendererBackendGetFallbackResource(
         areas.backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLER);
     if (cached) {

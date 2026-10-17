@@ -49,7 +49,7 @@
 #include "mgl_render_api_texture.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
-static GLMState *mglComputeBindState(const MGLRendererStateAreas *areas)
+static GLMState *mglComputeBindState(const MGLRendererStateView *areas)
 {
     if (areas->core && areas->core->activeState) {
         return areas->core->activeState;
@@ -146,8 +146,8 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
         return false;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglComputeBindState(&areas);
 
@@ -473,8 +473,8 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
         return false;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglComputeBindState(&areas);
 

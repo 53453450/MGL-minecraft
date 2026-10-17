@@ -192,8 +192,8 @@ void *mglTextureReadbackStageAndWait(void *renderer, void *sourceTexture,
                                      uint64_t stagingSize, const char *reason,
                                      const char *logKind, int *outSuccess)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLRenderPassManager *manager = areas.render_pass_manager;
     MGLCommandState *commandState = areas.command;
@@ -288,8 +288,8 @@ int mglTextureReadColorAsBGRA8(void *renderer, void *sourceTexture,
                                MGLRegionValue region, int flipY,
                                const char *reason)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *commandState = areas.command;
     int result = 0;
@@ -462,8 +462,8 @@ int mglTextureReadDepthAsFloat(void *renderer, void *sourceTexture,
                                uint64_t bytesPerRow, uint64_t bytesPerImage,
                                MGLRegionValue region, const char *reason)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     int result = 0;
     void *ownedResolved = NULL;
@@ -657,8 +657,8 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
                                   uint64_t mipmapLevel, uint64_t mtlSlice,
                                   int flipRows)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLRenderPassManager *manager = areas.render_pass_manager;
     MGLCommandState *commandState = areas.command;
@@ -852,8 +852,8 @@ void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
 {
     MGL_ASSERT_GL_THREAD();
     mglPlatformShellSetContext(renderer, glm_ctx);
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     uint64_t readSize = bytesPerImage;
     if (readSize == 0u && bytesPerRow > 0u) {
@@ -1009,8 +1009,8 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
                             uint64_t bytesPerImage, MGLRegionValue region)
 {
     mglPlatformShellSetContext(renderer, glm_ctx);
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     uint64_t readSize = bytesPerImage;
     if (readSize == 0 && bytesPerRow > 0) {
@@ -1179,7 +1179,7 @@ static int mglPdPreReadbackTryBody(void *renderer, void *rawCtx)
 /* Commits and waits for the current command buffer so readbacks on a separate
  * command buffer observe every encoded upload and draw. */
 static void mglPdCommitPendingForReadback(void *renderer,
-                                          MGLRendererStateAreas *areas)
+                                          MGLRendererStateView *areas)
 {
     mglRendererEndRenderEncodingLocked(renderer);
     if (mglRenderCommandBufferOwnerHasCurrent(
@@ -1205,7 +1205,7 @@ static void mglPdCommitPendingForReadback(void *renderer,
  * getBytes and plain buffer copies, so each aspect gets its own) and then
  * converted to the requested type (§8.11.4, §18.2.8). */
 static void mglPdGetDepthStencilImage(
-    MGLRendererStateAreas *areas, GLMContext glm_ctx, Texture *tex,
+    MGLRendererStateView *areas, GLMContext glm_ctx, Texture *tex,
     void *texture, void *pixelBytes, uint64_t bytesPerRow,
     MGLRegionValue region, GLenum format, GLenum type, uint64_t level,
     uint64_t slice, int flipRows)
@@ -1348,8 +1348,8 @@ int mglTextureReadStencilPixels(void *renderer, GLMContext glm_ctx,
 {
     MGL_ASSERT_GL_THREAD();
     mglPlatformShellSetContext(renderer, glm_ctx);
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     Framebuffer *fbo = glm_ctx->active_state->readbuffer;
     FBOAttachment *attachment = fbo ? &fbo->stencil : NULL;
@@ -1407,8 +1407,8 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
                            GLenum format, GLenum type, uint64_t level,
                            uint64_t slice)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *texture = NULL;
 
     mglPlatformShellSetContext(renderer, glm_ctx);

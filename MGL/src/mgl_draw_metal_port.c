@@ -549,7 +549,7 @@ static void mglStageMarkCbHasWork(void *renderer)
     if (!renderer) return;
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
-    if (areas.batching) areas.batching->currentCommandBufferHasWork = 1;
+    mglRendererSetCommandBufferHasWork(renderer, 1);
 }
 
 static void mglStageFlushCB(void *renderer, int wait)
@@ -1079,8 +1079,7 @@ static void mglGsMetalNoteDeviceReset(void *renderer)
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
     if (areas.core) {
-        atomic_store_explicit(&areas.core->deviceResetRequested, true,
-                              memory_order_release);
+        mglRendererRequestDeviceReset(renderer);
     }
 }
 
@@ -1093,7 +1092,7 @@ static void mglGsMetalSetExpansion(void *renderer, Program *program, int active,
     areas.geometry->expansionActive = active ? 1 : 0;
     areas.geometry->program = active ? program : NULL;
     if (active && last_draw_mode) {
-        areas.core->lastDrawPrimitiveMode = last_draw_mode;
+        mglRendererSetLastDrawPrimitiveMode(renderer, last_draw_mode);
     }
 }
 
@@ -1768,7 +1767,7 @@ void mglDrawHostGuardIssueArrays(void *renderer, GLMContext ctx, GLenum mode,
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
     METAL_LOCK();
-    areas.core->lastDrawPrimitiveMode = mode;
+    mglRendererSetLastDrawPrimitiveMode(renderer, mode);
     if (with_ms) {
         MGLMsDrawArraysOnce once = {.ctx = ctx, .renderer = renderer, .mode = mode,
                                     .first = first, .count = count,
@@ -1801,7 +1800,7 @@ void mglDrawHostGuardIssueElements(void *renderer, GLMContext ctx, GLenum mode,
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
     METAL_LOCK();
-    areas.core->lastDrawPrimitiveMode = mode;
+    mglRendererSetLastDrawPrimitiveMode(renderer, mode);
     if (with_ms) {
         MGLMsDrawElementsOnce once = {.ctx = ctx, .renderer = renderer, .mode = mode,
                                       .count = count, .type = type,
@@ -1839,7 +1838,7 @@ void mglDrawHostSetLastPrimitiveMode(void *renderer, GLenum mode)
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
     {
-        areas.core->lastDrawPrimitiveMode = mode;
+        mglRendererSetLastDrawPrimitiveMode(renderer, mode);
     }
 }
 

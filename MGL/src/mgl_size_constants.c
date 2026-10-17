@@ -36,7 +36,7 @@
 #include "mgl_types_buffer.h"          /* mglBufferMapVisibleSize */
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
-static GLMState *mglSizeConstantsState(const MGLRendererStateAreas *areas)
+static GLMState *mglSizeConstantsState(const MGLRendererStateView *areas)
 {
     if (areas->core && areas->core->activeState) {
         return areas->core->activeState;
@@ -60,7 +60,7 @@ static void mglSizeConstantsReleaseCreated(void *buffer, void **slot)
 /* The size-constant buffer of one stage: the backend's cached one, else a fresh
  * shared-storage buffer stored in that cache.  Borrowed; NULL when the stage
  * needs nothing or the materialization failed. */
-static void *mglSizeConstantsBufferForStage(const MGLRendererStateAreas *areas,
+static void *mglSizeConstantsBufferForStage(const MGLRendererStateView *areas,
                                             uint32_t backend_kind,
                                             const uint32_t *size_constants,
                                             size_t constants_bytes)
@@ -111,8 +111,8 @@ static void mglSizeConstantsFillFromMapList(const BufferMapList *list,
 
 bool mglRendererBindBufferSizeConstantsForRenderEncoder(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglSizeConstantsState(&areas);
     void *renderEncoderOwner =

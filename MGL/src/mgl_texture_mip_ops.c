@@ -221,8 +221,8 @@ static int mglTxGetBytesBody(void *renderer, void *rawCtx)
 void mglTextureGenerateMipmaps(void *renderer, GLMContext glm_ctx,
                                struct Texture_t *tex)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *commandState = areas.command;
     mglPlatformShellSetContext(renderer, glm_ctx);
 
@@ -301,8 +301,8 @@ void mglTextureGenerateMipmaps(void *renderer, GLMContext glm_ctx,
 void mglTextureFlushImageUnitSlice(void *renderer, GLMContext glm_ctx,
                                    uint32_t unit)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *commandState = areas.command;
     if (!glm_ctx || unit >= glm_ctx->active_state->var.max_image_units ||
         unit >= TEXTURE_UNITS) {
@@ -352,8 +352,8 @@ void mglTextureFlushImageUnitSlice(void *renderer, GLMContext glm_ctx,
 void mglTexturePrepareImageUnitSlice(void *renderer, GLMContext glm_ctx,
                                      uint32_t unit)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *commandState = areas.command;
     if (!glm_ctx || unit >= glm_ctx->active_state->var.max_image_units ||
         unit >= TEXTURE_UNITS) {

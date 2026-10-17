@@ -330,8 +330,7 @@ static int mglRendererCommitCommandBufferWithAGXRecoveryBody(void *renderer,
                     transaction.before.status);
         }
         if (transaction.device_reset_requested) {
-            atomic_store_explicit(&areas.core->deviceResetRequested, true,
-                                  memory_order_release);
+            mglRendererRequestDeviceReset(renderer);
         }
         return 0;
     }
@@ -342,8 +341,7 @@ static int mglRendererCommitCommandBufferWithAGXRecoveryBody(void *renderer,
                 transaction.used_submission,
                 (unsigned long long)transaction.recovery.consecutive_errors);
         if (transaction.device_reset_requested) {
-            atomic_store_explicit(&areas.core->deviceResetRequested, true,
-                                  memory_order_release);
+            mglRendererRequestDeviceReset(renderer);
         }
         return 0;
     }

@@ -1623,12 +1623,7 @@ void mglRendererFlushDrawBufferLocked(void *renderer, GLMContext glm_ctx)
         return;
     }
     auto teardown = mglScopeExit([&] {
-        MGLRendererStateAreas areas;
-        mglRendererFillStateAreas(renderer, &areas);
-        if (areas.command) {
-            areas.command->traceReplayFlushId = 0u;
-            areas.command->traceReplayBatchIndex = 0u;
-        }
+        mglRendererSetTraceReplayIdentity(renderer, 0u, 0u);
         mglBatchTeardownReplay(renderer, glm_ctx, &pass);
     });
     mglBatchFlushRunBatches(renderer, glm_ctx, &pass);

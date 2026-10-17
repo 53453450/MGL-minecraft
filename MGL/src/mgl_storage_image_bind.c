@@ -47,7 +47,7 @@
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C (the same twin as
  * mgl_compute_bind.c). */
-static GLMState *mglSiState(const MGLRendererStateAreas *areas)
+static GLMState *mglSiState(const MGLRendererStateView *areas)
 {
     if (areas->core && areas->core->activeState) {
         return areas->core->activeState;
@@ -154,14 +154,14 @@ static bool mglSiFlushResourceBindings(void *binding_state_owner,
 /* The render encoder owner is re-read at every use, exactly like the method
  * did: a texture upload inside the ENSURE pass restores (and therefore
  * replaces) it, and the queue/flush must target the current one. */
-static void *mglSiRenderEncoderOwner(const MGLRendererStateAreas *areas)
+static void *mglSiRenderEncoderOwner(const MGLRendererStateView *areas)
 {
     return areas->command ? areas->command->currentRenderEncoderOwner : NULL;
 }
 
 /* The method-local MGL_ABORT_TBIND_IF_ENCODER_CLOSED(): true when the draw
  * must be abandoned because the texture path closed the render encoder. */
-static bool mglSiAbortTBindIfEncoderClosed(const MGLRendererStateAreas *areas)
+static bool mglSiAbortTBindIfEncoderClosed(const MGLRendererStateView *areas)
 {
     if (mglRenderEncoderOwnerHasCurrent(mglSiRenderEncoderOwner(areas)) == 0) {
         if (areas->ctx) {
@@ -182,8 +182,8 @@ bool mglBindingStateBindStorageImagesForStage(void *renderer, int shader_stage,
         return false;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *binding_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
     const int use_resource_snapshot = 1;
@@ -284,8 +284,8 @@ bool mglBindingStateBindStorageImagesForVertexProgram(void *renderer,
         return false;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     const int vertex_stage = areas.tessellation->nativeTESActive
                                  ? _TESS_EVALUATION_SHADER

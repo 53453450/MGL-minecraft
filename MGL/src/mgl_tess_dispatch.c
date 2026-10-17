@@ -656,8 +656,7 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
                 &execution_result, execution_error,
                 sizeof(execution_error)) != 0) {
             if (execution_result.transaction.device_reset_requested) {
-                atomic_store_explicit(&areas.core->deviceResetRequested, true,
-                                      memory_order_release);
+                mglRendererRequestDeviceReset(renderer);
             }
             fprintf(stderr, "MGL TESS ERROR: C++ TCS execution failed: %s",
                     execution_error[0] ? execution_error : "unknown error");
@@ -850,7 +849,7 @@ bool mglTessDispatchAIRTessEvalVertexRender(
     mglTessPlanRasterQuery(tes_program, (uint64_t)instance_count,
                            (uint64_t)items_per_instance, 0, 0u, 0u, &query);
     if (mglTessDispatchState(&areas)->caps.rasterizer_discard) {
-        areas.batching->currentCommandBufferHasWork = 1;
+        mglRendererSetCommandBufferHasWork(renderer, 1);
         mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
         ok = true;
         goto done;
@@ -1014,7 +1013,7 @@ bool mglTessDispatchAIRTessEvalVertexRender(
     }
     free(patches);
     free(contracts);
-    areas.batching->currentCommandBufferHasWork = 1;
+    mglRendererSetCommandBufferHasWork(renderer, 1);
     mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
     areas.tessellation->tessComputeActive = 0;
     areas.tessellation->tessComputeProgram = NULL;
@@ -1475,8 +1474,7 @@ bool mglTessDispatchAIRTessEvalCompute(
                 &execution_result, execution_error,
                 sizeof(execution_error)) != 0) {
             if (execution_result.transaction.device_reset_requested) {
-                atomic_store_explicit(&areas.core->deviceResetRequested, true,
-                                      memory_order_release);
+                mglRendererRequestDeviceReset(renderer);
             }
             fprintf(stderr, "MGL TESS ERROR: C++ TES execution failed: %s",
                     execution_error[0] ? execution_error : "unknown error");
@@ -1684,7 +1682,7 @@ bool mglTessDispatchAIRTessEvalCompute(
          * passthrough draw entirely, but the compute expansion already ran
          * and the primitive query must still count the generated
          * primitives (persistent query semantics). */
-        areas.batching->currentCommandBufferHasWork = 1;
+        mglRendererSetCommandBufferHasWork(renderer, 1);
         mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
         ok = true;
         goto done;
@@ -1747,7 +1745,7 @@ bool mglTessDispatchAIRTessEvalCompute(
                                       (size_t)items_per_instance, 1u,
                                       (size_t)base_instance + (size_t)i);
     }
-    areas.batching->currentCommandBufferHasWork = 1;
+    mglRendererSetCommandBufferHasWork(renderer, 1);
     mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
     areas.tessellation->tessComputeActive = 0;
     areas.tessellation->tessComputeProgram = NULL;
