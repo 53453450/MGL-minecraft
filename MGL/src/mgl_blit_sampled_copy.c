@@ -648,6 +648,13 @@ int mglBlitFlipRenderTargetStorageForFirstWrite(void *renderer, Texture *tex)
         tex->mtl_render_target_write_version != 0u) {
         return 1;
     }
+    /* GL-order storage needs no flip, but the first write still makes the GPU
+     * the authority: draws that do not mark the target themselves (geometry
+     * shader passes) would otherwise leave GetTexImage reading the CPU level. */
+    if (mglFBOGLOrderEnabled()) {
+        tex->mtl_render_target_write_version = 1u;
+        return 1;
+    }
     bool hasContent = false;
     for (GLuint face = 0u; face < 6u && !hasContent; face++) {
         for (GLuint level = 0u; level < tex->num_levels && tex->faces[face].levels; level++) {
