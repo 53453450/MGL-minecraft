@@ -1580,9 +1580,13 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
             }
         }
         /* Table 8.12 marks SNORM CR, but MSAA SNORM RTs are not a useful
-         * AGX path; keep CTS fillMSTexture on UNSUPPORTED. */
+         * AGX path; keep CTS fillMSTexture on UNSUPPORTED.  RGB16F / RGB16
+         * are renderable as single-sample attachments (shader packs attach
+         * them) but their multisample storage is not a supported target. */
         if (tex && tex->samples > 1u) {
             switch (ifmt) {
+            case GL_RGB16F:
+            case GL_RGB16:
             case GL_R8_SNORM:
             case GL_RG8_SNORM:
             case GL_RGB8_SNORM:
