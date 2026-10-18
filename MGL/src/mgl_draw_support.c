@@ -40,6 +40,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include "mgl_texture_backend.h"
 
 /* Declared in the Objective-C MGLRenderer+DrawSupportUtil.h. */
 extern int mglDrawSupportEncodeContextIsActive(const MGLEncodeContext *encCtx);
@@ -328,9 +329,9 @@ Texture *mglDrawEmulatedMSAttachmentTexture(GLMContext ctx, FBOAttachment *att)
      * mtl_data may still be nil. All MS targets are emulated as array sample
      * planes (a multisample renderbuffer's backing included), so the GL
      * target/samples check is sufficient. */
-    if (tex->mtl_data) {
+    if (mglTextureMtl(tex)) {
         MGLRenderTextureInfo info = {0};
-        (void)mglRenderGetTextureInfo(tex->mtl_data, &info);
+        (void)mglRenderGetTextureInfo(mglTextureMtl(tex), &info);
         if (info.texture_type != MGLTextureType2DArray) {
             return NULL;
         }

@@ -48,6 +48,7 @@
 #include "mgl_render_api_readback.h"
 #include "mgl_render_api_texture.h"
 #include "mgl_program_backend.h"
+#include "mgl_texture_backend.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
 static GLMState *mglComputeBindState(const MGLRendererStateView *areas)
@@ -607,11 +608,11 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                 if (ptr)
                 {
                     RETURN_FALSE_ON_FAILURE(mglRendererBindMTLTexture(renderer, ptr));
-                    if (!ptr->mtl_data) {
+                    if (!mglTextureMtl(ptr)) {
                         continue;
                     }
 
-                    void *texture = ptr->mtl_data;
+                    void *texture = mglTextureMtl(ptr);
                     if (!texture) {
                         continue;
                     }
@@ -712,12 +713,12 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                 Texture *ptr = mglTextureForSampledResource(
                     ctx, resource, metalSlot, stage, expectedType, glUnit);
                 if (!ptr || !mglRendererBindMTLTexture(renderer, ptr) ||
-                    !ptr->mtl_data) {
+                    !mglTextureMtl(ptr)) {
                     continue;
                 }
 
                 void *texture = mglSampledTextureViewForBaseLevel(
-                    ptr, ptr->mtl_data);
+                    ptr, mglTextureMtl(ptr));
                 /* Same shared port as the loop above.  This path used to
                  * skip the "dirty sampler" release the others do, so a
                  * re-parameterized sampler could keep its old Metal object;

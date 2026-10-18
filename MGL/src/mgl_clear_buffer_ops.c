@@ -40,6 +40,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "mgl_pso_format_class.h"
+#include "mgl_texture_backend.h"
 
 /* The .m's file-local constants this TU needs (values copied verbatim from
  * MGLRenderer.m's enum). */
@@ -285,7 +286,7 @@ static int mglPdClearColorIsInteger(void *texture)
 static int mglPdBindClearTarget(void *renderer, Texture *tex)
 {
     tex->is_render_target = 1;
-    if (!mglRendererBindMTLTexture(renderer, tex) || !tex->mtl_data) {
+    if (!mglRendererBindMTLTexture(renderer, tex) || !mglTextureMtl(tex)) {
         return 0;
     }
     if (tex->mtl_render_target_write_version == 0u) {
@@ -782,7 +783,7 @@ static void mglPdClearRects(void *renderer, GLMContext glm_ctx, unsigned int mas
                 }
                 colors[colorCount].tex_obj = texObj;
                 colors[colorCount].attachment = attachment;
-                colors[colorCount].texture = texObj->mtl_data;
+                colors[colorCount].texture = mglTextureMtl(texObj);
                 colors[colorCount].subresource =
                     mglMetalAttachmentSubresourceForAttachment(attachment);
                 colors[colorCount].write_mask = writeMask;
@@ -794,7 +795,7 @@ static void mglPdClearRects(void *renderer, GLMContext glm_ctx, unsigned int mas
             ds.depth_attachment = &fbo->depth;
             ds.depth_obj = mglRendererAttachmentTextureFor(glm_ctx, &fbo->depth);
             if (ds.depth_obj && mglPdBindClearTarget(renderer, ds.depth_obj)) {
-                ds.depth_texture = ds.depth_obj->mtl_data;
+                ds.depth_texture = mglTextureMtl(ds.depth_obj);
                 ds.depth_subresource =
                     mglMetalAttachmentSubresourceForAttachment(&fbo->depth);
             }
@@ -803,7 +804,7 @@ static void mglPdClearRects(void *renderer, GLMContext glm_ctx, unsigned int mas
             ds.stencil_attachment = &fbo->stencil;
             ds.stencil_obj = mglRendererAttachmentTextureFor(glm_ctx, &fbo->stencil);
             if (ds.stencil_obj && mglPdBindClearTarget(renderer, ds.stencil_obj)) {
-                ds.stencil_texture = ds.stencil_obj->mtl_data;
+                ds.stencil_texture = mglTextureMtl(ds.stencil_obj);
                 ds.stencil_subresource =
                     mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
             }

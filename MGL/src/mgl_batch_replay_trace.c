@@ -15,6 +15,7 @@
 #include "mgl_sync.h"             /* mglLoadActionName / mglStoreActionName */
 #include <stdio.h>
 #include <string.h>
+#include "mgl_texture_backend.h"
 
 static void *mglBatchEncoderTraceToken(void *owner) { return owner; }
 static MGLRenderTextureInfo mglBatchTextureInfo(void *texture)
@@ -70,7 +71,7 @@ static MGLBatchTraceAttPod mglBatchAttPod(uint32_t tex, uint32_t target, uint32_
 {
     return (MGLBatchTraceAttPod){
         .tex = tex, .target = target, .level = level, .ptr = t,
-        .w = t ? t->width : 0u, .h = t ? t->height : 0u, .mtl = t ? t->mtl_data : NULL,
+        .w = t ? t->width : 0u, .h = t ? t->height : 0u, .mtl = t ? mglTextureMtl(t) : NULL,
         .ever = ever, .full = full, .source = source,
         .rt_ver = t ? t->mtl_render_target_write_version : 0u,
         .sampled_ver = t ? t->mtl_gl_sampled_write_version : 0u,

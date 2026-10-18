@@ -60,6 +60,7 @@
 #include "mgl_trace_log.h"         /* mglTraceLog */
 #include "mgl_types_state.h"       /* GL boolean helper */
 #include "mgl_pso_format_class.h"
+#include "mgl_texture_backend.h"
 
 /* Declared next to its definition in the Objective-C
  * MGLRenderer+Blit_Private.h; repeated here for the C twin below. */
@@ -1017,10 +1018,10 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
     }
     src_tex_obj->is_render_target = true;
     if (!mglRendererBindMTLTexture(renderer, src_tex_obj) ||
-        !src_tex_obj->mtl_data) {
+        !mglTextureMtl(src_tex_obj)) {
         return false;
     }
-    void *src_texture = src_tex_obj->mtl_data;
+    void *src_texture = mglTextureMtl(src_tex_obj);
     if (!src_texture) {
         return false;
     }
@@ -1030,7 +1031,7 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
         return false;
     }
 
-    if (mglRenderTextureIsFramebufferOnly(src_tex_obj->mtl_data)) {
+    if (mglRenderTextureIsFramebufferOnly(mglTextureMtl(src_tex_obj))) {
         return false;
     }
 
@@ -2266,8 +2267,8 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_te
         return;
     }
 
-    void *src_texture = src_tex->mtl_data;
-    void *dst_texture = dst_tex->mtl_data;
+    void *src_texture = mglTextureMtl(src_tex);
+    void *dst_texture = mglTextureMtl(dst_tex);
     if (!src_texture || !dst_texture) {
         mglDispatchError(glm_ctx, __FUNCTION__,
                          (GLenum)mglRenderErrorInvalidOperation());
@@ -2535,7 +2536,7 @@ bool mglBlitResolveFramebufferAttachments(
                     "missing\n");
             return false;
         }
-        if (!read_texture_object->mtl_data || read_texture_object->dirty_bits ||
+        if (!mglTextureMtl(read_texture_object) || read_texture_object->dirty_bits ||
             !read_texture_object->is_render_target) {
             read_texture_object->is_render_target = true;
             if (!mglRendererBindMTLTexture(renderer, read_texture_object)) {
@@ -2550,7 +2551,7 @@ bool mglBlitResolveFramebufferAttachments(
                                                          read_texture_object)) {
             return false;
         }
-        readtexid = read_texture_object->mtl_data;
+        readtexid = mglTextureMtl(read_texture_object);
         if (!readtexid) {
             fprintf(stderr,
                     "MGL WARN: mtlBlitFramebuffer read MTL texture missing\n");
@@ -2615,7 +2616,7 @@ bool mglBlitResolveFramebufferAttachments(
                                                          draw_texture_object)) {
             return false;
         }
-        drawtexid = draw_texture_object->mtl_data;
+        drawtexid = mglTextureMtl(draw_texture_object);
         if (!drawtexid) {
             fprintf(stderr,
                     "MGL WARN: mtlBlitFramebuffer draw MTL texture missing\n");
@@ -3429,7 +3430,7 @@ void mglBlitCopyTexSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
     }
 
     /* Bind the destination texture so we can inspect its Metal pixel format. */
-    if (!tex->mtl_data && !mglRendererBindMTLTexture(renderer, tex)) {
+    if (!mglTextureMtl(tex) && !mglRendererBindMTLTexture(renderer, tex)) {
         fprintf(stderr,
                 "MGL ERROR: mtlCopyTexSubImage failed to bind destination "
                 "texture %u\n",
@@ -3438,7 +3439,7 @@ void mglBlitCopyTexSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
                          (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
-    void *dest_texture = tex->mtl_data;
+    void *dest_texture = mglTextureMtl(tex);
     if (!dest_texture) {
         fprintf(stderr,
                 "MGL ERROR: mtlCopyTexSubImage destination texture %u has no "
@@ -3729,9 +3730,9 @@ void *mglBlitFreshGLSampledRenderTargetCopyForSampling(
      * (direct MTL upload skipped/failed).  Rebuild the Y-flip copy from Metal
      * only after flushing CPU backing, otherwise feedback sampling sees the
      * previous clear/RT contents (KHR-GL46.texture_barrier). */
-    if ((tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0 && tex->mtl_data &&
+    if ((tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0 && mglTextureMtl(tex) &&
         !tex->metal_data_authoritative) {
-        void *dirty_metal = tex->mtl_data;
+        void *dirty_metal = mglTextureMtl(tex);
         int flushed = 0;
         if (mglRenderTextureTargetIs2D((uint32_t)tex->target) &&
             mglBdTextureInfo(dirty_metal).texture_type == MGLTextureType2D &&
@@ -3757,7 +3758,7 @@ void *mglBlitFreshGLSampledRenderTargetCopyForSampling(
                   tex->params.depth_stencil_mode,
                   mglBdTextureInfo(sampled_copy).pixel_format),
               expected_kind))) {
-        source = tex->mtl_data;
+        source = mglTextureMtl(tex);
         if (source) {
             (void)mglBlitUpdateGLSampledRenderTargetCopy(
                 renderer, tex, source, "sample_gate_miss_repair");

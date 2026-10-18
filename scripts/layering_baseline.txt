@@ -2,12 +2,12 @@
 # Format: rule path count.  Counts may only go down; see the script.
 
 C1 MGL/src/buffers.c 10
-C1 MGL/src/framebuffers.c 10
-C1 MGL/src/rendering.c 6
+C1 MGL/src/framebuffers.c 9
+C1 MGL/src/rendering.c 4
 C1 MGL/src/samplers.c 3
 C1 MGL/src/shaders.c 2
 C1 MGL/src/tex_param.c 3
-C1 MGL/src/textures.c 62
+C1 MGL/src/textures.c 45
 C2 MGL/src/mgl_batch_dyn_bind_encode.c 1
 C2 MGL/src/mgl_render_binding.cpp 83
 C2 MGL/src/mgl_render_buffer.cpp 60
@@ -21,7 +21,7 @@ C2 MGL/src/mgl_render_texture.cpp 125
 C2 MGL/src/mgl_renderer_ports.c 1
 C2 MGL/src/mgl_texture_bind.c 49
 C4 MGL/include/mgl_types_buffer.h 1
-C4 MGL/include/mgl_types_texture.h 3
+C4 MGL/include/mgl_types_texture.h 2
 C5 MGL/src/mgl_batch_replay_trace.c 2
 C5 MGL/src/mgl_clear_buffer_ops.c 6
 C5 MGL/src/mgl_draw_metal_port.c 122

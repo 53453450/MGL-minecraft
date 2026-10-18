@@ -567,7 +567,7 @@ bool mglSampledBindSeparateSamplersAndArrayTextures(
                     array_stage == _FRAGMENT_SHADER ? "fragment" : "vertex";
                 if (array_texture &&
                     mglRendererBindMTLTexture(renderer, array_texture)) {
-                    metal_texture = array_texture->mtl_data;
+                    metal_texture = mglTextureMtl(array_texture);
                     /* mtl_data may be a bound render target; sample its copy. */
                     if (!mglSampledRenderTargetCopyPlan(
                             renderer, array_texture, &metal_texture,
@@ -875,8 +875,8 @@ bool mglSampledBindTexturesForStage(
             if (is_fragment) {
                 RETURN_FALSE_ON_FAILURE(mglRendererBindMTLTexture(renderer, ptr));
                 MGL_SS_ABORT_TBIND_IF_ENCODER_CLOSED();
-                if (ptr->mtl_data) {
-                    texture = ptr->mtl_data;
+                if (mglTextureMtl(ptr)) {
+                    texture = mglTextureMtl(ptr);
                     /* Defer RT base-level views until Y-flip (avoids MRT view races). */
                     if (!ptr->is_render_target) {
                         texture = mglSampledTextureViewForBaseLevel(ptr, texture);
@@ -961,8 +961,8 @@ bool mglSampledBindTexturesForStage(
             } else {
                 RETURN_FALSE_ON_FAILURE(mglRendererBindMTLTexture(renderer, ptr));
                 MGL_SS_ABORT_TBIND_IF_ENCODER_CLOSED();
-                if (ptr->mtl_data) {
-                    texture = (ptr->mtl_data);
+                if (mglTextureMtl(ptr)) {
+                    texture = (mglTextureMtl(ptr));
                     texture = mglSampledTextureViewForBaseLevel(
                         ptr, texture);
                 }

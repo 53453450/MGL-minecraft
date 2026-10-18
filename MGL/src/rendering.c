@@ -47,6 +47,7 @@
 #include "mgl_texture_debug.h"
 
 #include "mgl_trace_log.h"
+#include "mgl_texture_backend.h"
 
 static Texture *mglStencilAttachmentTexture(FBOAttachment *attachment)
 {
@@ -2666,7 +2667,7 @@ static GLubyte *mglReadPixelsGpuStencil(GLMContext ctx, Texture *stencilTexture,
                                         GLint x, GLint y,
                                         GLsizei width, GLsizei height)
 {
-    if (!stencilTexture || !STATE(readbuffer) || !stencilTexture->mtl_data) {
+    if (!stencilTexture || !STATE(readbuffer) || !mglTextureMtl(stencilTexture)) {
         return NULL;
     }
     GLubyte *stencil = (GLubyte *)calloc((size_t)width * height, 1u);
@@ -2788,7 +2789,7 @@ static bool mglReadPixelsDepthStencil(GLMContext ctx,
     GLboolean useGpuDepth = GL_FALSE;
 
     mglFlushCommandBuffer(ctx);
-    if (depthTex && depthTex->mtl_data) {
+    if (depthTex && mglTextureMtl(depthTex)) {
         gpuDepth = (GLfloat *)calloc((size_t)width * height, sizeof(GLfloat));
         if (!gpuDepth) {
             ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);

@@ -47,6 +47,12 @@ static inline void *mglImageUnitView(const ImageUnit *unit)
     return unit && unit->backend ? unit->backend->view : NULL;
 }
 
+/* The Metal texture kept for `texture`, or NULL. */
+static inline void *mglTextureMtl(const Texture *texture)
+{
+    return texture && texture->backend ? texture->backend->mtl_data : NULL;
+}
+
 /* The owner Metal texture a texture view was last built from, or NULL. */
 static inline void *mglTextureViewParent(const Texture *texture)
 {

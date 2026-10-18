@@ -34,6 +34,7 @@
 
 #include <simd/simd.h>          /* vector_float4 / vector_uint2 (shader layouts) */
 #include <stdio.h>              /* fprintf for the RT-SAMPLE-COPY diagnostics */
+#include "mgl_texture_backend.h"
 
 /* Local twin of the file-static mglBlitTextureInfo in MGLRenderer+Blit.m
  * (same three lines: fetch the Metal texture info, zero when absent). */
@@ -638,7 +639,7 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
 
 int mglBlitFlipRenderTargetStorageForFirstWrite(void *renderer, Texture *tex)
 {
-    if (!tex || !tex->mtl_data || !tex->is_render_target ||
+    if (!tex || !mglTextureMtl(tex) || !tex->is_render_target ||
         tex->mtl_render_target_write_version != 0u) {
         return 1;
     }
@@ -651,7 +652,7 @@ int mglBlitFlipRenderTargetStorageForFirstWrite(void *renderer, Texture *tex)
             }
         }
     }
-    if (!hasContent || !mglBlitTextureCanUseGLSampledRenderTargetCopy(tex, tex->mtl_data)) {
+    if (!hasContent || !mglBlitTextureCanUseGLSampledRenderTargetCopy(tex, mglTextureMtl(tex))) {
         return 1;
     }
 
@@ -661,17 +662,17 @@ int mglBlitFlipRenderTargetStorageForFirstWrite(void *renderer, Texture *tex)
     tex->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
     MGLRendererStateView areas;
     mglRendererFillStateView(renderer, &areas);
-    if (!mglBlitUpdateGLSampledRenderTargetCopy(renderer, tex, tex->mtl_data,
+    if (!mglBlitUpdateGLSampledRenderTargetCopy(renderer, tex, mglTextureMtl(tex),
                                                 "rt_first_write_flip") ||
         mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(
             areas.command ? areas.command->currentCommandBufferOwner : NULL,
-            tex->mtl_gl_sampled_data, tex->mtl_data) != 0) {
+            tex->mtl_gl_sampled_data, mglTextureMtl(tex)) != 0) {
         fprintf(stderr, "MGL ERROR: texture %u: render-target storage flip failed\n",
                 tex->name);
         return 0;
     }
     tex->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
-    if (!mglBlitUpdateGLSampledRenderTargetCopy(renderer, tex, tex->mtl_data,
+    if (!mglBlitUpdateGLSampledRenderTargetCopy(renderer, tex, mglTextureMtl(tex),
                                                 "rt_first_write_sample_gl")) {
         fprintf(stderr, "MGL ERROR: texture %u: render-target sampled-copy rebuild failed\n",
                 tex->name);
@@ -684,21 +685,21 @@ int mglBlitUnflipRenderTargetStorageForImageAccess(void *renderer, Texture *tex)
 {
     /* Views share the storage with textures whose orientation is tracked
      * separately; those stay flipped. */
-    if (!tex || !tex->mtl_data ||
+    if (!tex || !mglTextureMtl(tex) ||
         !mglRenderTargetStorageYFlipped(tex->is_render_target ? 1 : 0,
                                         tex->mtl_render_target_write_version) ||
         tex->view_root || tex->view_count ||
-        !mglBlitTextureCanUseGLSampledRenderTargetCopy(tex, tex->mtl_data)) {
+        !mglBlitTextureCanUseGLSampledRenderTargetCopy(tex, mglTextureMtl(tex))) {
         return 1;
     }
     mglRendererEndRenderEncodingLocked(renderer);
     MGLRendererStateView areas;
     mglRendererFillStateView(renderer, &areas);
-    if (!mglBlitUpdateGLSampledRenderTargetCopy(renderer, tex, tex->mtl_data,
+    if (!mglBlitUpdateGLSampledRenderTargetCopy(renderer, tex, mglTextureMtl(tex),
                                                 "rt_image_unflip") ||
         mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(
             areas.command ? areas.command->currentCommandBufferOwner : NULL,
-            tex->mtl_gl_sampled_data, tex->mtl_data) != 0) {
+            tex->mtl_gl_sampled_data, mglTextureMtl(tex)) != 0) {
         fprintf(stderr, "MGL ERROR: texture %u: render-target storage unflip failed\n",
                 tex->name);
         return 0;
@@ -733,7 +734,7 @@ void mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer(
         }
         FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
         Texture *tex = mglRendererAttachmentTextureFor(areas.ctx, attachment);
-        if (tex && tex->mtl_data &&
+        if (tex && mglTextureMtl(tex) &&
             mglRenderSampledRTNeedsCopy(tex->is_render_target ? 1 : 0,
                                         tex->mtl_render_target_write_version)) {
             anySampledRT = true;
@@ -753,11 +754,11 @@ void mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer(
         FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
 
         Texture *tex = mglRendererAttachmentTextureFor(areas.ctx, attachment);
-        if (!tex || !tex->mtl_data) {
+        if (!tex || !mglTextureMtl(tex)) {
             continue;
         }
 
-        void *source = tex->mtl_data;
+        void *source = mglTextureMtl(tex);
         if (!mglBlitTextureCanUseGLSampledRenderTargetCopy(tex, source)) {
             continue;
         }

@@ -47,6 +47,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "mgl_texture_backend.h"
 
 /* The .m's file-local constants this TU needs (values copied verbatim). */
 enum {
@@ -717,7 +718,7 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
         loadStore.has_clear_pending =
             mglRenderClearMaskHasColor((uint32_t)att->clear_bitmask) ? 1 : 0;
         loadStore.texture_present =
-            (attachmentTextureForClear && attachmentTextureForClear->mtl_data)
+            (attachmentTextureForClear && mglTextureMtl(attachmentTextureForClear))
                 ? 1
                 : 0;
         loadStore.dontcare_enabled = dontCareLoadEnabled ? 1 : 0;
@@ -771,7 +772,7 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
              * only hits the attached base slice. Clear the other sample planes
              * so imageLoad(sample) sees the same clear value. */
             if (attachmentTextureForClear &&
-                attachmentTextureForClear->mtl_data &&
+                mglTextureMtl(attachmentTextureForClear) &&
                 mglRenderIsMultisampleTextureTarget(
                     (uint32_t)attachmentTextureForClear->target)) {
                 const MGLMetalAttachmentSubresource sub =
@@ -781,7 +782,7 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
                 for (uint64_t s = 1u; s < samples; s++) {
                     (void)mglRenderEncodeColorClearForCommandBufferOwner(
                         commandState->currentCommandBufferOwner,
-                        attachmentTextureForClear->mtl_data, sub.level,
+                        mglTextureMtl(attachmentTextureForClear), sub.level,
                         sub.slice + s, sub.depthPlane, att->clear_color[0],
                         att->clear_color[1], att->clear_color[2],
                         att->clear_color[3]);

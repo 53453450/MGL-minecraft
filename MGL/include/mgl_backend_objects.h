@@ -90,6 +90,9 @@ struct MGLBaseLevelViewCache {
 };
 
 struct MGLTextureBackend {
+    /* The texture's Metal texture (retained), or NULL until the backend first
+     * creates it. */
+    void *mtl_data;
     struct MGLBaseLevelViewCache base_level_view;
     /* A texture view's Metal texture is a view of its owner's; this is the
      * retained owner texture the view was last built from, compared to see

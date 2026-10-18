@@ -31,6 +31,7 @@
 #include "mgl_frame_activity.h" /* MGL_FRAME_LOAD / draw-since-swap */
 #include "mgl_index_buffer.h"    /* mglGLIndexElementSize */
 #include "mgl_sync.h"            /* mglCommandBufferStatusName */
+#include "mgl_texture_backend.h"
 
 /* Restated from the ObjC private headers (rules 7 / 26). */
 extern void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level);
@@ -94,7 +95,7 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
     mglMarkGLSampledCopyLevelDirty(tex, level);
 
     if (tex->name == 8u && mglEnvFlagEnabled("MGL_TRACE_RT_WRITE_MARKS")) {
-        void *mtlTexture = tex->mtl_data ? (tex->mtl_data) : NULL;
+        void *mtlTexture = mglTextureMtl(tex) ? (mglTextureMtl(tex)) : NULL;
         mglTraceLog("RT_WRITE_MARK tex=%u level=%u oldRtVer=%u newRtVer=%u caller=%s:%d mtl=%p fmt=%lu size=%lux%lu dirty=0x%x sampledVer=%u copy=%p",
                     (unsigned)tex->name,
                     (unsigned)level,

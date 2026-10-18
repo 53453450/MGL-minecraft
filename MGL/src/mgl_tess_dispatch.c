@@ -64,6 +64,7 @@
 #include "glm_limits.h"                  /* MAX_ATTRIBS, TEXTURE_UNITS */
 #include "mgl_texture_binding_resolve.h" /* mglSamplerBackend* */
 #include "mgl_program_backend.h"
+#include "mgl_texture_backend.h"
 
 /* Declared next to their definitions in Objective-C headers a .c file cannot
  * include; repeated here the way mgl_renderer_ports.c repeats its prototypes.
@@ -922,14 +923,14 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         if (mglTessTextureBindIsStorage(bind->kind)) {
             ptr = mglTessDispatchState(&areas)->image_units[bind->gl_unit].tex;
             if (ptr) {
-                texture = ptr->mtl_data;
+                texture = mglTextureMtl(ptr);
                 texture = mglRendererStorageImageTexture(
                     texture,
                     &mglTessDispatchState(&areas)->image_units[bind->gl_unit]);
             }
         } else {
             ptr = mglTessDispatchState(&areas)->active_textures[bind->gl_unit];
-            texture = ptr ? ptr->mtl_data : NULL;
+            texture = ptr ? mglTextureMtl(ptr) : NULL;
             /* Match VS/FS: stencil-aspect / base-level view for sampling. */
             if (ptr && texture)
                 texture = mglSampledTextureViewForBaseLevel(ptr, texture);

@@ -42,6 +42,7 @@
 #include "mgl_pixel_format.h"
 #include "pixel_utils.h"
 #include "utils.h"
+#include "mgl_texture_backend.h"
 
 /* GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS is defined in GLES but not in desktop
  * GL headers; define it here for FBO completeness checks. */
@@ -3330,10 +3331,10 @@ void mglRenderbufferStorageMultisample(GLMContext ctx, GLenum target, GLsizei sa
     {
         Texture *tex = STATE(renderbuffer)->tex;
         tex->samples = mglRenderbufferStorageSamples(ctx, samples);
-        if (tex->mtl_data) {
+        if (mglTextureMtl(tex)) {
             /* Drop any premature single-sample Metal texture so the next
              * FBO bind recreates with Multisample → array-emulated planes. */
-            mglSafeReleaseMetalObj((void **)&tex->mtl_data);
+            mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(tex)->mtl_data);
         }
         tex->dirty_bits |= DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA;
     }

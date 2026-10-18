@@ -46,6 +46,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "mgl_texture_backend.h"
 
 /* The .m's file-local constants this TU needs (values copied verbatim). */
 enum {
@@ -989,14 +990,14 @@ int mglTextureEncodeBytesUpload(void *renderer, Texture *tex, void *buffer,
         return false;
     }
 
-    if (tex->mtl_data == NULL) {
+    if (mglTextureMtl(tex) == NULL) {
         mglRendererBindMTLTexture(renderer, tex);
-        if (tex->mtl_data == NULL) {
+        if (mglTextureMtl(tex) == NULL) {
             return false;
         }
     }
 
-    void *texture = tex->mtl_data;
+    void *texture = mglTextureMtl(tex);
     if (!texture) {
         return false;
     }
@@ -3258,8 +3259,8 @@ int mglTextureSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
     }
 
 
-    if (tex->mtl_data) {
-        void *dstTexture = tex->mtl_data;
+    if (mglTextureMtl(tex)) {
+        void *dstTexture = mglTextureMtl(tex);
         uint32_t dstPixelFormat = mglPdTextureInfo(dstTexture).pixel_format;
         int needsChannelExpand = mglTextureNeedsChannelExpansion(tex->internalformat, dstPixelFormat);
         int needsRGBA8Expand = 0;
@@ -3420,7 +3421,7 @@ int mglTextureSubImageBytes(void *renderer, GLMContext glm_ctx,
         return false;
     }
 
-    if (!tex->mtl_data) {
+    if (!mglTextureMtl(tex)) {
         return false;
     }
 
@@ -3428,7 +3429,7 @@ int mglTextureSubImageBytes(void *renderer, GLMContext glm_ctx,
      * The CPU backing stores 3 channels per pixel, but the Metal texture expects
      * 4 channels. We must expand each pixel by inserting a default alpha before
      * uploading, otherwise the data layout mismatches and pixels shift. */
-    void *dstTexture = tex->mtl_data;
+    void *dstTexture = mglTextureMtl(tex);
     uint32_t dstPixelFormat = mglPdTextureInfo(dstTexture).pixel_format;
     int needsChannelExpand = mglTextureNeedsChannelExpansion(tex->internalformat,
                                                               dstPixelFormat);
@@ -3609,7 +3610,7 @@ int mglTextureSubImageBytes(void *renderer, GLMContext glm_ctx,
          * copy before the first feedback draw (color1+ previously rebuilt
          * only as a side-effect of color0's sample-gate repair). */
         mglUpMarkTextureLevelMetalFilled(tex, level, packedBytes);
-        void *source = tex->mtl_data;
+        void *source = mglTextureMtl(tex);
         if (source) {
             (void)mglBlitUpdateGLSampledRenderTargetCopy(
                 renderer, tex, source, "texSubImage_metal_fill");

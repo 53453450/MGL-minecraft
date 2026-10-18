@@ -44,6 +44,7 @@
 #include "mgl_types_state.h"      /* mglMarkRendererDirtyBits + DIRTY_* */
 #include "mgl_metal_ref.h"        /* shared metal reference helpers */
 #include "glm_context.h"          /* RETURN_FALSE_ON_FAILURE */
+#include "mgl_texture_backend.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C (the same twin as
  * mgl_compute_bind.c). */
@@ -246,7 +247,7 @@ bool mglBindingStateBindStorageImagesForStage(void *renderer, int shader_stage,
                 if (mglSiAbortTBindIfEncoderClosed(&areas)) {
                     return false;
                 }
-                texture = ptr->mtl_data;
+                texture = mglTextureMtl(ptr);
                 texture = mglSiCreateStorageImageView(
                     texture, &mglSiState(&areas)->image_units[plan.gl_unit]);
             }

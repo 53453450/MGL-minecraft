@@ -55,6 +55,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "mgl_texture_backend.h"
 
 /* The .m's file-local constants this TU needs (values copied verbatim). */
 enum {
@@ -879,7 +880,7 @@ void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
 
         readTextureObject->is_render_target = 1;
         if (!mglRendererBindMTLTexture(renderer, readTextureObject) ||
-            !readTextureObject->mtl_data) {
+            !mglTextureMtl(readTextureObject)) {
             fprintf(stderr,
                     "MGL WARNING: readPixels could not bind FBO depth texture fbo=%u tex=%u\n",
                     fbo ? (unsigned)fbo->name : 0u,
@@ -889,7 +890,7 @@ void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
             return;
         }
 
-        void *texture = readTextureObject->mtl_data;
+        void *texture = mglTextureMtl(readTextureObject);
         const MGLMetalAttachmentSubresource subresource =
             mglMetalAttachmentSubresourceForAttachment(attachment);
 
@@ -964,13 +965,13 @@ void mglTextureReadIntegerPixels(void *renderer, GLMContext glm_ctx,
     FBOAttachment *attachment = &fbo->color_attachments[att];
     Texture *textureObj = mglRendererAttachmentTextureFor(glm_ctx, attachment);
     if (!textureObj || !mglRendererBindMTLTexture(renderer, textureObj) ||
-        !textureObj->mtl_data) {
+        !mglTextureMtl(textureObj)) {
         mglDispatchError(glm_ctx, __func__,
                          (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
-    void *texture = textureObj->mtl_data;
+    void *texture = mglTextureMtl(textureObj);
     const MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
 
@@ -1075,7 +1076,7 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
 
         readTextureObject->is_render_target = 1;
         if (!mglRendererBindMTLTexture(renderer, readTextureObject) ||
-            !readTextureObject->mtl_data) {
+            !mglTextureMtl(readTextureObject)) {
             fprintf(stderr,
                     "MGL WARNING: readPixels could not bind FBO read texture fbo=%u attachment=0x%x tex=%u\n",
                     (unsigned)fbo->name, (unsigned)readBuffer,
@@ -1085,7 +1086,7 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
             return;
         }
 
-        void *texture = readTextureObject->mtl_data;
+        void *texture = mglTextureMtl(readTextureObject);
         const MGLMetalAttachmentSubresource subresource =
             mglMetalAttachmentSubresourceForAttachment(attachment);
         mglRendererEndRenderEncodingLocked(renderer);
@@ -1355,16 +1356,16 @@ int mglTextureReadStencilPixels(void *renderer, GLMContext glm_ctx,
     FBOAttachment *attachment = fbo ? &fbo->stencil : NULL;
     Texture *tex = mglRendererAttachmentTextureFor(glm_ctx, attachment);
     if (!tex || tex->samples > 1u || !mglRendererBindMTLTexture(renderer, tex) ||
-        !tex->mtl_data) {
+        !mglTextureMtl(tex)) {
         return 0;
     }
     const uint32_t pixelFormat =
-        (uint32_t)mglPdTextureInfo(tex->mtl_data).pixel_format;
+        (uint32_t)mglPdTextureInfo(mglTextureMtl(tex)).pixel_format;
     if (!mglMetalPixelFormatIsPackedDepthStencil(pixelFormat) &&
         pixelFormat != 253u /* Stencil8 */) {
         return 0;
     }
-    void *texture = tex->mtl_data;
+    void *texture = mglTextureMtl(tex);
     const MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
     const uint64_t levelWidth = mglPdMaxU64(
@@ -1427,7 +1428,7 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         return;
     }
 
-    if ((!tex->mtl_data || (tex->dirty_bits & DIRTY_TEXTURE_DATA)) &&
+    if ((!mglTextureMtl(tex) || (tex->dirty_bits & DIRTY_TEXTURE_DATA)) &&
         !mglRendererBindMTLTexture(renderer, tex)) {
         fprintf(stderr,
                 "MGL ERROR: mtlGetTexImage failed to bind texture %u\n",
@@ -1437,7 +1438,7 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         return;
     }
 
-    texture = tex->mtl_data;
+    texture = mglTextureMtl(tex);
     if (!texture) {
         fprintf(stderr,
                 "MGL ERROR: mtlGetTexImage texture %u has no Metal texture\n",

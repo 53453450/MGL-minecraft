@@ -60,6 +60,7 @@
 #include <math.h>     /* lrintf */
 #include "mgl_readback_policy.h"
 #include "mgl_program_backend.h"
+#include "mgl_texture_backend.h"
 
 /* Defined in MGLRenderer.m; declared in the Objective-C
  * MGLRenderer+RenderPass_Private.h. */
@@ -826,12 +827,12 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
 
         if (tex) {
             tex->is_render_target = 1;
-            if (!tex->mtl_data) {
+            if (!mglTextureMtl(tex)) {
                 if (!mglRendererBindMTLTexture(renderer, tex)) {
                     return 0;
                 }
             }
-            expected = (tex->mtl_data);
+            expected = (mglTextureMtl(tex));
         }
 
         void * actual = mglRenderPassTextureFromSnapshot(
@@ -869,13 +870,13 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
     void * expectedDepth = NULL;
     if (fbo->depth.texture) {
         Texture *depthTex = mglRendererAttachmentTextureFor(ctx, &fbo->depth);
-        if (depthTex && !depthTex->mtl_data) {
+        if (depthTex && !mglTextureMtl(depthTex)) {
             depthTex->is_render_target = 1;
             if (!mglRendererBindMTLTexture(renderer, depthTex)) {
                 return 0;
             }
         }
-        expectedDepth = depthTex ? (depthTex->mtl_data) : NULL;
+        expectedDepth = depthTex ? (mglTextureMtl(depthTex)) : NULL;
     }
     void * actualDepth = mglRenderPassTextureFromSnapshot(
         &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
@@ -899,13 +900,13 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
     void * expectedStencil = NULL;
     if (fbo->stencil.texture) {
         Texture *stencilTex = mglRendererAttachmentTextureFor(ctx, &fbo->stencil);
-        if (stencilTex && !stencilTex->mtl_data) {
+        if (stencilTex && !mglTextureMtl(stencilTex)) {
             stencilTex->is_render_target = 1;
             if (!mglRendererBindMTLTexture(renderer, stencilTex)) {
                 return 0;
             }
         }
-        expectedStencil = stencilTex ? (stencilTex->mtl_data) : NULL;
+        expectedStencil = stencilTex ? (mglTextureMtl(stencilTex)) : NULL;
     }
     void * actualStencil = mglRenderPassTextureFromSnapshot(
         &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0);
@@ -1074,7 +1075,7 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
                 fprintf(stderr, "failure %s:%d\n", __func__, __LINE__);
                 return false;
             }
-            if (!tex->mtl_data) {
+            if (!mglTextureMtl(tex)) {
                 continue;
             }
             if (!mglBlitFlipRenderTargetStorageForFirstWrite(renderer, tex)) {
@@ -1093,7 +1094,7 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
             }
             mglPdSetPersistentAttachment(
                 commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
-                mglApplySRGBStateToRenderTarget(tex->mtl_data, ctx),
+                mglApplySRGBStateToRenderTarget(mglTextureMtl(tex), ctx),
                 subresource.level, subresource.slice, subresource.depthPlane,
                 fbo->color_attachments[attachmentIndex].layered ? 1 : 0);
 
@@ -1152,7 +1153,7 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
                 return false;
             }
         }
-        if (tex && tex->mtl_data) {
+        if (tex && mglTextureMtl(tex)) {
             if (!mglBlitFlipRenderTargetStorageForFirstWrite(renderer, tex)) {
                 return false;
             }
@@ -1167,7 +1168,7 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
             }
             mglPdSetPersistentAttachment(
                 commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
-                tex->mtl_data, subresource.level, subresource.slice,
+                mglTextureMtl(tex), subresource.level, subresource.slice,
                 subresource.depthPlane, fbo->depth.layered ? 1 : 0);
         }
     }
@@ -1182,7 +1183,7 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
                 return false;
             }
         }
-        if (tex && tex->mtl_data) {
+        if (tex && mglTextureMtl(tex)) {
             if (!mglBlitFlipRenderTargetStorageForFirstWrite(renderer, tex)) {
                 return false;
             }
@@ -1197,7 +1198,7 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
             }
             mglPdSetPersistentAttachment(
                 commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
-                tex->mtl_data, subresource.level, subresource.slice,
+                mglTextureMtl(tex), subresource.level, subresource.slice,
                 subresource.depthPlane, fbo->stencil.layered ? 1 : 0);
         }
     }
@@ -1865,7 +1866,7 @@ int mglRenderPassGeneratePipelineDescriptorState(
                 }
                 Texture *stubTex = mglRendererAttachmentTextureFor(
                     ctx, &stubFbo->color_attachments[i]);
-                if (stubTex && stubTex->mtl_data) {
+                if (stubTex && mglTextureMtl(stubTex)) {
                     stubColor0 = mtlPixelFormatForGLTex(stubTex);
                     if (!mglRenderPixelFormatIsInvalid(stubColor0)) {
                         break;
@@ -2007,7 +2008,7 @@ int mglRenderPassGeneratePipelineDescriptorState(
                             i, tex->name);
                     return 0;
                 }
-                if (tex && tex->mtl_data) {
+                if (tex && mglTextureMtl(tex)) {
                     desc->color_format[i] =
                         (uint32_t)mtlPixelFormatForGLTex(tex);
                 } else {
@@ -2029,7 +2030,7 @@ int mglRenderPassGeneratePipelineDescriptorState(
                         tex->name);
                 return 0;
             }
-            if (tex && tex->mtl_data) {
+            if (tex && mglTextureMtl(tex)) {
                 const uint32_t rawDepth =
                     (uint32_t)mtlPixelFormatForGLTex(tex);
                 const uint32_t depthFormat =
@@ -2052,7 +2053,7 @@ int mglRenderPassGeneratePipelineDescriptorState(
                         tex->name);
                 return 0;
             }
-            if (tex && tex->mtl_data) {
+            if (tex && mglTextureMtl(tex)) {
                 const uint32_t rawStencil =
                     (uint32_t)mtlPixelFormatForGLTex(tex);
                 const uint32_t stencilFormat =

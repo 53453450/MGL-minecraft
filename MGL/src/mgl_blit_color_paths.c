@@ -52,6 +52,7 @@
 #include "mgl_texture_bind.h"      /* mglRendererBindMTLTexture */
 #include "mgl_texture_readback_clear.h" /* pending FBO depth clear */
 #include "mgl_pso_format_class.h"
+#include "mgl_texture_backend.h"
 
 /* Repeated from MGLRenderer+Blit_Private.h (an Objective-C header a .c file
  * cannot include): the MSAA-integer-resolve compute parameters. */
@@ -736,8 +737,8 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                                                         depth_read_object) &&
             mglBlitFlipRenderTargetStorageForFirstWrite(renderer,
                                                         depth_draw_object)) {
-            void *depth_read_texture = depth_read_object->mtl_data;
-            void *depth_draw_texture = depth_draw_object->mtl_data;
+            void *depth_read_texture = mglTextureMtl(depth_read_object);
+            void *depth_draw_texture = mglTextureMtl(depth_draw_object);
             MGLMetalAttachmentSubresource depth_read_subresource =
                 mglMetalAttachmentSubresourceForAttachment(depth_read_attachment);
             MGLMetalAttachmentSubresource depth_draw_subresource =

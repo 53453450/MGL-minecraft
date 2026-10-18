@@ -53,6 +53,7 @@
 #include "mgl_types_texture.h"      /* Texture, Sampler */
 #include "mgl_texture_binding_resolve.h" /* mglSamplerBackend* */
 #include "mgl_program_backend.h"
+#include "mgl_texture_backend.h"
 
 /* Declared next to its definition in the Objective-C
  * MGLRenderer+RenderPass_Private.h, which a .c file cannot include; repeated
@@ -533,13 +534,13 @@ bool mglTessPlanTextureBinds(void *renderer, const MGLTessTextureBind *binds,
         if (mglTessTextureBindIsStorage(bind->kind)) {
             ptr = state->image_units[bind->gl_unit].tex;
             if (ptr) {
-                texture = ptr->mtl_data;
+                texture = mglTextureMtl(ptr);
                 texture = mglRendererStorageImageTexture(
                     texture, &state->image_units[bind->gl_unit]);
             }
         } else {
             ptr = state->active_textures[bind->gl_unit];
-            texture = ptr ? ptr->mtl_data : NULL;
+            texture = ptr ? mglTextureMtl(ptr) : NULL;
             /* GL 4.6 §8.23.1: STENCIL_INDEX mode needs an X32/X24_Stencil8
              * view — same as VS/FS bind. Tess used to bind raw mtl_data. */
             if (ptr && texture)

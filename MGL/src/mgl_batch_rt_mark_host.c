@@ -43,6 +43,7 @@
 #include "mgl_render_api_texture.h"
 #include "mgl_render_api_command.h"
 #include "mgl_render_api_binding.h"
+#include "mgl_texture_backend.h"
 
 /* Defined in MGLRenderer+Draw.m (C linkage); the ObjC private header declares
  * it, so C declares it here. */
@@ -91,7 +92,7 @@ static void *mglBatchRtMarkHostAttachmentMtl(void *v, uint32_t att)
     MGLBatchRtMarkHostCtx *c = (MGLBatchRtMarkHostCtx *)v;
     Texture *tex =
         mglRendererAttachmentTextureFor(c->glm, &c->fbo->color_attachments[att]);
-    return (tex && tex->mtl_data) ? tex->mtl_data : NULL;
+    return (tex && mglTextureMtl(tex)) ? mglTextureMtl(tex) : NULL;
 }
 
 static int mglBatchRtMarkHostRpHas(void *v, void *mtl)
@@ -119,8 +120,8 @@ static void mglBatchRtMarkTraceWriteMark(GLMContext ctx, void *renderer,
     Texture *rtColor = NULL, *rtDepth = NULL;
     (void)mglFramebufferLooksLikeGLSampledCopyRenderTarget(ctx, fbo, &rtColor,
                                                            &rtDepth);
-    void *colorMTL = tex->mtl_data;
-    void *depthMTL = (rtDepth && rtDepth->mtl_data) ? rtDepth->mtl_data : NULL;
+    void *colorMTL = mglTextureMtl(tex);
+    void *depthMTL = (rtDepth && mglTextureMtl(rtDepth)) ? mglTextureMtl(rtDepth) : NULL;
     void *owner = mglRendererCommandStateFor(renderer)->renderPassStateOwner;
     void *rpColor0 = mglRenderGetRenderPassAttachmentTextureOwner(
         owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);

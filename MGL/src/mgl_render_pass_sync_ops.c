@@ -77,6 +77,7 @@
 
 #include <stdio.h>
 #include "mgl_program_backend.h"
+#include "mgl_texture_backend.h"
 
 /* Declared in Objective-C headers a .c file cannot include. */
 extern int mglEnvFlagEnabled(const char *name);
@@ -1277,8 +1278,8 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
                                 }
                             }
 
-                            void *attachmentMtl = (attachmentTexture && attachmentTexture->mtl_data)
-                                ? (void *)(attachmentTexture->mtl_data)
+                            void *attachmentMtl = (attachmentTexture && mglTextureMtl(attachmentTexture))
+                                ? (void *)(mglTextureMtl(attachmentTexture))
                                 : NULL;
                             void *rpAttachment = mglRsColorTextureFor(commandState, attIndex);
 

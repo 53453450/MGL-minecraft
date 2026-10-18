@@ -200,7 +200,6 @@ typedef struct Texture_t {
     GLuint samples;
     GLboolean fixed_sample_locations;
     TextureFace faces[6];
-    void    *mtl_data;
     void    *mtl_gl_sampled_data;
     GLuint  mtl_gl_sampled_width;
     GLuint  mtl_gl_sampled_height;

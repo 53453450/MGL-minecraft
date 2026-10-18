@@ -246,7 +246,7 @@ void mglTextureGenerateMipmaps(void *renderer, GLMContext glm_ctx,
 
     void *texture;
 
-    texture = tex->mtl_data;
+    texture = mglTextureMtl(tex);
     if (!texture) {
         fprintf(stderr, "MGL ERROR: mtlGenerateMipmaps texture %u has no Metal texture after bind\n", tex->name);
         mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
@@ -316,10 +316,10 @@ void mglTextureFlushImageUnitSlice(void *renderer, GLMContext glm_ctx,
             (uint32_t)iu->access)) {
         return;
     }
-    if (!mglRendererBindMTLTexture(renderer, iu->tex) || !iu->tex->mtl_data) {
+    if (!mglRendererBindMTLTexture(renderer, iu->tex) || !mglTextureMtl(iu->tex)) {
         return;
     }
-    void *dst3d = iu->tex->mtl_data;
+    void *dst3d = mglTextureMtl(iu->tex);
     void *staging = mglImageUnitView(iu);
     MGLRenderTextureInfo info = mglTxTextureInfo(dst3d);
     if (info.texture_type != MGLTextureType3D || info.width == 0u) {
@@ -365,10 +365,10 @@ void mglTexturePrepareImageUnitSlice(void *renderer, GLMContext glm_ctx,
         !mglRenderTextureTargetIs3D((uint32_t)iu->tex->target)) {
         return;
     }
-    if (!mglRendererBindMTLTexture(renderer, iu->tex) || !iu->tex->mtl_data) {
+    if (!mglRendererBindMTLTexture(renderer, iu->tex) || !mglTextureMtl(iu->tex)) {
         return;
     }
-    void *src3d = iu->tex->mtl_data;
+    void *src3d = mglTextureMtl(iu->tex);
     MGLRenderTextureInfo info = mglTxTextureInfo(src3d);
     if (info.texture_type != MGLTextureType3D || info.width == 0u) {
         return;
@@ -428,12 +428,12 @@ void mglTextureSyncBufferFromImage(void *renderer, GLMContext glm_ctx,
 {
     if (!glm_ctx || !tex ||
         !mglRenderTextureTargetIsBuffer((uint32_t)tex->target) ||
-        !tex->mtl_data || !tex->texture_buffer || tex->texture_buffer_size <= 0) {
+        !mglTextureMtl(tex) || !tex->texture_buffer || tex->texture_buffer_size <= 0) {
         return;
     }
 
     Buffer *sourceBuffer = tex->texture_buffer;
-    void *texture = tex->mtl_data;
+    void *texture = mglTextureMtl(tex);
     MGLRenderTextureInfo info = mglTxTextureInfo(texture);
     if (info.width == 0u || info.height == 0u) {
         return;

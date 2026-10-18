@@ -20,6 +20,7 @@
 
 #include "mgl_rt_sync.h"
 #include "mgl_render_api_texture.h"
+#include "mgl_texture_backend.h"
 
 /* findTexture is implemented in textures.c and resolves a GL texture name to
  * a Texture *.  Declared here so this module does not need to include the
@@ -28,7 +29,7 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
 
 bool mglTextureIsAttachmentOfFramebuffer(Framebuffer *fbo, Texture *tex)
 {
-    if (!fbo || !tex || !tex->mtl_data) {
+    if (!fbo || !tex || !mglTextureMtl(tex)) {
         return false;
     }
     GLuint texName = tex->name;
