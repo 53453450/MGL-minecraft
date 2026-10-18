@@ -257,7 +257,7 @@ static bool mglTextureParameterValuesEqual(const TextureParameter *a,
                                            const TextureParameter *b)
 {
     return a && b &&
-           memcmp(a, b, offsetof(TextureParameter, mtl_data)) == 0;
+           memcmp(a, b, sizeof(TextureParameter)) == 0;
 }
 
 static void mglCommitTextureParameter(GLMContext ctx,
@@ -274,9 +274,7 @@ static void mglCommitTextureParameter(GLMContext ctx,
         mglFlushPendingDrawsForTextureParameterChange(ctx, tex);
     }
 
-    void *metal_sampler = tex->params.mtl_data;
     tex->params = *candidate;
-    tex->params.mtl_data = metal_sampler;
     mglMarkTextureParameterDirty(ctx, tex, pname);
 }
 

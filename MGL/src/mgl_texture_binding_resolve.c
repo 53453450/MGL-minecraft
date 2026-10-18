@@ -245,7 +245,7 @@ void mglTextureSampledFacts(const Texture *tex, MGLTextureSampledFacts *out)
     out->dirty = tex->dirty_bits ? 1 : 0;
     out->is_rt = tex->is_render_target ? 1 : 0;
     out->mtl_texture = mglTextureMtl(tex);
-    out->param_sampler_mtl = tex->params.mtl_data;
+    out->param_sampler_mtl = mglTextureSamplerState(tex);
 }
 
 void *mglSamplerBackendState(const Sampler *sampler)

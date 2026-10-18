@@ -93,6 +93,9 @@ struct MGLTextureBackend {
     /* The texture's Metal texture (retained), or NULL until the backend first
      * creates it. */
     void *mtl_data;
+    /* The texture's own MTLSamplerState, built from its parameters and
+     * rebuilt when they change; retained. */
+    void *sampler_state;
     struct MGLBaseLevelViewCache base_level_view;
     /* A texture view's Metal texture is a view of its owner's; this is the
      * retained owner texture the view was last built from, compared to see

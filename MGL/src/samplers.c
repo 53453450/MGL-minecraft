@@ -49,7 +49,7 @@ static bool mglSamplerParameterValuesEqual(const TextureParameter *a,
                                            const TextureParameter *b)
 {
     return a && b &&
-           memcmp(a, b, offsetof(TextureParameter, mtl_data)) == 0;
+           memcmp(a, b, sizeof(TextureParameter)) == 0;
 }
 
 static void mglCommitSamplerParameter(GLMContext ctx,
@@ -66,9 +66,7 @@ static void mglCommitSamplerParameter(GLMContext ctx,
         mglFlushPendingDraws(ctx);
     }
 
-    void *metal_sampler = sampler->params.mtl_data;
     sampler->params = *candidate;
-    sampler->params.mtl_data = metal_sampler;
     mglMarkSamplerParameterDirty(sampler);
 }
 

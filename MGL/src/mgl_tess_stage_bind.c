@@ -569,8 +569,8 @@ bool mglTessPlanTextureBinds(void *renderer, const MGLTessTextureBind *binds,
                 gl_sampler->dirty_bits = 0;
             }
             sampler = mglSamplerBackendState(gl_sampler);
-        } else if (ptr && ptr->params.mtl_data) {
-            sampler = ptr->params.mtl_data;
+        } else if (ptr && mglTextureSamplerState(ptr)) {
+            sampler = mglTextureSamplerState(ptr);
         }
         if (!sampler) {
             sampler = mglTessStageBindCreateSampler();

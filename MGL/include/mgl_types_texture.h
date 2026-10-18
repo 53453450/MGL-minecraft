@@ -81,12 +81,11 @@ typedef struct TextureParameter_t {
      * pipeline) or GL_SKIP_DECODE_EXT (treat sRGB-backed data as linear).
      * Stored here so the texture-creation / pixel-format selection path can
      * downgrade an sRGB Metal pixel format to its linear variant when
-     * SKIP_DECODE is requested.  Kept before mtl_data so the param-equality
-     * memcmp (which spans up to offsetof(mtl_data)) detects changes to it.
+     * SKIP_DECODE is requested.  The parameter-equality memcmp spans the whole
+     * struct, so it detects changes to it.
      * Default is GL_DECODE_EXT; texture structs are bzero'd at creation, so 0
      * is treated as "unset → DECODE" by the getter/helper. */
     GLenum  srgb_decode_ext;
-    void *mtl_data;
 } TextureParameter;
 
 /* GL_EXT_texture_filter_anisotropic: advertised upper bound for

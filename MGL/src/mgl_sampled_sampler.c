@@ -140,7 +140,7 @@ void *mglSampledSamplerMaterialize(void *renderer, Texture *ptr,
         &in, force_default ? 1 : 0, texture_unit < TEXTURE_UNITS ? 1 : 0,
         gl_sampler ? 1 : 0, gl_sampler && gl_sampler->dirty_bits ? 1 : 0,
         mglSamplerBackendState(gl_sampler) ? 1 : 0,
-        ptr && ptr->params.mtl_data ? 1 : 0,
+        ptr && mglTextureSamplerState(ptr) ? 1 : 0,
         (stage && stage[0] == 'v') ? 1 : 0);
     MGLSamplerMaterializePlan plan = {0};
     if (mglBindingTexturePlanSamplerMaterialize(&in, &plan) != 0) {
@@ -171,7 +171,7 @@ void *mglSampledSamplerMaterialize(void *renderer, Texture *ptr,
         params = &gl_sampler->params;
         sampler_name = gl_sampler->name;
     } else if (plan.action == MGL_SM_ACTION_USE_TEX_PARAMS && ptr) {
-        sampler = ptr->params.mtl_data;
+        sampler = mglTextureSamplerState(ptr);
         params = &ptr->params;
     } else {
         return default_sampler;

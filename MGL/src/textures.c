@@ -1774,10 +1774,10 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
         tex->mtl_gl_sampled_data = NULL;
     }
 
-    if (tex->params.mtl_data)
+    if (mglTextureSamplerState(tex))
     {
-        mglRendererDeleteMetalObject(ctx, tex->params.mtl_data);
-        tex->params.mtl_data = NULL;
+        mglRendererDeleteMetalObject(ctx, mglTextureSamplerState(tex));
+        mglTextureBackendEnsure(tex)->sampler_state = NULL;
     }
 
     /* release the cached base-level view */

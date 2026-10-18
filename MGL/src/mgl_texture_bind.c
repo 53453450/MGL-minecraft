@@ -218,14 +218,14 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
         }
         tex->dirty_bits &= ~(DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA |
                              DIRTY_TEXTURE_ACCESS);
-        if ((tex->dirty_bits & DIRTY_TEXTURE_PARAM) && tex->params.mtl_data) {
-            mglSafeReleaseMetalObj((void **)&tex->params.mtl_data);
+        if ((tex->dirty_bits & DIRTY_TEXTURE_PARAM) && mglTextureSamplerState(tex)) {
+            mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(tex)->sampler_state);
         }
-        if (!tex->params.mtl_data) {
-            tex->params.mtl_data =
+        if (!mglTextureSamplerState(tex)) {
+            mglTextureBackendEnsure(tex)->sampler_state =
                 mglTextureCreateSamplerForTexParam(&tex->params, tex->target);
         }
-        if (tex->params.mtl_data) {
+        if (mglTextureSamplerState(tex)) {
             tex->dirty_bits &= ~DIRTY_TEXTURE_PARAM;
         }
         return true;
@@ -481,9 +481,9 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
             }
         }
 
-        if (samplerNeedsRebuild && tex->params.mtl_data)
+        if (samplerNeedsRebuild && mglTextureSamplerState(tex))
         {
-            mglSafeReleaseMetalObj((void **)&tex->params.mtl_data);
+            mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(tex)->sampler_state);
         }
     }
 
@@ -549,14 +549,14 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
         }
     }
 
-    if (tex->params.mtl_data == NULL)
+    if (mglTextureSamplerState(tex) == NULL)
     {
-        tex->params.mtl_data =
+        mglTextureBackendEnsure(tex)->sampler_state =
             mglTextureCreateSamplerForTexParam(&tex->params, tex->target);
         /* Sampler creation should not fail even in recovery mode */
-        if (!tex->params.mtl_data) {
+        if (!mglTextureSamplerState(tex)) {
             fprintf(stderr, "MGL WARNING: Sampler creation failed, using default\n");
-            tex->params.mtl_data = mglTextureBindCreateDefaultSampler();
+            mglTextureBackendEnsure(tex)->sampler_state = mglTextureBindCreateDefaultSampler();
         }
         if ((tex->name == 21u || tex->name == 27u) &&
             mgl_env_flag_enabled("MGL_TRACE_TEXTURE_NAMES")) {
@@ -573,7 +573,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
         }
     }
 
-    if (tex->params.mtl_data) {
+    if (mglTextureSamplerState(tex)) {
         tex->dirty_bits &= ~DIRTY_TEXTURE_PARAM;
     }
 

@@ -53,6 +53,12 @@ static inline void *mglTextureMtl(const Texture *texture)
     return texture && texture->backend ? texture->backend->mtl_data : NULL;
 }
 
+/* The texture's own Metal sampler state, or NULL. */
+static inline void *mglTextureSamplerState(const Texture *texture)
+{
+    return texture && texture->backend ? texture->backend->sampler_state : NULL;
+}
+
 /* The owner Metal texture a texture view was last built from, or NULL. */
 static inline void *mglTextureViewParent(const Texture *texture)
 {
