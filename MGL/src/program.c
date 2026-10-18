@@ -2239,6 +2239,41 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     }
     pptr->modules[stage].metallib_bytes = bytes;
     pptr->modules[stage].metallib_size = size;
+    {
+        /* MGL_DUMP_SHADER_DIR=<dir>: keep every linked stage's source and
+         * metallib as prog<name>_stage<N>.{glsl,metallib}, so a pipeline
+         * the log names by program number can be reproduced. */
+        const char *dump_dir = getenv("MGL_DUMP_SHADER_DIR");
+        if (dump_dir && dump_dir[0]) {
+            char path[1024];
+            snprintf(path, sizeof path, "%s/prog%u_stage%d.glsl", dump_dir,
+                     (unsigned)pptr->name, (int)stage);
+            FILE *f = fopen(path, "wb");
+            if (f) {
+                fwrite(shader->src, 1, strlen(shader->src), f);
+                fclose(f);
+            }
+            snprintf(path, sizeof path, "%s/prog%u_attribs.txt", dump_dir,
+                     (unsigned)pptr->name);
+            f = fopen(path, "w");
+            if (f) {
+                for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
+                    if (pptr->attrib_location_names[ai]) {
+                        fprintf(f, "%d %s\n", ai,
+                                pptr->attrib_location_names[ai]);
+                    }
+                }
+                fclose(f);
+            }
+            snprintf(path, sizeof path, "%s/prog%u_stage%d.metallib",
+                     dump_dir, (unsigned)pptr->name, (int)stage);
+            f = fopen(path, "wb");
+            if (f) {
+                fwrite(bytes, 1, size, f);
+                fclose(f);
+            }
+        }
+    }
     if (getenv("MGL_DUMP_AIR") && stage == _GEOMETRY_SHADER) {
         FILE *f = fopen("/tmp/poison_gs.air", "wb");
         if (f) {

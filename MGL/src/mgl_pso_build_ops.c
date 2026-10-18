@@ -515,6 +515,43 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
         } else {
             fprintf(stderr,
                     "MGL CRITICAL: VIRTUALIZED AGX - Metal pipeline creation crashed\n");
+            /* MGL_DUMP_SHADER_DIR: record the vertex layout and attachment
+             * formats the failing pipeline was built with, next to the
+             * program's dumped shaders. */
+            const char *dumpDir = getenv("MGL_DUMP_SHADER_DIR");
+            if (dumpDir && dumpDir[0]) {
+                char path[1024];
+                snprintf(path, sizeof path, "%s/prog%u_pso.txt", dumpDir,
+                         (unsigned)currentProgramName);
+                FILE *df = fopen(path, "w");
+                if (df) {
+                    fprintf(df, "attrib_count %u\n",
+                            (unsigned)finalState.attrib_count);
+                    for (uint32_t i = 0; i < finalState.attrib_count && i < 32;
+                         i++) {
+                        fprintf(df,
+                                "attr %u format %u offset %u buffer %u "
+                                "stride %u step %u rate %u\n",
+                                (unsigned)i,
+                                (unsigned)finalState.attrib_format[i],
+                                (unsigned)finalState.attrib_offset[i],
+                                (unsigned)finalState.attrib_buffer_index[i],
+                                (unsigned)finalState.attrib_stride[i],
+                                (unsigned)finalState.attrib_step_function[i],
+                                (unsigned)finalState.attrib_step_rate[i]);
+                    }
+                    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+                        fprintf(df, "color %d format %u mask %u\n", i,
+                                (unsigned)finalState.color_format[i],
+                                (unsigned)finalState.color_write_mask[i]);
+                    }
+                    fprintf(df, "depth %u stencil %u samples %u\n",
+                            (unsigned)finalState.depth_format,
+                            (unsigned)finalState.stencil_format,
+                            (unsigned)finalState.raster_sample_count);
+                    fclose(df);
+                }
+            }
             if (cppError[0]) {
                 fprintf(stderr, "MGL CRITICAL: %s\n", cppError);
             }
