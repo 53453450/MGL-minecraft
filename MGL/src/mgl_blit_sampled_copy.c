@@ -15,6 +15,7 @@
  */
 
 #include "mgl_render_pass_manager_ops.h"
+#include "mgl_raster_orientation_plan.h"
 #include "mgl_blit_sampled_copy.h"
 #include "mgl_render_api_command.h"
 #include "mgl_render_api_binding.h"
@@ -50,6 +51,10 @@ static MGLRenderTextureInfo mglBlitSampledCopyTextureInfo(void *texture)
 int mglBlitTextureCanUseGLSampledRenderTargetCopy(Texture *tex, void *source)
 {
     if (!tex || !source || !tex->is_render_target) {
+        return 0;
+    }
+    /* GL-order render targets are sampled directly; they have no copy. */
+    if (mglFBOGLOrderEnabled()) {
         return 0;
     }
 
@@ -686,7 +691,7 @@ int mglBlitUnflipRenderTargetStorageForImageAccess(void *renderer, Texture *tex)
     /* Views share the storage with textures whose orientation is tracked
      * separately; those stay flipped. */
     if (!tex || !mglTextureMtl(tex) ||
-        !mglRenderTargetStorageYFlipped(tex->is_render_target ? 1 : 0,
+        !mglRenderTargetHasGPUContent(tex->is_render_target ? 1 : 0,
                                         tex->mtl_render_target_write_version) ||
         tex->view_root || tex->view_count ||
         !mglBlitTextureCanUseGLSampledRenderTargetCopy(tex, mglTextureMtl(tex))) {

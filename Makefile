@@ -1185,7 +1185,7 @@ test-mglsema: $(build_dir)/test_mglsema
 	$(build_dir)/test_mglsema
 
 $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
-	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
+	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
 	MGL/src/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
 	MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/mgl_glsl_sema.c \
@@ -1194,7 +1194,7 @@ $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -gfull -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Cocoa -framework Foundation -framework Metal \
 		test_legacy_compat/test_mglair.mm \
-		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
+		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 		MGL/src/mgl_legacy_compat.c \
 		MGL/src/mgl_frontend_session.c \
 		MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/mgl_glsl_sema.c \
@@ -1219,12 +1219,12 @@ $(build_dir)/mcrepro_%.o: MGL/src/%.c
 		-IMGL/include/GL -IMGL/src -c $< -o $@
 
 $(build_dir)/test_mcrepro: test_legacy_compat/test_mcrepro.mm \
-	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
+	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 	$(MCREPRO_COBJ)
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Foundation \
 		test_legacy_compat/test_mcrepro.mm \
-		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
+		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 		-x none $(MCREPRO_COBJ) \
 		-o $@
 
@@ -1259,7 +1259,7 @@ METALCPP_RENDER_SRC := MGL/src/mgl_render.cpp $(wildcard MGL/src/mgl_render_*.cp
 
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	$(METALCPP_RENDER_SRC) MGL/include/mgl_render.h \
-	MGL/src/mgl_readback_policy.c MGL/include/mgl_readback_policy.h \
+	MGL/src/mgl_readback_policy.c MGL/include/mgl_readback_policy.h MGL/src/mgl_raster_orientation_plan.c \
 	MGL/src/mgl_binding_policy.c MGL/include/mgl_binding_policy.h \
 	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h \
 	MGL/src/mgl_binding_texture.c MGL/include/mgl_binding_texture.h \
@@ -1287,7 +1287,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		-framework Cocoa -framework Foundation -framework QuartzCore -framework Metal \
 		test_legacy_compat/test_metalcpp_smoke.mm \
 		$(METALCPP_RENDER_SRC) \
-		MGL/src/mgl_readback_policy.c \
+		MGL/src/mgl_readback_policy.c MGL/src/mgl_raster_orientation_plan.c \
 		MGL/src/mgl_texture_plan.c \
 		MGL/src/mgl_binding_policy.c \
 		MGL/src/mgl_buffer_transient.c \
@@ -1330,7 +1330,7 @@ $(GTEST_STAMP):
 	@touch $@
 
 $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
-	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
+	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
 	MGL/src/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
 	MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/mgl_glsl_sema.c \
@@ -1339,7 +1339,7 @@ $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 	$(GTEST_STAMP)
 	$(LLVM_CXX) -x c++ $(LLVM_CXXFLAGS) $(GTEST_CXXFLAGS) $(LLVM_LDFLAGS) \
 		test_legacy_compat/test_mglair_gtest.cpp \
-		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
+		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 		MGL/src/mgl_legacy_compat.c MGL/src/mgl_frontend_session.c \
 		MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/mgl_glsl_sema.c \
 		MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \

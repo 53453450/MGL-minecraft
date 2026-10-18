@@ -7,8 +7,19 @@
 #include "mgl_raster_orientation_plan.h"
 
 #include <stddef.h>
+#include <stdlib.h>
 
 #define MGL_RO_GL_UPPER_LEFT 0x8CA2u
+
+int mglFBOGLOrderEnabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("MGL_FBO_GL_ORDER");
+        cached = (v && v[0] != '\0' && v[0] != '0') ? 1 : 0;
+    }
+    return cached;
+}
 
 int mglRasterOrientationPlanBuild(const MGLRasterOrientationInput *in,
                                   MGLRasterOrientationPlan *out)
@@ -21,9 +32,9 @@ int mglRasterOrientationPlanBuild(const MGLRasterOrientationInput *in,
 
     out->viewport_from_top = !gl_order;
     out->scissor_from_top = !gl_order && !upper_left;
-    out->negative_viewport_height = upper_left;
+    out->negative_viewport_height = upper_left != gl_order;
     out->invert_winding = upper_left != gl_order;
-    out->vs_y_scale = gl_order ? -1.0f : 1.0f;
+    out->fragcoord_from_top = !upper_left && !gl_order;
     return 0;
 }
 

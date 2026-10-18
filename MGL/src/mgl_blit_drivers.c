@@ -40,6 +40,7 @@
 #include "mgl_texture_compat.h"   /* expansion helpers */
 #include "mgl_readback.h"         /* pixel-format predicates */
 #include "mgl_readback_policy.h"  /* mglRenderTargetStorageYFlipped */
+#include "mgl_raster_orientation_plan.h"  /* mglFBOGLOrderEnabled */
 #include "pixel_utils.h"          /* sizeForInternalFormat */
 #include "mgl_render_values.h"    /* storage/usage enums */
 #include "mgl_region_value.h"     /* MGLOriginValue / MGLSizeValue / regions */
@@ -100,7 +101,7 @@ static void mglBdMarkTextureLevelCopied(Texture *tex, GLuint level)
     tex_level->last_upload_size = 0u;
     tex_level->last_src_ptr = NULL;
     tex_level->last_src_hash = 0ull;
-    if (mglRenderTargetStorageYFlipped(tex->is_render_target ? 1 : 0,
+    if (mglRenderTargetHasGPUContent(tex->is_render_target ? 1 : 0,
                                        tex->mtl_render_target_write_version)) {
         tex->mtl_render_target_write_version++;
         mglMarkGLSampledCopyLevelDirty(tex, level);
@@ -573,9 +574,9 @@ bool mglBlitCopyImageSubDataCpuToCpu(
     mglRendererFillStateView(renderer, &areas);
 
     /* Rendered storage holds rows the CPU level lacks, Y-flipped. */
-    if (mglRenderTargetStorageYFlipped(src_tex->is_render_target ? 1 : 0,
+    if (mglRenderTargetHasGPUContent(src_tex->is_render_target ? 1 : 0,
                                        src_tex->mtl_render_target_write_version) ||
-        mglRenderTargetStorageYFlipped(dst_tex->is_render_target ? 1 : 0,
+        mglRenderTargetHasGPUContent(dst_tex->is_render_target ? 1 : 0,
                                        dst_tex->mtl_render_target_write_version)) {
         return false;
     }
@@ -876,7 +877,7 @@ static void mglBdMarkTextureLevelMetalFilled(Texture *tex, GLuint level,
     tex_level->last_upload_size = upload_size;
     tex_level->last_src_ptr = NULL;
     tex_level->last_src_hash = 0ull;
-    if (mglRenderTargetStorageYFlipped(tex->is_render_target ? 1 : 0,
+    if (mglRenderTargetHasGPUContent(tex->is_render_target ? 1 : 0,
                                        tex->mtl_render_target_write_version)) {
         tex->mtl_render_target_write_version++;
         mglMarkGLSampledCopyLevelDirty(tex, level);
@@ -891,7 +892,7 @@ static void mglBdSyncCopyTexSubImageCPU(void *renderer, Texture *tex,
                                         int64_t yoffset, size_t width,
                                         size_t height)
 {
-    if (mglRenderTargetStorageYFlipped(tex->is_render_target ? 1 : 0,
+    if (mglRenderTargetHasGPUContent(tex->is_render_target ? 1 : 0,
                                        tex->mtl_render_target_write_version)) {
         return;
     }
@@ -2079,7 +2080,7 @@ static void mglBdPushCpuShadowRegionToMetalSource(
     GLsizei height, GLsizei depth)
 {
     if (!renderer || !src_tex || !src_texture || src_tex->metal_data_authoritative ||
-        mglRenderTargetStorageYFlipped(src_tex->is_render_target ? 1 : 0,
+        mglRenderTargetHasGPUContent(src_tex->is_render_target ? 1 : 0,
                                        src_tex->mtl_render_target_write_version)) {
         return;
     }
@@ -2873,11 +2874,26 @@ bool mglBlitFramebufferScaledColorWithState(void *renderer,
         return true;
     }
 
+    /* The UV helper maps GL rows onto Metal-row storage. A GL-row side is
+     * expressed by mirroring the rect inside the texture and inverting that
+     * side's direction, which lands on the same physical rows. */
+    double uv_src_min_y = src_min_y;
+    double uv_src_max_y = src_max_y;
+    int uv_src_y_forward = src_y_forward ? 1 : 0;
+    int uv_dst_y_forward = dst_y_forward ? 1 : 0;
+    if (st->srcGLOrder) {
+        uv_src_min_y = (double)src_tex_h - src_max_y;
+        uv_src_max_y = (double)src_tex_h - src_min_y;
+        uv_src_y_forward = !uv_src_y_forward;
+    }
+    if (st->dstGLOrder) {
+        uv_dst_y_forward = !uv_dst_y_forward;
+    }
     MGLRenderScaledBlitUVs uvs = {0};
     mglRenderScaledBlitUVs((uint32_t)src_tex_w, (uint32_t)src_tex_h, src_min_x,
-                           src_max_x, src_min_y, src_max_y,
-                           src_x_forward ? 1 : 0, src_y_forward ? 1 : 0,
-                           dst_x_forward ? 1 : 0, dst_y_forward ? 1 : 0, &uvs);
+                           src_max_x, uv_src_min_y, uv_src_max_y,
+                           src_x_forward ? 1 : 0, uv_src_y_forward,
+                           dst_x_forward ? 1 : 0, uv_dst_y_forward, &uvs);
     MGLScaledBlitParams params;
     params.uvRect = (vector_float4){
         uvs.uv_left,
@@ -2931,8 +2947,10 @@ bool mglBlitFramebufferScaledColorWithState(void *renderer,
             gl_scissor_x0 + glm_ctx->active_state->var.scissor_box[2];
         int64_t gl_scissor_y1 =
             gl_scissor_y0 + glm_ctx->active_state->var.scissor_box[3];
-        int64_t metal_scissor_y0 = (int64_t)dst_tex_h - gl_scissor_y1;
-        int64_t metal_scissor_y1 = (int64_t)dst_tex_h - gl_scissor_y0;
+        int64_t metal_scissor_y0 =
+            st->dstGLOrder ? gl_scissor_y0 : (int64_t)dst_tex_h - gl_scissor_y1;
+        int64_t metal_scissor_y1 =
+            st->dstGLOrder ? gl_scissor_y1 : (int64_t)dst_tex_h - gl_scissor_y0;
         scissor_x0 = scissor_x0 > gl_scissor_x0 ? scissor_x0 : gl_scissor_x0;
         scissor_x1 = scissor_x1 < gl_scissor_x1 ? scissor_x1 : gl_scissor_x1;
         scissor_y0 = scissor_y0 > metal_scissor_y0 ? scissor_y0 : metal_scissor_y0;
@@ -3262,6 +3280,11 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
         mglSafeReleaseMetalObj(&readtexid);
         return;
     }
+    /* A user framebuffer's attachments store GL rows when GL-order storage is
+     * on; the default framebuffer keeps the drawable's Metal rows. */
+    const int src_gl_order = readfbo != NULL && mglFBOGLOrderEnabled();
+    const int dst_gl_order = drawfbo != NULL && mglFBOGLOrderEnabled();
+    mglRenderBlitPlanApplyStorageOrder(&plan, src_gl_order, dst_gl_order);
     int src_x_forward = plan.src_x_forward;
     int src_y_forward = plan.src_y_forward;
     int dst_x_forward = plan.dst_x_forward;
@@ -3394,6 +3417,8 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
     st.srcMetalY = src_metal_y;
     st.dstMetalY = dst_metal_y;
     st.scaledDstMetalY = scaled_dst_metal_y;
+    st.srcGLOrder = src_gl_order;
+    st.dstGLOrder = dst_gl_order;
 
     if (mglBlitIntegerColorWithState(renderer, &st)) {
         mglSafeReleaseMetalObj(&readtexid);

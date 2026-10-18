@@ -61,6 +61,7 @@
 #include "mgl_readback_policy.h"
 #include "mgl_program_backend.h"
 #include "mgl_texture_backend.h"
+#include "mgl_raster_orientation_state.h"
 
 /* Defined in MGLRenderer.m; declared in the Objective-C
  * MGLRenderer+RenderPass_Private.h. */
@@ -4660,13 +4661,19 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
             }
         }
         float fragCoordParams[5] = {0.f, 0.f, 0.f, 0.f, 0.f};
+        const MGLRasterOrientationPlan orientation =
+            mglRasterOrientationForState(glState);
+        /* Metal's point_coord counts rows; a GL-order target counts them from
+         * the bottom, so the sprite origin flips with it. */
+        const int pointLowerLeft =
+            (glState->var.point_sprite_coord_origin == GL_LOWER_LEFT) !=
+            (mglRasterTargetStoresGLOrder(glState) != 0);
         mglRenderFillFragCoordSlot(
             useFragCoordParams, useSampleParams, (uint32_t)passHeight,
-            mglRenderClipOriginIsLowerLeft(
-                (uint32_t)glState->var.clip_origin),
+            orientation.fragcoord_from_top != 0,
             numSamples, sampleBuffers, mglPlatformShellMSSampleInLoop(renderer),
             (uint32_t)areas.mssample_forced_id,
-            glState->var.point_sprite_coord_origin == GL_LOWER_LEFT,
+            pointLowerLeft,
             fragCoordParams);
         (void)mglRenderSetRenderBytesForOwner(
             commandState->currentRenderEncoderOwner, fragCoordParams,

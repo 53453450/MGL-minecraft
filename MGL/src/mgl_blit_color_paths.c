@@ -53,6 +53,7 @@
 #include "mgl_texture_readback_clear.h" /* pending FBO depth clear */
 #include "mgl_pso_format_class.h"
 #include "mgl_texture_backend.h"
+#include "mgl_raster_orientation_plan.h"  /* mglFBOGLOrderEnabled */
 
 /* Repeated from MGLRenderer+Blit_Private.h (an Objective-C header a .c file
  * cannot include): the MSAA-integer-resolve compute parameters. */
@@ -660,6 +661,9 @@ static void mglBlitScaledStencil(void *renderer, MGLRendererStateView *areas,
     const int dst_packed =
         mglRenderPixelFormatIsPackedDepthStencil((uint32_t)dst_info->pixel_format);
 
+    /* Physical row of a GL row: GL-order storage keeps it, Metal-order
+     * storage counts from the top. */
+    const int gl_rows = mglFBOGLOrderEnabled();
     void *staging = NULL;
     if (mglRenderCreateBuffer(cols * rows, 0u, "mglBlitScaledStencil",
                               &staging) != 0 || !staging) {
@@ -668,14 +672,16 @@ static void mglBlitScaledStencil(void *renderer, MGLRendererStateView *areas,
     mglBcEndRenderEncodingPort(renderer);
     if (mglRenderPassEnsureWritableCommandBufferLocked(
             renderer, "mtlBlitFramebuffer.stencilScaled")) {
-        /* Buffer row r holds GL source row sy_hi - 1 - r. */
+        /* Buffer row r holds GL source row sy_hi - 1 - r (Metal rows) or
+         * sy_lo + r (GL rows). */
         void *gather = mglRenderCreateBlitEncoderBorrowed(
             mglBcCommandBufferOwner(areas));
         if (gather) {
             for (GLint x = x_lo; x < x_hi; x++) {
                 GLint sx = mglBlitNearestSource(x, src_x0, src_x1, dst_x0, dst_x1);
                 (void)mglRenderBlitCopyStencilToBuffer(
-                    gather, src, (uint64_t)sx, (uint64_t)(src_h - sy_hi), 1u,
+                    gather, src, (uint64_t)sx,
+                    (uint64_t)(gl_rows ? sy_lo : src_h - sy_hi), 1u,
                     rows, staging, (uint64_t)(x - x_lo), cols, src_packed);
             }
             mglBcEndBlitEncoder(gather);
@@ -687,8 +693,10 @@ static void mglBlitScaledStencil(void *renderer, MGLRendererStateView *areas,
             for (GLint y = y_lo; y < y_hi; y++) {
                 GLint sy = mglBlitNearestSource(y, src_y0, src_y1, dst_y0, dst_y1);
                 (void)mglRenderBlitCopyBufferToStencil(
-                    scatter, staging, (uint64_t)(sy_hi - 1 - sy) * cols, cols,
-                    cols, 1u, dst, (uint64_t)x_lo, (uint64_t)(dst_h - 1 - y),
+                    scatter, staging,
+                    (uint64_t)(gl_rows ? sy - sy_lo : sy_hi - 1 - sy) * cols,
+                    cols, cols, 1u, dst, (uint64_t)x_lo,
+                    (uint64_t)(gl_rows ? y : dst_h - 1 - y),
                     dst_packed);
             }
             mglBcEndBlitEncoder(scatter);
@@ -728,8 +736,10 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
             depth_read_object->is_render_target = true;
             depth_draw_object->is_render_target = true;
         }
-        /* The plans address both attachments as flipped render-target
-         * storage. */
+        /* Both attachments belong to user framebuffers, so they share one
+         * storage row order: GL rows when GL-order storage is on, otherwise
+         * flipped render-target storage. */
+        const int gl_rows = mglFBOGLOrderEnabled();
         if (depth_read_object && depth_draw_object &&
             mglRendererBindMTLTexture(renderer, depth_read_object) &&
             mglRendererBindMTLTexture(renderer, depth_draw_object) &&
@@ -883,11 +893,13 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                                 mglBcCommandBufferOwner(&areas));
                             if (depth_blit) {
                                 size_t source_metal_y =
-                                    ds_read_info.height -
-                                    (size_t)(copy_src_y + copy_height);
+                                    gl_rows ? (size_t)copy_src_y
+                                            : ds_read_info.height -
+                                                  (size_t)(copy_src_y + copy_height);
                                 size_t destination_metal_y =
-                                    ds_draw_info.height -
-                                    (size_t)(copy_dst_y0 + copy_height);
+                                    gl_rows ? (size_t)copy_dst_y0
+                                            : ds_draw_info.height -
+                                                  (size_t)(copy_dst_y0 + copy_height);
                                 /* Emulated MS sample planes are array slices;
                                  * an MS->MS blit copies every sample. */
                                 uint32_t planes = 1u;
@@ -1017,6 +1029,10 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                                      * in Metal space: (srcTexH - srcMaxY). */
                                     float uv_top = MAX(0.0f, MIN(1.0f, (float)((double)src_tex_h - src_max_yf) * inv_src_h));
                                     float uv_bottom = MAX(0.0f, MIN(1.0f, (float)((double)src_tex_h - src_min_yf) * inv_src_h));
+                                    if (gl_rows) {
+                                        uv_top = MAX(0.0f, MIN(1.0f, src_min_yf * inv_src_h));
+                                        uv_bottom = MAX(0.0f, MIN(1.0f, src_max_yf * inv_src_h));
+                                    }
 
                                     MGLScaledBlitParams params;
                                     params.uvRect = (vector_float4){
@@ -1053,7 +1069,8 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                                     double dst_wd = dst_max_xd - dst_min_xd;
                                     double dst_hd = dst_max_yd - dst_min_yd;
                                     double scaled_dst_metal_y =
-                                        (double)dst_tex_h - dst_max_yd;
+                                        gl_rows ? dst_min_yd
+                                                : (double)dst_tex_h - dst_max_yd;
 
                                     /* Scissor rect to limit writes to the
                                      * destination region. */
@@ -1070,8 +1087,10 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                                         int64_t gl_scissor_y0 = glm_ctx->active_state->var.scissor_box[1];
                                         int64_t gl_scissor_x1 = gl_scissor_x0 + glm_ctx->active_state->var.scissor_box[2];
                                         int64_t gl_scissor_y1 = gl_scissor_y0 + glm_ctx->active_state->var.scissor_box[3];
-                                        int64_t metal_scissor_y0 = (int64_t)dst_tex_h - gl_scissor_y1;
-                                        int64_t metal_scissor_y1 = (int64_t)dst_tex_h - gl_scissor_y0;
+                                        int64_t metal_scissor_y0 =
+                                            gl_rows ? gl_scissor_y0 : (int64_t)dst_tex_h - gl_scissor_y1;
+                                        int64_t metal_scissor_y1 =
+                                            gl_rows ? gl_scissor_y1 : (int64_t)dst_tex_h - gl_scissor_y0;
                                         scissor_x0 = MAX(scissor_x0, gl_scissor_x0);
                                         scissor_x1 = MIN(scissor_x1, gl_scissor_x1);
                                         scissor_y0 = MAX(scissor_y0, metal_scissor_y0);

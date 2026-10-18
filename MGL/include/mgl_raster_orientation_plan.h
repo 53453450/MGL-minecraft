@@ -6,13 +6,13 @@
  *
  * GL window Y grows upward, Metal's texture rows grow downward.  Rendering
  * into a window-system target keeps Metal row order (row 0 = top); rendering
- * into an FBO attachment is meant to store GL row order (row 0 = bottom), which
- * takes a negated Y in the vertex stage, an inverted winding and viewport /
- * scissor rectangles placed by GL's y.  ARB_clip_control's UPPER_LEFT origin
- * is a second, independent Y inversion (negative viewport height plus an
- * inverted winding).  This plan folds both inputs into the decisions the
- * encoder state code and the vertex stage need, so they are made in one place
- * (docs/TODO_FBO_GL_ROW_ORDER_2026-10-18.md).
+ * into an FBO attachment is meant to store GL row order (row 0 = bottom).  Both
+ * ARB_clip_control's UPPER_LEFT origin and a GL-order target invert Y relative
+ * to Metal's native mapping, and both are done the same way: a negative
+ * viewport height plus an inverted winding, with the viewport and scissor
+ * rectangles placed by the matching y.  Two inversions cancel.  This plan folds
+ * the two inputs into the decisions the encoder state code needs, so they are
+ * made in one place (docs/TODO_FBO_GL_ROW_ORDER_2026-10-18.md).
  *
  * clip_origin takes the GL enum values (GL_LOWER_LEFT 0x8CA1,
  * GL_UPPER_LEFT 0x8CA2).
@@ -39,9 +39,16 @@ typedef struct MGLRasterOrientationPlan {
     int viewport_from_top;         /* viewport y = pass_h - (y + h), clamped at 0 */
     int negative_viewport_height;  /* origin moves to the far edge, height negates */
     int invert_winding;            /* flip the Metal front-face winding */
-    float vs_y_scale;              /* factor the vertex stage applies to
-                                      gl_Position.y: -1 for GL-order targets */
+    int fragcoord_from_top;        /* gl_FragCoord.y is the row counted from the
+                                      top and must become pass_h - y (a
+                                      window-system target with a lower-left
+                                      clip origin) */
 } MGLRasterOrientationPlan;
+
+/* MGL_FBO_GL_ORDER=1 stores FBO attachments in GL row order (the redesign in
+ * docs/TODO_FBO_GL_ROW_ORDER_2026-10-18.md); off by default.  Process-wide and
+ * read once. */
+int mglFBOGLOrderEnabled(void);
 
 /* Plan a draw's orientation.  Returns 0; -1 for a NULL argument. */
 int mglRasterOrientationPlanBuild(const MGLRasterOrientationInput *in,

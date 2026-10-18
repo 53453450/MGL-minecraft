@@ -1152,7 +1152,13 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
                 float sy = 0.5f;
                 mglRenderStandardSamplePosition(nSamples, sIdx, &sx, &sy);
                 vx += (GLdouble)sx - 0.5;
-                metalVy -= (GLdouble)sy - 0.5;
+                /* Sample positions are in GL window space (Y up); rows count
+                 * down in a Metal-order target and up in a GL-order one. */
+                if (mglRasterTargetStoresGLOrder(state)) {
+                    metalVy += (GLdouble)sy - 0.5;
+                } else {
+                    metalVy -= (GLdouble)sy - 0.5;
+                }
             }
 
             Texture *guiRTColor = NULL;

@@ -73,6 +73,7 @@
 #include "mgl_glsl_parser.h"
 #include "mgl_glsl_sema.h"
 #include "mgl_ir.h"
+#include "mgl_raster_orientation_plan.h"  /* mglFBOGLOrderEnabled */
 #include "mgl_air_target.h" /* AirTarget: triple + !air.* versions + container */
 #include "mgl_metallib_writer.h"
 #include "mgl_air_reflect.h"
@@ -1639,6 +1640,10 @@ static llvm::Value *addTexelOffset(Codegen &cg, llvm::Value *coord,
 static llvm::Value *flipMultisampleStorageRow(Codegen &cg, llvm::Value *tex,
                                               llvm::Value *coord)
 {
+    /* GL-order storage already holds the rows GL addresses. */
+    if (mglFBOGLOrderEnabled()) {
+        return coord;
+    }
     llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
     llvm::Value *h = callAirFn(cg, "air.get_height_texture_2d_array", i32,
                                {tex, cg.b->getInt32(0)});

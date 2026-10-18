@@ -9,10 +9,13 @@
  */
 
 #include "mgl_coordinate.h"
+#include "mgl_raster_orientation_plan.h"  /* mglFBOGLOrderEnabled */
 
 MGLYFlipDecision mglDecideYFlipForSampledRT(Texture *tex)
 {
-    if (!tex || !tex->is_render_target) {
+    /* GL-order render targets store the rows GL expects; sampling needs no
+     * flipped copy. */
+    if (!tex || !tex->is_render_target || mglFBOGLOrderEnabled()) {
         return MGL_YFLIP_USE_ORIGINAL;
     }
     return MGL_YFLIP_USE_SAMPLED_COPY;

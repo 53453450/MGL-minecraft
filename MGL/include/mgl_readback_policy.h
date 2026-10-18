@@ -126,6 +126,10 @@ int mglRenderIntegerReadbackSourceClassify(
 /* Render passes store rows top-row-first in Metal; until a render target is
  * first written (write_version 0) its contents are uploads in GL row order.
  * Readback flips and uploads write flipped rows only when this holds. */
+/* Whether a render target has GPU-authoritative content (it has been rendered
+ * or blitted into), so its CPU levels no longer describe it. */
+int mglRenderTargetHasGPUContent(int is_render_target, uint32_t write_version);
+
 int mglRenderTargetStorageYFlipped(int is_render_target, uint32_t write_version);
 
 /* copy packed rows with optional Y-flip. Pure CPU memcpy of `row_bytes`

@@ -80,7 +80,8 @@ static void test_window_target_matches_inline_math(void)
         if ((plan.invert_winding != 0) != (origins[o] == GL_UPPER_LEFT)) {
             agree = 0;
         }
-        if (plan.vs_y_scale != 1.0f) {
+        /* Today's gl_FragCoord flip: exactly the lower-left clip origin. */
+        if ((plan.fragcoord_from_top != 0) != (origins[o] == GL_LOWER_LEFT)) {
             agree = 0;
         }
     }
@@ -93,32 +94,33 @@ static void test_gl_order_target_rules(void)
 {
     MGLRasterOrientationPlan p = plan_for(GL_LOWER_LEFT, 1);
     CHECK(!p.scissor_from_top && !p.viewport_from_top &&
-              !p.negative_viewport_height && p.invert_winding &&
-              p.vs_y_scale == -1.0f,
-          "GL-order target, lower-left: GL y direct, winding inverted, VS y "
-          "negated");
+              p.negative_viewport_height && p.invert_winding &&
+              !p.fragcoord_from_top,
+          "GL-order target, lower-left: GL y direct, viewport negated, "
+          "winding inverted, gl_FragCoord.y is the row");
     CHECK(mglRasterPlanScissorY(&p, 5, 10, 64) == 5,
           "GL-order scissor y is GL's y");
     double y = 5.0, h = 10.0;
     mglRasterPlanViewportY(&p, &y, &h, 64);
-    CHECK(y == 5.0 && h == 10.0, "GL-order viewport is GL's rectangle");
+    CHECK(y == 15.0 && h == -10.0,
+          "GL-order viewport: origin at the far edge, height negated");
 
     p = plan_for(GL_UPPER_LEFT, 1);
     CHECK(!p.scissor_from_top && !p.viewport_from_top &&
-              p.negative_viewport_height && !p.invert_winding &&
-              p.vs_y_scale == -1.0f,
-          "GL-order target, upper-left: the two inversions of winding cancel, "
-          "the viewport still goes negative");
+              !p.negative_viewport_height && !p.invert_winding &&
+              !p.fragcoord_from_top,
+          "GL-order target, upper-left: the two inversions cancel and Metal's "
+          "native mapping applies");
     y = 5.0;
     h = 10.0;
     mglRasterPlanViewportY(&p, &y, &h, 64);
-    CHECK(y == 15.0 && h == -10.0,
-          "GL-order upper-left viewport: origin to the far edge, height negated");
+    CHECK(y == 5.0 && h == 10.0,
+          "GL-order upper-left viewport is GL's rectangle, positive height");
 
     p = plan_for(GL_LOWER_LEFT, 0);
     CHECK(p.scissor_from_top && p.viewport_from_top &&
               !p.negative_viewport_height && !p.invert_winding &&
-              p.vs_y_scale == 1.0f,
+              p.fragcoord_from_top,
           "window target, lower-left: the default");
 }
 

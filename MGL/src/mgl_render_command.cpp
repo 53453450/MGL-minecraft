@@ -186,6 +186,28 @@ int mglRenderBlitFramebufferPlan(
     return 0;
 }
 
+extern "C"
+void mglRenderBlitPlanApplyStorageOrder(
+    MGLRenderBlitFramebufferPlan* plan, int src_gl_order, int dst_gl_order) {
+    if (!plan) return;
+    plan->src_gl_order = src_gl_order ? 1 : 0;
+    plan->dst_gl_order = dst_gl_order ? 1 : 0;
+    if (plan->src_gl_order) {
+        plan->src_metal_y = plan->copy_src_y;
+    }
+    if (plan->dst_gl_order) {
+        plan->dst_metal_y = plan->copy_dst_y;
+        plan->scaled_dst_metal_y = plan->dst_min_y;
+    }
+    const int y_diff = plan->src_y_forward != plan->dst_y_forward;
+    const int x_diff = plan->src_x_forward != plan->dst_x_forward;
+    const int order_diff = plan->src_gl_order != plan->dst_gl_order;
+    if (order_diff) {
+        plan->blit_needs_flip = x_diff || !y_diff;
+        plan->needs_scaled_blit = 1;
+    }
+}
+
 int mglRenderDispatchCompute(void* compute_encoder,
                                 uint32_t groups_x,
                                 uint32_t groups_y,

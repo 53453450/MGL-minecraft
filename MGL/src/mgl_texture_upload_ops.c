@@ -3600,7 +3600,7 @@ int mglTextureSubImageBytes(void *renderer, GLMContext glm_ctx,
             height, depth, slice, level, xoffset, yoffset, zoffset,
             "mtlTexSubImageBytes");
     }
-    if (uploaded && mglRenderTargetStorageYFlipped(
+    if (uploaded && mglRenderTargetHasGPUContent(
                         tex->is_render_target ? 1 : 0,
                         tex->mtl_render_target_write_version)) {
         /* Direct CPU→Metal refresh of an FBO-attached texture must invalidate

@@ -6753,7 +6753,7 @@ void mglTextureViewFamilyWritten(Texture *writer)
 {
     Texture *root = writer ? (writer->view_root ? writer->view_root : writer) : NULL;
     if (!root || root->view_count == 0u ||
-        !mglRenderTargetStorageYFlipped(writer->is_render_target,
+        !mglRenderTargetHasGPUContent(writer->is_render_target,
                                         writer->mtl_render_target_write_version)) {
         return;
     }
@@ -6920,7 +6920,7 @@ void mglTextureView(GLMContext ctx, GLuint texture, GLenum target, GLuint origte
     view->view_min_layer = orig->view_min_layer + minlayer;
     view->view_num_layers = layers;
     view->immutable_levels = orig->immutable_levels;
-    if (mglRenderTargetStorageYFlipped(orig->is_render_target,
+    if (mglRenderTargetHasGPUContent(orig->is_render_target,
                                        orig->mtl_render_target_write_version)) {
         view->is_render_target = GL_TRUE;
         view->mtl_render_target_write_version = 1u;

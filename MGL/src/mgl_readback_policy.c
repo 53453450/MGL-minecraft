@@ -17,6 +17,7 @@
  */
 
 #include "mgl_readback_policy.h"
+#include "mgl_raster_orientation_plan.h"
 #include "mgl_texture_plan.h" /* MGL_TEXTURE_MS_PLANE_STRIDE */
 
 #include "glcorearb.h"
@@ -560,7 +561,15 @@ void *mglRenderTextureRepackDepthPlanes(const void *bytes,
     return packed;
 }
 
+int mglRenderTargetHasGPUContent(int is_render_target, uint32_t write_version) {
+    return is_render_target && write_version != 0u;
+}
+
 int mglRenderTargetStorageYFlipped(int is_render_target, uint32_t write_version) {
+    /* GL-order render targets are never stored flipped. */
+    if (mglFBOGLOrderEnabled()) {
+        return 0;
+    }
     return is_render_target && write_version != 0u;
 }
 

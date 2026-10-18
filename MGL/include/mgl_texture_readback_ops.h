@@ -50,7 +50,8 @@ int mglTextureReadDepthAsFloat(void *renderer, void *sourceTexture,
                                uint64_t sourceLevel, uint64_t sourceSlice,
                                uint64_t sourceDepthPlane, void *pixelBytes,
                                uint64_t bytesPerRow, uint64_t bytesPerImage,
-                               MGLRegionValue region, const char *reason);
+                               MGLRegionValue region, int storageGLRows,
+                               const char *reason);
 
 /* -mtlReadDepthPixels:pixelBytes:bytesPerRow:bytesPerImage:fromRegion: */
 void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,

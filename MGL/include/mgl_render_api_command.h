@@ -76,6 +76,10 @@ typedef struct MGLRenderBlitFramebufferPlan_t {
     int64_t src_metal_y;
     int64_t dst_metal_y;
     double scaled_dst_metal_y;
+    /* Per-side storage row order, set by mglRenderBlitPlanApplyStorageOrder:
+     * 1 when the texture stores GL rows (row 0 = bottom), 0 for Metal rows. */
+    int src_gl_order;
+    int dst_gl_order;
 } MGLRenderBlitFramebufferPlan;
 
 int mglRenderSetComputeBytes(void *compute_encoder,
@@ -615,6 +619,14 @@ int mglRenderBlitFramebufferPlan(
     int needs_render_target_sync_blit,
     int scissor_test_enabled,
     MGLRenderBlitFramebufferPlan *out);
+
+/* Re-expresses a plan built for Metal-row storage on both sides in each
+ * side's own row order: the *_metal_y fields become physical rows, and a
+ * side that differs in order from the other adds a vertical flip. */
+void mglRenderBlitPlanApplyStorageOrder(
+    MGLRenderBlitFramebufferPlan *plan,
+    int src_gl_order,
+    int dst_gl_order);
 
 int mglRenderDispatchCompute(void *compute_encoder,
                                 uint32_t groups_x,

@@ -27590,23 +27590,33 @@ static int test_air_geometry_lines_expand(unsigned char *pixels,
     glFinish();
     glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 
-    /* Three horizontal 1px lines across the middle half of the FBO. */
+    /* Three horizontal 1px lines across the middle half of the FBO, one pixel
+     * apart.  Each lies exactly on a pixel boundary (window y 95, 96, 97), a
+     * tie GL leaves to the implementation, so the block may sit one row lower
+     * depending on the storage row order: require three adjacent rows within
+     * 94..97 (readback rows are bottom-origin). */
     {
-        int rows[3] = { 95, 96, 97 };  /* readback rows are bottom-origin */
-        for (int r = 0; r < 3; r++) {
-            int y = rows[r];
+        int lit_rows[8] = {0};
+        for (int y = 93; y <= 98; y++) {
             int lit = 0;
             for (int x = 0; x < REG_W; x++) {
                 const unsigned char *q = &pixels[(y * REG_W + x) * 4];
                 if (q[0] || q[1] || q[2]) lit++;
             }
-            if (lit < 32) {
-                fprintf(stderr,
-                        "air_geometry_lines_expand: row %d has %d lit "
-                        "pixels, expected >= 32\n", y, lit);
-
-                goto cleanup;
-            }
+            lit_rows[y - 93] = lit >= 32;
+        }
+        int first = -1;
+        for (int y = 93; y <= 98; y++) {
+            if (lit_rows[y - 93]) { first = y; break; }
+        }
+        int count = 0;
+        for (int y = 93; y <= 98; y++) count += lit_rows[y - 93];
+        if (first < 94 || first > 95 || count != 3 ||
+            !lit_rows[first - 93 + 1] || !lit_rows[first - 93 + 2]) {
+            fprintf(stderr,
+                    "air_geometry_lines_expand: expected 3 adjacent lit rows "
+                    "starting at 94 or 95, first=%d count=%d\n", first, count);
+            goto cleanup;
         }
     }
 

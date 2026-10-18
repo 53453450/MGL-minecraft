@@ -24,6 +24,7 @@
 #include "pixel_utils.h"           /* mglPixelTypeDatumBytes */
 #include "mgl_readback.h"          /* mglMetalReadback* */
 #include "mgl_readback_policy.h"   /* depth/integer readback plans */
+#include "mgl_raster_orientation_plan.h"  /* mglFBOGLOrderEnabled */
 #include "mgl_renderer_backend.h"  /* mglRendererBackendGetDevice */
 #include "mgl_render_pass_manager.h"
 #include "mgl_renderer_ports.h"
@@ -461,7 +462,8 @@ int mglTextureReadDepthAsFloat(void *renderer, void *sourceTexture,
                                uint64_t sourceLevel, uint64_t sourceSlice,
                                uint64_t sourceDepthPlane, void *pixelBytes,
                                uint64_t bytesPerRow, uint64_t bytesPerImage,
-                               MGLRegionValue region, const char *reason)
+                               MGLRegionValue region, int storageGLRows,
+                               const char *reason)
 {
     MGLRendererStateView areas;
     mglRendererFillStateView(renderer, &areas);
@@ -570,7 +572,9 @@ int mglTextureReadDepthAsFloat(void *renderer, void *sourceTexture,
     const int64_t dstX = (int64_t)clip.dst_x;
     const int64_t dstY = (int64_t)clip.dst_y;
     const int64_t metalSrcX = (int64_t)clip.metal_src_x;
-    const int64_t metalSrcY = (int64_t)clip.metal_src_y;
+    const int64_t metalSrcY = storageGLRows
+                                  ? (int64_t)region.origin.y + dstY
+                                  : (int64_t)clip.metal_src_y;
     if (clip.empty) {
         result = 1;
         goto done;
@@ -632,12 +636,12 @@ int mglTextureReadDepthAsFloat(void *renderer, void *sourceTexture,
             mglRenderCopyDepthTextureBytesToFloat(
                 mglPdTextureBufferContents(readBuffer), stagingBytesPerRow, dst,
                 bytesPerRow, (uint64_t)copyW, (uint64_t)copyH,
-                sourceDepthBytes, sourceIsDepth16 ? 1 : 0, 1);
+                sourceDepthBytes, sourceIsDepth16 ? 1 : 0, storageGLRows ? 0 : 1);
         } else {
             mglMetalCopyRows(
                 (const uint8_t *)mglPdTextureBufferContents(readBuffer),
                 stagingBytesPerRow, dst, bytesPerRow, stagingBytesPerRow,
-                (uint64_t)copyH, 1);
+                (uint64_t)copyH, storageGLRows ? 0 : 1);
         }
     }
     result = readbackSuccess;
@@ -907,7 +911,7 @@ void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
         (void)mglTextureReadDepthAsFloat(
             renderer, texture, subresource.level, subresource.slice,
             subresource.depthPlane, pixelBytes, bytesPerRow, bytesPerImage,
-            region, "FBO depth readback");
+            region, mglFBOGLOrderEnabled(), "FBO depth readback");
         return;
     }
 
@@ -938,7 +942,7 @@ void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
     }
     mglTextureApplyPendingDefaultDepthClear(renderer, texture);
     (void)mglTextureReadDepthAsFloat(renderer, texture, 0u, 0u, 0u, pixelBytes,
-                                     bytesPerRow, bytesPerImage, region,
+                                     bytesPerRow, bytesPerImage, region, 0,
                                      "default framebuffer depth readback");
 }
 
@@ -1100,7 +1104,7 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
             renderer, fbo, attachment, readTextureObject, texture, readBuffer);
         /* Multisample sources are resolved from render-pass storage. */
         const int flipY =
-            readTextureObject->samples > 1u ||
+            (readTextureObject->samples > 1u && !mglFBOGLOrderEnabled()) ||
             mglRenderTargetStorageYFlipped(
                 1, readTextureObject->mtl_render_target_write_version);
         (void)mglTextureReadColorAsBGRA8(
@@ -1387,8 +1391,12 @@ int mglTextureReadStencilPixels(void *renderer, GLMContext glm_ctx,
     }
     mglPdCommitPendingForReadback(renderer, &areas);
 
+    /* GL-order storage addresses the rows as GL gives them. */
+    const uint64_t srcRow = mglFBOGLOrderEnabled()
+                                ? (uint64_t)region.origin.y + (uint64_t)clip.dst_y
+                                : (uint64_t)clip.metal_src_y;
     MGLRegionValue metalRegion = {
-        mglTextureOrigin((uint64_t)clip.metal_src_x, (uint64_t)clip.metal_src_y, 0u),
+        mglTextureOrigin((uint64_t)clip.metal_src_x, srcRow, 0u),
         mglTextureSize((uint64_t)clip.copy_w, (uint64_t)clip.copy_h, 1u)};
     mglPdGetDepthStencilImage(
         &areas, glm_ctx, tex, texture,
