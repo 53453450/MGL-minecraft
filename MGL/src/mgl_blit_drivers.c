@@ -925,7 +925,6 @@ typedef struct {
     size_t yoffset;
     size_t width;
     size_t height;
-    int reverse_rows;
     int ended;
 } MglBdCopyTexBlitCtx;
 
@@ -933,26 +932,12 @@ static int mglBdCopyTexBlitGuarded(void *renderer, void *ctx_raw)
 {
     (void)renderer;
     MglBdCopyTexBlitCtx *ctx = (MglBdCopyTexBlitCtx *)ctx_raw;
-    if (!ctx->reverse_rows) {
-        mglBdCopyTexture(ctx->blit_encoder, ctx->src_texture,
-                         ctx->src_subresource.slice, ctx->src_subresource.level,
-                         mglBlitOrigin(ctx->x, ctx->src_y, 0u),
-                         mglBlitSize(ctx->width, ctx->height, 1u),
-                         ctx->dest_texture, ctx->slice, ctx->level,
-                         mglBlitOrigin(ctx->xoffset, ctx->yoffset, 0u));
-    } else {
-        for (size_t row = 0; row < ctx->height; row++) {
-            mglBdCopyTexture(ctx->blit_encoder, ctx->src_texture,
-                             ctx->src_subresource.slice,
-                             ctx->src_subresource.level,
-                             mglBlitOrigin(ctx->x, ctx->src_y + row, 0u),
-                             mglBlitSize(ctx->width, 1u, 1u),
-                             ctx->dest_texture, ctx->slice, ctx->level,
-                             mglBlitOrigin(ctx->xoffset,
-                                           ctx->yoffset + ctx->height - 1u - row,
-                                           0u));
-        }
-    }
+    mglBdCopyTexture(ctx->blit_encoder, ctx->src_texture,
+                     ctx->src_subresource.slice, ctx->src_subresource.level,
+                     mglBlitOrigin(ctx->x, ctx->src_y, 0u),
+                     mglBlitSize(ctx->width, ctx->height, 1u),
+                     ctx->dest_texture, ctx->slice, ctx->level,
+                     mglBlitOrigin(ctx->xoffset, ctx->yoffset, 0u));
     mglBdEndBlitEncoder(ctx->blit_encoder);
     ctx->ended = 1;
     return 1;
@@ -1088,24 +1073,9 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
             read_buffer);
     }
 
-    /* Rendered storage is Y-flipped (mglRenderTargetStorageYFlipped): convert
-     * each side's GL row range and reverse rows when only one side is. */
-    const int src_flipped = mglRenderTargetStorageYFlipped(
-        1, src_tex_obj->mtl_render_target_write_version);
-    const int dst_flipped = mglRenderTargetStorageYFlipped(
-        tex->is_render_target ? 1 : 0, tex->mtl_render_target_write_version);
-    int64_t src_y = y;
-    if (src_flipped) {
-        size_t src_level_height = mglMetalTextureLevelDimension(
-            mglBdTextureInfo(src_texture).height, src_subresource.level);
-        src_y = (int64_t)src_level_height - (y + (int64_t)height);
-        if (src_y < 0) {
-            src_y = 0;
-        }
-    }
-    int64_t dst_y = dst_flipped
-        ? (int64_t)dest_level_height - (yoffset + (int64_t)height)
-        : yoffset;
+    /* Both sides store GL rows, so the GL row ranges address them directly. */
+    const int64_t src_y = y;
+    const int64_t dst_y = yoffset;
 
     void *blit_encoder =
         mglRenderCreateBlitEncoderBorrowed(mglBdCommandBufferOwner(&areas));
@@ -1131,7 +1101,6 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
         .yoffset = (size_t)dst_y,
         .width = width,
         .height = height,
-        .reverse_rows = src_flipped != dst_flipped,
         .ended = 0,
     };
     if (!mglPlatformShellGuardedCallCtx(renderer, "copyTexSubImage texture blit",
@@ -2008,7 +1977,6 @@ typedef struct {
     size_t dst_depth_plane;
     size_t iterations;
     size_t src_size_depth;
-    int reverse_rows;
 } MglBdCopyImageDispatchCtx;
 
 static int mglBdCopyImageDispatchGuarded(void *renderer, void *ctx_raw)
@@ -2039,20 +2007,15 @@ static int mglBdCopyImageDispatchGuarded(void *renderer, void *ctx_raw)
             cur_dst_slice = c->dst_slice + i;
         }
 
-        const GLsizei rows = c->reverse_rows ? 1 : c->height;
-        for (GLsizei r = 0; r < c->height; r += rows) {
-            const GLsizei dst_row =
-                c->reverse_rows ? c->height - 1 - r : r;
-            mglBdCopyTexture(
-                c->encoder, c->source, cur_src_slice, (size_t)c->src_level,
-                mglBlitOrigin((uint64_t)c->src_x, (uint64_t)(c->src_y + r),
-                              (uint64_t)cur_src_depth),
-                mglBlitSize((uint64_t)c->width, (uint64_t)rows,
-                            (uint64_t)c->src_size_depth),
-                c->destination, cur_dst_slice, (size_t)c->dst_level,
-                mglBlitOrigin((uint64_t)c->dst_x, (uint64_t)(c->dst_y + dst_row),
-                              (uint64_t)cur_dst_depth));
-        }
+        mglBdCopyTexture(
+            c->encoder, c->source, cur_src_slice, (size_t)c->src_level,
+            mglBlitOrigin((uint64_t)c->src_x, (uint64_t)c->src_y,
+                          (uint64_t)cur_src_depth),
+            mglBlitSize((uint64_t)c->width, (uint64_t)c->height,
+                        (uint64_t)c->src_size_depth),
+            c->destination, cur_dst_slice, (size_t)c->dst_level,
+            mglBlitOrigin((uint64_t)c->dst_x, (uint64_t)c->dst_y,
+                          (uint64_t)cur_dst_depth));
     }
     mglBdEndBlitEncoder(c->encoder);
     return 1;
@@ -2373,21 +2336,6 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_te
         return;
     }
 
-    const int src_flipped = mglRenderTargetStorageYFlipped(
-        src_tex->is_render_target ? 1 : 0, src_tex->mtl_render_target_write_version);
-    const int dst_flipped = mglRenderTargetStorageYFlipped(
-        dst_tex->is_render_target ? 1 : 0, dst_tex->mtl_render_target_write_version);
-    const GLint blit_src_y = src_flipped
-        ? (GLint)mglMetalTextureLevelDimension(
-              mglBdTextureInfo(src_texture).height, (size_t)src_level) -
-              (src_y + height)
-        : src_y;
-    const GLint blit_dst_y = dst_flipped
-        ? (GLint)mglMetalTextureLevelDimension(
-              mglBdTextureInfo(dst_texture).height, (size_t)dst_level) -
-              (dst_y + height)
-        : dst_y;
-
     MglBdCopyImageDispatchCtx dispatch_ctx = {
         .encoder = blit_encoder,
         .source = src_texture,
@@ -2397,9 +2345,9 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_te
         .src_level = src_level,
         .dst_level = dst_level,
         .src_x = src_x,
-        .src_y = blit_src_y,
+        .src_y = src_y,
         .dst_x = dst_x,
-        .dst_y = blit_dst_y,
+        .dst_y = dst_y,
         .width = width,
         .height = height,
         .src_slice = src_slice,
@@ -2408,7 +2356,6 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_te
         .dst_depth_plane = dst_depth_plane,
         .iterations = iterations,
         .src_size_depth = src_size_depth,
-        .reverse_rows = src_flipped != dst_flipped,
     };
     if (!mglPlatformShellGuardedCallCtx(renderer, "mtlCopyImageSubData blit",
                                         mglBdCopyImageDispatchGuarded,
@@ -3596,19 +3543,13 @@ void mglBlitCopyTexSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         }
     }
 
-    const int destination_flipped = mglRenderTargetStorageYFlipped(
-        tex->is_render_target ? 1 : 0, tex->mtl_render_target_write_version);
-    size_t destination_y = (size_t)yoffset;
-    if (destination_flipped) {
-        destination_y = level_height - ((size_t)yoffset + height);
-    }
-    destination_origin.y = destination_y;
+    destination_origin.y = (size_t)yoffset;
 
     if (!mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
             (const uint8_t *)bgra_readback, bgra_row_bytes,
             (uint8_t *)upload_data, bgra_row_bytes, width, height,
             mglBdTextureInfo(texture).pixel_format,
-            destination_flipped)) {
+            0)) {
         free(bgra_readback);
         free(upload_data);
         mglDispatchError(glm_ctx, __FUNCTION__,
