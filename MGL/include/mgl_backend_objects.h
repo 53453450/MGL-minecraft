@@ -29,6 +29,11 @@ struct MGLSyncBackend {
     void *command_buffer; /* retained MTL::CommandBuffer, or NULL */
 };
 
+/* Sampler: the MTLSamplerState built from the sampler's parameters. */
+struct MGLSamplerBackend {
+    void *state; /* retained MTLSamplerState, or NULL until it is first needed */
+};
+
 /* Buffer: cold state that is not the buffer's own MTLBuffer. */
 struct MGLBufferBackend {
     /* Copy-on-write snapshot pool: an opaque C++ allocation (mgl::BufferCowPool),

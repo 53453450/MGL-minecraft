@@ -62,6 +62,7 @@
 #include "mgl_size_constants.h"          /* kMGLMaxBufferSlots */
 #include "mgl_thread_affinity.h"         /* MGL_ASSERT_GL_THREAD */
 #include "glm_limits.h"                  /* MAX_ATTRIBS, TEXTURE_UNITS */
+#include "mgl_texture_binding_resolve.h" /* mglSamplerBackend* */
 
 /* Declared next to their definitions in Objective-C headers a .c file cannot
  * include; repeated here the way mgl_renderer_ports.c repeats its prototypes.
@@ -943,16 +944,17 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         if (mglTessDispatchState(&areas)->texture_samplers[bind->gl_unit]) {
             Sampler *gl_sampler =
                 mglTessDispatchState(&areas)->texture_samplers[bind->gl_unit];
-            if (gl_sampler->dirty_bits && gl_sampler->mtl_data) {
-                mglSafeReleaseMetalObj((void **)&gl_sampler->mtl_data);
+            if (gl_sampler->dirty_bits) {
+                mglSamplerBackendResetState(gl_sampler);
             }
-            if (!gl_sampler->mtl_data && ptr) {
-                /* The C creation hands back +1; the field owns it. */
-                gl_sampler->mtl_data = mglTextureCreateSamplerForTexParam(
-                    &gl_sampler->params, ptr->target);
+            if (!mglSamplerBackendState(gl_sampler) && ptr) {
+                /* The C creation hands back +1; the backend state owns it. */
+                mglSamplerBackendSetState(
+                    gl_sampler, mglTextureCreateSamplerForTexParam(
+                                    &gl_sampler->params, ptr->target));
                 gl_sampler->dirty_bits = 0;
             }
-            sampler = gl_sampler->mtl_data;
+            sampler = mglSamplerBackendState(gl_sampler);
         } else if (ptr && ptr->params.mtl_data) {
             sampler = ptr->params.mtl_data;
         }

@@ -51,6 +51,7 @@
 #include "mgl_metal_ref.h"          /* mglSafeReleaseMetalObj */
 #include "mgl_thread_affinity.h"    /* MGL_ASSERT_GL_THREAD */
 #include "mgl_types_texture.h"      /* Texture, Sampler */
+#include "mgl_texture_binding_resolve.h" /* mglSamplerBackend* */
 
 /* Declared next to its definition in the Objective-C
  * MGLRenderer+RenderPass_Private.h, which a .c file cannot include; repeated
@@ -555,16 +556,17 @@ bool mglTessPlanTextureBinds(void *renderer, const MGLTessTextureBind *binds,
         int created_sampler = 0;
         if (state->texture_samplers[bind->gl_unit]) {
             Sampler *gl_sampler = state->texture_samplers[bind->gl_unit];
-            if (gl_sampler->dirty_bits && gl_sampler->mtl_data) {
-                mglSafeReleaseMetalObj((void **)&gl_sampler->mtl_data);
+            if (gl_sampler->dirty_bits) {
+                mglSamplerBackendResetState(gl_sampler);
             }
-            if (!gl_sampler->mtl_data && ptr) {
-                /* The C creation hands back +1; the field owns it. */
-                gl_sampler->mtl_data = mglTextureCreateSamplerForTexParam(
-                    &gl_sampler->params, ptr->target);
+            if (!mglSamplerBackendState(gl_sampler) && ptr) {
+                /* The C creation hands back +1; the backend state owns it. */
+                mglSamplerBackendSetState(
+                    gl_sampler, mglTextureCreateSamplerForTexParam(
+                                    &gl_sampler->params, ptr->target));
                 gl_sampler->dirty_bits = 0;
             }
-            sampler = gl_sampler->mtl_data;
+            sampler = mglSamplerBackendState(gl_sampler);
         } else if (ptr && ptr->params.mtl_data) {
             sampler = ptr->params.mtl_data;
         }

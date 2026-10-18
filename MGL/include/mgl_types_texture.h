@@ -155,6 +155,8 @@ typedef struct TextureFace_t {
     TextureLevel    *levels;
 } TextureFace;
 
+struct MGLSamplerBackend;
+
 #define DIRTY_SAMPLER_PARAM   0x1
 typedef struct Sampler_t {
     GLuint dirty_bits;
@@ -163,7 +165,9 @@ typedef struct Sampler_t {
      * name+address reuse after delete (STATE_DATAFLOW T1-2). */
     uint64_t identity_generation;
     TextureParameter params;
-    void *mtl_data;
+    /* Backend state (the Metal sampler).  Opaque here; see
+     * mgl_backend_objects.h. */
+    struct MGLSamplerBackend *backend;
     char *debug_label;  /* ObjectLabel, GL 4.6 §20.7; NULL = empty */
 } Sampler;
 

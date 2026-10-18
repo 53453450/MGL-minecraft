@@ -26,6 +26,7 @@
 #include "mgl_metal_ref.h"
 
 #include "mgl_trace_log.h"
+#include "mgl_texture_binding_resolve.h" /* mglSamplerBackend* */
 
 bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, const GLint *param);
 bool setTexParamsi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, const GLint *params);
@@ -315,7 +316,7 @@ void mglDeleteSamplers(GLMContext ctx, GLsizei count, const GLuint *samplers)
 
             deleteHashElement(&STATE(sampler_table), sampler);
 
-            mglSafeReleaseMetalObj((void **)&ptr->mtl_data);
+            mglSamplerBackendRelease(ptr);
 
             free(ptr->debug_label);
             free(ptr);

@@ -62,6 +62,7 @@ extern void init_dispatch(GLMContext ctx);
 extern void invalidateTexture(GLMContext ctx, Texture *tex);
 extern void mglFreeProgram(GLMContext ctx, Program *ptr);
 #include "mgl_trace_log.h"
+#include "mgl_texture_binding_resolve.h" /* mglSamplerBackend* */
 
 static _Thread_local GLMContext _ctx = NULL;
 static _Thread_local GLboolean _ctx_explicitly_unbound = GL_FALSE;
@@ -893,7 +894,7 @@ static void mglDestroyContextSampler(GLuint name, void *data, void *user)
         return;
     }
 
-    mglSafeReleaseMetalObj((void **)&sampler->mtl_data);
+    mglSamplerBackendRelease(sampler);
 
     free(sampler->debug_label);
     free(sampler);

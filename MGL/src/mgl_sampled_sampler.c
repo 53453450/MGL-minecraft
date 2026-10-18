@@ -56,6 +56,7 @@
 #include "mgl_encode_context.h"   /* MGLEncodeContext */
 #include "mgl_storage_image_bind.h" /* mglBindingStateBindStorageImagesForVertexProgram */
 #include "mgl_trace_strategy.h" /* mglWriteProgramMSLDump */
+#include "mgl_backend_objects.h"
 
 /* The .m's file-local invalid-pixel-format sentinel (MGLRenderer+BindingState.m). */
 enum { MGL_BINDING_PIXEL_FORMAT_INVALID = 0u };
@@ -137,7 +138,7 @@ void *mglSampledSamplerMaterialize(void *renderer, Texture *ptr,
     mglBindingTextureFillSamplerMaterializeInput(
         &in, force_default ? 1 : 0, texture_unit < TEXTURE_UNITS ? 1 : 0,
         gl_sampler ? 1 : 0, gl_sampler && gl_sampler->dirty_bits ? 1 : 0,
-        gl_sampler && gl_sampler->mtl_data ? 1 : 0,
+        mglSamplerBackendState(gl_sampler) ? 1 : 0,
         ptr && ptr->params.mtl_data ? 1 : 0,
         (stage && stage[0] == 'v') ? 1 : 0);
     MGLSamplerMaterializePlan plan = {0};
@@ -152,20 +153,20 @@ void *mglSampledSamplerMaterialize(void *renderer, Texture *ptr,
     GLuint sampler_name = 0u;
     if (plan.action == MGL_SM_ACTION_USE_GL_SAMPLER && gl_sampler) {
         if (plan.recreate_gl_sampler_mtl) {
-            if (gl_sampler->mtl_data) {
-                mglSafeReleaseMetalObj((void **)&gl_sampler->mtl_data);
-            }
+            mglSamplerBackendResetState(gl_sampler);
             GLuint target = sampler_target
                                 ? sampler_target
                                 : (ptr ? ptr->target : GL_TEXTURE_2D);
             /* CFBridgingRetain(X) == (__bridge_retained CFTypeRef)(X). */
-            gl_sampler->mtl_data = (void *)CFRetain((CFTypeRef)
-                mglTextureCreateSamplerForTexParam(&gl_sampler->params, target));
+            mglSamplerBackendSetState(
+                gl_sampler, (void *)CFRetain((CFTypeRef)
+                    mglTextureCreateSamplerForTexParam(&gl_sampler->params,
+                                                       target)));
         }
         if (plan.clear_gl_sampler_dirty) {
             gl_sampler->dirty_bits = 0;
         }
-        sampler = gl_sampler->mtl_data;
+        sampler = mglSamplerBackendState(gl_sampler);
         params = &gl_sampler->params;
         sampler_name = gl_sampler->name;
     } else if (plan.action == MGL_SM_ACTION_USE_TEX_PARAMS && ptr) {
