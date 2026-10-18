@@ -157,6 +157,7 @@ typedef struct TextureFace_t {
 
 struct MGLSamplerBackend;
 struct MGLTextureBackend;
+struct MGLImageUnitBackend;
 
 #define DIRTY_SAMPLER_PARAM   0x1
 typedef struct Sampler_t {
@@ -250,7 +251,6 @@ typedef struct Texture_t {
     GLuint view_count;
     GLuint view_capacity;
     GLboolean view_root_deleted;
-    void *view_parent_mtl;        /* view: retained owner id<MTLTexture> */
     char debug_label[MGL_MAX_LABEL_LENGTH];
 } Texture;
 
@@ -267,9 +267,9 @@ typedef struct ImageUnit_t {
     GLenum access;
     GLenum internalformat;
     Texture *tex;
-    /* Retained Metal texture view for non-layered / mip binds.  Released on
-     * rebind or reset so the GPU can finish using the previous view. */
-    void *mtl_image_view;
+    /* Backend state (the Metal view used for non-layered / mip access).
+     * Opaque here; see mgl_backend_objects.h and mgl_texture_backend.h. */
+    struct MGLImageUnitBackend *backend;
 } ImageUnit;
 
 typedef struct ProxyTextureQueryState_t {

@@ -86,10 +86,7 @@ static void mglResetImageUnit(ImageUnit *iu)
     if (!iu) {
         return;
     }
-    if (iu->mtl_image_view) {
-        mglRenderReleaseMetalObject(iu->mtl_image_view);
-        iu->mtl_image_view = NULL;
-    }
+    mglImageUnitBackendRelease(iu);
     bzero(iu, sizeof(*iu));
     iu->access = GL_READ_ONLY;
     iu->internalformat = GL_R8;
@@ -974,7 +971,7 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
     unit_params.access = access;
     unit_params.internalformat = internalformat;
     unit_params.tex = ptr;
-    unit_params.mtl_image_view = NULL;
+    unit_params.backend = NULL;
 
     {
         const ImageUnit *cur = &STATE(image_units)[unit];
@@ -994,10 +991,7 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
         }
     }
 
-    if (STATE(image_units)[unit].mtl_image_view) {
-        mglRenderReleaseMetalObject(STATE(image_units)[unit].mtl_image_view);
-        STATE(image_units)[unit].mtl_image_view = NULL;
-    }
+    mglImageUnitBackendRelease(&STATE(image_units)[unit]);
     STATE(image_units)[unit] = unit_params;
 
     mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
@@ -6815,9 +6809,9 @@ static bool mglTextureViewUnlink(GLMContext ctx, Texture *tex)
                 break;
             }
         }
-        if (tex->view_parent_mtl) {
-            mglRendererDeleteMetalObject(ctx, tex->view_parent_mtl);
-            tex->view_parent_mtl = NULL;
+        if (mglTextureViewParent(tex)) {
+            mglRendererDeleteMetalObject(ctx, mglTextureViewParent(tex));
+            mglTextureBackendEnsure(tex)->view_parent = NULL;
         }
         if (root->view_root_deleted && root->view_count == 0u) {
             free(root->views);

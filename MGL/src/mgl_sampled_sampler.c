@@ -57,6 +57,7 @@
 #include "mgl_storage_image_bind.h" /* mglBindingStateBindStorageImagesForVertexProgram */
 #include "mgl_trace_strategy.h" /* mglWriteProgramMSLDump */
 #include "mgl_backend_objects.h"
+#include "mgl_texture_backend.h"
 
 /* The .m's file-local invalid-pixel-format sentinel (MGLRenderer+BindingState.m). */
 enum { MGL_BINDING_PIXEL_FORMAT_INVALID = 0u };
@@ -1222,12 +1223,8 @@ static void *mglSsCacheImageUnitView(ImageUnit *iu, void *fallback, void *view)
     if (!view) {
         return fallback;
     }
-    if (iu->mtl_image_view) {
-        mglRenderReleaseMetalObject(iu->mtl_image_view);
-        iu->mtl_image_view = NULL;
-    }
-    iu->mtl_image_view = view; /* +1 from newTextureView */
-    return iu->mtl_image_view;
+    mglImageUnitSetView(iu, view); /* +1 from newTextureView */
+    return view;
 }
 
 /* BindImageTexture <format> -> PixelFormatView (CTS advanced-cast). */
@@ -1267,8 +1264,8 @@ void *mglRendererStorageImageTexture(void *base_texture, ImageUnit *iu)
     if (!texture || !iu) {
         return base_texture;
     }
-    if (iu->mtl_image_view) {
-        return iu->mtl_image_view;
+    if (mglImageUnitView(iu)) {
+        return mglImageUnitView(iu);
     }
     const MGLRenderTextureInfo info = mglSsTextureInfo(texture);
     if (info.width == 0u) {

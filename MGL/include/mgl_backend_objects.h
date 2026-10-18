@@ -91,6 +91,17 @@ struct MGLBaseLevelViewCache {
 
 struct MGLTextureBackend {
     struct MGLBaseLevelViewCache base_level_view;
+    /* A texture view's Metal texture is a view of its owner's; this is the
+     * retained owner texture the view was last built from, compared to see
+     * whether the view must be rebuilt. */
+    void *view_parent;
+};
+
+/* Image unit: the Metal texture view (or 3D slice staging texture) bound for
+ * non-layered or mip image access; released on rebind or reset so the GPU can
+ * finish with the previous one. */
+struct MGLImageUnitBackend {
+    void *view; /* retained MTL::Texture, or NULL */
 };
 
 /* Buffer: cold state that is not the buffer's own MTLBuffer. */

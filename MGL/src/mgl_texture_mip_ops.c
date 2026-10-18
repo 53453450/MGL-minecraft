@@ -46,6 +46,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "mgl_texture_backend.h"
 
 /* Declared in Objective-C headers a .c file cannot include. */
 extern GLuint mglRendererSafeFramebufferName(GLMContext ctx);
@@ -310,7 +311,7 @@ void mglTextureFlushImageUnitSlice(void *renderer, GLMContext glm_ctx,
     }
     ImageUnit *iu = &glm_ctx->active_state->image_units[unit];
     if (!mglRenderImageUnitSliceNeedsFlush(
-            iu->tex ? 1 : 0, iu->mtl_image_view ? 1 : 0, iu->layered ? 1 : 0,
+            iu->tex ? 1 : 0, mglImageUnitView(iu) ? 1 : 0, iu->layered ? 1 : 0,
             iu->tex ? (uint32_t)iu->tex->target : 0u,
             (uint32_t)iu->access)) {
         return;
@@ -319,7 +320,7 @@ void mglTextureFlushImageUnitSlice(void *renderer, GLMContext glm_ctx,
         return;
     }
     void *dst3d = iu->tex->mtl_data;
-    void *staging = iu->mtl_image_view;
+    void *staging = mglImageUnitView(iu);
     MGLRenderTextureInfo info = mglTxTextureInfo(dst3d);
     if (info.texture_type != MGLTextureType3D || info.width == 0u) {
         return;
@@ -378,10 +379,9 @@ void mglTexturePrepareImageUnitSlice(void *renderer, GLMContext glm_ctx,
         return;
     }
 
-    if (iu->mtl_image_view) {
+    if (mglImageUnitView(iu)) {
         mglTextureFlushImageUnitSlice(renderer, glm_ctx, unit);
-        mglRenderReleaseMetalObject(iu->mtl_image_view);
-        iu->mtl_image_view = NULL;
+        mglImageUnitSetView(iu, NULL);
     }
 
     MGLRenderTextureDescriptorState desc = {
@@ -419,7 +419,7 @@ void mglTexturePrepareImageUnitSlice(void *renderer, GLMContext glm_ctx,
     (void)mglRenderEndBlitEncoder(blit);
     mglRenderPassFlushCommandBuffer(renderer, 0);
 
-    iu->mtl_image_view = staging;
+    mglImageUnitSetView(iu, staging);
 }
 
 /* -syncTextureBufferFromImage:tex: */

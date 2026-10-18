@@ -30,9 +30,28 @@ void mglTextureBackendDropBaseLevelView(GLMContext ctx, Texture *texture);
 /* Drop everything the backend keeps for `texture` and free the struct. */
 void mglTextureBackendRelease(GLMContext ctx, Texture *texture);
 
+/* The Metal view kept for an image unit, or NULL. */
+static inline void *mglImageUnitView(const ImageUnit *unit);
+/* Keep `view` (a reference the caller hands over) for the image unit and
+ * release the previous one; NULL just releases. */
+void mglImageUnitSetView(ImageUnit *unit, void *view);
+/* Release the unit's view and free its backend struct. */
+void mglImageUnitBackendRelease(ImageUnit *unit);
+
 #ifdef __cplusplus
 }
 #endif
+
+static inline void *mglImageUnitView(const ImageUnit *unit)
+{
+    return unit && unit->backend ? unit->backend->view : NULL;
+}
+
+/* The owner Metal texture a texture view was last built from, or NULL. */
+static inline void *mglTextureViewParent(const Texture *texture)
+{
+    return texture && texture->backend ? texture->backend->view_parent : NULL;
+}
 
 static inline struct MGLTextureBackend *
 mglTextureBackendEnsure(Texture *texture)

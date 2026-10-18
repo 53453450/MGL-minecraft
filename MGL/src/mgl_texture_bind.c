@@ -51,6 +51,7 @@
 
 #include <CoreFoundation/CoreFoundation.h>  /* CFRetain / CFRelease for the aliases */
 #include <time.h>                /* clock_gettime for the fallback circuit breaker */
+#include "mgl_texture_backend.h"
 
 /* Wall clock in UNIX seconds: the C twin of [[NSDate date]
  * timeIntervalSince1970], which gates the fallback-texture circuit breaker. */
@@ -103,7 +104,7 @@ extern uint32_t mtlPixelFormatForGLTex(Texture *tex);
 static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
 {
     Texture *root = tex->view_root;
-    void *source = tex->view_parent_mtl;
+    void *source = mglTextureViewParent(tex);
     if (!root->view_root_deleted) {
         if (!mglRendererBindMTLTexture(renderer, root) || !root->mtl_data) {
             return false;
@@ -127,7 +128,7 @@ static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
         }
         source = root->mtl_data;
     }
-    if (tex->mtl_data && source == tex->view_parent_mtl) {
+    if (tex->mtl_data && source == mglTextureViewParent(tex)) {
         return true;
     }
 
@@ -197,9 +198,10 @@ static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
     mglSafeReleaseMetalObj((void **)&tex->mtl_data);
     mglTextureReleaseGLSampledCopy(tex);
     tex->mtl_data = view;
-    if (source != tex->view_parent_mtl) {
-        mglTextureBindReleaseAlias(tex->view_parent_mtl);
-        tex->view_parent_mtl = mglTextureBindRetainAlias(source);
+    if (source != mglTextureViewParent(tex)) {
+        mglTextureBindReleaseAlias(mglTextureViewParent(tex));
+        mglTextureBackendEnsure(tex)->view_parent =
+            mglTextureBindRetainAlias(source);
     }
     return true;
 }
@@ -312,9 +314,9 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                 }
                 mglSafeReleaseMetalObj((void **)&v->mtl_data);
                 mglTextureReleaseGLSampledCopy(v);
-                if (v->view_parent_mtl) {
-                    mglTextureBindReleaseAlias(v->view_parent_mtl);
-                    v->view_parent_mtl = NULL;
+                if (mglTextureViewParent(v)) {
+                    mglTextureBindReleaseAlias(mglTextureViewParent(v));
+                    mglTextureBackendEnsure(v)->view_parent = NULL;
                 }
             }
 
