@@ -5,7 +5,6 @@
  */
 
 #include "mgl_batch_issue.h"
-#include "mgl_binding_texture.h"
 #include "mgl_batch_rt_mark.h"
 #include "mgl_batch_path.h"
 #include "mgl_batch_restore.h"
@@ -403,60 +402,6 @@ static void test_rt_draw_attachments(void)
            "copy state to rt");
 }
 
-/* A draw that samples several stale render-target copies refreshes one per
- * bind pass, so the mapper bind fails once for each before it succeeds. */
-static int g_mapper_failures;
-static int g_mapper_calls;
-static int g_restore_calls;
-static int dyn_tex_mapper_after_failures(void *v)
-{
-    (void)v;
-    g_mapper_calls++;
-    if (g_mapper_failures > 0) {
-        g_mapper_failures--;
-        return 0;
-    }
-    return 1;
-}
-static int dyn_tex_restore_count(void *v)
-{
-    (void)v;
-    g_restore_calls++;
-    return 1;
-}
-
-static void test_dyn_apply_texture_retry(void)
-{
-    MGLBatchDynApplyOps ops = {
-        .ctx = NULL,
-        .refresh_owner = dyn_refresh,
-        .has_encoder = dyn_has_enc,
-        .apply_tex = dyn_ok,
-        .bind_tex_direct = dyn_fail,
-        .bind_tex_mapper = dyn_tex_mapper_after_failures,
-        .restore_after_tex_upload = dyn_tex_restore_count,
-        .bind_vertex_direct = dyn_ok,
-        .bind_uniform_direct = dyn_ok,
-        .mapper_fallback = dyn_ok,
-    };
-    g_mapper_failures = 5;
-    g_mapper_calls = 0;
-    g_restore_calls = 0;
-    expect(mgl_batch_issue_apply_dyn_bindings(0, 0, 1, &ops) == 1,
-           "five stale copies bind");
-    expect(g_mapper_calls == 6 && g_restore_calls == 5,
-           "one restore per refreshed copy");
-
-    g_mapper_failures = 1000;
-    g_mapper_calls = 0;
-    g_restore_calls = 0;
-    expect(mgl_batch_issue_apply_dyn_bindings(0, 0, 1, &ops) == 0,
-           "a bind that never succeeds fails");
-    expect(g_restore_calls == (int)MGL_TEXTURE_BIND_RETRY_PASSES &&
-               g_mapper_calls == (int)MGL_TEXTURE_BIND_RETRY_PASSES + 1,
-           "the retries are bounded");
-}
-
 static void test_dyn_apply(void)
 {
     g_dyn_steps = 0;
@@ -680,7 +625,6 @@ int main(void)
     test_stream_index_and_sampler();
     test_encode_fold();
     test_dyn_apply();
-    test_dyn_apply_texture_retry();
     test_flush_run();
     test_check_exec();
     test_flush_trace_skip();

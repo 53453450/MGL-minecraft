@@ -93,12 +93,6 @@ enum {
     MGL_ST_PHASE_FINAL = 3   /* nil fallback + queue texture/sampler */
 };
 
-/* Binds after the first that a draw may need when it samples stale sampled
- * copies of render targets.  Each RT_RETRY refreshes one copy and closes the
- * render encoder, so the bind starts over; a draw has at most a vertex and a
- * fragment stage of 16 sampler units. */
-#define MGL_TEXTURE_BIND_RETRY_PASSES 32u
-
 enum {
     MGL_ST_ACTION_SKIP = 0,
     MGL_ST_ACTION_PROCEED,          /* materialize / continue phase */

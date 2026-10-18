@@ -12,7 +12,6 @@
  * mglRenderBinding* call on the renderer's binding-state owner.
  */
 
-#include "mgl_binding_texture.h" /* MGL_TEXTURE_BIND_RETRY_PASSES */
 #include "mgl_render_pass_sync_ops.h"
 #include "mgl_renderer_binding_ops.h"
 #include "mgl_sampled_sampler.h"
@@ -113,20 +112,12 @@ bool mglRendererSyncResourceBindingsForContext(
     RETURN_FALSE_ON_FAILURE(
         mglRenderPassRestoreRenderEncoderAfterTextureUpload(
             renderer, "final-active-texture-bind"));
-    /* Refreshing a stale sampled copy of a render target blits on the command
-     * buffer, which closes the render encoder; the bind then reports failure
-     * so the encoder is restored and the bind starts over.  Every pass
-     * refreshes at least one copy, so a draw that samples several stale
-     * targets needs one pass per target. */
-    bool textures_bound = mglBindTexturesToCurrentRenderEncoder(renderer, &encCtx);
-    for (uint32_t pass = 0;
-         !textures_bound && pass < MGL_TEXTURE_BIND_RETRY_PASSES; pass++) {
+    if (!mglBindTexturesToCurrentRenderEncoder(renderer, &encCtx)) {
         RETURN_FALSE_ON_FAILURE(
             mglRenderPassRestoreRenderEncoderAfterTextureUpload(
                 renderer, "final-sampled-texture-bind"));
-        textures_bound =
-            mglBindTexturesToCurrentRenderEncoder(renderer, &encCtx);
+        RETURN_FALSE_ON_FAILURE(
+            mglBindTexturesToCurrentRenderEncoder(renderer, &encCtx));
     }
-    RETURN_FALSE_ON_FAILURE(textures_bound);
     return true;
 }
