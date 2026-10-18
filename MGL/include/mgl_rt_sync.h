@@ -36,6 +36,13 @@ static inline void mglRenderTargetMarkGPUAuthoritative(Texture *tex)
     }
 }
 
+/* Whether the GPU, not the CPU level, holds the content of `tex`. */
+static inline int mglTextureHasGPUContent(const Texture *tex)
+{
+    return tex && tex->is_render_target &&
+           tex->mtl_render_target_write_version != 0u;
+}
+
 #ifdef __cplusplus
 }
 #endif

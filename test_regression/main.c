@@ -62,7 +62,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 227
+#define MAX_TESTS 228
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -30141,6 +30141,76 @@ static int run_orientation_probe(const char *label, GLuint prog, int to_fbo,
     return 0;
 }
 
+/* glGenerateTextureMipmap / glGenerateMipmap on a texture that has been
+ * rendered into keeps level 0 and builds the lower levels from it (Iris
+ * regenerates the mips of colortex0/colortex3 after drawing into them). */
+static int test_generate_mipmap_render_target(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "out vec2 uv;\n"
+        "void main() { vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }\n";
+    GLuint pfill = link_program(vs,
+        "#version 330 core\nin vec2 uv;\nout vec4 c;\nvoid main() { c = vec4(0.25, 0.5, 0.75, 1.0); }\n");
+    GLuint plod = link_program(vs,
+        "#version 330 core\nuniform sampler2D s;\nin vec2 uv;\nout vec4 c;\n"
+        "void main() { c = textureLod(s, uv, 2.0); }\n");
+    if (!pfill || !plod) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    int fail = 0;
+    const GLenum formats[2] = {GL_RGBA16F, GL_RGBA8};
+    for (int f = 0; f < 2; f++) {
+        for (int dsa = 0; dsa < 2; dsa++) {
+            GLuint tex = 0, fbo = 0;
+            glGenTextures(1, &tex);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, formats[f], 64, 64, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, NULL);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glCreateFramebuffers(1, &fbo);
+            glNamedFramebufferTexture(fbo, GL_COLOR_ATTACHMENT0, tex, 0);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glViewport(0, 0, 64, 64);
+            glUseProgram(pfill);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            if (dsa) glGenerateTextureMipmap(tex);
+            else glGenerateMipmap(GL_TEXTURE_2D);
+            unsigned char px[4] = {0};
+            glReadPixels(10, 10, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            if (px[0] != 64 || px[1] < 127 || px[1] > 129 || px[2] != 191) {
+                fprintf(stderr, "generate_mipmap_render_target: fmt 0x%x dsa=%d level 0 became %u,%u,%u\n",
+                        formats[f], dsa, px[0], px[1], px[2]);
+                fail |= 1 << (f * 2 + dsa);
+            }
+            /* a lower level, sampled into the window, carries the same color */
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glViewport(0, 0, 64, 64);
+            glClearColor(0.f, 0.f, 0.f, 1.f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glUseProgram(plod);
+            glUniform1i(glGetUniformLocation(plod, "s"), 0);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glReadPixels(10, 10, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            if (px[0] < 62 || px[0] > 66 || px[2] < 189 || px[2] > 193) {
+                fprintf(stderr, "generate_mipmap_render_target: fmt 0x%x dsa=%d level 2 sampled %u,%u,%u\n",
+                        formats[f], dsa, px[0], px[1], px[2]);
+                fail |= 1 << (8 + f * 2 + dsa);
+            }
+            glDeleteFramebuffers(1, &fbo);
+            glDeleteTextures(1, &tex);
+        }
+    }
+    glDeleteVertexArrays(1, &vao);
+    return fail ? 1 : 0;
+}
+
 static int test_dfdy_orientation(unsigned char *pixels, const char *out_path)
 {
     (void)out_path;
@@ -30597,6 +30667,7 @@ static const TestCase TESTS[] = {
                     test_pixel_format_bpp_table),
     SELF_CHECK_TEST("sample_mask_state_key", test_sample_mask_state_key),
     SELF_CHECK_TEST("dfdy_orientation", test_dfdy_orientation),
+    SELF_CHECK_TEST("generate_mipmap_render_target", test_generate_mipmap_render_target),
     SELF_CHECK_TEST("interpolate_at_offset_orientation",
                     test_interpolate_at_offset_orientation),
     SELF_CHECK_TEST("draw_buffer_texture_attachment",

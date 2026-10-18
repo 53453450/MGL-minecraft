@@ -60,6 +60,7 @@
 #include "mgl_texture_transfer.h"
 #include "mgl_texture_compat.h"
 #include "mgl_readback_policy.h"
+#include "mgl_rt_sync.h"
 
 extern void *getBufferData(GLMContext ctx, Buffer *ptr);
 extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
@@ -1660,12 +1661,28 @@ void generateMipmaps(GLMContext ctx, GLuint texture, GLenum target)
     ptr->mipmap_levels = MAX(ptr->mipmap_levels, level_count);
 
     needs_storage_update = (!mglTextureMtl(ptr) || !ptr->mipmapped || !ptr->genmipmaps);
+    if (needs_storage_update && mglTextureMtl(ptr) &&
+        mglTextureHasGPUContent(ptr)) {
+        /* A rendered texture whose Metal storage already holds the whole chain
+         * has nothing to rebuild; rebuilding would drop its GPU content. */
+        MGLRenderTextureInfo mtlInfo = {0};
+        if (mglRenderGetTextureInfo(mglTextureMtl(ptr), &mtlInfo) == 0 &&
+            mtlInfo.mipmap_level_count >= level_count) {
+            needs_storage_update = GL_FALSE;
+        }
+    }
 
     ptr->mipmapped = true;
     ptr->genmipmaps = true;
 
     if (needs_storage_update) {
-        ptr->dirty_bits |= DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA;
+        ptr->dirty_bits |= DIRTY_TEXTURE_LEVEL;
+        /* A rendered texture's content lives on the GPU; the rebuild keeps it
+         * with a GPU copy, so the (stale or empty) CPU level must not be
+         * uploaded over it. */
+        if (!mglTextureHasGPUContent(ptr)) {
+            ptr->dirty_bits |= DIRTY_TEXTURE_DATA;
+        }
     }
 
     mglRendererGenerateMipmaps(ctx, ptr);
