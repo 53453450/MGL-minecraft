@@ -20,6 +20,7 @@
 #include "mgl_thread_affinity.h"         /* MGL_ASSERT_GL_THREAD (METAL_LOCK) */
 #include "mgl_render_pass_sync_ops.h"
 #include "MGLRenderer+DrawSupportUtil.h"
+#include "mgl_buffer_backend.h"
 /* Declared next to their definitions in the Objective-C MGLRenderer+Draw_Private.h,
  * which a .c file cannot include; repeated here the way mgl_renderer_ports.c does. */
 extern void mglLogDrawWithoutSwapWatchdog(const char *kind, int stage, GLMContext ctx,
@@ -1007,10 +1008,10 @@ static void *mglGsMetalMtlForBuffer(void *renderer, Buffer *buf)
     if (!renderer || !buf) return NULL;
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
-    if (!buf->data.mtl_data) {
+    if (!mglBufferMtl(buf)) {
         mglRendererBindMTLBuffer(renderer, buf);
     }
-    return buf->data.mtl_data;
+    return mglBufferMtl(buf);
 }
 
 static int mglGsMetalFillComputeBindings(void *renderer, GLMContext ctx,
@@ -1532,7 +1533,7 @@ static int mglStageResolveAttribPort(GLMContext ctx, void *vao, uint32_t attrib,
     out->last_write_src_ptr = vbo->last_write_src_ptr;
     out->last_write_src_hash = vbo->last_write_src_hash;
     out->buffer_obj = vbo;
-    out->mtl_data = vbo->data.mtl_data;
+    out->mtl_data = mglBufferMtl(vbo);
     return 1;
 }
 
@@ -1541,10 +1542,10 @@ static int mglStageEnsureMtlBufferPort(void *renderer,
 {
     if (!renderer || !info || !info->buffer_obj) return 0;
     Buffer *vbo = (Buffer *)info->buffer_obj;
-    if (!vbo->data.mtl_data) {
+    if (!mglBufferMtl(vbo)) {
         mglRendererBindMTLBuffer(renderer, vbo);
     }
-    info->mtl_data = vbo->data.mtl_data;
+    info->mtl_data = mglBufferMtl(vbo);
     return info->mtl_data ? 1 : 0;
 }
 

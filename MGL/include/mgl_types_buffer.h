@@ -120,7 +120,6 @@ typedef struct BufferData_t {
     GLuint          dirty_bits;
     size_t          buffer_size;
     vm_address_t    buffer_data;
-    void            *mtl_data;
     /* True when a no-copy MTLBuffer deallocator owns buffer_data. */
     GLboolean       mtl_owns_buffer_data;
 } BufferData;
@@ -368,12 +367,6 @@ typedef struct BufferMapList_t {
     GLuint      count;
     BufferMap   buffers[MAX_MAPPED_BUFFERS];
 } BufferMapList;
-
-/* The buffer's Metal object (borrowed), or NULL before it is bound. */
-static inline void *mglBufferMetalStore(const Buffer *buffer)
-{
-    return buffer ? buffer->data.mtl_data : NULL;
-}
 
 /* The buffer has CPU-side changes the Metal store has not seen yet. */
 static inline int mglBufferHasPendingUpdate(const Buffer *buffer)

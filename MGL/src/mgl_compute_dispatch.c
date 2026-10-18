@@ -49,6 +49,7 @@
 #include "mgl_render_api_texture.h"
 #include "mgl_render_api_buffer.h"
 #include "mgl_program_backend.h"
+#include "mgl_buffer_backend.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
 static GLMState *mglComputeDispatchState(const MGLRendererStateView *areas,
@@ -439,7 +440,7 @@ void mglComputeMtlDispatchIndirectLocked(void *renderer, GLMContext glm_ctx,
         return;
     }
 
-    void *indirectBuffer = glIndirectBuffer->data.mtl_data;
+    void *indirectBuffer = mglBufferMtl(glIndirectBuffer);
     if (!indirectBuffer) {
         fprintf(stderr,
                 "MGL COMPUTE ERROR: dispatch indirect buffer %u has no Metal backing\n",

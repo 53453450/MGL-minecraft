@@ -41,6 +41,7 @@
 #include <math.h>
 #include <stdio.h>
 #include "mgl_texture_backend.h"
+#include "mgl_buffer_backend.h"
 
 /* Declared in the Objective-C MGLRenderer+DrawSupportUtil.h. */
 extern int mglDrawSupportEncodeContextIsActive(const MGLEncodeContext *encCtx);
@@ -70,7 +71,7 @@ int mglDrawResolveIndirectBuffer(void *renderer, const char *label,
         return 0;
     }
 
-    void *indirectBuffer = gl_indirect_buffer->data.mtl_data;
+    void *indirectBuffer = mglBufferMtl(gl_indirect_buffer);
     if (!indirectBuffer) {
         fprintf(stderr,
                 "MGL WARNING: %s skipped because indirect buffer %u has no Metal buffer\n",
@@ -397,10 +398,10 @@ void mglDrawBindCullDistanceEmulationBuffers(void *renderer, uint32_t mode,
                 areas.ctx, vao, attribs[i], "bindCullDistanceEmu", &resolved)) {
             continue;
         }
-        if (!resolved.buffer || !resolved.buffer->data.mtl_data) {
+        if (!resolved.buffer || !mglBufferMtl(resolved.buffer)) {
             continue;
         }
-        ports[portCount].mtl_buffer = resolved.buffer->data.mtl_data;
+        ports[portCount].mtl_buffer = mglBufferMtl(resolved.buffer);
         ports[portCount].binding_offset = resolved.binding_offset;
         ports[portCount].stride = resolved.stride;
         ports[portCount].relativeoffset = resolved.relativeoffset;

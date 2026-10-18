@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "mgl_buffer_backend.h"
 
 /* The .m's file-local constants this TU needs (values copied verbatim). */
 enum {
@@ -303,7 +304,7 @@ void *mglTextureCreateMTLTexelBufferTexture(void *renderer, void *tex)
         return NULL;
     }
 
-    if (!sourceBuffer->data.mtl_data) {
+    if (!mglBufferMtl(sourceBuffer)) {
         fprintf(stderr,
                 "MGL TEXBUFFER ERROR: no Metal buffer for tex=%u buffer=%u\n",
                 texture->name, sourceBuffer->name);
@@ -312,7 +313,7 @@ void *mglTextureCreateMTLTexelBufferTexture(void *renderer, void *tex)
 
     /* Metal texture_buffer shares storage with the attached MTLBuffer.
      * RGB formats that Metal lacks need a temporary expanded RGBA buffer. */
-    void *metalBuffer = sourceBuffer->data.mtl_data;
+    void *metalBuffer = mglBufferMtl(sourceBuffer);
     uint64_t metalOffset = (uint64_t)texture->texture_buffer_offset;
     uint64_t bytesPerRow = texelCount * bytesPerTexel;
     void *expandedData = NULL;
@@ -328,7 +329,7 @@ void *mglTextureCreateMTLTexelBufferTexture(void *renderer, void *tex)
                 (size_t)texture->texture_buffer_offset;
         } else {
             void *contents =
-                mglPdTextureBufferContents(sourceBuffer->data.mtl_data);
+                mglPdTextureBufferContents(mglBufferMtl(sourceBuffer));
             if (contents) {
                 sourceBytes = ((const uint8_t *)contents) +
                               (size_t)texture->texture_buffer_offset;

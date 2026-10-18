@@ -94,6 +94,7 @@
 #include "mgl_byte_hash.h"
 #include "mgl_compute_pipeline_cache.h"
 #include "mgl_program_backend.h"
+#include "mgl_buffer_backend.h"
 
 
 /* Restated from the Objective-C headers a .c file cannot include, the way the
@@ -2083,8 +2084,8 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
     const uint8_t *vboBytes = NULL;
     if (vbo->data.buffer_data && ((uintptr_t)vbo->data.buffer_data >= 0x1000ull)) {
         vboBytes = (const uint8_t *)vbo->data.buffer_data;
-    } else if (vbo->data.mtl_data) {
-        void *vb = (void *)(vbo->data.mtl_data);
+    } else if (mglBufferMtl(vbo)) {
+        void *vb = (void *)(mglBufferMtl(vbo));
         vboBytes = (const uint8_t *)mglMexBufferContents(vb);
     }
 
@@ -2555,8 +2556,8 @@ void mglTraceReplayCommandVertexAttribSamples(GLMContext traceCtx,
     if (ebo->data.buffer_data && ((uintptr_t)ebo->data.buffer_data >= 0x1000ull)) {
         indexBytes = (const uint8_t *)ebo->data.buffer_data;
         indexBytesAvailable = (ebo->size > 0) ? (unsigned long)ebo->size : 0u;
-    } else if (ebo->data.mtl_data) {
-        void *indexBuffer = (void *)(ebo->data.mtl_data);
+    } else if (mglBufferMtl(ebo)) {
+        void *indexBuffer = (void *)(mglBufferMtl(ebo));
         if (indexBuffer && mglMexBufferContents(indexBuffer)) {
             indexBytes = (const uint8_t *)mglMexBufferContents(indexBuffer);
             indexBytesAvailable = mglMexBufferLength(indexBuffer);

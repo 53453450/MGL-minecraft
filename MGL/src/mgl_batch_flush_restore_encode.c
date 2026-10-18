@@ -25,6 +25,7 @@
 #include "mgl_batch_mtl_encode.h"
 #include <assert.h>
 #include <string.h>
+#include "mgl_buffer_backend.h"
 
 typedef struct {
     void *r; GLMContext ctx;
@@ -158,7 +159,7 @@ static int sIdx(void *v, void **mtl)
 {
     SCtx *c = v; Buffer *ib = (Buffer *)c->batch->stream_index_buffer;
     int pok = ib ? mglRendererProcessBuffer(c->r, ib) : 0;
-    void *m = ib ? ib->data.mtl_data : NULL;
+    void *m = ib ? mglBufferMtl(ib) : NULL;
     int ready = mgl_batch_issue_stream_index_ready(ib ? 1 : 0, pok, m ? 1 : 0);
     if (ready != MGL_BATCH_STREAM_INDEX_OK) {
         mglBatchTraceStreamCmd0(c->r, c->batch, c->ctx, "FALLBACK",

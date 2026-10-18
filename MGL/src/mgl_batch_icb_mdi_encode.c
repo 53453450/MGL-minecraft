@@ -21,6 +21,7 @@
 #include "mgl_batch_rt_mark.h"    /* mglBatchTraceReplayCommand */
 #include "mgl_batch_encode_shared.h"
 #include <CoreFoundation/CoreFoundation.h>
+#include "mgl_buffer_backend.h"
 
 typedef struct {
     void *r;
@@ -104,7 +105,7 @@ static void *mglStreamIdx(void *v)
         mglIcbTrace(v, 0, "FALLBACK", "stream_mdi_index_buffer");
         return NULL;
     }
-    void *mtl = indexBuffer->data.mtl_data;
+    void *mtl = mglBufferMtl(indexBuffer);
     if (!mtl) {
         mglIcbTrace(v, 0, "FALLBACK", "stream_mdi_no_mtl_index");
         return NULL;

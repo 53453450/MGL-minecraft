@@ -32,6 +32,7 @@
 #include "mgl_sync.h"
 #include "mgl_readback_policy.h"
 #include "mgl_program_backend.h"
+#include "mgl_buffer_backend.h"
 
 /* This target exercises the renderer facade without constructing AIR loader
  * objects. Product builds link the real implementation. */
@@ -451,13 +452,13 @@ static int verifyBufferBinding(void) {
     char message[128] = {0};
     if (mglRenderBindBufferStorage(&buffer, message, sizeof(message)) !=
             MGL_RENDER_BUFFER_BOUND ||
-        !buffer.data.mtl_data || buffer.data.mtl_owns_buffer_data) {
+        !mglBufferMtl(&buffer) || buffer.data.mtl_owns_buffer_data) {
         fprintf(stderr, "FAIL: C++ buffer binder: %s\n",
                 message[0] ? message : "unknown");
         return 1;
     }
     id<MTLBuffer> metalBuffer =
-        (__bridge id<MTLBuffer>)buffer.data.mtl_data;
+        (__bridge id<MTLBuffer>)mglBufferMtl(&buffer);
     if (metalBuffer.length != sizeof(source) || !metalBuffer.contents ||
         memcmp(metalBuffer.contents, source, sizeof(source)) != 0) {
         fprintf(stderr, "FAIL: C++ buffer binder contents\n");
@@ -483,24 +484,24 @@ static int verifyBufferBinding(void) {
         return 1;
     }
     uint32_t cowValue = 71u;
-    void *initialBacking = buffer.data.mtl_data;
+    void *initialBacking = mglBufferMtl(&buffer);
     mglRenderBufferSubData(NULL, &buffer, 0, sizeof(cowValue), &cowValue);
     id<MTLBuffer> firstCowBuffer =
-        (__bridge id<MTLBuffer>)buffer.data.mtl_data;
+        (__bridge id<MTLBuffer>)mglBufferMtl(&buffer);
     if (s_legacyBufferSubDataCount != 0 ||
-        buffer.data.mtl_data == initialBacking || !(buffer.backend && buffer.backend->cow_pool) ||
+        mglBufferMtl(&buffer) == initialBacking || !(buffer.backend && buffer.backend->cow_pool) ||
         source[0] != cowValue || !firstCowBuffer.contents ||
         memcmp(firstCowBuffer.contents, source, sizeof(source)) != 0) {
         fprintf(stderr, "FAIL: Metal-cpp split-shadow COW snapshot\n");
         return 1;
     }
 
-    void *firstCowBacking = buffer.data.mtl_data;
+    void *firstCowBacking = mglBufferMtl(&buffer);
     uint64_t generation1 = mglRenderAdvanceBufferGeneration();
     mglRenderNoteBufferEncoded(&buffer);
     cowValue = 72u;
     mglRenderBufferSubData(NULL, &buffer, 0, sizeof(cowValue), &cowValue);
-    void *secondCowBacking = buffer.data.mtl_data;
+    void *secondCowBacking = mglBufferMtl(&buffer);
     if (secondCowBacking == firstCowBacking || source[0] != cowValue) {
         fprintf(stderr, "FAIL: in-flight COW slot was reused\n");
         return 1;
@@ -511,7 +512,7 @@ static int verifyBufferBinding(void) {
     mglRenderRecordBufferGenerationCompleted(generation1);
     cowValue = 73u;
     mglRenderBufferSubData(NULL, &buffer, 0, sizeof(cowValue), &cowValue);
-    if (buffer.data.mtl_data != firstCowBacking ||
+    if (mglBufferMtl(&buffer) != firstCowBacking ||
         mglRenderCompletedBufferGeneration() < generation1 ||
         generation2 <= generation1) {
         fprintf(stderr, "FAIL: completed COW slot was not reused\n");
@@ -519,7 +520,7 @@ static int verifyBufferBinding(void) {
     }
     mglRenderReleaseBufferMetalData(NULL, &buffer);
     mglRenderReleaseBufferBackend(&buffer);
-    if (buffer.data.mtl_data != NULL) {
+    if (mglBufferMtl(&buffer) != NULL) {
         fprintf(stderr, "FAIL: C++ buffer release did not clear backing\n");
         return 1;
     }
@@ -551,8 +552,8 @@ static int verifyBufferBinding(void) {
             uint32_t value = 90u + i;
             mglRenderBufferSubData(NULL, &capped, 0, sizeof(value), &value);
             @autoreleasepool {
-                if (i == 3u) lastPooled = (__bridge id<MTLBuffer>)capped.data.mtl_data;
-                if (i == 4u) overflow = (__bridge id<MTLBuffer>)capped.data.mtl_data;
+                if (i == 3u) lastPooled = (__bridge id<MTLBuffer>)mglBufferMtl(&capped);
+                if (i == 4u) overflow = (__bridge id<MTLBuffer>)mglBufferMtl(&capped);
             }
         }
         bool pooledAlive = false, overflowAlive = false;
@@ -596,7 +597,7 @@ static int verifyBufferBinding(void) {
         mglRenderBufferSubData(NULL, &resized, 0, sizeof(firstValue),
                                &firstValue);
         id<MTLBuffer> smallSnapshot =
-            (__bridge id<MTLBuffer>)resized.data.mtl_data;
+            (__bridge id<MTLBuffer>)mglBufferMtl(&resized);
         if (smallSnapshot.length != sizeof(smallSource)) {
             fprintf(stderr, "FAIL: COW resize first snapshot length=%lu\n",
                     (unsigned long)smallSnapshot.length);
@@ -623,7 +624,7 @@ static int verifyBufferBinding(void) {
         mglRenderBufferSubData(NULL, &resized, 0, sizeof(secondValue),
                                &secondValue);
         id<MTLBuffer> grownSnapshot =
-            (__bridge id<MTLBuffer>)resized.data.mtl_data;
+            (__bridge id<MTLBuffer>)mglBufferMtl(&resized);
         if (grownSnapshot.length < sizeof(grownSource)) {
             fprintf(stderr,
                     "FAIL: COW pool reused a %lu-byte slot for a %lu-byte"
@@ -651,13 +652,13 @@ static int verifyBufferBinding(void) {
             &direct, 0, sizeof(directValues), directValues,
             message, sizeof(message)) !=
             MGL_RENDER_BUFFER_OPERATION_HANDLED ||
-        !direct.data.mtl_data) {
+        !mglBufferMtl(&direct)) {
         fprintf(stderr, "FAIL: direct Metal buffer subdata: %s\n",
                 message[0] ? message : "unknown");
         return 1;
     }
     id<MTLBuffer> directMetal =
-        (__bridge id<MTLBuffer>)direct.data.mtl_data;
+        (__bridge id<MTLBuffer>)mglBufferMtl(&direct);
     if (!directMetal.contents ||
         memcmp(directMetal.contents, directValues, sizeof(directValues)) != 0) {
         fprintf(stderr, "FAIL: direct Metal buffer subdata contents\n");
@@ -678,20 +679,20 @@ static int verifyBufferBinding(void) {
         fprintf(stderr, "FAIL: range-flush buffer bind: %s\n", message);
         return 1;
     }
-    void *flushInitialBacking = flushBuffer.data.mtl_data;
+    void *flushInitialBacking = mglBufferMtl(&flushBuffer);
     flushSource[1] = 95u;
     if (mglRenderFlushBufferRangeStorage(
             &flushBuffer, sizeof(uint32_t), sizeof(uint32_t),
             message, sizeof(message)) !=
             MGL_RENDER_BUFFER_OPERATION_HANDLED ||
-        flushBuffer.data.mtl_data == flushInitialBacking ||
+        mglBufferMtl(&flushBuffer) == flushInitialBacking ||
         !(flushBuffer.backend && flushBuffer.backend->cow_pool)) {
         fprintf(stderr, "FAIL: C++ mapped range COW flush: %s\n",
                 message[0] ? message : "unknown");
         return 1;
     }
     id<MTLBuffer> flushedMetal =
-        (__bridge id<MTLBuffer>)flushBuffer.data.mtl_data;
+        (__bridge id<MTLBuffer>)mglBufferMtl(&flushBuffer);
     if (!flushedMetal.contents ||
         memcmp(flushedMetal.contents, flushSource, sizeof(flushSource)) != 0) {
         fprintf(stderr, "FAIL: C++ mapped range COW contents\n");
@@ -713,7 +714,7 @@ static int verifyBufferBinding(void) {
             &plainUniform, message, sizeof(message)) !=
             MGL_RENDER_BUFFER_OPERATION_HANDLED ||
         plainUniform.data.dirty_bits != 0 ||
-        plainUniform.data.mtl_data != NULL) {
+        mglBufferMtl(&plainUniform) != NULL) {
         fprintf(stderr, "FAIL: C++ plain-uniform dirty update\n");
         return 1;
     }
@@ -731,12 +732,12 @@ static int verifyBufferBinding(void) {
             &smallDirty, message, sizeof(message)) !=
             MGL_RENDER_BUFFER_OPERATION_HANDLED ||
         smallDirty.data.dirty_bits != 0 || smallDirty.cpu_shadow_pending ||
-        !smallDirty.data.mtl_data) {
+        !mglBufferMtl(&smallDirty)) {
         fprintf(stderr, "FAIL: C++ small dirty update: %s\n", message);
         return 1;
     }
     id<MTLBuffer> smallMetal =
-        (__bridge id<MTLBuffer>)smallDirty.data.mtl_data;
+        (__bridge id<MTLBuffer>)mglBufferMtl(&smallDirty);
     if (!smallMetal.contents ||
         memcmp(smallMetal.contents, smallSource, sizeof(smallSource)) != 0) {
         fprintf(stderr, "FAIL: C++ small dirty contents\n");
@@ -769,12 +770,12 @@ static int verifyBufferBinding(void) {
             &largeDirty, message, sizeof(message)) !=
             MGL_RENDER_BUFFER_OPERATION_HANDLED ||
         largeDirty.data.dirty_bits != 0 || largeDirty.cpu_shadow_pending ||
-        !largeDirty.data.mtl_data) {
+        !mglBufferMtl(&largeDirty)) {
         fprintf(stderr, "FAIL: C++ large dirty update: %s\n", message);
         return 1;
     }
     id<MTLBuffer> largeMetal =
-        (__bridge id<MTLBuffer>)largeDirty.data.mtl_data;
+        (__bridge id<MTLBuffer>)mglBufferMtl(&largeDirty);
     if (!largeMetal.contents ||
         memcmp(largeMetal.contents, largeSource, sizeof(largeSource)) != 0) {
         fprintf(stderr, "FAIL: C++ large dirty contents\n");
@@ -812,14 +813,14 @@ static int verifyBufferBinding(void) {
     noCopy.data.buffer_data = noCopyAddress;
     noCopy.storage_flags = GL_CLIENT_STORAGE_BIT;
     mglRenderBindBuffer(NULL, &noCopy);
-    if (!noCopy.data.mtl_data || !noCopy.data.mtl_owns_buffer_data) {
+    if (!mglBufferMtl(&noCopy) || !noCopy.data.mtl_owns_buffer_data) {
         vm_deallocate((vm_map_t)mach_task_self(), noCopyAddress,
                       (vm_size_t)noCopyLength);
         fprintf(stderr, "FAIL: no-copy buffer C++ callback bind\n");
         return 1;
     }
     id<MTLBuffer> noCopyMetal =
-        (__bridge id<MTLBuffer>)noCopy.data.mtl_data;
+        (__bridge id<MTLBuffer>)mglBufferMtl(&noCopy);
     if (noCopyMetal.contents != noCopyBytes) {
         fprintf(stderr, "FAIL: no-copy buffer address changed\n");
         return 1;
@@ -856,7 +857,7 @@ static int verifyPackedStructBufferRing(void) {
     const uint64_t releaseCountBefore = s_metalReleaseCount;
     slots[0] = mglRenderAcquirePackedStructBuffer(
         firstBytes, sizeof(firstBytes), message, sizeof(message));
-    if (!slots[0] || !slots[0]->data.mtl_data ||
+    if (!slots[0] || !mglBufferMtl(slots[0]) ||
         slots[0]->size != 256 || slots[0]->data.buffer_size != 256 ||
         slots[0]->target != GL_UNIFORM_BUFFER ||
         slots[0]->usage != GL_STATIC_DRAW ||
@@ -867,7 +868,7 @@ static int verifyPackedStructBufferRing(void) {
     }
 
     id<MTLBuffer> firstMetal =
-        (__bridge id<MTLBuffer>)slots[0]->data.mtl_data;
+        (__bridge id<MTLBuffer>)mglBufferMtl(slots[0]);
     const uint8_t *firstContents =
         static_cast<const uint8_t *>(firstMetal.contents);
     if (firstMetal.length != 256 || !firstContents ||
@@ -882,7 +883,7 @@ static int verifyPackedStructBufferRing(void) {
         }
     }
 
-    void *firstBackingAddress = slots[0]->data.mtl_data;
+    void *firstBackingAddress = mglBufferMtl(slots[0]);
     firstMetal = nil;
     for (size_t i = 1; i < 128; ++i) {
         uint32_t value = static_cast<uint32_t>(i);
@@ -900,14 +901,14 @@ static int verifyPackedStructBufferRing(void) {
     Buffer *wrapped = mglRenderAcquirePackedStructBuffer(
         &wrappedValue, sizeof(wrappedValue), message, sizeof(message));
     if (wrapped != slots[0] ||
-        wrapped->data.mtl_data == firstBackingAddress ||
+        mglBufferMtl(wrapped) == firstBackingAddress ||
         s_metalCreateCount != createCountBefore + 129 ||
         s_metalReleaseCount != releaseCountBefore + 1) {
         fprintf(stderr, "FAIL: packed struct ring did not replace slot 0\n");
         return 1;
     }
     id<MTLBuffer> wrappedMetal =
-        (__bridge id<MTLBuffer>)wrapped->data.mtl_data;
+        (__bridge id<MTLBuffer>)mglBufferMtl(wrapped);
     if (!wrappedMetal.contents ||
         memcmp(wrappedMetal.contents, &wrappedValue, sizeof(wrappedValue)) != 0) {
         fprintf(stderr, "FAIL: wrapped packed struct contents\n");
@@ -9915,7 +9916,7 @@ int main(void) {
         const uint32_t teardownValue = 0x10203040u;
         Buffer *teardownSlot = mglRenderAcquirePackedStructBuffer(
             &teardownValue, sizeof(teardownValue), NULL, 0);
-        if (!teardownSlot || !teardownSlot->data.mtl_data) {
+        if (!teardownSlot || !mglBufferMtl(teardownSlot)) {
             fprintf(stderr, "FAIL: packed struct teardown fixture\n");
             return 1;
         }

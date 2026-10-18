@@ -53,6 +53,7 @@
 #include "mgl_shader_resource.h"       /* mglMGLShaderResourceTypeName */
 #include "hash_table.h"                /* searchHashTable */
 #include "mgl_trace_log.h"             /* mglTraceLog / kMGLDiagnosticStateLogs */
+#include "mgl_buffer_backend.h"
 
 /* === C prototypes for functions defined in Objective-C translation units ===
  * Their declarations live in MGLRenderer+Draw_Private.h, which a .c file
@@ -287,7 +288,7 @@ bool mglRendererMapGLBuffersToMTLBufferMap(void *renderer,
                                    : NULL);
             Buffer *drawIndexBuffer = vao->element_array.buffer;
             planInput.index_buffer_metal =
-                drawIndexBuffer ? drawIndexBuffer->data.mtl_data : NULL;
+                drawIndexBuffer ? mglBufferMtl(drawIndexBuffer) : NULL;
             planInput.vao = (const void *)vao;
             planInput.resolve = mglResolveVertexAttribForPlan;
             planInput.resolve_user = (void *)&resolveCtx;

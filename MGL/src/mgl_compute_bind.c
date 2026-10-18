@@ -49,6 +49,7 @@
 #include "mgl_render_api_texture.h"
 #include "mgl_program_backend.h"
 #include "mgl_texture_backend.h"
+#include "mgl_buffer_backend.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
 static GLMState *mglComputeBindState(const MGLRendererStateView *areas)
@@ -206,8 +207,8 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
             map->has_metal_binding ? (int32_t)map->metal_binding_index : -1,
             (int32_t)map->buffer_base_index, (uint32_t)map->resource_type,
             map->offset, ptr->size, /*has_buffer=*/1,
-            ptr->data.buffer_data ? 1 : 0, ptr->data.mtl_data ? 1 : 0,
-            (const void *)(uintptr_t)ptr->data.buffer_data, ptr->data.mtl_data,
+            ptr->data.buffer_data ? 1 : 0, mglBufferMtl(ptr) ? 1 : 0,
+            (const void *)(uintptr_t)ptr->data.buffer_data, mglBufferMtl(ptr),
             /*cpu_dirty=*/0, ptr->gpu_write_target ? 1 : 0,
             /*allow_isolate_when_gpu=*/1, /*attrib_reserved=*/0,
             (uint32_t)kMGLMaxMetalVertexBufferCount,
@@ -259,9 +260,9 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
                                                  (uint64_t)metalBindingIndex);
 
         /* ---- materialize the Metal backing the plan asked for ---- */
-        if (ptr->data.mtl_data) {
+        if (mglBufferMtl(ptr)) {
             MGLRenderBufferInfo existingInfo = {0};
-            if (mglRenderGetBufferInfo(ptr->data.mtl_data, &existingInfo) == 0 &&
+            if (mglRenderGetBufferInfo(mglBufferMtl(ptr), &existingInfo) == 0 &&
                 mglRenderMetalBackingTooSmall(ptr->size, existingInfo.length)) {
                 /* A plain-uniform buffer may grow after another stage has
                  * materialized a short backing store.  The dirty-update path
@@ -270,7 +271,7 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
                 mglRenderReleaseBufferMetalData(ctx, ptr);
             }
         }
-        if (!ptr->data.mtl_data) {
+        if (!mglBufferMtl(ptr)) {
             mglRendererBindMTLBuffer(renderer, ptr);
         }
         if (mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
@@ -294,7 +295,7 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
             mglRenderClearCPUWriteRange(ptr);
         }
 
-        void *buffer = ptr->data.mtl_data;
+        void *buffer = mglBufferMtl(ptr);
         MGLRenderBufferInfo bufferInfo = {0};
         const bool hasBufferInfo = buffer &&
             mglRenderGetBufferInfo(buffer, &bufferInfo) == 0;
@@ -303,7 +304,7 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
             : 0u;
 
         mglBindingStageFillMapEntryPostMtl(
-            &bin, ptr->data.mtl_data ? 1 : 0, ptr->data.mtl_data,
+            &bin, mglBufferMtl(ptr) ? 1 : 0, mglBufferMtl(ptr),
             hasBufferInfo ? 1 : 0, hasBufferInfo ? bufferInfo.length : 0u,
             (uint64_t)availableBytes, /*binding_state_valid=*/0,
             /*buffer_matches=*/0);

@@ -49,6 +49,7 @@
 #include "mgl_texture_bind.h"       /* mglRendererBindMTLBuffer */
 #include "mgl_metal_ref.h"          /* mglSafeReleaseMetalObj */
 #include "mgl_frame_activity.h"     /* MGL_PERF_INC + the bind counters */
+#include "mgl_buffer_backend.h"
 
 /* Declared next to its definition in the Objective-C MGLRenderer+Draw_Private.h
  * (which a .c file cannot include); repeated here the way mgl_renderer_ports.c
@@ -297,9 +298,9 @@ bool mglBindingStateBindStageBufferMapEntries(
             (int32_t)map->buffer_base_index, (uint32_t)map->resource_type,
             map->offset, ptr ? ptr->size : -1, ptr ? 1 : 0,
             ptr && ptr->data.buffer_data ? 1 : 0,
-            ptr && ptr->data.mtl_data ? 1 : 0,
+            ptr && mglBufferMtl(ptr) ? 1 : 0,
             ptr ? (const void *)(uintptr_t)ptr->data.buffer_data : NULL,
-            ptr ? ptr->data.mtl_data : NULL,
+            ptr ? mglBufferMtl(ptr) : NULL,
             ptr && mglRenderBufferHasCPUDirty(ptr->data.dirty_bits) ? 1 : 0,
             ptr && ptr->gpu_write_target ? 1 : 0, allow_isolate_when_gpu ? 1 : 0,
             0, max_metal_slots, (uint32_t)MAX_BINDABLE_BUFFERS,
@@ -380,7 +381,7 @@ bool mglBindingStateBindStageBufferMapEntries(
             if (plan.mark_any_present) {
                 any_binding_present[binding_index] = true;
             }
-            if (plan.clear_cpu_dirty_if_no_mtl && ptr && !ptr->data.mtl_data) {
+            if (plan.clear_cpu_dirty_if_no_mtl && ptr && !mglBufferMtl(ptr)) {
                 ptr->data.dirty_bits &= ~DIRTY_BUFFER_DATA;
             }
             if (plan.clear_cpu_dirty && ptr) {
@@ -394,14 +395,14 @@ bool mglBindingStateBindStageBufferMapEntries(
         }
 
         if (!(is_fragment && plan.use_mtl_as_inline_src)) {
-            if (!ptr->data.mtl_data) {
+            if (!mglBufferMtl(ptr)) {
                 mglRendererBindMTLBuffer(renderer, ptr);
             }
             /* Create-on-first-bind used to skip this; written_min then
              * survived and the next draw's dirty upload overwrote GPU
              * SSBO stores with the original glBufferData shadow
              * (KHR-GL46 advanced-usage-sync: 2 vs 4). */
-            if (ptr->data.mtl_data &&
+            if (mglBufferMtl(ptr) &&
                 mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
                 (void)mglRendererUpdateDirtyBuffer(renderer, ptr);
             }
@@ -412,13 +413,13 @@ bool mglBindingStateBindStageBufferMapEntries(
         }
 
         int mtl_usable = mglBindingStagePostMtlUsable(
-            frag, ptr->data.mtl_data, plan.use_mtl_as_inline_src ? 1 : 0);
-        void *buffer = mtl_usable ? ptr->data.mtl_data : NULL;
+            frag, mglBufferMtl(ptr), plan.use_mtl_as_inline_src ? 1 : 0);
+        void *buffer = mtl_usable ? mglBufferMtl(ptr) : NULL;
         size_t metal_len = buffer ? (size_t)mglSbBufferLength(buffer) : 0u;
         size_t available_bytes =
             buffer ? mglBufferMapVisibleBackingBytes(map, metal_len) : 0u;
         mglBindingStageFillMapEntryPostMtl(
-            &bin, ptr->data.mtl_data ? 1 : 0, ptr->data.mtl_data, mtl_usable,
+            &bin, mglBufferMtl(ptr) ? 1 : 0, mglBufferMtl(ptr), mtl_usable,
             (uint64_t)metal_len, (uint64_t)available_bytes,
             mglSbBindingStateIsValid(binding_owner) ? 1 : 0,
             buffer && mglSbBindingStateBufferMatches(

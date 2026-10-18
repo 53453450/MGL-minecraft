@@ -50,6 +50,7 @@
 // Used to recover from a corrupted context pointer (e.g. small non-NULL values like 0x2f)
 extern void mgl_lazy_init(void);
 #include "mgl_trace_log.h"
+#include "mgl_buffer_backend.h"
 
 void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access);
 
@@ -142,7 +143,7 @@ static void mglPrepareGpuWrittenBufferForCpuShadowWrite(GLMContext ctx,
                                                         Buffer *ptr)
 {
     if (!ctx || !ptr || !ptr->gpu_write_target || ptr->cpu_shadow_pending ||
-        !ptr->data.buffer_data || !ptr->data.mtl_data) {
+        !ptr->data.buffer_data || !mglBufferMtl(ptr)) {
         return;
     }
 
@@ -335,7 +336,9 @@ void mglReleaseBufferStorage(Buffer *buf)
     if (!buf) return;
 
     GLboolean metal_owns_cpu_backing = buf->data.mtl_owns_buffer_data;
-    mglSafeReleaseMetalObj((void **)&buf->data.mtl_data);
+    if (buf->backend) {
+        mglSafeReleaseMetalObj((void **)&buf->backend->mtl_data);
+    }
 
     if (buf->data.buffer_data && buf->data.buffer_size > 0 &&
         !metal_owns_cpu_backing) {
@@ -2245,7 +2248,7 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
                                 (long long)size,
                                 src_hash,
                                 src_preview,
-                                ptr->data.mtl_data);
+                                mglBufferMtl(ptr));
         }
         /* Mark before the Metal upload so gpu_write_target snapshots include
          * this range in their shadow overlay. */
@@ -2357,7 +2360,7 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
                            data,
                            src_hash_for_meta);
 
-        if (ptr->data.mtl_data)
+        if (mglBufferMtl(ptr))
         {
             // use use metal to do the subdata call
             mglRendererBufferSubData(ctx, ptr, offset, size, data);

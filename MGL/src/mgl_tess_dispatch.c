@@ -65,6 +65,7 @@
 #include "mgl_texture_binding_resolve.h" /* mglSamplerBackend* */
 #include "mgl_program_backend.h"
 #include "mgl_texture_backend.h"
+#include "mgl_buffer_backend.h"
 
 /* Declared next to their definitions in Objective-C headers a .c file cannot
  * include; repeated here the way mgl_renderer_ports.c repeats its prototypes.
@@ -266,9 +267,9 @@ static const uint8_t *mglTessDispatchReadableBufferBytes(Buffer *buffer)
         mglRenderCPUPointerUsable((const void *)buffer->data.buffer_data)) {
         return (const uint8_t *)(uintptr_t)buffer->data.buffer_data;
     }
-    if (buffer->data.mtl_data) {
+    if (mglBufferMtl(buffer)) {
         return (const uint8_t *)mglTessDispatchBufferContents(
-            buffer->data.mtl_data);
+            mglBufferMtl(buffer));
     }
     return NULL;
 }
@@ -1343,10 +1344,10 @@ bool mglTessDispatchAIRTessEvalCompute(
             } else if (xfb_slot->buf->size == 0) {
                 mglRenderClearEmptyBufferDirty(xfb_slot->buf);
             }
-            if (!xfb_slot->buf->data.mtl_data) {
+            if (!mglBufferMtl(xfb_slot->buf)) {
                 mglRendererBindMTLBuffer(renderer, xfb_slot->buf);
             }
-            xfb_mtl = xfb_slot->buf->data.mtl_data;
+            xfb_mtl = mglBufferMtl(xfb_slot->buf);
             mglTessDispatchKeepAlive(temporaries, xfb_mtl);
             if (xfb_mtl) {
                 BufferMap xfb_map = {0};
@@ -1531,10 +1532,10 @@ bool mglTessDispatchAIRTessEvalCompute(
                         goto done;
                     }
                 }
-                if (!dest_buf->data.mtl_data) {
+                if (!mglBufferMtl(dest_buf)) {
                     mglRendererBindMTLBuffer(renderer, dest_buf);
                 }
-                void *dest_mtl = dest_buf->data.mtl_data;
+                void *dest_mtl = mglBufferMtl(dest_buf);
                 /* SubData below may replace the buffer's Metal backing, and
                  * the ARC local was what kept this one alive (log 128). */
                 mglTessDispatchKeepAlive(temporaries, dest_mtl);

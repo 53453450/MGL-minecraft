@@ -112,6 +112,9 @@ struct MGLImageUnitBackend {
 
 /* Buffer: cold state that is not the buffer's own MTLBuffer. */
 struct MGLBufferBackend {
+    /* The buffer's Metal buffer (retained), or NULL until the backend first
+     * creates it. */
+    void *mtl_data;
     /* Copy-on-write snapshot pool: an opaque C++ allocation (mgl::BufferCowPool),
      * not a CF object. */
     void *cow_pool;

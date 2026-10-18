@@ -38,6 +38,7 @@
 #include "MGLRenderer.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_api_texture.h"
+#include "mgl_buffer_backend.h"
 
 /* Legacy GL 1.1 clip-plane surface: glClipPlane/glGetClipPlane are not
  * declared by glcorearb.h, and GL_CLIP_PLANE0..5 share the GL_CLIP_DISTANCE
@@ -6789,21 +6790,21 @@ static int test_persistent_map_rss_soak(unsigned char *pixels,
 
     GLMContext ctx = MGLgetCurrentContext();
     internal = ctx ? ctx->active_state->buffers[_ARRAY_BUFFER] : NULL;
-    if (!internal || !internal->data.mtl_data ||
+    if (!internal || !mglBufferMtl(internal) ||
         !internal->data.mtl_owns_buffer_data ||
         internal->mapped_ptr != mapped) {
         fprintf(stderr,
                 "persistent_map_rss_soak: no-copy backing not established "
                 "(buffer=%p mtl=%p owns=%u mapped=%p expected=%p)\n",
                 (void *)internal,
-                internal ? internal->data.mtl_data : NULL,
+                internal ? mglBufferMtl(internal) : NULL,
                 internal ? (unsigned)internal->data.mtl_owns_buffer_data : 0u,
                 internal ? internal->mapped_ptr : NULL,
                 mapped);
         rc = 4;
         goto cleanup;
     }
-    stable_mtl_data = internal->data.mtl_data;
+    stable_mtl_data = mglBufferMtl(internal);
     if (glGetError() != GL_NO_ERROR || sample_process_memory(&baseline) != 0) {
         fprintf(stderr, "persistent_map_rss_soak: warmup or memory sample failed\n");
         rc = 5;
@@ -6823,12 +6824,12 @@ static int test_persistent_map_rss_soak(unsigned char *pixels,
         glBindVertexBuffer(0, buffer_name, (GLintptr)offset,
                            2 * sizeof(float));
         glDrawArrays(GL_TRIANGLES, 0, 3);
-        if (internal->data.mtl_data != stable_mtl_data ||
+        if (mglBufferMtl(internal) != stable_mtl_data ||
             !internal->data.mtl_owns_buffer_data) {
             fprintf(stderr,
                     "persistent_map_rss_soak: Metal backing changed at %u "
                     "(%p -> %p owns=%u)\n",
-                    i + 1u, stable_mtl_data, internal->data.mtl_data,
+                    i + 1u, stable_mtl_data, mglBufferMtl(internal),
                     (unsigned)internal->data.mtl_owns_buffer_data);
             rc = 6;
             goto cleanup;

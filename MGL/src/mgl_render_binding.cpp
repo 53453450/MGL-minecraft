@@ -54,6 +54,7 @@ extern "C" {
 #include <Block.h>
 #include <objc/runtime.h>
 #include "mgl_program_backend.h"
+#include "mgl_buffer_backend.h"
 
 void mglRenderBindBuffer(GLMContext glm_ctx, Buffer* buffer) {
     char error[256] = {};
@@ -753,7 +754,7 @@ int mglRenderBindBufferStorage(Buffer* buffer,
             snprintf(err, errcap, "suspicious size=%zu",
                      static_cast<size_t>(buffer->size));
         }
-        buffer->data.mtl_data = nullptr;
+        mglBufferBackendEnsure(buffer)->mtl_data = nullptr;
         return MGL_RENDER_BUFFER_ERROR;
     }
 
@@ -777,7 +778,7 @@ int mglRenderBindBufferStorage(Buffer* buffer,
         if (err && errcap) {
             snprintf(err, errcap, "transient buffer has no CPU backing");
         }
-        buffer->data.mtl_data = nullptr;
+        mglBufferBackendEnsure(buffer)->mtl_data = nullptr;
         return MGL_RENDER_BUFFER_ERROR;
     }
     if (buffer->transient_batch_buffer) {
@@ -797,7 +798,7 @@ int mglRenderBindBufferStorage(Buffer* buffer,
                      "no-copy buffer has no CPU backing buffer=%u",
                      static_cast<unsigned>(buffer->name));
         }
-        buffer->data.mtl_data = nullptr;
+        mglBufferBackendEnsure(buffer)->mtl_data = nullptr;
         return MGL_RENDER_BUFFER_ERROR;
     }
     if (clientStorage) {
@@ -819,11 +820,11 @@ int mglRenderBindBufferStorage(Buffer* buffer,
             snprintf(err, errcap, "Metal buffer creation failed size=%zu",
                      allocationSize);
         }
-        buffer->data.mtl_data = nullptr;
+        mglBufferBackendEnsure(buffer)->mtl_data = nullptr;
         return MGL_RENDER_BUFFER_ERROR;
     }
 
-    buffer->data.mtl_data = metalBuffer;
+    mglBufferBackendEnsure(buffer)->mtl_data = metalBuffer;
     buffer->data.mtl_owns_buffer_data = noCopy ? GL_TRUE : GL_FALSE;
     if (!bytes) buffer->data.buffer_data = 0;
     return MGL_RENDER_BUFFER_BOUND;

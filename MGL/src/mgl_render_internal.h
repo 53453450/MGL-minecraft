@@ -23,6 +23,7 @@
 #include "mgl_render_api_query.h"
 #include "mgl_render_api_texture.h"
 #include "mgl_render_api_draw.h"
+#include "mgl_buffer_backend.h"
 
 extern "C" void mglMetalCountRelease(int kind);
 extern "C" void mglMetalCountCreate(int kind);
@@ -434,7 +435,7 @@ inline bool vertexConversionSource(Buffer* source,
         return true;
     }
     MTL::Buffer* metal =
-        static_cast<MTL::Buffer*>(source->data.mtl_data);
+        static_cast<MTL::Buffer*>(mglBufferMtl(source));
     if (!metal || !metal->contents() || metal->length() == 0) return false;
     *bytesOut = static_cast<const uint8_t*>(metal->contents());
     *sizeOut = static_cast<size_t>(metal->length());
@@ -445,7 +446,8 @@ inline BufferCowPool* bufferCowPool(Buffer* owner, bool create) {
     if (!owner) return nullptr;
     if (!owner->backend) {
         if (!create) return nullptr;
-        owner->backend = new (std::nothrow) MGLBufferBackend();
+        owner->backend = static_cast<MGLBufferBackend*>(
+            calloc(1, sizeof(MGLBufferBackend)));
         if (!owner->backend) return nullptr;
     }
     BufferCowPool* pool =
@@ -523,8 +525,8 @@ inline bool bufferShadowUploadRange(const Buffer* buffer,
 inline void installBufferCowSnapshot(Buffer* owner,
                               const BufferCowSnapshot& snapshot) {
     if (snapshot.poolOwnsReference) snapshot.buffer->retain();
-    releaseBridgedObject(&owner->data.mtl_data);
-    owner->data.mtl_data = snapshot.buffer;
+    releaseBridgedObject(&mglBufferBackendEnsure(owner)->mtl_data);
+    mglBufferBackendEnsure(owner)->mtl_data = snapshot.buffer;
 }
 
 struct BindingState {
@@ -1014,7 +1016,7 @@ inline void releaseBindingStates(Renderer& renderer) {
 inline void releasePackedStructBuffers(Renderer& renderer) {
     for (Buffer*& buffer : renderer.packedStructBuffers) {
         if (!buffer) continue;
-        releaseBridgedObject(&buffer->data.mtl_data);
+        releaseBridgedObject(&mglBufferBackendEnsure(buffer)->mtl_data);
         std::free(buffer);
         buffer = nullptr;
     }

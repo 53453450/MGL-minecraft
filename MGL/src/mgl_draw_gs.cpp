@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cstring>
 #include "mgl_program_backend.h"
+#include "mgl_buffer_backend.h"
 
 extern "C" bool mglDrawGsInputModeAccepts(GLenum gsMode, GLenum drawMode)
 {
@@ -1131,13 +1132,13 @@ extern "C" int mglDrawGsRunDraw(GLMContext ctx, GLenum mode, GLint first,
         Buffer *ebo = indexedDraw ? getElementBuffer(ctx) : NULL;
         if (indexedDraw &&
             (!ebo || !ops->process_buffer(ops->renderer, ebo) ||
-             !ebo->data.mtl_data)) {
+             !mglBufferMtl(ebo))) {
             mglDispatchError(ctx, label ? label : "geometryDraw",
                              (GLenum)mglRenderErrorInvalidOperation());
             return 1;
         }
         if (indexedDraw) {
-            eboMetal = ebo->data.mtl_data;
+            eboMetal = mglBufferMtl(ebo);
             indexOffsetBytes = (uint64_t)(uintptr_t)indices;
             indexBytes = mglElementIndexSourceForDraw(
                 ebo, eboMetal, indexType, indexOffsetBytes, count);

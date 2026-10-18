@@ -34,6 +34,7 @@
 #include <cstddef>
 #include <CoreFoundation/CoreFoundation.h>
 #include "mgl_program_backend.h"
+#include "mgl_buffer_backend.h"
 
 extern "C" Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
 
@@ -2998,12 +2999,12 @@ static int mglXfbFinishVsOnlyCapture(GLMContext ctx, GLenum mode, GLsizei count,
             MGLRenderBufferInfo existingInfo = {0};
             const bool shadowNewer = slot->buf->cpu_shadow_pending ||
                 (slot->buf->data.dirty_bits & DIRTY_BUFFER_DATA);
-            if (!shadowNewer && slot->buf->data.mtl_data &&
-                mglRenderGetBufferInfo(slot->buf->data.mtl_data,
+            if (!shadowNewer && mglBufferMtl(slot->buf) &&
+                mglRenderGetBufferInfo(mglBufferMtl(slot->buf),
                                        &existingInfo) == 0 &&
                 destinationOffset + writtenBytes <= existingInfo.length) {
                 existing = (const uint8_t *)buffer_contents(
-                    slot->buf->data.mtl_data);
+                    mglBufferMtl(slot->buf));
             }
             if (existing) {
                 memcpy(packed, existing + destinationOffset, writtenBytes);
@@ -3021,13 +3022,13 @@ static int mglXfbFinishVsOnlyCapture(GLMContext ctx, GLenum mode, GLsizei count,
                             plan->buffer_stride[buffer]);
         mglRendererBufferSubData(ctx, slot->buf, destinationOffset, writtenBytes,
                                  packed);
-        if (slot->buf->data.mtl_data) {
+        if (mglBufferMtl(slot->buf)) {
             MGLRenderBufferInfo liveInfo = {0};
-            if (mglRenderGetBufferInfo(slot->buf->data.mtl_data, &liveInfo) ==
+            if (mglRenderGetBufferInfo(mglBufferMtl(slot->buf), &liveInfo) ==
                     0 &&
                 destinationOffset + writtenBytes <= liveInfo.length) {
                 uint8_t *liveBase =
-                    (uint8_t *)buffer_contents(slot->buf->data.mtl_data);
+                    (uint8_t *)buffer_contents(mglBufferMtl(slot->buf));
                 if (liveBase) {
                     memcpy(liveBase + destinationOffset, packed, writtenBytes);
                 }
@@ -3313,8 +3314,8 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
         int sparseCompactOk = 0;
         Buffer *ebo = getElementBuffer(ctx);
         if (ebo && ops->process_buffer(ops->renderer, ebo) &&
-            ebo->data.mtl_data) {
-            void *eboMetal = ebo->data.mtl_data;
+            mglBufferMtl(ebo)) {
+            void *eboMetal = mglBufferMtl(ebo);
             const uint64_t indexOffsetBytes = (uint64_t)(uintptr_t)indices;
             const uint8_t *indexBytes = mglElementIndexSourceForDraw(
                 ebo, eboMetal, indexType, indexOffsetBytes, count);
@@ -3394,10 +3395,10 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
     } else if (path.capture == MGL_TESS_CAPTURE_INDEXED_GATHER) {
         Buffer *ebo = getElementBuffer(ctx);
         if (!ebo || !ops->process_buffer(ops->renderer, ebo) ||
-            !ebo->data.mtl_data) {
+            !mglBufferMtl(ebo)) {
             nativeTES = 0;
         } else {
-            void *eboMetal = ebo->data.mtl_data;
+            void *eboMetal = mglBufferMtl(ebo);
             const uint64_t indexOffsetBytes = (uint64_t)(uintptr_t)indices;
             const uint8_t *indexBytes = mglElementIndexSourceForDraw(
                 ebo, eboMetal, indexType, indexOffsetBytes, count);

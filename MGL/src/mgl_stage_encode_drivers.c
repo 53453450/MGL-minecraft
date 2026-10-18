@@ -64,6 +64,7 @@
 #include "mgl_size_constants.h"      /* kMGLMaxBufferSlots */
 #include "mgl_buffer_slots.h"        /* kMGLPointSizeBufferIndex */
 #include "mgl_types_state.h"         /* mglMarkRendererDirtyBits (tbind gate) */
+#include "mgl_buffer_backend.h"
 
 /* Declared next to their definitions in Objective-C headers a .c file cannot
  * include; repeated here the way mgl_renderer_ports.c repeats its prototypes.
@@ -687,26 +688,26 @@ static bool mglStageEncodeBindVertexAttributes(
         }
 
         /* NEED_MTL → ensure → POST plan */
-        if (!attrib_buffer->data.mtl_data) {
+        if (!mglBufferMtl(attrib_buffer)) {
             mglRendererBindMTLBuffer(renderer, attrib_buffer);
         }
-        if (attrib_buffer->data.mtl_data &&
+        if (mglBufferMtl(attrib_buffer) &&
             mglRenderBufferHasCPUDirty(attrib_buffer->data.dirty_bits)) {
             (void)mglRendererUpdateDirtyBuffer(renderer, attrib_buffer);
         }
-        if (!attrib_buffer->data.mtl_data) {
+        if (!mglBufferMtl(attrib_buffer)) {
             fprintf(stderr,
                     "MGL VBIND skip attrib=%u buffer=%u: no Metal backing\n",
                     attrib, attrib_buffer->name);
             continue;
         }
-        if (!mglRenderMetalDataPointerUsable(attrib_buffer->data.mtl_data)) {
+        if (!mglRenderMetalDataPointerUsable(mglBufferMtl(attrib_buffer))) {
             fprintf(stderr,
                     "MGL VBIND skip attrib=%u buffer=%u: suspicious mtl_data=%p\n",
-                    attrib, attrib_buffer->name, attrib_buffer->data.mtl_data);
+                    attrib, attrib_buffer->name, mglBufferMtl(attrib_buffer));
             continue;
         }
-        void *attrib_metal_buffer = attrib_buffer->data.mtl_data;
+        void *attrib_metal_buffer = mglBufferMtl(attrib_buffer);
         if (!attrib_metal_buffer) {
             fprintf(stderr,
                     "MGL VBIND skip attrib=%u buffer=%u: Metal bridge failed\n",
@@ -787,7 +788,7 @@ static bool mglStageEncodeBindVertexAttributes(
                     (unsigned long)ain.metal_len, attrib,
                     (unsigned)resolved.stride,
                     (unsigned long long)(uintptr_t)resolved.relativeoffset,
-                    attrib_buffer->data.mtl_data);
+                    mglBufferMtl(attrib_buffer));
         }
     }
 
@@ -929,7 +930,7 @@ bool mglStageEncodeBindVertexBuffers(void *renderer,
                                              : vao->attrib[i].divisor),
                     (unsigned)vao->attrib[i].buffer_bindingindex,
                     attrib_buffer && resolved.uses_binding_table ? 1 : 0,
-                    attrib_buffer ? attrib_buffer->data.mtl_data : NULL,
+                    attrib_buffer ? mglBufferMtl(attrib_buffer) : NULL,
                     attrib_buffer ? (unsigned)attrib_buffer->ever_written : 0u,
                     attrib_buffer ? (long long)attrib_buffer->written_min : 0ll,
                     attrib_buffer ? (long long)attrib_buffer->written_max : 0ll);

@@ -54,6 +54,7 @@
 #include "mgl_texture_binding_resolve.h" /* mglSamplerBackend* */
 #include "mgl_program_backend.h"
 #include "mgl_texture_backend.h"
+#include "mgl_buffer_backend.h"
 
 /* Declared next to its definition in the Objective-C
  * MGLRenderer+RenderPass_Private.h, which a .c file cannot include; repeated
@@ -234,7 +235,7 @@ bool mglTessPrepareStageBufferBindings(void *renderer,
      * encoder. bindMTLBuffer: may itself need an encoder. */
     for (GLuint i = 0; i < stage_buffer_map.count; i++) {
         Buffer *ptr = stage_buffer_map.buffers[i].buf;
-        if (ptr && !ptr->data.mtl_data) {
+        if (ptr && !mglBufferMtl(ptr)) {
             mglRendererBindMTLBuffer(renderer, ptr);
         }
     }
@@ -255,7 +256,7 @@ bool mglTessPrepareStageBufferBindings(void *renderer,
         }
         mglClearStageBindingCopyBackAtIndex(renderer, copy_backs,
                                                  metal_binding_index);
-        void *buffer = ptr->data.mtl_data;
+        void *buffer = mglBufferMtl(ptr);
         if (buffer && mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
             /* Consume the CPU-side initialization before a tessellation
              * stage can write the same Metal backing. Otherwise a later
@@ -263,7 +264,7 @@ bool mglTessPrepareStageBufferBindings(void *renderer,
             if (!mglRendererUpdateDirtyBuffer(renderer, ptr)) {
                 return false;
             }
-            buffer = ptr->data.mtl_data;
+            buffer = mglBufferMtl(ptr);
         }
         MGLTessIsolatedBindingPlan bind_plan = {0};
         GLsizeiptr storage_remaining = mglBufferMapStorageRemaining(map);

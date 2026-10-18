@@ -47,6 +47,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "mgl_texture_backend.h"
+#include "mgl_buffer_backend.h"
 
 /* The .m's file-local constants this TU needs (values copied verbatim). */
 enum {
@@ -3244,15 +3245,15 @@ int mglTextureSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
     }
 
     // we can deal with a null buffer but we need a texture
-    if (buf->data.mtl_data == NULL)
+    if (mglBufferMtl(buf) == NULL)
     {
         mglRendererBindMTLBuffer(renderer, buf);
-        if (buf->data.mtl_data == NULL) {
+        if (mglBufferMtl(buf) == NULL) {
             return 0;
         }
     }
 
-    void *buffer = buf->data.mtl_data;
+    void *buffer = mglBufferMtl(buf);
     if (!buffer) {
         fprintf(stderr, "MGL ERROR: mtlTexSubImage missing Metal buffer object tex=%u\n", tex->name);
         return 0;

@@ -53,6 +53,7 @@ extern "C" {
 #include <mach/mach.h>
 #include <Block.h>
 #include <objc/runtime.h>
+#include "mgl_buffer_backend.h"
 
 int mglRenderBufferSubDataStorage(Buffer* buffer,
                                      size_t offset,
@@ -75,7 +76,7 @@ int mglRenderBufferSubDataStorage(Buffer* buffer,
         ? reinterpret_cast<uint8_t*>(
               static_cast<uintptr_t>(buffer->data.buffer_data))
         : nullptr;
-    if (!buffer->data.mtl_data) {
+    if (!mglBufferMtl(buffer)) {
         int bindResult = mglRenderBindBufferStorage(buffer, err, errcap);
         if (bindResult == MGL_RENDER_BUFFER_NOT_APPLICABLE) {
             return MGL_RENDER_BUFFER_OPERATION_NOT_APPLICABLE;
@@ -86,7 +87,7 @@ int mglRenderBufferSubDataStorage(Buffer* buffer,
     }
 
     MTL::Buffer* metalBuffer =
-        static_cast<MTL::Buffer*>(buffer->data.mtl_data);
+        static_cast<MTL::Buffer*>(mglBufferMtl(buffer));
     uint8_t* metalBase = static_cast<uint8_t*>(metalBuffer->contents());
     const size_t metalLength = static_cast<size_t>(metalBuffer->length());
     if (offset > metalLength || size > metalLength - offset) {
@@ -159,7 +160,7 @@ int mglRenderMapBufferStorage(Buffer* buffer,
         return MGL_RENDER_BUFFER_OPERATION_ERROR;
     }
 
-    if (!buffer->data.mtl_data) {
+    if (!mglBufferMtl(buffer)) {
         int bindResult = mglRenderBindBufferStorage(buffer, err, errcap);
         if (bindResult == MGL_RENDER_BUFFER_NOT_APPLICABLE) {
             return MGL_RENDER_BUFFER_OPERATION_NOT_APPLICABLE;
@@ -170,7 +171,7 @@ int mglRenderMapBufferStorage(Buffer* buffer,
     }
 
     MTL::Buffer* metalBuffer =
-        static_cast<MTL::Buffer*>(buffer->data.mtl_data);
+        static_cast<MTL::Buffer*>(mglBufferMtl(buffer));
     const size_t metalLength = static_cast<size_t>(metalBuffer->length());
     if (offset > metalLength) {
         if (err && errcap) {
@@ -234,11 +235,11 @@ void mglRenderReadBackBuffer(GLMContext glm_ctx,
                                 size_t size) {
     (void)glm_ctx;
     if (!buffer || size == 0 || buffer->cpu_shadow_pending ||
-        !buffer->data.mtl_data) {
+        !mglBufferMtl(buffer)) {
         return;
     }
     MTL::Buffer* metalBuffer =
-        static_cast<MTL::Buffer*>(buffer->data.mtl_data);
+        static_cast<MTL::Buffer*>(mglBufferMtl(buffer));
     if (metalBuffer->storageMode() != MTL::StorageModeShared) return;
 
     uint8_t* metalBase = static_cast<uint8_t*>(metalBuffer->contents());
@@ -272,7 +273,7 @@ int mglRenderFlushBufferRangeStorage(Buffer* buffer,
     if (length == 0) return MGL_RENDER_BUFFER_OPERATION_HANDLED;
 
     bool created = false;
-    if (!buffer->data.mtl_data) {
+    if (!mglBufferMtl(buffer)) {
         int bindResult = mglRenderBindBufferStorage(buffer, err, errcap);
         if (bindResult == MGL_RENDER_BUFFER_NOT_APPLICABLE) {
             return MGL_RENDER_BUFFER_OPERATION_NOT_APPLICABLE;
@@ -284,7 +285,7 @@ int mglRenderFlushBufferRangeStorage(Buffer* buffer,
     }
 
     MTL::Buffer* metalBuffer =
-        static_cast<MTL::Buffer*>(buffer->data.mtl_data);
+        static_cast<MTL::Buffer*>(mglBufferMtl(buffer));
     const size_t safeOffset = static_cast<size_t>(offset);
     const size_t safeLength = static_cast<size_t>(length);
     const size_t metalLength = static_cast<size_t>(metalBuffer->length());
@@ -657,9 +658,9 @@ int mglRenderSetTessellationFactorBuffer(void* render_encoder,
 }
 
 void mglRenderReleaseBufferMetalData(GLMContext glm_ctx, Buffer* buffer) {
-    if (!buffer || !buffer->data.mtl_data) return;
+    if (!buffer || !mglBufferMtl(buffer)) return;
     (void)glm_ctx;
-    mgl::releaseBridgedObject(&buffer->data.mtl_data);
+    mgl::releaseBridgedObject(&mglBufferBackendEnsure(buffer)->mtl_data);
 }
 
 void mglRenderReleaseBufferBackend(Buffer* buffer) {
@@ -670,7 +671,7 @@ void mglRenderReleaseBufferBackend(Buffer* buffer) {
     if (backend->uint16_expanded_data) {
         static_cast<NS::Object*>(backend->uint16_expanded_data)->release();
     }
-    delete backend;
+    free(backend);
 }
 
 Buffer* mglRenderAcquirePackedStructBuffer(const void* data,
@@ -753,11 +754,11 @@ uint64_t mglRenderCompletedBufferGeneration(void) {
 }
 
 void mglRenderNoteBufferEncoded(Buffer* buffer) {
-    if (!buffer || !buffer->data.mtl_data) return;
+    if (!buffer || !mglBufferMtl(buffer)) return;
     mgl::BufferCowPool* pool = mgl::bufferCowPool(buffer, false);
     if (!pool) return;
     MTL::Buffer* current =
-        static_cast<MTL::Buffer*>(buffer->data.mtl_data);
+        static_cast<MTL::Buffer*>(mglBufferMtl(buffer));
     /* The generation belongs to the command buffer that is accumulating right
      * now: the commit which submits it records exactly this value as completed,
      * and that commit is the only thing that mints the next one.  Tagging with
@@ -788,7 +789,7 @@ int mglRenderSnapshotSharedDirtyBuffer(Buffer* buffer,
     }
 
     MTL::Buffer* current =
-        static_cast<MTL::Buffer*>(buffer->data.mtl_data);
+        static_cast<MTL::Buffer*>(mglBufferMtl(buffer));
     *metal_buffer_out = current;
     uint8_t* cpuData = buffer->data.buffer_data >= 0x1000u
         ? reinterpret_cast<uint8_t*>(
@@ -865,7 +866,7 @@ int mglRenderSnapshotSharedDirtyBuffer(Buffer* buffer,
     mgl::installBufferCowSnapshot(buffer, snapshot);
     mglRenderNoteBufferEncoded(buffer);
     mglRecordBufferCowSnapshot(metalLength);
-    *metal_buffer_out = buffer->data.mtl_data;
+    *metal_buffer_out = mglBufferMtl(buffer);
     return 0;
 }
 
@@ -884,7 +885,7 @@ int mglRenderSnapshotSharedBufferRange(Buffer* buffer,
     }
 
     MTL::Buffer* current =
-        static_cast<MTL::Buffer*>(buffer->data.mtl_data);
+        static_cast<MTL::Buffer*>(mglBufferMtl(buffer));
     *metal_buffer_out = current;
     uint8_t* cpuData = buffer->data.buffer_data >= 0x1000u
         ? reinterpret_cast<uint8_t*>(
@@ -929,7 +930,7 @@ int mglRenderSnapshotSharedBufferRange(Buffer* buffer,
     mgl::installBufferCowSnapshot(buffer, snapshot);
     mglRenderNoteBufferEncoded(buffer);
     mglRecordBufferCowSnapshot(metalLength);
-    *metal_buffer_out = buffer->data.mtl_data;
+    *metal_buffer_out = mglBufferMtl(buffer);
     return 0;
 }
 
@@ -943,7 +944,7 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
     }
 
     auto ensureMetalBuffer = [&]() -> int {
-        if (buffer->data.mtl_data) {
+        if (mglBufferMtl(buffer)) {
             return MGL_RENDER_BUFFER_OPERATION_HANDLED;
         }
         const int bindResult =
@@ -957,7 +958,7 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
         return MGL_RENDER_BUFFER_OPERATION_ERROR;
     };
 
-    if (buffer->plain_uniform_slot && !buffer->data.mtl_data &&
+    if (buffer->plain_uniform_slot && !mglBufferMtl(buffer) &&
         buffer->data.buffer_data && buffer->size > 0 &&
         buffer->size <= 4096) {
         buffer->data.dirty_bits &=
@@ -967,7 +968,7 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
 
     if (buffer->size < 4096) {
         if ((buffer->data.dirty_bits & DIRTY_BUFFER_ADDR) &&
-            !buffer->data.mtl_data) {
+            !mglBufferMtl(buffer)) {
             const int result = ensureMetalBuffer();
             if (result != MGL_RENDER_BUFFER_OPERATION_HANDLED) {
                 return result;
@@ -985,7 +986,7 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
         }
 
         MTL::Buffer* metalBuffer =
-            static_cast<MTL::Buffer*>(buffer->data.mtl_data);
+            static_cast<MTL::Buffer*>(mglBufferMtl(buffer));
         MTL::Buffer* bufferBeforeSnapshot = metalBuffer;
         void* snapshotBuffer = nullptr;
         if (mglRenderSnapshotSharedDirtyBuffer(

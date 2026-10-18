@@ -30,6 +30,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include "mgl_buffer_backend.h"
 
 /* Defined in textures.c (C); declared here like framebuffers.c does. */
 extern Texture *findTexture(GLMContext ctx, GLuint texture);

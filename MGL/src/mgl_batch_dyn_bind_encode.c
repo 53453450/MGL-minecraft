@@ -33,6 +33,7 @@
 #include "mgl_batch_mtl_encode.h"
 #include <stdio.h>
 #include <string.h>
+#include "mgl_buffer_backend.h"
 
 static const uint32_t kMaxFragmentSamplerSlots = 16;
 
@@ -62,9 +63,9 @@ static int mglDynVertexEnsure(void *v, const MGLBatchDynVertexStreamPlan *p, voi
         BufferMapList upload = {0}; upload.count = 1; upload.buffers[0].buf = buf;
         if (!mglRenderUpdateDirtyBaseBufferList(c->ctx, &upload, "updateDirtyBaseBufferList:")) return 0;
     }
-    if (!buf->data.mtl_data) mglRendererBindMTLBuffer(c->r, buf);
-    if (!mgl_batch_replay_mtl_ptr_ok(buf->data.mtl_data)) return 0;
-    void *mb = buf->data.mtl_data; MGLRenderBufferInfo info = {0};
+    if (!mglBufferMtl(buf)) mglRendererBindMTLBuffer(c->r, buf);
+    if (!mgl_batch_replay_mtl_ptr_ok(mglBufferMtl(buf))) return 0;
+    void *mb = mglBufferMtl(buf); MGLRenderBufferInfo info = {0};
     if (mglRenderGetBufferInfo(mb, &info) != 0) return 0;
     if (mtl) *mtl = mb; if (gl) *gl = buf;
     if (dyn) *dyn = (uint64_t)p->dynamic_offset; if (len) *len = info.length;
@@ -82,9 +83,9 @@ static int mglDynUniformGather(void *v, uint64_t *lens, uint32_t count)
     for (uint32_t i = 0; i < count; i++) {
         BufferBaseTarget *slot = &c->ctx->active_state->buffer_base[_UNIFORM_BUFFER]
                                       .buffers[c->cmd->dynamic_uniform_bindings[i].binding_index];
-        if (!slot->buf || !mgl_batch_replay_mtl_ptr_ok(slot->buf->data.mtl_data)) return 0;
+        if (!slot->buf || !mgl_batch_replay_mtl_ptr_ok(mglBufferMtl(slot->buf))) return 0;
         MGLRenderBufferInfo info = {0};
-        if (mglRenderGetBufferInfo(slot->buf->data.mtl_data, &info) != 0) return 0;
+        if (mglRenderGetBufferInfo(mglBufferMtl(slot->buf), &info) != 0) return 0;
         lens[i] = info.length;
     }
     return 1;
@@ -94,8 +95,8 @@ static int mglDynUniformResolve(void *v, const MGLBatchUniformBindOp *op, void *
     MGLDynUniformCtx *c = v;
     BufferBaseTarget *slot =
         &c->ctx->active_state->buffer_base[_UNIFORM_BUFFER].buffers[op->binding_index];
-    if (!slot->buf || !mgl_batch_replay_mtl_ptr_ok(slot->buf->data.mtl_data)) return 0;
-    if (mtl) *mtl = slot->buf->data.mtl_data; if (gl) *gl = slot->buf; return 1;
+    if (!slot->buf || !mgl_batch_replay_mtl_ptr_ok(mglBufferMtl(slot->buf))) return 0;
+    if (mtl) *mtl = mglBufferMtl(slot->buf); if (gl) *gl = slot->buf; return 1;
 }
 
 typedef struct {

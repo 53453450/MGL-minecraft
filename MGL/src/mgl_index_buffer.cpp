@@ -471,7 +471,8 @@ MGLIndexMetalHandle mglPreparedElementIndexBuffer(
     void *expanded = mglNewUInt16IndexBufferFromUInt8(device, source, source_count);
     if (!expanded) return nullptr;
     if (eligible && !cache) {
-        cache = new (std::nothrow) MGLBufferBackend();
+        cache = static_cast<MGLBufferBackend *>(
+            calloc(1, sizeof(MGLBufferBackend)));
         gl_buffer->backend = cache;
     }
     if (eligible && cache) {

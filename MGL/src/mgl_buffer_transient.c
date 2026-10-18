@@ -8,6 +8,7 @@
 #include "glm_context.h"
 
 #include <stdlib.h>
+#include "mgl_buffer_backend.h"
 
 Buffer *mglBufferTransientCreate(GLuint name)
 {
@@ -27,8 +28,8 @@ Buffer *mglBufferTransientCreate(GLuint name)
 void *mglBufferTransientAdopt(Buffer *buffer, void *mtl_buffer,
                               size_t padded_size)
 {
-    void *previous = buffer->data.mtl_data;
-    buffer->data.mtl_data = mtl_buffer;
+    void *previous = mglBufferMtl(buffer);
+    mglBufferBackendEnsure(buffer)->mtl_data = mtl_buffer;
     buffer->size = (GLsizeiptr)padded_size;
     buffer->data.buffer_data = 0;
     buffer->data.buffer_size = padded_size;
