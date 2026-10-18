@@ -56,6 +56,7 @@ extern "C" {
 #include <mach/mach.h>
 #include <Block.h>
 #include <objc/runtime.h>
+#include "mgl_texture_backend.h"
 
 int mglRenderGetTextureInfo(const void *texture,
                                MGLRenderTextureInfo *info_out) {
@@ -174,21 +175,23 @@ int mglRenderSampledTextureViewForBaseLevel(
         *view_out = source_texture;
         return 0;
     }
-    if (texture_object->mtl_base_level_view &&
-        texture_object->mtl_base_level_view_source == source_texture &&
+    MGLBaseLevelViewCache &cache =
+        mglTextureBackendEnsure(texture_object)->base_level_view;
+    if (cache.view &&
+        cache.source == source_texture &&
         static_cast<uint32_t>(static_cast<MTL::Texture *>(
-            texture_object->mtl_base_level_view)->pixelFormat()) == view_format &&
-        texture_object->mtl_base_level_view_base == base &&
-        texture_object->mtl_base_level_view_max == max_level &&
-        texture_object->mtl_base_level_view_swizzle_r ==
+            cache.view)->pixelFormat()) == view_format &&
+        cache.base == base &&
+        cache.max == max_level &&
+        cache.swizzle_r ==
             (GLuint)texture_object->params.swizzle_r &&
-        texture_object->mtl_base_level_view_swizzle_g ==
+        cache.swizzle_g ==
             (GLuint)texture_object->params.swizzle_g &&
-        texture_object->mtl_base_level_view_swizzle_b ==
+        cache.swizzle_b ==
             (GLuint)texture_object->params.swizzle_b &&
-        texture_object->mtl_base_level_view_swizzle_a ==
+        cache.swizzle_a ==
             (GLuint)texture_object->params.swizzle_a) {
-        *view_out = texture_object->mtl_base_level_view;
+        *view_out = cache.view;
         return 0;
     }
 
@@ -201,24 +204,24 @@ int mglRenderSampledTextureViewForBaseLevel(
         *view_out = source_texture;
         return 0;
     }
-    if (texture_object->mtl_base_level_view) {
-        static_cast<NS::Object *>(texture_object->mtl_base_level_view)->release();
+    if (cache.view) {
+        static_cast<NS::Object *>(cache.view)->release();
     }
     static_cast<NS::Object *>(view_handle)->retain();
-    texture_object->mtl_base_level_view = view_handle;
-    texture_object->mtl_base_level_view_source = source_texture;
-    texture_object->mtl_base_level_view_base = base;
-    texture_object->mtl_base_level_view_max = max_level;
-    texture_object->mtl_base_level_view_swizzle_r =
+    cache.view = view_handle;
+    cache.source = source_texture;
+    cache.base = base;
+    cache.max = max_level;
+    cache.swizzle_r =
         (GLuint)texture_object->params.swizzle_r;
-    texture_object->mtl_base_level_view_swizzle_g =
+    cache.swizzle_g =
         (GLuint)texture_object->params.swizzle_g;
-    texture_object->mtl_base_level_view_swizzle_b =
+    cache.swizzle_b =
         (GLuint)texture_object->params.swizzle_b;
-    texture_object->mtl_base_level_view_swizzle_a =
+    cache.swizzle_a =
         (GLuint)texture_object->params.swizzle_a;
     static_cast<NS::Object *>(view_handle)->release();
-    *view_out = texture_object->mtl_base_level_view;
+    *view_out = cache.view;
     return 0;
 }
 

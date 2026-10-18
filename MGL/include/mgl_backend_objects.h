@@ -74,6 +74,25 @@ struct MGLSamplerBackend {
     void *state; /* retained MTLSamplerState, or NULL until it is first needed */
 };
 
+/* Texture: the base-level view of the texture's Metal texture.
+ * newTextureViewWithPixelFormat: is expensive and would run per draw whenever
+ * base_level != 0, so the view is kept, keyed on (source texture, base level,
+ * max level, swizzle); a mismatch on any of them rebuilds it. */
+struct MGLBaseLevelViewCache {
+    void *view;   /* retained MTL::Texture, or NULL */
+    void *source; /* the Metal texture the view was made from (identity only) */
+    uint32_t base;
+    uint32_t max;
+    uint32_t swizzle_r;
+    uint32_t swizzle_g;
+    uint32_t swizzle_b;
+    uint32_t swizzle_a;
+};
+
+struct MGLTextureBackend {
+    struct MGLBaseLevelViewCache base_level_view;
+};
+
 /* Buffer: cold state that is not the buffer's own MTLBuffer. */
 struct MGLBufferBackend {
     /* Copy-on-write snapshot pool: an opaque C++ allocation (mgl::BufferCowPool),

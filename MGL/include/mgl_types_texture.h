@@ -156,6 +156,7 @@ typedef struct TextureFace_t {
 } TextureFace;
 
 struct MGLSamplerBackend;
+struct MGLTextureBackend;
 
 #define DIRTY_SAMPLER_PARAM   0x1
 typedef struct Sampler_t {
@@ -231,20 +232,10 @@ typedef struct Texture_t {
     GLubyte *rgb10a2_shadow;
     GLuint rgb10a2_shadow_width;
     GLuint rgb10a2_shadow_height;
-    /* Cached base-level texture view.  newTextureViewWithPixelFormat:
-     * is expensive and called per-draw when base_level != 0 (common in
-     * Minecraft).  Cache the view keyed on (source texture, base_level,
-     * max_level); self-invalidating via comparison in
-     * mglSampledTextureViewForBaseLevel.  Released via CFRelease in
-     * texture cleanup.  void* for pure-C header compatibility. */
-    void      *mtl_base_level_view;          /* id<MTLTexture> retained via CFRetain */
-    void      *mtl_base_level_view_source;   /* source id<MTLTexture> (weak ref for identity check) */
-    GLuint     mtl_base_level_view_base;
-    GLuint     mtl_base_level_view_max;
-    GLuint     mtl_base_level_view_swizzle_r;
-    GLuint     mtl_base_level_view_swizzle_g;
-    GLuint     mtl_base_level_view_swizzle_b;
-    GLuint     mtl_base_level_view_swizzle_a;
+    /* Backend state kept beside the texture's own storage (the cached
+     * base-level view).  Opaque here; see mgl_backend_objects.h and
+     * mgl_texture_backend.h. */
+    struct MGLTextureBackend *backend;
     /* §8.18/§8.19 state, meaningful only while immutable_storage is set.
      * view_min_level/view_min_layer are absolute in the shared store. */
     GLuint immutable_levels;

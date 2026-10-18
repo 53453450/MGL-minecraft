@@ -63,6 +63,7 @@ extern void invalidateTexture(GLMContext ctx, Texture *tex);
 extern void mglFreeProgram(GLMContext ctx, Program *ptr);
 #include "mgl_trace_log.h"
 #include "mgl_texture_binding_resolve.h" /* mglSamplerBackend* */
+#include "mgl_texture_backend.h"
 
 static _Thread_local GLMContext _ctx = NULL;
 static _Thread_local GLboolean _ctx_explicitly_unbound = GL_FALSE;
@@ -851,6 +852,7 @@ static void mglDestroyContextTexture(GLuint name, void *data, void *user)
     }
 
     invalidateTexture(ctx, texture);
+    mglTextureBackendRelease(ctx, texture);
     free(texture);
 }
 

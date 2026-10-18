@@ -70,6 +70,7 @@ extern void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width,
                           void *pixels);
 extern bool getParam(GLMContext ctx, TextureParameter *tex_params, GLenum pname, GLint *iparam, GLfloat *fparam);
 #include "mgl_trace_log.h"
+#include "mgl_texture_backend.h"
 extern GLint mglTexLevelCanonicalInternalFormat(GLint internalformat);
 extern bool mglTexLevelInternalFormatCompressed(GLint internalformat);
 extern GLint mglCompressedInternalFormatToSizedUncompressed(GLint internalformat);
@@ -1106,6 +1107,7 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
                 tex->internalformat = store_format;
                 continue;
             }
+            mglTextureBackendRelease(ctx, tex);
             free(tex);
         }
     }
@@ -1735,19 +1737,7 @@ void mglGenerateTextureMipmap(GLMContext ctx, GLuint texture)
 
 void mglInvalidateTextureBaseLevelView(GLMContext ctx, Texture *tex)
 {
-    if (!tex || !tex->mtl_base_level_view)
-        return;
-
-    if (ctx)
-        mglRendererDeleteMetalObject(ctx, tex->mtl_base_level_view);
-    tex->mtl_base_level_view = NULL;
-    tex->mtl_base_level_view_source = NULL;
-    tex->mtl_base_level_view_base = 0u;
-    tex->mtl_base_level_view_max = 0u;
-    tex->mtl_base_level_view_swizzle_r = 0u;
-    tex->mtl_base_level_view_swizzle_g = 0u;
-    tex->mtl_base_level_view_swizzle_b = 0u;
-    tex->mtl_base_level_view_swizzle_a = 0u;
+    mglTextureBackendDropBaseLevelView(ctx, tex);
 }
 
 void invalidateTexture(GLMContext ctx, Texture *tex)
@@ -1796,19 +1786,8 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
         tex->params.mtl_data = NULL;
     }
 
-    /* release cached base-level texture view */
-    if (tex->mtl_base_level_view)
-    {
-        mglRendererDeleteMetalObject(ctx, tex->mtl_base_level_view);
-        tex->mtl_base_level_view = NULL;
-        tex->mtl_base_level_view_source = NULL;
-        tex->mtl_base_level_view_base = 0u;
-        tex->mtl_base_level_view_max = 0u;
-        tex->mtl_base_level_view_swizzle_r = 0u;
-        tex->mtl_base_level_view_swizzle_g = 0u;
-        tex->mtl_base_level_view_swizzle_b = 0u;
-        tex->mtl_base_level_view_swizzle_a = 0u;
-    }
+    /* release the cached base-level view */
+    mglTextureBackendDropBaseLevelView(ctx, tex);
 
     for(int face=0; face<_CUBE_MAP_MAX_FACE; face++)
     {
