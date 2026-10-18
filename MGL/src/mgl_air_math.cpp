@@ -41,11 +41,12 @@ static llvm::Value *callFloatIntrinsic(Codegen &cg, llvm::Intrinsic::ID id,
     return cg.b->CreateIntrinsic(id, {v->getType()}, {v});
 }
 
-/* AGX metallib crashes (XPC_ERROR_CONNECTION_INTERRUPTED) when llvm.sin/cos
- * results are written to gl_ClipDistance mirrors that the FS later reads.
- * air.fast_sin/cos avoids that crash, but using them for ordinary VS→FS
- * color varyings fails CTS aggressive_optimizations.  Only switch to
- * air.fast_* when the stage actually emits clip-distance mirrors. */
+/* The AGX compiler aborts (XPC_ERROR_CONNECTION_INTERRUPTED, "unable to
+ * legalize instruction") on llvm.sin / llvm.cos / llvm.pow in a fragment
+ * program, so those three go through the AIR library calls instead.
+ * air.fast_sin/cos is kept for stages that emit clip-distance mirrors: the
+ * llvm.sin/cos results also crashed there, and the precise air.sin/cos
+ * variants were only verified for ordinary stages. */
 static llvm::Value *callAirFastUnary(Codegen &cg, const AirMathDeps &deps,
                                      const char *airfn, llvm::Value *a0) {
     llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
@@ -226,10 +227,9 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
                                          : "air.fast_cos.f32",
                 a0);
         }
-        return callFloatIntrinsic(
-            cg,
-            strcmp(name, "sin") == 0 ? llvm::Intrinsic::sin
-                                     : llvm::Intrinsic::cos,
+        return callAirFastUnary(
+            cg, deps,
+            strcmp(name, "sin") == 0 ? "air.sin.f32" : "air.cos.f32",
             a0);
     }
     if (strcmp(name, "sinh") == 0 || strcmp(name, "cosh") == 0 ||
@@ -352,8 +352,8 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
             s = callAirFastUnary(cg, deps, "air.fast_sin.f32", a0);
             c = callAirFastUnary(cg, deps, "air.fast_cos.f32", a0);
         } else {
-            s = callFloatIntrinsic(cg, llvm::Intrinsic::sin, a0);
-            c = callFloatIntrinsic(cg, llvm::Intrinsic::cos, a0);
+            s = callAirFastUnary(cg, deps, "air.sin.f32", a0);
+            c = callAirFastUnary(cg, deps, "air.cos.f32", a0);
         }
         return cg.b->CreateFDiv(s, c);
     }
@@ -415,8 +415,23 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         a0 = farg(0);
         a1 = farg(1);
         if (!a0 || !a1) return nullptr;
-        return cg.b->CreateIntrinsic(llvm::Intrinsic::pow,
-                                     {a0->getType()}, {a0, a1});
+        {
+            const char *fn = "air.pow.f32";
+            llvm::Type *t = a0->getType();
+            if (t->isVectorTy()) a1 = deps.broadcastTo(cg, a1, t);
+            if (!t->isVectorTy()) return deps.callAirFn(cg, fn, t, {a0, a1});
+            llvm::Value *r = llvm::UndefValue::get(t);
+            unsigned n = llvm::cast<llvm::FixedVectorType>(t)->getNumElements();
+            for (unsigned i = 0; i < n; i++) {
+                auto *ix = llvm::ConstantInt::get(cg.b->getInt32Ty(), i);
+                llvm::Value *x = deps.callAirFn(
+                    cg, fn, cg.b->getFloatTy(),
+                    {cg.b->CreateExtractElement(a0, ix),
+                     cg.b->CreateExtractElement(a1, ix)});
+                r = cg.b->CreateInsertElement(r, x, ix);
+            }
+            return r;
+        }
     }
     if (strcmp(name, "mod") == 0) {
         if (!need(2)) return nullptr;

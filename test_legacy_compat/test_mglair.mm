@@ -571,6 +571,47 @@ int main(int argc, const char *argv[]) {
         }
         printf("PSO_OK\n");
 
+        /* pow / sin / cos / tan in a fragment program.  Emitted as the llvm
+         * intrinsics they abort the AGX compiler ("unable to legalize
+         * instruction") and the pipeline never builds. */
+        {
+            static const char *kFSTranscendental =
+                "#version 330 core\n"
+                "uniform vec3 u;\n"
+                "in vec2 vUV;\n"
+                "out vec4 o;\n"
+                "void main() {\n"
+                "    o = vec4(pow(u.z * abs(vUV.x), 0.75),\n"
+                "             sin(vUV.y * 6.2831853) + cos(u.x),\n"
+                "             tan(vUV.x), pow(abs(vUV), vec2(2.2)).y);\n"
+                "}\n";
+            unsigned char *trBytes = NULL;
+            size_t trSize = 0;
+            if (mglShaderCompileGLSL(kFSTranscendental, MGL_STAGE_FRAGMENT,
+                                     &trBytes, &trSize, err, sizeof err) != 0) {
+                fprintf(stderr, "TRANSCENDENTAL_COMPILE_FAIL: %s\n", err);
+                return 1;
+            }
+            id<MTLLibrary> trLib =
+                loadLibrary(dev, trBytes, trSize, "transcendental-fragment");
+            mglShaderFree(trBytes);
+            id<MTLFunction> trFn = [trLib newFunctionWithName:@"main"];
+            MTLRenderPipelineDescriptor *trPD = [MTLRenderPipelineDescriptor new];
+            trPD.vertexFunction = vsFn;
+            trPD.fragmentFunction = trFn;
+            trPD.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+            trPD.vertexDescriptor = vd;
+            NSError *trErr = nil;
+            id<MTLRenderPipelineState> trPSO =
+                [dev newRenderPipelineStateWithDescriptor:trPD error:&trErr];
+            if (!trFn || !trPSO) {
+                fprintf(stderr, "TRANSCENDENTAL_PSO_FAIL: %s\n",
+                        trErr.localizedDescription.UTF8String ?: "?");
+                return 1;
+            }
+            printf("TRANSCENDENTAL_PSO_OK\n");
+        }
+
         /* Multiple named fragment outputs must become a struct return with one
          * air.render_target entry per explicit layout(location). */
         {
