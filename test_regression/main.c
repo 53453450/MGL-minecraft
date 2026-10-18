@@ -62,7 +62,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 225
+#define MAX_TESTS 227
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -30082,6 +30082,123 @@ static int test_draw_buffer_texture_attachment(unsigned char *pixels,
     return failures ? 1 : 0;
 }
 
+/* Orientation probes for the fragment built-ins that follow window-space Y
+ * (docs/TODO_FBO_GL_ROW_ORDER_2026-10-18.md, Phase 0).  GL defines window Y as
+ * increasing upward, so dFdy(gl_FragCoord.y) is +1 and a +y interpolation
+ * offset moves toward larger NDC y, for every render target.  The probes
+ * render one full-screen triangle and read the center pixel. */
+static GLuint orientation_probe_program(const char *fs_body)
+{
+    static const char *vs =
+        "#version 450\n"
+        "layout(location = 0) out vec2 ndc;\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+        "  ndc = p * 2.0 - 1.0;\n"
+        "  gl_Position = vec4(ndc, 0.0, 1.0);\n"
+        "}\n";
+    return link_program(vs, fs_body);
+}
+
+static int run_orientation_probe(const char *label, GLuint prog, int to_fbo,
+                                 unsigned char *pixels, unsigned char out[4])
+{
+    GLuint color = 0, fbo = 0, vao = 0;
+    if (to_fbo) {
+        fbo = make_fbo(REG_W, REG_H, &color);
+        if (!fbo) return 1;
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    } else {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glUseProgram(prog);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    const unsigned char *px = &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+    memcpy(out, px, 4);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteVertexArrays(1, &vao);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "%s: GL error\n", label);
+        return 1;
+    }
+    return 0;
+}
+
+static int test_dfdy_orientation(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint prog = orientation_probe_program(
+        "#version 450\n"
+        "layout(location = 0) in vec2 ndc;\n"
+        "out vec4 c;\n"
+        "void main() {\n"
+        "  c = vec4(dFdy(gl_FragCoord.y) > 0.0 ? 1.0 : 0.0,\n"
+        "           dFdx(gl_FragCoord.x) > 0.0 ? 1.0 : 0.0,\n"
+        "           dFdy(ndc.y) > 0.0 ? 1.0 : 0.0, 1.0);\n"
+        "}\n");
+    if (!prog) return 1;
+    int fail = 0;
+    for (int to_fbo = 1; to_fbo >= 0; to_fbo--) {
+        unsigned char px[4];
+        if (run_orientation_probe("dfdy_orientation", prog, to_fbo, pixels, px)) {
+            fail = 1;
+            continue;
+        }
+        if (px[0] < 200 || px[1] < 200 || px[2] < 200) {
+            fprintf(stderr,
+                    "dfdy_orientation: %s dFdy(fragY)>0=%u dFdx(fragX)>0=%u "
+                    "dFdy(ndc.y)>0=%u (all must be 255)\n",
+                    to_fbo ? "fbo" : "default", px[0], px[1], px[2]);
+            fail = 1;
+        }
+    }
+    glDeleteProgram(prog);
+    return fail;
+}
+
+static int test_interpolate_at_offset_orientation(unsigned char *pixels,
+                                                  const char *out_path)
+{
+    (void)out_path;
+    GLuint prog = orientation_probe_program(
+        "#version 450\n"
+        "layout(location = 0) in vec2 ndc;\n"
+        "out vec4 c;\n"
+        "void main() {\n"
+        "  vec2 up = interpolateAtOffset(ndc, vec2(0.0, 0.5));\n"
+        "  vec2 right = interpolateAtOffset(ndc, vec2(0.5, 0.0));\n"
+        "  c = vec4(up.y > ndc.y ? 1.0 : 0.0, right.x > ndc.x ? 1.0 : 0.0,\n"
+        "           0.0, 1.0);\n"
+        "}\n");
+    if (!prog) return 1;
+    int fail = 0;
+    for (int to_fbo = 1; to_fbo >= 0; to_fbo--) {
+        unsigned char px[4];
+        if (run_orientation_probe("interpolate_at_offset_orientation", prog,
+                                  to_fbo, pixels, px)) {
+            fail = 1;
+            continue;
+        }
+        if (px[0] < 200 || px[1] < 200) {
+            fprintf(stderr,
+                    "interpolate_at_offset_orientation: %s +y offset moves "
+                    "toward +ndc.y=%u, +x offset toward +ndc.x=%u (both must "
+                    "be 255)\n",
+                    to_fbo ? "fbo" : "default", px[0], px[1]);
+            fail = 1;
+        }
+    }
+    glDeleteProgram(prog);
+    return fail;
+}
+
 static int test_sample_mask_state_key(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -30469,6 +30586,11 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("pixel_format_bpp_table",
                     test_pixel_format_bpp_table),
     SELF_CHECK_TEST("sample_mask_state_key", test_sample_mask_state_key),
+    /* Phase 0 probes of the FBO row-order redesign; explicit-only until the
+     * redesign makes them pass (docs/TODO_FBO_GL_ROW_ORDER_2026-10-18.md). */
+    EXPLICIT_SELF_CHECK_TEST("dfdy_orientation", test_dfdy_orientation),
+    EXPLICIT_SELF_CHECK_TEST("interpolate_at_offset_orientation",
+                             test_interpolate_at_offset_orientation),
     SELF_CHECK_TEST("draw_buffer_texture_attachment",
                     test_draw_buffer_texture_attachment),
     /* depth_test/stencil use probe-style fns (test_depth_probe /
