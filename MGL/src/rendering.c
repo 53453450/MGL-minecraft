@@ -1238,7 +1238,10 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
         {
             GLuint draw_index = (GLuint)(buf - GL_COLOR_ATTACHMENT0);
             FBOAttachment *att = &fbo->color_attachments[draw_index];
-            if (att->buf.rbo)
+            /* buf is a union: only a renderbuffer attachment points at a
+             * Renderbuffer.  Writing through rbo for a texture attachment
+             * stored into whatever Texture field sat at that offset. */
+            if (att->textarget == GL_RENDERBUFFER && att->buf.rbo)
                 att->buf.rbo->is_draw_buffer = GL_TRUE;
         }
     }

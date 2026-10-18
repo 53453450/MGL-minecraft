@@ -62,7 +62,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 224
+#define MAX_TESTS 225
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -30010,6 +30010,78 @@ static int test_pixel_format_bpp_table(unsigned char *pixels, const char *out_pa
  *
  * The check is behavioural: compute the state key twice with only that field
  * changed and require the two keys to differ. */
+/* glDrawBuffer used to mark the selected attachment as a draw buffer through
+ * the renderbuffer view of the attachment union, whether or not the attachment
+ * was a renderbuffer.  For a texture attachment that stored into the Texture
+ * (its access field), after which texture creation failed with an invalid
+ * access and nothing could be drawn to the texture. */
+static int test_draw_buffer_texture_attachment(unsigned char *pixels,
+                                               const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLMContext ctx = MGLgetCurrentContext();
+    if (!ctx || !ctx->active_state) {
+        fprintf(stderr, "draw_buffer_texture_attachment: no current GLM context\n");
+        return 1;
+    }
+
+    GLuint tex = 0, fbo = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 2, GL_RGBA8, 4, 4);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           tex, 0);
+
+    Texture *internal = (Texture *)searchHashTable(
+        &ctx->active_state->texture_table, tex);
+    if (!internal) {
+        fprintf(stderr, "draw_buffer_texture_attachment: texture lookup failed\n");
+        return 1;
+    }
+    const GLenum access_before = internal->access;
+    const GLboolean render_target_before = internal->is_render_target;
+    const GLuint dirty_before = internal->dirty_bits;
+
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+    int failures = 0;
+    if (internal->access != access_before) {
+        fprintf(stderr,
+                "draw_buffer_texture_attachment: access 0x%x became 0x%x\n",
+                access_before, internal->access);
+        failures++;
+    }
+    if (internal->is_render_target != render_target_before ||
+        internal->dirty_bits != dirty_before) {
+        fprintf(stderr,
+                "draw_buffer_texture_attachment: texture state changed by "
+                "glDrawBuffer\n");
+        failures++;
+    }
+
+    glClearColor(0.25f, 0.5f, 0.75f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    GLfloat px[4] = {0.f, 0.f, 0.f, 0.f};
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glReadPixels(0, 0, 1, 1, GL_RGBA, GL_FLOAT, px);
+    if (px[0] < 0.19f || px[0] > 0.31f || px[1] < 0.44f || px[1] > 0.56f ||
+        px[2] < 0.69f || px[2] > 0.81f) {
+        fprintf(stderr,
+                "draw_buffer_texture_attachment: cleared texture reads "
+                "[%g %g %g %g], expected [0.25 0.5 0.75 1]\n",
+                px[0], px[1], px[2], px[3]);
+        failures++;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    return failures ? 1 : 0;
+}
+
 static int test_sample_mask_state_key(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -30397,6 +30469,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("pixel_format_bpp_table",
                     test_pixel_format_bpp_table),
     SELF_CHECK_TEST("sample_mask_state_key", test_sample_mask_state_key),
+    SELF_CHECK_TEST("draw_buffer_texture_attachment",
+                    test_draw_buffer_texture_attachment),
     /* depth_test/stencil use probe-style fns (test_depth_probe /
      * test_stencil_probe): hardcoded per-program values.
      * uniform_alias gates the cross-stage uniform-location fix (program.c
