@@ -33,6 +33,7 @@
 #include <cstring>
 #include <cstddef>
 #include <CoreFoundation/CoreFoundation.h>
+#include "mgl_program_backend.h"
 
 extern "C" Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
 
@@ -161,13 +162,13 @@ extern "C" bool mglTessNativeInterfaceSupported(Program *tcs, Program *tes)
         return false;
     }
     return mglRenderNativeTESInterfaceSupported(
-               tes->modules[_TESS_EVALUATION_SHADER].mtl_function,
-               (uint64_t)tes->modules[_TESS_EVALUATION_SHADER].metallib_bytes,
+               mglProgramModuleView(tes, _TESS_EVALUATION_SHADER)->mtl_function,
+               (uint64_t)mglProgramModuleView(tes, _TESS_EVALUATION_SHADER)->metallib_bytes,
                (uint32_t)tes->tess_gen_point_mode,
                (uint32_t)tes->transform_feedback_varying_count,
                (uint32_t)tes->tess_gen_mode,
-               tcs ? tcs->modules[_TESS_CONTROL_SHADER].mtl_function : NULL,
-               tcs ? (uint64_t)tcs->modules[_TESS_CONTROL_SHADER].metallib_bytes
+               tcs ? mglProgramModuleView(tcs, _TESS_CONTROL_SHADER)->mtl_function : NULL,
+               tcs ? (uint64_t)mglProgramModuleView(tcs, _TESS_CONTROL_SHADER)->metallib_bytes
                    : 0u,
                tcs ? (uint32_t)tcs->tess_control_output_vertices : 0u) != 0;
 }
@@ -220,7 +221,7 @@ extern "C" bool mglTessPlanDrawPath(GLMContext ctx, GLenum mode, GLsizei count,
     out->has_tcs = tcs ? 1u : 0u;
     out->has_tes = tes ? 1u : 0u;
     out->air_tes =
-        tes && tes->modules[_TESS_EVALUATION_SHADER].metallib_bytes ? 1u : 0u;
+        tes && mglProgramModuleView(tes, _TESS_EVALUATION_SHADER)->metallib_bytes ? 1u : 0u;
     out->indexed = indexType != 0u ? 1u : 0u;
     out->native_ok =
         (mglTessNativeInterfaceSupported(tcs, tes) &&
@@ -2676,7 +2677,7 @@ extern "C" void *mglTessRunVertexCaptureArray(
     }
     Program *vertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     if (!vertexProgram || !ops->bind_mtl_program(ops->renderer, vertexProgram) ||
-        !vertexProgram->modules[_VERTEX_SHADER].mtl_tess_capture_function) {
+        !mglProgramModuleView(vertexProgram, _VERTEX_SHADER)->mtl_tess_capture_function) {
         return nullptr;
     }
     MGLTessVertexCapturePlan plan = {};
@@ -2731,7 +2732,7 @@ extern "C" void *mglTessRunVertexCaptureIndexed(
     }
     Program *vertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     if (!vertexProgram || !ops->bind_mtl_program(ops->renderer, vertexProgram) ||
-        !vertexProgram->modules[_VERTEX_SHADER].mtl_tess_capture_function) {
+        !mglProgramModuleView(vertexProgram, _VERTEX_SHADER)->mtl_tess_capture_function) {
         return nullptr;
     }
     MGLTessVertexCapturePlan plan = {};

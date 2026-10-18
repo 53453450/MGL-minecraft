@@ -48,6 +48,7 @@
 #include "mgl_render_api_query.h"
 #include "mgl_render_api_texture.h"
 #include "mgl_render_api_buffer.h"
+#include "mgl_program_backend.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
 static GLMState *mglComputeDispatchState(const MGLRendererStateView *areas,
@@ -102,7 +103,7 @@ bool mglComputeProcess(void *renderer, void *encoder,
         return false;
     }
 
-    void *func = program->modules[_COMPUTE_SHADER].mtl_function;
+    void *func = mglProgramModuleView(program, _COMPUTE_SHADER)->mtl_function;
     if (!func) {
         fprintf(stderr,
                 "MGL COMPUTE ERROR: compute shader for program %u has no Metal function\n",

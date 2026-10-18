@@ -31,6 +31,7 @@
 #include "mgl_types_sync.h"
 #include "mgl_sync.h"
 #include "mgl_readback_policy.h"
+#include "mgl_program_backend.h"
 
 /* This target exercises the renderer facade without constructing AIR loader
  * objects. Product builds link the real implementation. */
@@ -1241,9 +1242,9 @@ static int verifyAIRProgramClassification(void) {
 
     program.shader_slots[_VERTEX_SHADER] = NULL;
     program.shader_slots[_GEOMETRY_SHADER] = &shader;
-    program.modules[_GEOMETRY_SHADER].metallib_bytes =
+    mglProgramModuleBackend(&program, _GEOMETRY_SHADER)->metallib_bytes =
         reinterpret_cast<unsigned char *>(&program);
-    program.modules[_GEOMETRY_SHADER].metallib_size = 1;
+    mglProgramModuleBackend(&program, _GEOMETRY_SHADER)->metallib_size = 1;
     if (mglRenderBindAIRProgram(&program, &failedStage, message,
                                    sizeof(message)) !=
             MGL_RENDER_AIR_PROGRAM_ERROR ||
@@ -6998,7 +6999,7 @@ static int verifyBufferSlotRegistry(void) {
     /* Ordinary stages use hidden runtime-size slot 25.  GS and compute-TES
      * move the table to slot 23 so their gather params can remain at 25. */
     program = {};
-    program.modules[_COMPUTE_SHADER].needs_runtime_array_size_buffer = GL_TRUE;
+    mglProgramModuleBackend(&program, _COMPUTE_SHADER)->needs_runtime_array_size_buffer = GL_TRUE;
     if (!mglBufferSlotConflictsForProgram(&program, 25u, _COMPUTE_SHADER) ||
         mglBufferSlotConflictsForProgram(&program, 23u, _COMPUTE_SHADER) ||
         mglRuntimeArraySizeBufferIndexForProgram(&program, _COMPUTE_SHADER) !=
@@ -7009,7 +7010,7 @@ static int verifyBufferSlotRegistry(void) {
 
     program = {};
     program.gs_route = MGL_GS_ROUTE_COMPUTE;
-    program.modules[_GEOMETRY_SHADER].needs_runtime_array_size_buffer = GL_TRUE;
+    mglProgramModuleBackend(&program, _GEOMETRY_SHADER)->needs_runtime_array_size_buffer = GL_TRUE;
     if (!mglBufferSlotConflictsForProgram(&program, 23u, _GEOMETRY_SHADER) ||
         !mglBufferSlotConflictsForProgram(&program, 25u, _GEOMETRY_SHADER) ||
         mglRuntimeArraySizeBufferIndexForProgram(&program, _GEOMETRY_SHADER) !=
@@ -7021,7 +7022,7 @@ static int verifyBufferSlotRegistry(void) {
     program = {};
     program.tess_gen_mode = GL_ISOLINES;
     program.tess_eval_compute = GL_TRUE;
-    program.modules[_TESS_EVALUATION_SHADER].needs_runtime_array_size_buffer =
+    mglProgramModuleBackend(&program, _TESS_EVALUATION_SHADER)->needs_runtime_array_size_buffer =
         GL_TRUE;
     if (!mglBufferSlotConflictsForProgram(&program, 23u,
                                           _TESS_EVALUATION_SHADER) ||

@@ -39,6 +39,8 @@
 
 typedef struct GLMContextRec_t *GLMContext;
 
+struct MGLProgramBackend;
+
 enum {
     _VERTEX_SHADER = 0,
     _TESS_CONTROL_SHADER,
@@ -154,34 +156,12 @@ typedef struct Shader_t {
     char *debug_label;  /* ObjectLabel, GL 4.6 §20.7; NULL = empty */
 } Shader;
 
-/* Per-shader backend module state: AIR serialized metallib bytes + the
- * renderer-owned Metal objects built from them. */
+/* Per-stage module identity.  What the AIR backend built for the stage (the
+ * metallib bytes and the Metal objects made from them) is in
+ * Program::backend; see mgl_backend_objects.h. */
 typedef struct MGLShaderModule_t {
     GLuint stage;
     char *entry_point;
-    /* AIR backend output: serialized metallib (bitcode container). */
-    unsigned char *metallib_bytes;
-    size_t metallib_size;
-    unsigned char *metallib_tess_capture_bytes;
-    size_t metallib_tess_capture_size;
-    unsigned char *metallib_cull_capture_bytes;
-    size_t metallib_cull_capture_size;
-    /* TES render-vertex / compute dual-emit: when the TES is an isolines or
-     * point_mode program eligible for the render-vertex path, the compute
-     * expansion kernel is also stored here so indexed draws (glDrawElements /
-     * glMultiDrawElements) can fall back to the verified compute path, which
-     * carries the gather ABI the render-vertex ABI lacks. */
-    unsigned char *metallib_bytes_tes_compute;
-    size_t metallib_size_tes_compute;
-    void *mtl_function;
-    void *mtl_library;
-    void *mtl_tess_capture_function;
-    void *mtl_tess_capture_library;
-    void *mtl_cull_capture_function;
-    void *mtl_cull_capture_library;
-    /* Cached Metal function for metallib_bytes_tes_compute (TES kernel). */
-    void *mtl_function_compute;
-    GLboolean needs_runtime_array_size_buffer;
 } MGLShaderModule;
 /* Compatibility aliases for the historical SPIR-V-era names. */
 typedef MGLShaderModule Spirv;
@@ -425,8 +405,9 @@ typedef struct Program_t {
     MGLShaderResourceList *validated_resource_lists[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
     MGLShaderResource *validated_resource_list_storage[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
     GLuint validated_resource_list_counts[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
-    uint64_t pipeline_cache_instance_id;
-    uint64_t pipeline_cache_generation;
+    /* Backend state: the built stages and the pipeline cache validity.
+     * Opaque here; see mgl_backend_objects.h and mgl_program_backend.h. */
+    struct MGLProgramBackend *backend;
     GLboolean program_separable;
     /* Latched at successful link (GL 4.6 table 23.32 / CTS PipelineApi). */
     GLboolean linked_program_separable;

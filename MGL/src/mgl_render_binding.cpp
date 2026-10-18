@@ -53,6 +53,7 @@ extern "C" {
 #include <mach/mach.h>
 #include <Block.h>
 #include <objc/runtime.h>
+#include "mgl_program_backend.h"
 
 void mglRenderBindBuffer(GLMContext glm_ctx, Buffer* buffer) {
     char error[256] = {};
@@ -856,7 +857,7 @@ int mglRenderBindAIRProgram(Program* program,
                 return MGL_RENDER_AIR_PROGRAM_ERROR;
             }
         }
-        MGLShaderModule* spirv = &program->modules[stage];
+        const MGLShaderModuleBackend* spirv = mglProgramModuleView(program, stage);
         if (!spirv->metallib_bytes || spirv->metallib_size == 0u) {
             return MGL_RENDER_AIR_PROGRAM_NOT_APPLICABLE;
         }
@@ -869,7 +870,7 @@ int mglRenderBindAIRProgram(Program* program,
         if (!shader) {
             continue;
         }
-        MGLShaderModule* spirv = &program->modules[stage];
+        MGLShaderModuleBackend* spirv = mglProgramModuleBackend(program, stage);
         if (!spirv->mtl_library || !spirv->mtl_function) {
             mgl::releaseBridgedObject(&spirv->mtl_function);
             mgl::releaseBridgedObject(&spirv->mtl_library);
@@ -1926,7 +1927,7 @@ int mglGetOrCreateProgramComputePipeline(Program* program,
         if (err && errcap) snprintf(err, errcap, "invalid Program or shader stage");
         return -1;
     }
-    MGLShaderModule* spirv = &program->modules[stage];
+    MGLShaderModuleBackend* spirv = mglProgramModuleBackend(program, stage);
     /* TES render-vertex / compute dual emit: when the TES carries a separate
      * compute expansion kernel (metallib_bytes_tes_compute) for the
      * indexed-fallback route, build the compute pipeline from that kernel
@@ -1961,8 +1962,8 @@ int mglGetOrCreateProgramComputePipeline(Program* program,
     }
     return mglRenderGetOrCreateComputePipeline(
         kernelFunction,
-        program->pipeline_cache_instance_id,
-        program->pipeline_cache_generation,
+        mglProgramBackendView(program)->pipeline_cache_instance_id,
+        mglProgramBackendView(program)->pipeline_cache_generation,
         static_cast<uint32_t>(stage), 1, pipeline_out, err, errcap);
 }
 

@@ -76,6 +76,7 @@
 #include "mgl_draw_support.h"
 
 #include <stdio.h>
+#include "mgl_program_backend.h"
 
 /* Declared in Objective-C headers a .c file cannot include. */
 extern int mglEnvFlagEnabled(const char *name);
@@ -1670,8 +1671,8 @@ int mglRenderPassBindMTLProgramLocked(void *renderer, Program *ptr)
         if (shader)
         {
             if (mglDrawGsStageShouldBlockDraw(
-                    i, (uint32_t)ptr->gs_route, ptr->modules[i].metallib_bytes,
-                    (uint32_t)ptr->modules[i].metallib_size)) {
+                    i, (uint32_t)ptr->gs_route, mglProgramModuleView(ptr, i)->metallib_bytes,
+                    (uint32_t)mglProgramModuleView(ptr, i)->metallib_size)) {
                 static uint64_t s_geometryShaderMetalSkipCount = 0;
                 uint64_t hit = ++s_geometryShaderMetalSkipCount;
                 if (hit <= 16ull || (hit % 512ull) == 0ull) {
@@ -1681,37 +1682,37 @@ int mglRenderPassBindMTLProgramLocked(void *renderer, Program *ptr)
                 }
                 return 0;
             }
-            if (ptr->modules[i].metallib_bytes && ptr->modules[i].metallib_size > 0) {
+            if (mglProgramModuleView(ptr, i)->metallib_bytes && mglProgramModuleView(ptr, i)->metallib_size > 0) {
                 /* AIR path: the stage was compiled by the self-hosted
                  * frontend into a metallib blob; load it directly. */
-                if (ptr->modules[i].mtl_library == NULL || ptr->modules[i].mtl_function == NULL) {
-                    mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_function);
-                    mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_library);
+                if (mglProgramModuleView(ptr, i)->mtl_library == NULL || mglProgramModuleView(ptr, i)->mtl_function == NULL) {
+                    mglSafeReleaseMetalObj((void **)&mglProgramModuleBackend(ptr, i)->mtl_function);
+                    mglSafeReleaseMetalObj((void **)&mglProgramModuleBackend(ptr, i)->mtl_library);
                     void *library = NULL;
                     void *function = NULL;
                     char loadError[256] = {0};
                     if (!mglRsLoadAIRMainFunction(
-                            ptr->modules[i].metallib_bytes,
-                            ptr->modules[i].metallib_size, &library, &function,
+                            mglProgramModuleView(ptr, i)->metallib_bytes,
+                            mglProgramModuleView(ptr, i)->metallib_size, &library, &function,
                             loadError, sizeof loadError)) {
                         fprintf(stderr, "MGL ERROR: Failed to load AIR metallib program=%u stage=%d: %s\n",
                               (unsigned)ptr->name, i,
                               loadError[0] ? loadError : "?");
                         return 0;
                     }
-                    ptr->modules[i].mtl_library = library;
-                    ptr->modules[i].mtl_function = function;
+                    mglProgramModuleBackend(ptr, i)->mtl_library = library;
+                    mglProgramModuleBackend(ptr, i)->mtl_function = function;
                 }
                 if (mglRenderVertexCaptureNeedsLoad(
-                        i, ptr->modules[i].metallib_tess_capture_bytes,
-                        ptr->modules[i].mtl_tess_capture_library,
-                        ptr->modules[i].mtl_tess_capture_function)) {
+                        i, mglProgramModuleView(ptr, i)->metallib_tess_capture_bytes,
+                        mglProgramModuleView(ptr, i)->mtl_tess_capture_library,
+                        mglProgramModuleView(ptr, i)->mtl_tess_capture_function)) {
                     void *library = NULL;
                     void *function = NULL;
                     char loadError[256] = {0};
                     if (!mglRsLoadAIRMainFunction(
-                            ptr->modules[i].metallib_tess_capture_bytes,
-                            ptr->modules[i].metallib_tess_capture_size,
+                            mglProgramModuleView(ptr, i)->metallib_tess_capture_bytes,
+                            mglProgramModuleView(ptr, i)->metallib_tess_capture_size,
                             &library, &function, loadError,
                             sizeof loadError)) {
                         fprintf(stderr, "MGL ERROR: Failed to load AIR tess VS capture program=%u: %s\n",
@@ -1719,19 +1720,19 @@ int mglRenderPassBindMTLProgramLocked(void *renderer, Program *ptr)
                               loadError[0] ? loadError : "?");
                         return 0;
                     }
-                    ptr->modules[i].mtl_tess_capture_library = library;
-                    ptr->modules[i].mtl_tess_capture_function = function;
+                    mglProgramModuleBackend(ptr, i)->mtl_tess_capture_library = library;
+                    mglProgramModuleBackend(ptr, i)->mtl_tess_capture_function = function;
                 }
                 if (mglRenderVertexCaptureNeedsLoad(
-                        i, ptr->modules[i].metallib_cull_capture_bytes,
-                        ptr->modules[i].mtl_cull_capture_library,
-                        ptr->modules[i].mtl_cull_capture_function)) {
+                        i, mglProgramModuleView(ptr, i)->metallib_cull_capture_bytes,
+                        mglProgramModuleView(ptr, i)->mtl_cull_capture_library,
+                        mglProgramModuleView(ptr, i)->mtl_cull_capture_function)) {
                     void *library = NULL;
                     void *function = NULL;
                     char loadError[256] = {0};
                     if (!mglRsLoadAIRMainFunction(
-                            ptr->modules[i].metallib_cull_capture_bytes,
-                            ptr->modules[i].metallib_cull_capture_size,
+                            mglProgramModuleView(ptr, i)->metallib_cull_capture_bytes,
+                            mglProgramModuleView(ptr, i)->metallib_cull_capture_size,
                             &library, &function, loadError,
                             sizeof loadError)) {
                         fprintf(stderr,
@@ -1741,8 +1742,8 @@ int mglRenderPassBindMTLProgramLocked(void *renderer, Program *ptr)
                               loadError[0] ? loadError : "?");
                         return 0;
                     }
-                    ptr->modules[i].mtl_cull_capture_library = library;
-                    ptr->modules[i].mtl_cull_capture_function = function;
+                    mglProgramModuleBackend(ptr, i)->mtl_cull_capture_library = library;
+                    mglProgramModuleBackend(ptr, i)->mtl_cull_capture_function = function;
                 }
             } else {
                 fprintf(stderr, "MGL ERROR: Program %u stage %d has no AIR metallib\n",

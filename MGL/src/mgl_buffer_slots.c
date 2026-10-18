@@ -21,6 +21,7 @@
 #include "glm_context.h"  /* brings in Program after GLMContext typedef */
 #include <stddef.h>  /* NULL */
 #include <string.h>
+#include "mgl_program_backend.h"
 
 /* Shader stage indices — must match the enum order in glm_context.h
  * (_MAX_SHADER_TYPES: VERTEX=0, TESS_CONTROL=1, TESS_EVALUATION=2,
@@ -205,7 +206,7 @@ void mglBufferSlotFactsFromProgram(const Program *program, int stage,
     out->runtime_array_size_slot =
         mglRuntimeArraySizeBufferIndexForProgram(program, stage);
     out->needs_runtime_array_size_buffer =
-        program->modules[stage].needs_runtime_array_size_buffer ? 1 : 0;
+        mglProgramModuleView(program, stage)->needs_runtime_array_size_buffer ? 1 : 0;
     out->stage_has_samplers = mglProgramStageHasSamplers(program, stage) ? 1 : 0;
     out->uses_point_size_params = program->uses_point_size_params ? 1 : 0;
     out->uses_shader_draw_params = program->uses_shader_draw_params ? 1 : 0;

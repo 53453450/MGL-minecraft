@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "mgl_program_backend.h"
 
 static int tests_run;
 static int tests_passed;
@@ -53,7 +54,8 @@ int main(void)
     static Program program;
     memset(&program, 0, sizeof(program));
     const int stage = _TESS_EVALUATION_SHADER;
-    MGLShaderModule *m = &program.modules[stage];
+    MGLShaderModule *identity = &program.modules[stage];
+    struct MGLShaderModuleBackend *m = mglProgramModuleBackend(&program, stage);
 
     m->metallib_bytes = bytes_of(16);
     m->metallib_size = 16;
@@ -63,7 +65,7 @@ int main(void)
     m->metallib_cull_capture_size = 8;
     m->metallib_bytes_tes_compute = bytes_of(32);
     m->metallib_size_tes_compute = 32;
-    m->entry_point = strdup("main");
+    identity->entry_point = strdup("main");
     m->needs_runtime_array_size_buffer = GL_TRUE;
     m->mtl_function = retained_object();
     m->mtl_library = retained_object();
@@ -93,8 +95,13 @@ int main(void)
               m->mtl_cull_capture_function == NULL &&
               m->mtl_cull_capture_library == NULL,
           "every other Metal handle is cleared");
-    CHECK(m->entry_point == NULL && !m->needs_runtime_array_size_buffer,
+    CHECK(identity->entry_point == NULL && !m->needs_runtime_array_size_buffer,
           "entry point and the runtime-array flag are reset");
+
+    CHECK(mglProgramModuleView(&program, stage)->metallib_bytes == NULL &&
+              mglProgramModuleView(NULL, stage)->metallib_bytes == NULL &&
+              mglProgramModuleView(&program, -1)->metallib_bytes == NULL,
+          "a view of a cleared, missing or out-of-range stage reads as zero");
 
     clearStageCompileState(&program, stage);
     CHECK(1, "clearing an already-clear stage is harmless");
@@ -102,6 +109,18 @@ int main(void)
     clearStageCompileState(&program, -1);
     clearStageCompileState(&program, _MAX_SHADER_TYPES);
     CHECK(1, "a NULL program or out-of-range stage is ignored");
+
+    m->metallib_bytes = bytes_of(16);
+    m->metallib_size = 16;
+    m->mtl_function = retained_object();
+    program.backend->pipeline_cache_instance_id = 7u;
+    mglProgramBackendRelease(&program);
+    CHECK(program.backend == NULL &&
+              mglProgramBackendView(&program)->pipeline_cache_instance_id == 0u,
+          "releasing the backend frees it and its state reads as zero");
+    mglProgramBackendRelease(&program);
+    mglProgramBackendRelease(NULL);
+    CHECK(1, "releasing again, or a NULL program, is harmless");
 
     printf("test_clear_stage_compile_state: %d/%d passed\n", tests_passed,
            tests_run);

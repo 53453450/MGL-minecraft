@@ -14,6 +14,38 @@
 #include "mgl_glsl_ast.h" /* MGLTranslationUnit / MGLDecl: gl_PerVertex redeclarations */
 #include "mgl_metal_ref.h"
 #include "mgl_uniform_reflection.h"
+#include "mgl_program_backend.h"
+
+void mglShaderModuleBackendClear(struct MGLShaderModuleBackend *module)
+{
+    if (!module) {
+        return;
+    }
+    free(module->metallib_bytes);
+    free(module->metallib_tess_capture_bytes);
+    free(module->metallib_cull_capture_bytes);
+    free(module->metallib_bytes_tes_compute);
+    mglSafeReleaseMetalObj(&module->mtl_function);
+    mglSafeReleaseMetalObj(&module->mtl_function_compute);
+    mglSafeReleaseMetalObj(&module->mtl_library);
+    mglSafeReleaseMetalObj(&module->mtl_tess_capture_function);
+    mglSafeReleaseMetalObj(&module->mtl_tess_capture_library);
+    mglSafeReleaseMetalObj(&module->mtl_cull_capture_function);
+    mglSafeReleaseMetalObj(&module->mtl_cull_capture_library);
+    memset(module, 0, sizeof(*module));
+}
+
+void mglProgramBackendRelease(Program *program)
+{
+    if (!program || !program->backend) {
+        return;
+    }
+    for (int stage = 0; stage < MGL_PROGRAM_BACKEND_STAGES; stage++) {
+        mglShaderModuleBackendClear(&program->backend->modules[stage]);
+    }
+    free(program->backend);
+    program->backend = NULL;
+}
 
 void clearStageCompileState(Program *program, int stage)
 {
@@ -22,29 +54,11 @@ void clearStageCompileState(Program *program, int stage)
     }
 
     MGLShaderModule *compiled = &program->modules[stage];
-    free(compiled->metallib_bytes);
-    compiled->metallib_bytes = NULL;
-    compiled->metallib_size = 0;
-    free(compiled->metallib_tess_capture_bytes);
-    compiled->metallib_tess_capture_bytes = NULL;
-    compiled->metallib_tess_capture_size = 0;
-    free(compiled->metallib_cull_capture_bytes);
-    compiled->metallib_cull_capture_bytes = NULL;
-    compiled->metallib_cull_capture_size = 0;
-    free(compiled->metallib_bytes_tes_compute);
-    compiled->metallib_bytes_tes_compute = NULL;
-    compiled->metallib_size_tes_compute = 0;
     free(compiled->entry_point);
     compiled->entry_point = NULL;
-    compiled->needs_runtime_array_size_buffer = GL_FALSE;
-
-    mglSafeReleaseMetalObj(&compiled->mtl_function);
-    mglSafeReleaseMetalObj(&compiled->mtl_function_compute);
-    mglSafeReleaseMetalObj(&compiled->mtl_library);
-    mglSafeReleaseMetalObj(&compiled->mtl_tess_capture_function);
-    mglSafeReleaseMetalObj(&compiled->mtl_tess_capture_library);
-    mglSafeReleaseMetalObj(&compiled->mtl_cull_capture_function);
-    mglSafeReleaseMetalObj(&compiled->mtl_cull_capture_library);
+    if (program->backend) {
+        mglShaderModuleBackendClear(&program->backend->modules[stage]);
+    }
 
     for (int type = 0; type < MGL_MAX_SHADER_RESOURCES; type++) {
         MGLShaderResourceList *list = &program->shader_resources_list[stage][type];

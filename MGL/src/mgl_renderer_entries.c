@@ -93,6 +93,7 @@
 #include "mgl_trace_log.h"
 #include "mgl_byte_hash.h"
 #include "mgl_compute_pipeline_cache.h"
+#include "mgl_program_backend.h"
 
 
 /* Restated from the Objective-C headers a .c file cannot include, the way the
@@ -488,9 +489,9 @@ Program *mglResolveProgramFromState(GLMContext ctx)
     }
 
     if (!resolved->link_success &&
-        !resolved->modules[_VERTEX_SHADER].metallib_bytes &&
-        !resolved->modules[_FRAGMENT_SHADER].metallib_bytes &&
-        !resolved->modules[_COMPUTE_SHADER].metallib_bytes) {
+        !mglProgramModuleView(resolved, _VERTEX_SHADER)->metallib_bytes &&
+        !mglProgramModuleView(resolved, _FRAGMENT_SHADER)->metallib_bytes &&
+        !mglProgramModuleView(resolved, _COMPUTE_SHADER)->metallib_bytes) {
         fprintf(stderr, "MGL PROGRAM RESOLVE pending: name=%u ptr=%p not linked\n",
               (unsigned)ctx->active_state->program_name, resolved);
         return NULL;
@@ -660,12 +661,12 @@ Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage)
     }
 
     if (!stageProgram->link_success &&
-        !stageProgram->modules[_VERTEX_SHADER].metallib_bytes &&
-        !stageProgram->modules[_FRAGMENT_SHADER].metallib_bytes &&
-        !stageProgram->modules[_COMPUTE_SHADER].metallib_bytes &&
-        !stageProgram->modules[_GEOMETRY_SHADER].metallib_bytes &&
-        !stageProgram->modules[_TESS_CONTROL_SHADER].metallib_bytes &&
-        !stageProgram->modules[_TESS_EVALUATION_SHADER].metallib_bytes) {
+        !mglProgramModuleView(stageProgram, _VERTEX_SHADER)->metallib_bytes &&
+        !mglProgramModuleView(stageProgram, _FRAGMENT_SHADER)->metallib_bytes &&
+        !mglProgramModuleView(stageProgram, _COMPUTE_SHADER)->metallib_bytes &&
+        !mglProgramModuleView(stageProgram, _GEOMETRY_SHADER)->metallib_bytes &&
+        !mglProgramModuleView(stageProgram, _TESS_CONTROL_SHADER)->metallib_bytes &&
+        !mglProgramModuleView(stageProgram, _TESS_EVALUATION_SHADER)->metallib_bytes) {
         fprintf(stderr, "MGL PROGRAM PIPELINE RESOLVE pending stage program pipeline=%u stage=%s program=%u\n",
               (unsigned)pipeline->name,
               mglShaderStageName(stage),

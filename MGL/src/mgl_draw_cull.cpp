@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include "mgl_program_backend.h"
 
 extern "C" Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
 
@@ -60,7 +61,7 @@ extern "C" int mglDrawRunCullDistanceArrayCapture(
     Program *vertexProgram = cull_vs(ctx);
     if (!vertexProgram || !vertexProgram->uses_cull_distance ||
         !ops->bind_mtl_program(ops->renderer, vertexProgram) ||
-        !vertexProgram->modules[_VERTEX_SHADER].mtl_cull_capture_function) {
+        !mglProgramModuleView(vertexProgram, _VERTEX_SHADER)->mtl_cull_capture_function) {
         return 0;
     }
 
@@ -174,7 +175,7 @@ extern "C" int mglDrawEncodeCullDistanceElement(
     }
     void *captureBuffer =
         ops->load_cull_capture ? ops->load_cull_capture(ops->renderer) : nullptr;
-    if (active->modules[_VERTEX_SHADER].mtl_cull_capture_function &&
+    if (mglProgramModuleView(active, _VERTEX_SHADER)->mtl_cull_capture_function &&
         !captureBuffer) {
         return 1; /* handled as no-op (match ObjC early YES) */
     }
@@ -248,7 +249,7 @@ extern "C" int mglDrawPrepareAndEncodeCullDistanceElement(
         return 1;
     }
 
-    if (active->modules[_VERTEX_SHADER].mtl_cull_capture_function) {
+    if (mglProgramModuleView(active, _VERTEX_SHADER)->mtl_cull_capture_function) {
         if (!mglDrawRunCullDistanceElementCapture(
                 ctx, indexBytes, indexType, count, baseVertex, instanceCount,
                 baseInstance, ops) ||

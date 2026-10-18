@@ -52,6 +52,7 @@
 #include "mgl_thread_affinity.h"    /* MGL_ASSERT_GL_THREAD */
 #include "mgl_types_texture.h"      /* Texture, Sampler */
 #include "mgl_texture_binding_resolve.h" /* mglSamplerBackend* */
+#include "mgl_program_backend.h"
 
 /* Declared next to its definition in the Objective-C
  * MGLRenderer+RenderPass_Private.h, which a .c file cannot include; repeated
@@ -340,7 +341,7 @@ bool mglTessPrepareStageBufferBindings(void *renderer,
 
     Program *stage_program = mglResolveProgramForStageFromState(areas.ctx, stage);
     if (stage_program &&
-        stage_program->modules[stage].needs_runtime_array_size_buffer) {
+        mglProgramModuleView(stage_program, stage)->needs_runtime_array_size_buffer) {
         bindings->size_buffer_index =
             mglRuntimeArraySizeBufferIndexForProgram(stage_program, stage);
         uint32_t size_constants[kMGLMaxBufferSlots] = {0};

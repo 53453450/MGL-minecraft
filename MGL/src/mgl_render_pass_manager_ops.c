@@ -59,6 +59,7 @@
 #include <string.h>   /* memcpy / strlen */
 #include <math.h>     /* lrintf */
 #include "mgl_readback_policy.h"
+#include "mgl_program_backend.h"
 
 /* Defined in MGLRenderer.m; declared in the Objective-C
  * MGLRenderer+RenderPass_Private.h. */
@@ -1705,9 +1706,9 @@ static uint64_t mglPdGeometryPassthroughCacheKey(const Program *program,
 {
     uint64_t hash = 1469598103934665603ull;
     hash = mglHashStepU64(
-        hash, program ? program->pipeline_cache_instance_id : 0u);
+        hash, program ? mglProgramBackendView(program)->pipeline_cache_instance_id : 0u);
     hash = mglHashStepU64(hash,
-                          program ? program->pipeline_cache_generation : 0u);
+                          program ? mglProgramBackendView(program)->pipeline_cache_generation : 0u);
     return mglHashStepU64(hash, layerStride);
 }
 
@@ -1820,12 +1821,12 @@ int mglRenderPassGeneratePipelineDescriptorState(
          * compute expansion uses the generated slot-28 reader. */
         if (tess->tessVertexRenderActive) {
             tessPassthroughFunction =
-                tess->tessComputeProgram->modules[_TESS_EVALUATION_SHADER]
-                    .mtl_function;
+                mglProgramModuleView(tess->tessComputeProgram,
+                                     _TESS_EVALUATION_SHADER)->mtl_function;
         } else {
             (void)mglRendererBackendGetPassthroughFunction(
                 areas.backend, MGL_RENDERER_BACKEND_PASSTHROUGH_TESS_EVALUATION,
-                tess->tessComputeProgram->pipeline_cache_instance_id,
+                mglProgramBackendView(tess->tessComputeProgram)->pipeline_cache_instance_id,
                 &tessPassthroughFunction);
         }
     }
@@ -1834,15 +1835,15 @@ int mglRenderPassGeneratePipelineDescriptorState(
         : tessCompute
         ? tessPassthroughFunction
         : cullDistanceCapture
-        ? vertexProgram->modules[_VERTEX_SHADER].mtl_cull_capture_function
+        ? mglProgramModuleView(vertexProgram, _VERTEX_SHADER)->mtl_cull_capture_function
         : tessVertexCapture
-        ? vertexProgram->modules[_VERTEX_SHADER].mtl_tess_capture_function
-        : vertexProgram->modules[vertexStage].mtl_function;
+        ? mglProgramModuleView(vertexProgram, _VERTEX_SHADER)->mtl_tess_capture_function
+        : mglProgramModuleView(vertexProgram, vertexStage)->mtl_function;
     void *vertexFunction = vertexFunctionPtr;
 
     void *fragmentFunction =
         fragmentProgram
-            ? fragmentProgram->modules[_FRAGMENT_SHADER].mtl_function
+            ? mglProgramModuleView(fragmentProgram, _FRAGMENT_SHADER)->mtl_function
             : NULL;
     /* Tess/cull VS capture also needs a real FS: AGX drops vertex device-
      * buffer stores when Metal rasterization is off (same as
@@ -1899,12 +1900,12 @@ int mglRenderPassGeneratePipelineDescriptorState(
     }
 
     memset(desc, 0, sizeof(*desc));
-    desc->vertex_program_instance = vertexProgram->pipeline_cache_instance_id;
-    desc->vertex_program_generation = vertexProgram->pipeline_cache_generation;
+    desc->vertex_program_instance = mglProgramBackendView(vertexProgram)->pipeline_cache_instance_id;
+    desc->vertex_program_generation = mglProgramBackendView(vertexProgram)->pipeline_cache_generation;
     desc->fragment_program_instance =
-        fragmentProgram ? fragmentProgram->pipeline_cache_instance_id : 0u;
+        fragmentProgram ? mglProgramBackendView(fragmentProgram)->pipeline_cache_instance_id : 0u;
     desc->fragment_program_generation =
-        fragmentProgram ? fragmentProgram->pipeline_cache_generation : 0u;
+        fragmentProgram ? mglProgramBackendView(fragmentProgram)->pipeline_cache_generation : 0u;
     desc->color_count = MAX_COLOR_ATTACHMENTS;
     desc->rasterization_enabled = 1;
 
@@ -3599,7 +3600,7 @@ int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(void *renderer,
     void *cachedFunction = NULL;
     if (mglRendererBackendGetPassthroughFunction(
             areas.backend, MGL_RENDERER_BACKEND_PASSTHROUGH_TESS_EVALUATION,
-            program->pipeline_cache_instance_id, &cachedFunction) == 1) {
+            mglProgramBackendView(program)->pipeline_cache_instance_id, &cachedFunction) == 1) {
         return 1;
     }
     (void)mglRendererBackendSetPassthroughFunction(
@@ -3812,7 +3813,7 @@ int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(void *renderer,
         result =
             mglRendererBackendSetPassthroughFunction(
                 areas.backend, MGL_RENDERER_BACKEND_PASSTHROUGH_TESS_EVALUATION,
-                library, function, program->pipeline_cache_instance_id) == 0
+                library, function, mglProgramBackendView(program)->pipeline_cache_instance_id) == 0
                 ? 1
                 : 0;
         /* ARC released these at scope exit in the .m twin. */

@@ -34,6 +34,7 @@
 #include "mgl_renderer_binding_ops.h"     /* record last bound buffer */
 #include "mgl_frame_activity.h"        /* MGL_PERF_INC */
 #include "mgl_types_buffer.h"          /* mglBufferMapVisibleSize */
+#include "mgl_program_backend.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
 static GLMState *mglSizeConstantsState(const MGLRendererStateView *areas)
@@ -123,7 +124,7 @@ bool mglRendererBindBufferSizeConstantsForRenderEncoder(void *renderer)
     }
 
     Program *vertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
-    if (vertexProgram && vertexProgram->modules[_VERTEX_SHADER].needs_runtime_array_size_buffer)
+    if (vertexProgram && mglProgramModuleView(vertexProgram, _VERTEX_SHADER)->needs_runtime_array_size_buffer)
     {
         uint32_t sizeConstants[31];
         mglSizeConstantsFillFromMapList(&state->vertex_buffer_map_list, sizeConstants);
@@ -143,7 +144,7 @@ bool mglRendererBindBufferSizeConstantsForRenderEncoder(void *renderer)
     }
 
     Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
-    if (fragmentProgram && fragmentProgram->modules[_FRAGMENT_SHADER].needs_runtime_array_size_buffer)
+    if (fragmentProgram && mglProgramModuleView(fragmentProgram, _FRAGMENT_SHADER)->needs_runtime_array_size_buffer)
     {
         uint32_t sizeConstants[31];
         mglSizeConstantsFillFromMapList(&state->fragment_buffer_map_list, sizeConstants);

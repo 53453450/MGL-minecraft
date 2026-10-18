@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include "mgl_program_backend.h"
 
 extern "C" bool mglDrawGsInputModeAccepts(GLenum gsMode, GLenum drawMode)
 {
@@ -1101,7 +1102,7 @@ extern "C" int mglDrawGsRunDraw(GLMContext ctx, GLenum mode, GLint first,
     }
 
     if (!ops->bind_mtl_program(ops->renderer, program) ||
-        !program->modules[_GEOMETRY_SHADER].mtl_function) {
+        !mglProgramModuleView(program, _GEOMETRY_SHADER)->mtl_function) {
         std::fprintf(stderr,
                      "MGL GS ERROR: failed to load AIR kernel program=%u\n",
                      (unsigned)program->name);

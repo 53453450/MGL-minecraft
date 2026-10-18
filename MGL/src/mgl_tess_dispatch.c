@@ -63,6 +63,7 @@
 #include "mgl_thread_affinity.h"         /* MGL_ASSERT_GL_THREAD */
 #include "glm_limits.h"                  /* MAX_ATTRIBS, TEXTURE_UNITS */
 #include "mgl_texture_binding_resolve.h" /* mglSamplerBackend* */
+#include "mgl_program_backend.h"
 
 /* Declared next to their definitions in Objective-C headers a .c file cannot
  * include; repeated here the way mgl_renderer_ports.c repeats its prototypes.
@@ -314,7 +315,7 @@ static void *mglTessDispatchNewTCSStageInBuffer(
         return NULL;
     }
 
-    if (!tcs_program->modules[_TESS_CONTROL_SHADER].metallib_bytes) {
+    if (!mglProgramModuleView(tcs_program, _TESS_CONTROL_SHADER)->metallib_bytes) {
         return NULL;
     }
 
@@ -448,7 +449,7 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
     Shader *tcs_shader = tcs_program->shader_slots[_TESS_CONTROL_SHADER];
     if (!mglTessStageHasCompiledFunction(
             tcs_shader ? 1 : 0,
-            tcs_program->modules[_TESS_CONTROL_SHADER].mtl_function ? 1 : 0)) {
+            mglProgramModuleView(tcs_program, _TESS_CONTROL_SHADER)->mtl_function ? 1 : 0)) {
         fprintf(stderr,
                 "MGL TESS WARNING: TCS program %u has no compiled function",
                 tcs_program->name);
@@ -716,7 +717,7 @@ bool mglTessDispatchAIRTessEvalVertexRender(
     Shader *tes_shader = tes_program->shader_slots[_TESS_EVALUATION_SHADER];
     if (!mglTessStageHasCompiledFunction(
             tes_shader ? 1 : 0,
-            tes_program->modules[_TESS_EVALUATION_SHADER].mtl_function ? 1 : 0)) {
+            mglProgramModuleView(tes_program, _TESS_EVALUATION_SHADER)->mtl_function ? 1 : 0)) {
         fprintf(stderr,
                 "MGL TESS ERROR: TES-vertex program %u has no compiled function",
                 (unsigned)tes_program->name);
@@ -1070,7 +1071,7 @@ bool mglTessDispatchAIRTessEvalCompute(
     Shader *tes_shader = tes_program->shader_slots[_TESS_EVALUATION_SHADER];
     if (!mglTessStageHasCompiledFunction(
             tes_shader ? 1 : 0,
-            tes_program->modules[_TESS_EVALUATION_SHADER].mtl_function ? 1 : 0)) {
+            mglProgramModuleView(tes_program, _TESS_EVALUATION_SHADER)->mtl_function ? 1 : 0)) {
         fprintf(stderr,
                 "MGL TESS WARNING: TES program %u has no compiled function",
                 tes_program->name);

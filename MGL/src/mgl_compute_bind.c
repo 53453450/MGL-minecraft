@@ -47,6 +47,7 @@
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_readback.h"
 #include "mgl_render_api_texture.h"
+#include "mgl_program_backend.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
 static GLMState *mglComputeBindState(const MGLRendererStateView *areas)
@@ -378,7 +379,7 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
     {
         Program *computeProgram = mglResolveProgramForStageFromState(ctx, stage);
         if (computeProgram &&
-            computeProgram->modules[stage].needs_runtime_array_size_buffer)
+            mglProgramModuleView(computeProgram, stage)->needs_runtime_array_size_buffer)
         {
             const GLuint runtimeSizeSlot =
                 mglRuntimeArraySizeBufferIndexForProgram(computeProgram, stage);

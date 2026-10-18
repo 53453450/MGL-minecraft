@@ -47,6 +47,7 @@
 #include <stdio.h>
 #include <stdlib.h>   /* getenv (MGL_TOPO_TRACE) */
 #include <string.h>
+#include "mgl_program_backend.h"
 
 /* Objective-C private header declarations restated for C. */
 extern Program *mglResolveProgramFromState(GLMContext ctx);
@@ -761,13 +762,13 @@ static uint64_t mglPdGeometryPipelineFunctionKey(
 {
     uint64_t hash = 1469598103934665603ull;
     hash = mglHashStepU64(hash,
-                          vertexProgram ? vertexProgram->pipeline_cache_instance_id : 0u);
+                          vertexProgram ? mglProgramBackendView(vertexProgram)->pipeline_cache_instance_id : 0u);
     hash = mglHashStepU64(hash,
-                          vertexProgram ? vertexProgram->pipeline_cache_generation : 0u);
+                          vertexProgram ? mglProgramBackendView(vertexProgram)->pipeline_cache_generation : 0u);
     hash = mglHashStepU64(hash,
-                          geometryProgram ? geometryProgram->pipeline_cache_instance_id : 0u);
+                          geometryProgram ? mglProgramBackendView(geometryProgram)->pipeline_cache_instance_id : 0u);
     hash = mglHashStepU64(hash,
-                          geometryProgram ? geometryProgram->pipeline_cache_generation : 0u);
+                          geometryProgram ? mglProgramBackendView(geometryProgram)->pipeline_cache_generation : 0u);
     return mglHashStepU64(hash, layerStride);
 }
 
@@ -979,7 +980,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
                                  | ((tessellation && tessellation->tessComputeActive) ? (1ull << 19) : 0ull)
                                  | ((tessellation && tessellation->tessVertexRenderActive) ? (1ull << 18) : 0ull));
             uint64_t vertexInstance = currentVertexProgram
-                ? currentVertexProgram->pipeline_cache_instance_id : 0u;
+                ? mglProgramBackendView(currentVertexProgram)->pipeline_cache_instance_id : 0u;
             if (geometry && geometry->expansionActive && geometry->program) {
                 /* The raster vertex function is generated from both the real
                  * VS/FS interface and the GS output record.  Fold both program
@@ -991,11 +992,11 @@ int mglRenderPassSyncPipelineState(void *renderer,
                     mglPdGeometryPassthroughLayerStride(ctx));
             }
             uint64_t vertexGeneration = currentVertexProgram
-                ? currentVertexProgram->pipeline_cache_generation : 0u;
+                ? mglProgramBackendView(currentVertexProgram)->pipeline_cache_generation : 0u;
             uint64_t fragmentInstance = currentFragmentProgram
-                ? currentFragmentProgram->pipeline_cache_instance_id : 0u;
+                ? mglProgramBackendView(currentFragmentProgram)->pipeline_cache_instance_id : 0u;
             uint64_t fragmentGeneration = currentFragmentProgram
-                ? currentFragmentProgram->pipeline_cache_generation : 0u;
+                ? mglProgramBackendView(currentFragmentProgram)->pipeline_cache_generation : 0u;
             keyWords[0] = primaryKey;
             keyWords[1] = vertexInstance;
             keyWords[2] = vertexGeneration;

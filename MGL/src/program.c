@@ -58,12 +58,14 @@
 #include "mgl_glsl_parser.h"
 #include "mgl_glsl_ast.h"
 #include "mgl_frontend_session.h"
+#include "mgl_program_backend.h"
 
 
 
 /* A16: keep the last successful executable until a new link commits. */
 typedef struct MGLSavedLinkExecutable {
     MGLShaderModule modules[_MAX_SHADER_TYPES];
+    struct MGLShaderModuleBackend module_backends[_MAX_SHADER_TYPES];
     MGLShaderResourceList shader_resources_list[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
     GLboolean uses_vertex_id;
     GLboolean uses_primitive_id;
@@ -111,6 +113,10 @@ static void mglCaptureLinkExecutable(Program *pptr, MGLSavedLinkExecutable *out)
 {
     memset(out, 0, sizeof(*out));
     memcpy(out->modules, pptr->modules, sizeof(out->modules));
+    if (pptr->backend) {
+        memcpy(out->module_backends, pptr->backend->modules,
+               sizeof(out->module_backends));
+    }
     memcpy(out->shader_resources_list, pptr->shader_resources_list,
            sizeof(out->shader_resources_list));
     out->uses_vertex_id = pptr->uses_vertex_id;
@@ -162,6 +168,9 @@ static void mglCaptureLinkExecutable(Program *pptr, MGLSavedLinkExecutable *out)
     out->sampled_texture_unit_mask_valid = pptr->sampled_texture_unit_mask_valid;
 
     memset(pptr->modules, 0, sizeof(pptr->modules));
+    if (pptr->backend) {
+        memset(pptr->backend->modules, 0, sizeof(pptr->backend->modules));
+    }
     memset(pptr->shader_resources_list, 0, sizeof(pptr->shader_resources_list));
 }
 
@@ -174,6 +183,7 @@ static void mglDiscardSavedLinkExecutable(MGLSavedLinkExecutable *saved)
            sizeof(tmp.shader_resources_list));
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
         clearStageCompileState(&tmp, stage);
+        mglShaderModuleBackendClear(&saved->module_backends[stage]);
     }
     memset(saved, 0, sizeof(*saved));
 }
@@ -184,6 +194,8 @@ static void mglRestoreSavedLinkExecutable(Program *pptr, MGLSavedLinkExecutable 
         clearStageCompileState(pptr, stage);
     }
     memcpy(pptr->modules, saved->modules, sizeof(pptr->modules));
+    memcpy(mglProgramBackendEnsure(pptr)->modules, saved->module_backends,
+           sizeof(saved->module_backends));
     memcpy(pptr->shader_resources_list, saved->shader_resources_list,
            sizeof(pptr->shader_resources_list));
     pptr->uses_vertex_id = saved->uses_vertex_id;
@@ -880,7 +892,7 @@ Program *newProgram(GLMContext ctx, GLuint program)
     bzero(ptr, sizeof(Program));
 
     ptr->name = program;
-    ptr->pipeline_cache_instance_id =
+    mglProgramBackendEnsure(ptr)->pipeline_cache_instance_id =
         atomic_fetch_add_explicit(&mglNextMSLTextureCacheInstanceID,
                                   1u,
                                   memory_order_relaxed);
@@ -999,43 +1011,16 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
     mglFreeActiveUniformCache(ptr);
 
     mglRenderInvalidateProgramPipelines(
-        ptr->pipeline_cache_instance_id);
+        mglProgramBackendView(ptr)->pipeline_cache_instance_id);
 
+    mglProgramBackendRelease(ptr);
     for(int i=0; i<_MAX_SHADER_TYPES; i++)
     {
-        // CRITICAL FIX: Add NULL checks before all free/release operations to prevent double-frees
-        if (ptr->modules[i].metallib_bytes) {
-            free(ptr->modules[i].metallib_bytes);
-            ptr->modules[i].metallib_bytes = NULL;
-            ptr->modules[i].metallib_size = 0;
-        }
-        if (ptr->modules[i].metallib_bytes_tes_compute) {
-            free(ptr->modules[i].metallib_bytes_tes_compute);
-            ptr->modules[i].metallib_bytes_tes_compute = NULL;
-            ptr->modules[i].metallib_size_tes_compute = 0;
-        }
-        if (ptr->modules[i].metallib_tess_capture_bytes) {
-            free(ptr->modules[i].metallib_tess_capture_bytes);
-            ptr->modules[i].metallib_tess_capture_bytes = NULL;
-            ptr->modules[i].metallib_tess_capture_size = 0;
-        }
-        if (ptr->modules[i].metallib_cull_capture_bytes) {
-            free(ptr->modules[i].metallib_cull_capture_bytes);
-            ptr->modules[i].metallib_cull_capture_bytes = NULL;
-            ptr->modules[i].metallib_cull_capture_size = 0;
-        }
         if (ptr->modules[i].entry_point) {
             free(ptr->modules[i].entry_point);
             ptr->modules[i].entry_point = NULL;
         }
-        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_function);
-        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_function_compute);
-        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_library);
-        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_tess_capture_function);
-        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_tess_capture_library);
-        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_cull_capture_function);
-        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_cull_capture_library);
-        
+
         for(int j=0; j<MGL_MAX_SHADER_RESOURCES; j++)
         {
             // CRITICAL FIX: Add NULL checks and clear pointers to prevent double-frees
@@ -2134,8 +2119,8 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
                 shader->src, attrib_snapshot, MGL_AIR_COMPILE_TESS_CAPTURE,
                 &capture_bytes, &capture_size, capture_err,
                 sizeof capture_err) == 0) {
-            pptr->modules[stage].metallib_tess_capture_bytes = capture_bytes;
-            pptr->modules[stage].metallib_tess_capture_size = capture_size;
+            mglProgramModuleBackend(pptr, stage)->metallib_tess_capture_bytes = capture_bytes;
+            mglProgramModuleBackend(pptr, stage)->metallib_tess_capture_size = capture_size;
             if (getenv("MGL_DUMP_AIR")) {
                 FILE *f = fopen("/tmp/poison_capvar.air", "wb");
                 if (f) {
@@ -2166,9 +2151,9 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
                     shader->src, attrib_snapshot, MGL_AIR_COMPILE_CULL_CAPTURE,
                     &cull_capture_bytes, &cull_capture_size, cull_capture_err,
                     sizeof cull_capture_err) == 0) {
-                pptr->modules[stage].metallib_cull_capture_bytes =
+                mglProgramModuleBackend(pptr, stage)->metallib_cull_capture_bytes =
                     cull_capture_bytes;
-                pptr->modules[stage].metallib_cull_capture_size =
+                mglProgramModuleBackend(pptr, stage)->metallib_cull_capture_size =
                     cull_capture_size;
                 if (getenv("MGL_DUMP_AIR")) {
                     FILE *f = fopen("/tmp/cullcap.air", "wb");
@@ -2207,9 +2192,9 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             iface_peers, stage_info.tess_patch_vertices, &compute_art,
             compute_err, sizeof compute_err);
         if (compute_rc == 0 && compute_art.complete) {
-            pptr->modules[stage].metallib_bytes_tes_compute =
+            mglProgramModuleBackend(pptr, stage)->metallib_bytes_tes_compute =
                 compute_art.metallib_bytes;
-            pptr->modules[stage].metallib_size_tes_compute =
+            mglProgramModuleBackend(pptr, stage)->metallib_size_tes_compute =
                 compute_art.metallib_size;
             compute_art.metallib_bytes = NULL;
             compute_art.metallib_size = 0;
@@ -2237,8 +2222,8 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
                                            : 1u;
         pptr->shared_memory_bytes = stage_info.shared_memory_bytes;
     }
-    pptr->modules[stage].metallib_bytes = bytes;
-    pptr->modules[stage].metallib_size = size;
+    mglProgramModuleBackend(pptr, stage)->metallib_bytes = bytes;
+    mglProgramModuleBackend(pptr, stage)->metallib_size = size;
     {
         /* MGL_DUMP_SHADER_DIR=<dir>: keep every linked stage's source,
          * metallib and its LLVM IR as prog<name>_stage<N>.{glsl,metallib,ll},
@@ -2317,7 +2302,7 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             fprintf(stderr, "MGL DUMP: cs.air %zu bytes\n", size);
         }
     }
-    pptr->modules[stage].needs_runtime_array_size_buffer =
+    mglProgramModuleBackend(pptr, stage)->needs_runtime_array_size_buffer =
         stage_info.needs_runtime_array_size_buffer ? GL_TRUE : GL_FALSE;
     if (pptr->modules[stage].entry_point) {
         free(pptr->modules[stage].entry_point);
@@ -2766,12 +2751,12 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     MGLSavedLinkExecutable saved_executable;
     GLboolean have_saved_executable = GL_FALSE;
     if (pptr->link_success ||
-        pptr->modules[_VERTEX_SHADER].metallib_bytes ||
-        pptr->modules[_FRAGMENT_SHADER].metallib_bytes ||
-        pptr->modules[_COMPUTE_SHADER].metallib_bytes ||
-        pptr->modules[_GEOMETRY_SHADER].metallib_bytes ||
-        pptr->modules[_TESS_CONTROL_SHADER].metallib_bytes ||
-        pptr->modules[_TESS_EVALUATION_SHADER].metallib_bytes) {
+        mglProgramModuleView(pptr, _VERTEX_SHADER)->metallib_bytes ||
+        mglProgramModuleView(pptr, _FRAGMENT_SHADER)->metallib_bytes ||
+        mglProgramModuleView(pptr, _COMPUTE_SHADER)->metallib_bytes ||
+        mglProgramModuleView(pptr, _GEOMETRY_SHADER)->metallib_bytes ||
+        mglProgramModuleView(pptr, _TESS_CONTROL_SHADER)->metallib_bytes ||
+        mglProgramModuleView(pptr, _TESS_EVALUATION_SHADER)->metallib_bytes) {
         mglCaptureLinkExecutable(pptr, &saved_executable);
         have_saved_executable = GL_TRUE;
     }
@@ -2801,7 +2786,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     /* C++ compute PSOs retain functions from the previous link generation.
      * Drop them before stage objects and metallib libraries are replaced. */
     mglRenderInvalidateProgramPipelines(
-        pptr->pipeline_cache_instance_id);
+        mglProgramBackendView(pptr)->pipeline_cache_instance_id);
 
     pptr->uses_vertex_id = GL_FALSE;
     pptr->uses_primitive_id = GL_FALSE;
@@ -2864,7 +2849,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     pptr->ir_cache_valid = GL_FALSE;
     /* Bump the per-Program cache generation so renderer pipeline keys cannot
      * reuse objects from the previous linked executable. */
-    pptr->pipeline_cache_generation++;
+    mglProgramBackendEnsure(pptr)->pipeline_cache_generation++;
 
     {
         GLboolean saw_spirv = GL_FALSE;
@@ -3104,7 +3089,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
      * expands point/line/triangle strips to Metal list primitives. */
     if (pptr->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT) {
         bool computeRoute =
-            pptr->modules[_GEOMETRY_SHADER].metallib_bytes != NULL &&
+            mglProgramModuleView(pptr, _GEOMETRY_SHADER)->metallib_bytes != NULL &&
             (pptr->geometry_input_type == GL_POINTS ||
              pptr->geometry_input_type == GL_LINES ||
              pptr->geometry_input_type == GL_LINES_ADJACENCY ||
@@ -3131,7 +3116,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                     "geometry shader is outside the AIR compute-expansion "
                     "subset (air=%d in=0x%x out=0x%x max=%u inv=%u)\n",
                     pptr->name,
-                    pptr->modules[_GEOMETRY_SHADER].metallib_bytes != NULL,
+                    mglProgramModuleView(pptr, _GEOMETRY_SHADER)->metallib_bytes != NULL,
                     pptr->geometry_input_type,
                     pptr->geometry_output_type,
                     pptr->geometry_vertices_out,
@@ -3487,7 +3472,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     /* Populate renderer feature caches from AIR reflection. */
     {
         uint32_t attr_mask = 0u;
-        if (pptr->modules[_VERTEX_SHADER].metallib_bytes) {
+        if (mglProgramModuleView(pptr, _VERTEX_SHADER)->metallib_bytes) {
             MGLShaderResourceList *ins =
                 &pptr->shader_resources_list[_VERTEX_SHADER]
                                            [_STAGE_INPUT_RES];

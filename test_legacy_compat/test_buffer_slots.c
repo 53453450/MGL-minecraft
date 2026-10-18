@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "mgl_program_backend.h"
 
 static int tests_run;
 static int tests_passed;
@@ -40,7 +41,7 @@ static GLboolean reference_conflicts(const Program *program, GLuint slot,
         return GL_FALSE;
     }
     if (slot == mglRuntimeArraySizeBufferIndexForProgram(program, stage) &&
-        program->modules[stage].needs_runtime_array_size_buffer) {
+        mglProgramModuleView(program, stage)->needs_runtime_array_size_buffer) {
         return GL_TRUE;
     }
     if (stage == _VERTEX_SHADER || stage == _FRAGMENT_SHADER) {
@@ -113,7 +114,7 @@ static Program g_program;
 static void configure(unsigned flags, int stage)
 {
     memset(&g_program, 0, sizeof(g_program));
-    g_program.modules[stage].needs_runtime_array_size_buffer = (flags & 1u) != 0;
+    mglProgramModuleBackend(&g_program, stage)->needs_runtime_array_size_buffer = (flags & 1u) != 0;
     g_program.uses_point_size_params = (flags & 2u) != 0;
     g_program.uses_shader_draw_params = (flags & 4u) != 0;
     g_program.uses_cull_distance = (flags & 8u) != 0;
