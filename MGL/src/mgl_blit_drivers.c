@@ -2706,8 +2706,6 @@ bool mglBlitFramebufferScaledColorWithState(void *renderer,
     double src_max_y = st->srcMaxY;
     double dst_min_x = st->dstMinX;
     double dst_max_x = st->dstMaxX;
-    double dst_min_y = st->dstMinY;
-    double dst_max_y = st->dstMaxY;
     double dst_w = st->dstW;
     double dst_h = st->dstH;
     double scaled_dst_metal_y = st->scaledDstMetalY;

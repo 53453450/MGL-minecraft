@@ -266,46 +266,6 @@ void *mglBlitScaledDepthPipelineForPixelFormat(void *renderer, uint32_t pixelFor
     return pipeline;
 }
 
-void *mglBlitScaledComputePipelineForPixelFormat(void *renderer, uint32_t pixelFormat)
-{
-    MGLRendererStateView areas; mglRendererFillStateView(renderer, &areas);
-    pixelFormat = mglRenderColorFormatOrBGRA(pixelFormat);
-
-    MGLTextureDataKind dataKind = mglTextureDataKindForPixelFormat(pixelFormat);
-    const char *entryName = "mgl_scaled_blit_cs";
-    if (dataKind == MGLTextureDataKindUint) {
-        entryName = "mgl_scaled_blit_cs_uint";
-    } else if (dataKind == MGLTextureDataKindSint) {
-        entryName = "mgl_scaled_blit_cs_int";
-    } else if (dataKind == MGLTextureDataKindDepth) {
-        return NULL;
-    }
-    /* Encode data kind so uint/int/float caches do not collide. */
-    uint64_t variant =
-        ((uint64_t)(uint32_t)dataKind << 32) | (uint64_t)pixelFormat;
-
-    void *cached = mglBlitLookupAuxComputePipeline(
-        MGL_RENDER_AUX_COMPUTE_SCALED_BLIT, variant);
-    if (cached) return cached;
-
-    char error[512] = {0};
-    void *pipeline = mglBlitCreateAuxComputePipelineFromAsset(
-        "scaled_blit_cs", entryName, MGL_RENDER_AUX_COMPUTE_SCALED_BLIT,
-        variant, error, sizeof(error));
-    if (!pipeline) {
-        fprintf(stderr,
-                "MGL ERROR: scaled blit asset compute pipeline create failed pixelFormat=%lu kind=%s entry=%s error=%s\n",
-                (unsigned long)pixelFormat, mglTextureDataKindName(dataKind), entryName,
-                error[0] ? error : "(none)");
-        if (areas.ctx) mglDispatchError(areas.ctx, __func__, (GLenum)mglRenderErrorInvalidOperation());
-        return NULL;
-    }
-    fprintf(stderr,
-            "MGL INFO: created scaled blit compute pipeline pixelFormat=%lu kind=%s entry=%s (Metal-cpp asset)\n",
-            (unsigned long)pixelFormat, mglTextureDataKindName(dataKind), entryName);
-    return pipeline;
-}
-
 void *mglBlitMsaaIntegerResolvePipeline(void *renderer, int signedInteger)
 {
     MGLRendererStateView areas; mglRendererFillStateView(renderer, &areas);

@@ -59,9 +59,6 @@ void *mglBlitScaledPipelineForPixelFormat(void *renderer, uint32_t pixel_format)
 /* Scaled depth(-stencil) blit pipeline for a depth pixel format. */
 void *mglBlitScaledDepthPipelineForPixelFormat(void *renderer, uint32_t pixel_format);
 
-/* Scaled-blit compute pipeline for a colour pixel format (uint/sint/float
- * variants share the cache with distinct variants). */
-void *mglBlitScaledComputePipelineForPixelFormat(void *renderer, uint32_t pixel_format);
 
 /* MSAA integer resolve compute pipeline. */
 void *mglBlitMsaaIntegerResolvePipeline(void *renderer, int signed_integer);

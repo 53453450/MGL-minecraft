@@ -382,7 +382,6 @@ void mglBlitDirectColorWithState(void *renderer, const MGLBlitColorState *st)
     int64_t copy_dst_y = st->copyDstY;
     int64_t src_metal_y = st->srcMetalY;
     int64_t dst_metal_y = st->dstMetalY;
-    int did_msaa_resolve = st->didMsaaResolve;
     /* start blit encoder */
     void *blit_command_encoder =
         mglRenderCreateBlitEncoderBorrowed(mglBcCommandBufferOwner(&areas));
