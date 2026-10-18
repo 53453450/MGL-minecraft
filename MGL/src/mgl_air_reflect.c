@@ -18,6 +18,7 @@
  */
 
 #include "mgl_air_reflect.h"
+#include "mgl_ir.h"
 #include "mgl_buffer_layout.h"
 
 #include <GL/glcorearb.h>
@@ -1386,6 +1387,26 @@ static int mglAirReflectModuleImpl(
      * location 1 while the kernel stored it at 0). */
     uint32_t next_user_in = 0;
     uint32_t next_user_out = 0;
+    /* Vertex inputs with a fixed place (layout(location) or a bind) keep it;
+     * the unbound ones must not land on it (see mglAttribLocReserve). */
+    uint64_t reserved_in = 0;
+    if (isVS) {
+        for (uint32_t i = 0; i < mod->symbol_count; i++) {
+            const MGLIRSymbol *s = mod->symbols[i];
+            if (s->is_function || air_skip_gl_symbol(s) ||
+                !(s->qualifiers & MGL_AST_Q_IN) ||
+                air_is_per_vertex_builtin_io(s)) {
+                continue;
+            }
+            uint32_t fixed = s->location != UINT32_MAX
+                ? s->location
+                : air_reflect_attrib_location(s->name, attrib_names);
+            if (fixed != UINT32_MAX) {
+                reserved_in = mglAttribLocReserve(
+                    reserved_in, fixed, air_reflect_io_span(s->type, 0));
+            }
+        }
+    }
     /* TCS/TES: patch and per-vertex I/O use separate location spaces
      * (matches assignStageVarSymLocations in mgl_air_varsym.cpp).  Reflection
      * used to share one counter, so TES←TCS name remapping picked the wrong
@@ -1636,7 +1657,10 @@ static int mglAirReflectModuleImpl(
             uint32_t *next_in = (q & MGL_AST_Q_PATCH) ? &tess_next_patch_in
                                                       : &next_user_in;
             if (location == UINT32_MAX && !air_is_per_vertex_builtin_io(s)) {
-                location = *next_in;
+                location = isVS
+                    ? mglAttribLocFirstFree(reserved_in, *next_in,
+                                            air_reflect_io_span(t, 0))
+                    : *next_in;
             }
             if (!push_resource(&lists[_STAGE_INPUT_RES], s, t, location, 0,
                                stage) ||

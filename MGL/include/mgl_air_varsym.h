@@ -55,6 +55,14 @@ uint32_t varyingLocationSpan(const MType &t);
 uint32_t airAttribLocation(const char *name, const char *const *attrib_names,
                            int maxAttribs);
 
+/* Locations of a vertex stage's inputs, parallel to `syms` (UINT32_MAX for
+ * symbols that are not vertex attributes).  Priority: layout(location), then
+ * glBindAttribLocation, then the first free run at or after the running
+ * declaration-order counter that no fixed input occupies. */
+std::vector<uint32_t> vsAttribLocations(const std::vector<VarSym> &syms,
+                                        const char *const *attrib_names,
+                                        int maxAttribs);
+
 /* Classify IR symbols into stage VarSyms (kind/type/qualifiers). Clears *out
  * then fills; flattens opaque leaves inside struct uniforms. */
 void collectStageVarSyms(const MGLIRModule *mod, const MGLTranslationUnit *tu,

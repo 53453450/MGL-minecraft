@@ -16481,30 +16481,16 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         /* Vertex attributes are the first value arguments (Metal ABI:
          * stage_in value args precede buffers/textures). */
         uint32_t mArgSlot = 0;
-        uint32_t nextFreeAttrLoc = 0;
-        for (VarSym &v : syms) {
+        const std::vector<uint32_t> attrLocs =
+            vsAttribLocations(syms, attrib_names, MAX_ATTRIBS);
+        for (size_t symIdx = 0; symIdx < syms.size(); symIdx++) {
+            VarSym &v = syms[symIdx];
             if (v.kind != VarSym::ATTR) continue;
             /* The air.location_index must equal the location the reflector
-             * reports (mglAirReflectModule) — the renderer's vertex
-             * descriptor and draw-time bindings are driven by the reflected
-             * locations.  Priority: explicit layout(location=N) from the
-             * sema, then glBindAttribLocation, then the running
-             * declaration-order counter.  The previous code
-             * ignored explicit locations entirely (running counter only),
-             * which silently misaligned any shader with non-contiguous
-             * explicit attribute locations (the reflector said N, the
-             * metallib read [[attribute(k)]]). */
-            uint32_t attrLoc = v.location;
-            if (!v.locationExplicit) {
-                uint32_t want = airAttribLocation(v.name.c_str(),
-                                                  attrib_names, MAX_ATTRIBS);
-                if (want != UINT32_MAX)
-                    attrLoc = want;
-                else if (attrLoc == UINT32_MAX)
-                    attrLoc = nextFreeAttrLoc;
-            } else if (attrLoc == UINT32_MAX) {
-                attrLoc = nextFreeAttrLoc;
-            }
+             * reports (mglAirReflectModule): the renderer's vertex descriptor
+             * and draw-time bindings are driven by the reflected locations.
+             * Both place inputs through mgl_ir.h's attribute helpers. */
+            const uint32_t attrLoc = attrLocs[symIdx];
             const AttrExpansion ex = attrExpansion(v.type);
             const uint32_t n = ex.count;
             const MType el = ex.argType;
@@ -16527,7 +16513,6 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                     llvm::MDString::get(ctx, argName)};
                 argNodes.push_back(llvm::MDNode::get(ctx, elems));
             }
-            nextFreeAttrLoc = std::max(nextFreeAttrLoc, attrLoc + n);
         }
     }
     if (isCapture) {
@@ -16997,21 +16982,13 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         uint32_t mArgSlot = 1 + (hasBuffer ? 1 : 0) + ssboCount + uboCount + acCount +
                             (needsBufferSizeBuffer ? 1 : 0) + texArgSlots +
                             imageCount;
-        uint32_t attrLoc = 0;
-        uint32_t nextFreeAttrLoc = 0;
-        for (VarSym &v : syms) {
+        const std::vector<uint32_t> attrLocs =
+            vsAttribLocations(syms, attrib_names, MAX_ATTRIBS);
+        for (size_t symIdx = 0; symIdx < syms.size(); symIdx++) {
+            VarSym &v = syms[symIdx];
             if (v.kind != VarSym::ATTR) continue;
-            /* Same priority as the non-capture path and the reflector. */
-            uint32_t want = v.location;
-            if (!v.locationExplicit) {
-                uint32_t bound = airAttribLocation(v.name.c_str(),
-                                                   attrib_names, MAX_ATTRIBS);
-                if (bound != UINT32_MAX)
-                    want = bound;
-            }
-            if (want == UINT32_MAX)
-                want = nextFreeAttrLoc;
-            attrLoc = want;
+            /* Same placement as the non-capture path and the reflector. */
+            uint32_t attrLoc = attrLocs[symIdx];
             const AttrExpansion ex = attrExpansion(v.type);
             const uint32_t n = ex.count;
             const MType el = ex.argType;
@@ -17034,7 +17011,6 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                     llvm::MDString::get(ctx, argName)};
                 argNodes.push_back(llvm::MDNode::get(ctx, elems));
             }
-            nextFreeAttrLoc = std::max(nextFreeAttrLoc, attrLoc);
         }
     }
     if (isTESVertex) {

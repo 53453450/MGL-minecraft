@@ -612,6 +612,65 @@ int main(int argc, const char *argv[]) {
             printf("TRANSCENDENTAL_PSO_OK\n");
         }
 
+        /* An attribute declared before a bound one must not share its
+         * location: the duplicate air.location_index aborts the compiler.
+         * `freeAttr` is unbound and declared first; `boundAttr` is bound to
+         * location 0, so the free one has to move to 1. */
+        {
+            static const char *kVSBound =
+                "#version 330 core\n"
+                "in vec3 freeAttr;\n"
+                "in vec4 boundAttr;\n"
+                "void main() { gl_Position = boundAttr + vec4(freeAttr, 0.0); }\n";
+            const char *names[32] = {NULL};
+            names[0] = "boundAttr";
+            unsigned char *bBytes = NULL;
+            size_t bSize = 0;
+            if (mglAirCompileGLSLWithReflect(kVSBound, MGL_STAGE_VERTEX, names,
+                                             &bBytes, &bSize, NULL, err,
+                                             sizeof err) != 0) {
+                fprintf(stderr, "BOUND_ATTR_COMPILE_FAIL: %s\n", err);
+                return 1;
+            }
+            id<MTLLibrary> bLib = loadLibrary(dev, bBytes, bSize, "bound-attr-vs");
+            mglShaderFree(bBytes);
+            id<MTLFunction> bFn = [bLib newFunctionWithName:@"main"];
+            MTLRenderPipelineDescriptor *bPD = [MTLRenderPipelineDescriptor new];
+            static const char *kFSPlain =
+                "#version 330 core\n"
+                "out vec4 o;\n"
+                "void main() { o = vec4(1.0); }\n";
+            unsigned char *pBytes = NULL;
+            size_t pSize = 0;
+            if (mglShaderCompileGLSL(kFSPlain, MGL_STAGE_FRAGMENT, &pBytes,
+                                     &pSize, err, sizeof err) != 0) {
+                fprintf(stderr, "BOUND_ATTR_FS_COMPILE_FAIL: %s\n", err);
+                return 1;
+            }
+            id<MTLLibrary> pLib = loadLibrary(dev, pBytes, pSize, "plain-fs");
+            mglShaderFree(pBytes);
+            bPD.vertexFunction = bFn;
+            bPD.fragmentFunction = [pLib newFunctionWithName:@"main"];
+            bPD.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+            MTLVertexDescriptor *bVD = [MTLVertexDescriptor new];
+            bVD.attributes[0].format = MTLVertexFormatFloat4;
+            bVD.attributes[0].bufferIndex = 16;
+            bVD.layouts[16].stride = 16;
+            bVD.attributes[1].format = MTLVertexFormatFloat3;
+            bVD.attributes[1].bufferIndex = 17;
+            bVD.layouts[17].stride = 12;
+            bPD.vertexDescriptor = bVD;
+            NSError *bErr = nil;
+            id<MTLRenderPipelineState> bPSO =
+                [dev newRenderPipelineStateWithDescriptor:bPD error:&bErr];
+            if (!bFn || !bPSO) {
+                fprintf(stderr, "BOUND_ATTR_PSO_FAIL: %s\n",
+                        bErr.localizedDescription.UTF8String ?: "?");
+                return 1;
+            }
+            printf("BOUND_ATTR_PSO_OK\n");
+        }
+
         /* Multiple named fragment outputs must become a struct return with one
          * air.render_target entry per explicit layout(location). */
         {

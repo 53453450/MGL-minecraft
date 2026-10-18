@@ -14,6 +14,7 @@
  */
 
 #include "mgl_air_varsym.h"
+#include "mgl_ir.h"
 #include "mgl_air_resource.h"
 #include "mgl_air_type.h"
 
@@ -49,6 +50,40 @@ uint32_t airAttribLocation(const char *name, const char *const *attrib_names,
         }
     }
     return UINT32_MAX;
+}
+
+std::vector<uint32_t> vsAttribLocations(const std::vector<VarSym> &syms,
+                                        const char *const *attrib_names,
+                                        int maxAttribs)
+{
+    std::vector<uint32_t> loc(syms.size(), UINT32_MAX);
+    std::vector<uint32_t> fixed(syms.size(), UINT32_MAX);
+    uint64_t reserved = 0;
+    for (size_t i = 0; i < syms.size(); i++) {
+        const VarSym &v = syms[i];
+        if (v.kind != VarSym::ATTR) continue;
+        uint32_t f = v.locationExplicit
+            ? v.location
+            : airAttribLocation(v.name.c_str(), attrib_names, maxAttribs);
+        fixed[i] = f;
+        if (f != UINT32_MAX)
+            reserved = mglAttribLocReserve(reserved, f,
+                                           varyingLocationSpan(v.type));
+    }
+    uint32_t next = 0;
+    for (size_t i = 0; i < syms.size(); i++) {
+        const VarSym &v = syms[i];
+        if (v.kind != VarSym::ATTR) continue;
+        const uint32_t span = varyingLocationSpan(v.type);
+        uint32_t at = fixed[i];
+        if (at == UINT32_MAX && !v.locationExplicit && v.location != UINT32_MAX)
+            at = v.location;
+        if (at == UINT32_MAX)
+            at = mglAttribLocFirstFree(reserved, next, span);
+        loc[i] = at;
+        next = std::max(next, at + span);
+    }
+    return loc;
 }
 
 void collectStageVarSyms(const MGLIRModule *mod, const MGLTranslationUnit *tu,

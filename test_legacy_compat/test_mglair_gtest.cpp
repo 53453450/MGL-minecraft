@@ -1035,6 +1035,68 @@ TEST(Reflect, VertexResources) {
     mglGLSLTranslationUnitDestroy(tu);
 }
 
+static const MGLShaderResource *findInput(const MGLShaderResourceList &list,
+                                          const char *name) {
+    for (GLuint i = 0; i < list.count; i++) {
+        if (strcmp(list.list[i].name, name) == 0) return &list.list[i];
+    }
+    return nullptr;
+}
+
+/* A bound attribute keeps its place, and an unbound one declared before it
+ * must not take that place.  Two inputs on one location make two
+ * air.vertex_input entries with the same location_index, which the Metal
+ * compiler aborts on. */
+TEST(Reflect, UnboundAttributeAvoidsBoundLocation) {
+    static const char *src =
+        "#version 460 core\n"
+        "in vec3 free_a;\n"
+        "in vec4 bound_b;\n"
+        "in vec2 free_c;\n"
+        "void main() {\n"
+        "    gl_Position = bound_b + vec4(free_a, 0.0) + vec4(free_c, 0.0, 0.0);\n"
+        "}\n";
+    const char *names[MAX_ATTRIBS] = {nullptr};
+    names[0] = "bound_b";
+    unsigned char *bytes = nullptr;
+    size_t size = 0;
+    char err[512] = {0};
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES] = {{0}};
+    ASSERT_EQ(0, mglAirCompileGLSLWithReflect(src, MGL_STAGE_VERTEX, names,
+                                              &bytes, &size, lists, err,
+                                              sizeof err))
+        << err;
+    const MGLShaderResource *a = findInput(lists[_STAGE_INPUT_RES], "free_a");
+    const MGLShaderResource *b = findInput(lists[_STAGE_INPUT_RES], "bound_b");
+    const MGLShaderResource *c = findInput(lists[_STAGE_INPUT_RES], "free_c");
+    ASSERT_TRUE(a && b && c);
+    EXPECT_EQ(0u, b->location);
+    EXPECT_EQ(1u, a->location);
+    EXPECT_EQ(2u, c->location);
+    mglShaderFree(bytes);
+    mglAirReflectDestroy(lists);
+}
+
+TEST(Reflect, UnboundAttributeKeepsDeclarationOrderWithoutBinds) {
+    static const char *src =
+        "#version 460 core\n"
+        "in vec3 first;\n"
+        "in vec4 second;\n"
+        "void main() { gl_Position = second + vec4(first, 0.0); }\n";
+    unsigned char *bytes = nullptr;
+    size_t size = 0;
+    char err[512] = {0};
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES] = {{0}};
+    ASSERT_EQ(0, mglAirCompileGLSLWithReflect(src, MGL_STAGE_VERTEX, nullptr,
+                                              &bytes, &size, lists, err,
+                                              sizeof err))
+        << err;
+    EXPECT_EQ(0u, findInput(lists[_STAGE_INPUT_RES], "first")->location);
+    EXPECT_EQ(1u, findInput(lists[_STAGE_INPUT_RES], "second")->location);
+    mglShaderFree(bytes);
+    mglAirReflectDestroy(lists);
+}
+
 TEST(Reflect, TessEvalPerVertexBuiltinDoesNotStealUserLocations) {
     static const char *src =
         "#version 460 core\n"
