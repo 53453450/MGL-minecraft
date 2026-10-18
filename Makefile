@@ -952,6 +952,22 @@ $(build_dir)/test_texture_plan: test_legacy_compat/test_texture_plan.c \
 test-texture-plan: $(build_dir)/test_texture_plan
 	$(build_dir)/test_texture_plan
 
+$(build_dir)/test_raster_orientation_plan: test_legacy_compat/test_raster_orientation_plan.c \
+	MGL/src/mgl_raster_orientation_plan.c MGL/include/mgl_raster_orientation_plan.h \
+	MGL/src/mgl_pso_format_class.c MGL/include/mgl_pso_format_class.h
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_raster_orientation_plan.c \
+		MGL/src/mgl_raster_orientation_plan.c \
+		MGL/src/mgl_pso_format_class.c \
+		-o $@
+
+test-raster-orientation-plan: $(build_dir)/test_raster_orientation_plan
+	$(build_dir)/test_raster_orientation_plan
+
 $(build_dir)/test_render_pass_attachment_plan: test_legacy_compat/test_render_pass_attachment_plan.c \
 	MGL/src/mgl_render_pass_plan.c MGL/include/mgl_render_pass_plan.h \
 	MGL/include/mgl_render_pass_clear.h
@@ -1397,6 +1413,7 @@ test-all:
 	$(MAKE) build_dir=$(build_dir) test-blit-plan
 	$(MAKE) build_dir=$(build_dir) test-render-pass-attachment-plan
 	$(MAKE) build_dir=$(build_dir) test-texture-plan
+	$(MAKE) build_dir=$(build_dir) test-raster-orientation-plan
 	$(MAKE) build_dir=$(build_dir) test-buffer-layout
 	$(MAKE) build_dir=$(build_dir) test-buffer-slots
 	$(MAKE) build_dir=$(build_dir) test-clear-stage-compile-state
@@ -1420,7 +1437,7 @@ test-all:
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
 	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-batch-path test-batch-hazard test-batch-icb test-batch-restore test-batch-issue test-process-gl-state-plan test-binding-stage test-geometry-gather test-validate-arrays-early test-tess-air test-benchmark \
 	test-buffer-plan test-reference-query test-per-vertex-signature test-render-pass-clear-plan \
-	test-render-pass-load-store test-blit-plan test-render-pass-attachment-plan test-texture-plan test-buffer-layout test-buffer-slots test-clear-stage-compile-state \
+	test-render-pass-load-store test-blit-plan test-render-pass-attachment-plan test-texture-plan test-raster-orientation-plan test-buffer-layout test-buffer-slots test-clear-stage-compile-state \
 	test-legacy-compat test-mglir test-mgl-air-type test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-air-loader-cache test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \

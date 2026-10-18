@@ -77,6 +77,7 @@
 
 #include <stdio.h>
 #include "mgl_program_backend.h"
+#include "mgl_raster_orientation_state.h"
 #include "mgl_texture_backend.h"
 
 /* Declared in Objective-C headers a .c file cannot include. */
@@ -877,10 +878,10 @@ void mglRenderPassUpdateCurrentRenderEncoder(void *renderer)
     mglRenderBindingSetCullIfNeededForOwner(
         bindingOwner,
         commandState->currentRenderEncoderOwner, cull_mode);
+    const MGLRasterOrientationPlan orientation = mglRasterOrientationForState(state);
     uint32_t _winding =
         mglMaybeInvertMTLWinding(mglMTLWindingForGL(state->var.front_face),
-                                 !mglRenderClipOriginIsLowerLeft(
-                                     (uint32_t)state->var.clip_origin));
+                                 orientation.invert_winding != 0);
     mglRenderBindingSetWindingIfNeededForOwner(
         bindingOwner,
         commandState->currentRenderEncoderOwner,
@@ -973,6 +974,7 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
     mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglRsState(&areas);
+    const MGLRasterOrientationPlan orientation = mglRasterOrientationForState(state);
     MGLCommandState *commandState = areas.command;
     void *bindingOwner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
@@ -1093,9 +1095,8 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
                         sh = (GLint)passHeight;
                     }
                 }
-                GLint metalSy = mglRenderMetalScissorY(
-                    sy, sh, (uint32_t)passHeight,
-                    (uint32_t)state->var.clip_origin);
+                GLint metalSy = mglRasterPlanScissorY(
+                    &orientation, sy, sh, (uint32_t)passHeight);
                 scissorPacked[si * 4 + 0] = (uint64_t)sx;
                 scissorPacked[si * 4 + 1] = (uint64_t)metalSy;
                 scissorPacked[si * 4 + 2] = (uint64_t)sw;
@@ -1134,10 +1135,9 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
             GLdouble vh = rawVh;
             mglRenderClampViewport(&vx, &vy, &vw, &vh, (uint32_t)passWidth,
                                    (uint32_t)passHeight);
-            GLdouble metalVy = mglRenderMetalViewportY(vy, vh,
-                                                       (uint32_t)passHeight);
-            mglRenderApplyClipOriginToViewport(&metalVy, &vh,
-                                               (uint32_t)state->var.clip_origin);
+            GLdouble metalVy = vy;
+            mglRasterPlanViewportY(&orientation, &metalVy, &vh,
+                                   (uint32_t)passHeight);
             /* Per-sample draw of a SAMPLE_SHADING FS: shift the window mapping
              * so pixel-center interpolants land on that sample's position.
              * Skip when the FS already consumes SampleID / interpolateAtSample. */
@@ -1326,11 +1326,9 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
                     mglRenderClampViewport(&avx, &avy, &avw, &avh,
                                            (uint32_t)passWidth,
                                            (uint32_t)passHeight);
-                    GLdouble metalAvy = mglRenderMetalViewportY(
-                        avy, avh, (uint32_t)passHeight);
-                    mglRenderApplyClipOriginToViewport(
-                        &metalAvy, &avh,
-                        (uint32_t)state->var.clip_origin);
+                    GLdouble metalAvy = avy;
+                    mglRasterPlanViewportY(&orientation, &metalAvy, &avh,
+                                           (uint32_t)passHeight);
                     if (emptyScissor[vi]) {
                         avw = 0.0;
                         avh = 0.0;

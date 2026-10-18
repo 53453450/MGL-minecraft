@@ -41,6 +41,7 @@
 #include <string.h>
 #include "mgl_pso_format_class.h"
 #include "mgl_texture_backend.h"
+#include "mgl_raster_orientation_state.h"
 
 /* The .m's file-local constants this TU needs (values copied verbatim from
  * MGLRenderer.m's enum). */
@@ -424,10 +425,14 @@ static void mglPdClearRectDraw(void *renderer, GLMContext glm_ctx,
     const GLint clearW = x1 - x0;
     const GLint clearH = y1 - y0;
     GLint metalY = y0;
-    if (mglRenderClipOriginIsLowerLeft((uint32_t)glState->var.clip_origin)) {
-        metalY = (GLint)passHeight - y1;
-        if (metalY < 0) {
-            metalY = 0;
+    {
+        const MGLRasterOrientationPlan orientation =
+            mglRasterOrientationForState(glState);
+        if (orientation.scissor_from_top) {
+            metalY = (GLint)passHeight - y1;
+            if (metalY < 0) {
+                metalY = 0;
+            }
         }
     }
 
