@@ -31,12 +31,15 @@ void clearStageCompileState(Program *program, int stage)
     free(compiled->metallib_cull_capture_bytes);
     compiled->metallib_cull_capture_bytes = NULL;
     compiled->metallib_cull_capture_size = 0;
+    free(compiled->metallib_bytes_tes_compute);
+    compiled->metallib_bytes_tes_compute = NULL;
+    compiled->metallib_size_tes_compute = 0;
     free(compiled->entry_point);
     compiled->entry_point = NULL;
     compiled->needs_runtime_array_size_buffer = GL_FALSE;
 
-    mglSafeReleaseMetalObj(&compiled->mtl_compute_pipeline);
     mglSafeReleaseMetalObj(&compiled->mtl_function);
+    mglSafeReleaseMetalObj(&compiled->mtl_function_compute);
     mglSafeReleaseMetalObj(&compiled->mtl_library);
     mglSafeReleaseMetalObj(&compiled->mtl_tess_capture_function);
     mglSafeReleaseMetalObj(&compiled->mtl_tess_capture_library);

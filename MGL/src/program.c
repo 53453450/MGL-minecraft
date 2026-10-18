@@ -1001,8 +1001,6 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
     mglRenderInvalidateProgramPipelines(
         ptr->pipeline_cache_instance_id);
 
-    mglSafeReleaseMetalObj((void **)&ptr->mtl_data);
-
     for(int i=0; i<_MAX_SHADER_TYPES; i++)
     {
         // CRITICAL FIX: Add NULL checks before all free/release operations to prevent double-frees
@@ -1030,7 +1028,6 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
             free(ptr->modules[i].entry_point);
             ptr->modules[i].entry_point = NULL;
         }
-        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_compute_pipeline);
         mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_function);
         mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_function_compute);
         mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_library);

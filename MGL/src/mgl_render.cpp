@@ -193,7 +193,6 @@ void mglRenderWaitForSync(GLMContext glm_ctx, Sync* sync) {
             sync->mtl_command_buffer, &state);
         mgl::releaseBridgedObject(&sync->mtl_command_buffer);
     }
-    mgl::releaseBridgedObject(&sync->mtl_event);
 }
 
 

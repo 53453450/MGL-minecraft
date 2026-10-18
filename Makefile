@@ -856,6 +856,26 @@ $(build_dir)/test_reference_query: test_legacy_compat/test_reference_query.c \
 test-reference-query: $(build_dir)/test_reference_query
 	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_reference_query
 
+$(build_dir)/test_clear_stage_compile_state: test_legacy_compat/test_clear_stage_compile_state.c \
+	MGL/src/mgl_program_reflection.c MGL/include/mgl_program_reflection.h \
+	MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_glsl_cpp.c \
+	MGL/src/mgl_metal_ref.c MGL/include/mgl_metal_ref.h \
+	MGL/src/mgl_uniform_reflection.c MGL/src/mgl_binding_policy.c
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_clear_stage_compile_state.c \
+		MGL/src/mgl_program_reflection.c MGL/src/mgl_metal_ref.c \
+		MGL/src/mgl_uniform_reflection.c MGL/src/mgl_binding_policy.c \
+		MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_glsl_cpp.c \
+		-framework CoreFoundation -framework Foundation -framework Metal \
+		-o $@
+
+test-clear-stage-compile-state: $(build_dir)/test_clear_stage_compile_state
+	$(build_dir)/test_clear_stage_compile_state
+
 $(build_dir)/test_per_vertex_signature: test_legacy_compat/test_per_vertex_signature.c \
 	MGL/src/mgl_program_reflection.c MGL/include/mgl_program_reflection.h \
 	MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_glsl_cpp.c \
@@ -1379,6 +1399,7 @@ test-all:
 	$(MAKE) build_dir=$(build_dir) test-texture-plan
 	$(MAKE) build_dir=$(build_dir) test-buffer-layout
 	$(MAKE) build_dir=$(build_dir) test-buffer-slots
+	$(MAKE) build_dir=$(build_dir) test-clear-stage-compile-state
 	$(MAKE) build_dir=$(build_dir) test-binding-stage
 	$(MAKE) build_dir=$(build_dir) test-geometry-gather
 	$(MAKE) build_dir=$(build_dir) test-validate-arrays-early
@@ -1399,7 +1420,7 @@ test-all:
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
 	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-batch-path test-batch-hazard test-batch-icb test-batch-restore test-batch-issue test-process-gl-state-plan test-binding-stage test-geometry-gather test-validate-arrays-early test-tess-air test-benchmark \
 	test-buffer-plan test-reference-query test-per-vertex-signature test-render-pass-clear-plan \
-	test-render-pass-load-store test-blit-plan test-render-pass-attachment-plan test-texture-plan test-buffer-layout test-buffer-slots \
+	test-render-pass-load-store test-blit-plan test-render-pass-attachment-plan test-texture-plan test-buffer-layout test-buffer-slots test-clear-stage-compile-state \
 	test-legacy-compat test-mglir test-mgl-air-type test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-air-loader-cache test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \

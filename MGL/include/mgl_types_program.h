@@ -181,7 +181,6 @@ typedef struct MGLShaderModule_t {
     void *mtl_cull_capture_library;
     /* Cached Metal function for metallib_bytes_tes_compute (TES kernel). */
     void *mtl_function_compute;
-    void *mtl_compute_pipeline;
     GLboolean needs_runtime_array_size_buffer;
 } MGLShaderModule;
 /* Compatibility aliases for the historical SPIR-V-era names. */
@@ -479,7 +478,6 @@ typedef struct Program_t {
     GLuint active_uniform_cache_count;
     GLint active_uniform_cache_max_name_length;
     GLboolean active_uniform_cache_valid;
-    void *mtl_data;
     char *debug_label;
 } Program;
 

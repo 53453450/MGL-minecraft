@@ -2616,7 +2616,7 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
         return 1;
     }
     mglRenderWaitForSync(NULL, &sync);
-    if (sync.mtl_command_buffer || sync.mtl_event ||
+    if (sync.mtl_command_buffer ||
         mglRenderGetSyncStatus(NULL, &sync) != GL_SIGNALED) {
         fprintf(stderr, "FAIL: sync wait did not release/signaled state\n");
         mglRenderReleaseSync(NULL, &sync);
@@ -2624,10 +2624,12 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
     }
 
     Sync releaseOnly = {};
-    id<MTLEvent> event = [device newEvent];
-    if (event) releaseOnly.mtl_event = (void *)CFBridgingRetain(event);
+    id<MTLCommandBuffer> unsubmitted = [queue commandBuffer];
+    if (unsubmitted) {
+        releaseOnly.mtl_command_buffer = (void *)CFBridgingRetain(unsubmitted);
+    }
     mglRenderReleaseSync(NULL, &releaseOnly);
-    if (releaseOnly.mtl_event || releaseOnly.mtl_command_buffer) {
+    if (releaseOnly.mtl_command_buffer) {
         fprintf(stderr, "FAIL: sync release did not clear resources\n");
         return 1;
     }
@@ -2663,7 +2665,7 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
         return 1;
     }
     mglRenderWaitForSync(&context, &captured);
-    if (captured.mtl_command_buffer || captured.mtl_event ||
+    if (captured.mtl_command_buffer ||
         mglRenderGetSyncStatus(&context, &captured) != GL_SIGNALED) {
         fprintf(stderr, "FAIL: captured sync wait/release\n");
         mglRenderDetachRuntimeOwners(&context);

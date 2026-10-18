@@ -169,7 +169,6 @@ typedef struct Sampler_t {
 
 typedef struct Texture_t {
     GLuint dirty_bits;
-    GLuint dirty_on_gpu;
     GLboolean is_render_target;
     GLenum access;
     GLboolean immutable_storage;
@@ -180,7 +179,6 @@ typedef struct Texture_t {
     GLuint index;
     GLuint mipmapped;
     GLboolean genmipmaps;
-    GLboolean mtl_requires_private_storage; // depth, multi sample
     TextureParameter params;
 
     // base level params

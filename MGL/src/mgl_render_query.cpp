@@ -270,7 +270,6 @@ void mglRenderGetSync(GLMContext glm_ctx, Sync* sync) {
      * backend, and doing it before the lease test keeps the early-out from
      * skipping the release. */
     mgl::releaseBridgedObject(&sync->mtl_command_buffer);
-    mgl::releaseBridgedObject(&sync->mtl_event);
     MGLBackendLeaseScope lease(glm_ctx);
     if (!lease.ok()) return;
     MGLCommandBufferOwner* command_owner =

@@ -485,7 +485,6 @@ void mglRenderReleaseSync(GLMContext glm_ctx, Sync* sync) {
     (void)glm_ctx;
     if (!sync) return;
     mgl::releaseBridgedObject(&sync->mtl_command_buffer);
-    mgl::releaseBridgedObject(&sync->mtl_event);
 }
 
 int mglRenderCreateDepthStencilState(void* depth_stencil_descriptor,

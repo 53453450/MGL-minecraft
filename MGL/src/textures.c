@@ -1875,12 +1875,10 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
     tex->rgb10a2_shadow_height = 0u;
 
     tex->dirty_bits = 0;
-    tex->dirty_on_gpu = 0;
     tex->is_render_target = GL_FALSE;
     tex->immutable_storage = GL_FALSE;
     tex->mipmapped = 0;
     tex->genmipmaps = GL_FALSE;
-    tex->mtl_requires_private_storage = GL_FALSE;
     tex->internalformat = 0;
     tex->compressed_internalformat = 0;
     tex->width = 0;
@@ -2156,7 +2154,6 @@ static bool mglTextureStorageMultisampleMetadata(GLMContext ctx,
         tex->view_num_levels = 1u;
         tex->view_num_layers = is_array ? (GLuint)depth : 1u;
     }
-    tex->mtl_requires_private_storage = GL_TRUE;
     tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
 
@@ -3206,20 +3203,6 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
                 depth,
                 pixel_size);
         ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
-    }
-
-    switch(mtlFormatForGLInternalFormat(internalformat))
-    {
-        case MGLPixelFormatDepth16Unorm:
-        case MGLPixelFormatDepth32Float:
-        case MGLPixelFormatDepth24Unorm_Stencil8:
-        case MGLPixelFormatDepth32Float_Stencil8:
-            tex->mtl_requires_private_storage = true;
-            break;
-
-        default:
-            tex->mtl_requires_private_storage = false;
-            break;
     }
 
     bool has_upload_source = (pixels != NULL) || (STATE(buffers[_PIXEL_UNPACK_BUFFER]) != NULL);

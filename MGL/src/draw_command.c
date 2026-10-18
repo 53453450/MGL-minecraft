@@ -4264,7 +4264,6 @@ static bool mglInitializeStreamMergedBatch(GLMContext ctx,
      * Metal object through a callback; the live VAO still owns it.  Only
      * nullify the pointer so batch replay doesn't reference the live VAO's
      * Metal data. */
-    vao->mtl_data = NULL;
     vao->dirty_bits |= DIRTY_VAO_ATTRIB | DIRTY_VAO_BUFFER_BASE;
     vao->element_array.buffer = indexBuffer;
 
