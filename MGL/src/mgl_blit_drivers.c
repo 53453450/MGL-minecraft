@@ -1133,17 +1133,6 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
  * reports these C entries.
  */
 
-/* The .m's helper from MGLRenderer+Blit_Private.h, restated for this TU. */
-/* Twin of the MGLRenderer+Blit_Private.h static inline (version match alone is
- * not freshness: dirty mips must be empty too). */
-static int mglBdGLSampledCopyContentFresh(const Texture *tex)
-{
-    return tex != NULL && tex->mtl_gl_sampled_data != NULL &&
-           tex->mtl_gl_sampled_write_version ==
-               tex->mtl_render_target_write_version &&
-           tex->mtl_gl_sampled_dirty_mip_mask == 0u;
-}
-
 /* MGLRenderer_Private.h declares this BOOL (signed char on macOS). */
 extern signed char mglEnvFlagEnabled(const char *name);
 
@@ -3104,35 +3093,13 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
         }
     }
 
-    /* When the source texture is a render target and its sampled copy isn't
-     * current, force the blit through the render-pass (scaled) path to ensure
-     * proper Metal synchronization.  On tile-based Apple GPUs a
-     * MTLBlitCommandEncoder may read stale tile memory if the render target was
-     * recently written by a preceding render pass, leading to intermittent GUI
-     * icon / entity rendering errors. */
-    int needs_render_target_sync_blit = 0;
-    if (read_texture_object && read_texture_object->is_render_target &&
-        read_texture_object->mtl_render_target_write_version > 0u) {
-        if (read_texture_object->mtl_gl_sampled_write_version !=
-            read_texture_object->mtl_render_target_write_version) {
-            needs_render_target_sync_blit = 1;
-            static uint64_t s_rt_sync_blit_log_count = 0;
-            uint64_t hit = ++s_rt_sync_blit_log_count;
-            if (hit <= 32ull || (hit % 256ull) == 0ull) {
-                fprintf(stderr,
-                        "MGL RT-SYNC-BLIT read-tex=%u rtVer=%u sampledVer=%u "
-                        "size=%lux%lu hit=%llu\n",
-                        (unsigned)read_texture_object->name,
-                        (unsigned)
-                            read_texture_object->mtl_render_target_write_version,
-                        (unsigned)read_texture_object
-                            ->mtl_gl_sampled_write_version,
-                        (unsigned long)mglBdTextureInfo(readtexid).width,
-                        (unsigned long)mglBdTextureInfo(readtexid).height,
-                        (unsigned long long)hit);
-            }
-        }
-    }
+    /* A source that has been rendered into goes through the render-pass
+     * (scaled) path: a MTLBlitCommandEncoder may read stale tile memory on
+     * tile-based Apple GPUs when the render target was written by a preceding
+     * pass. */
+    const int needs_render_target_sync_blit =
+        read_texture_object && read_texture_object->is_render_target &&
+        read_texture_object->mtl_render_target_write_version > 0u;
 
     if (read_subresource.level >=
             mglBdTextureInfo(readtexid).mipmap_level_count ||
@@ -3283,12 +3250,7 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
                         ? (unsigned)draw_texture_object
                               ->mtl_render_target_write_version
                         : 0u,
-                    read_texture_object
-                        ? (unsigned)read_texture_object->mtl_gl_sampled_write_version
-                        : 0u,
-                    draw_texture_object
-                        ? (unsigned)draw_texture_object->mtl_gl_sampled_write_version
-                        : 0u,
+                    0u, 0u,
                     readtexid,
                     (unsigned long)mglBdTextureInfo(readtexid).pixel_format,
                     (unsigned long)src_tex_w, (unsigned long)src_tex_h, drawtexid,

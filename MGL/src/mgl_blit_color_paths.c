@@ -41,6 +41,7 @@
 #include "mgl_render.h"            /* compute encoders, blit encodes */
 #include "mgl_blit_plan.h"         /* blit plan helpers */
 #include "mgl_blit_pipelines.h"    /* mglBlitMsaaIntegerResolvePipeline */
+#include "mgl_rt_sync.h"          /* mglRenderTargetMarkGPUAuthoritative */
 #include "mgl_readback.h"          /* integer-color format predicates */
 #include "mgl_texture_compat.h"   /* mglMarkTextureLevelRenderTargetWritten */
 #include "mgl_state_compat.h"   /* mglNearlyEqual */

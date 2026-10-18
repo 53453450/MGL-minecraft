@@ -236,8 +236,6 @@ bool mglBindingStateBindStorageImagesForStage(void *renderer, int shader_stage,
             if (plan.action == MGL_SI_ACTION_ENSURE_TEX) {
                 if (ptr) {
                     RETURN_FALSE_ON_FAILURE(mglRendererBindMTLTexture(renderer, ptr));
-                    RETURN_FALSE_ON_FAILURE(
-                        mglBlitUnflipRenderTargetStorageForImageAccess(renderer, ptr));
                 }
                 continue;
             }

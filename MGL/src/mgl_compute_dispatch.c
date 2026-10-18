@@ -175,9 +175,7 @@ bool mglComputeRunDispatchOrchestrationLocked(
     for (size_t unit = 0; unit < TEXTURE_UNITS; unit++) {
         Texture *imageTexture = state->image_units[unit].tex;
         if (imageTexture) {
-            if (!mglRendererBindMTLTexture(renderer, imageTexture) ||
-                !mglBlitUnflipRenderTargetStorageForImageAccess(renderer,
-                                                                imageTexture)) {
+            if (!mglRendererBindMTLTexture(renderer, imageTexture)) {
                 return false;
             }
         }

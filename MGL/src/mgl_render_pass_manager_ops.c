@@ -15,6 +15,7 @@
 
 #include "mgl_render_pass_sync_ops.h"
 #include "mgl_render_pass_manager_ops.h"
+#include "mgl_rt_sync.h"   /* mglRenderTargetMarkGPUAuthoritative */
 #include "mgl_render_encoder_ops.h"
 #include "mgl_attachment_binding.h"   /* mglRendererBindFramebufferAttachmentTextures */
 #include "mgl_buffer_map.h"           /* map / dirty base buffers */
@@ -342,8 +343,6 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
         mglRendererSetCommandBufferHasWork(renderer, 1);
     }
 
-    Framebuffer *endedFramebuffer = cs->renderPassFramebuffer;
-
     static uint64_t s_renderPassEndLogCount = 0;
     uint64_t hit = ++s_renderPassEndLogCount;
     if (hit <= 128ull || (hit % 1024ull) == 0ull) {
@@ -366,13 +365,6 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
         mglClearFragmentTraceBindingsForRenderer(renderer,
                                                  "end_render_encoding_exception");
         mglRenderPassManagerClearRenderPassIdentity(renderer);
-    }
-
-    /* A later batch may sample this render target before the command buffer is
-     * submitted, so refresh its GL-visible copy immediately. */
-    if (endedFramebuffer) {
-        mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer(
-            renderer, endedFramebuffer, "end_render_pass");
     }
 }
 
