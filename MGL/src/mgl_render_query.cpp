@@ -113,9 +113,11 @@ int mglRenderQueryCapability(void* device_ref,
 
 unsigned int mglRenderGetSyncStatus(GLMContext glm_ctx, Sync* sync) {
     (void)glm_ctx;
-    if (!sync || !sync->mtl_command_buffer) return GL_SIGNALED;
+    if (!sync || !sync->backend || !sync->backend->command_buffer) {
+        return GL_SIGNALED;
+    }
     MTL::CommandBuffer* commandBuffer =
-        static_cast<MTL::CommandBuffer*>(sync->mtl_command_buffer);
+        static_cast<MTL::CommandBuffer*>(sync->backend->command_buffer);
     return commandBuffer->status() == MTL::CommandBufferStatusCompleted
         ? GL_SIGNALED
         : GL_UNSIGNALED;
@@ -269,7 +271,7 @@ void mglRenderGetSync(GLMContext glm_ctx, Sync* sync) {
     /* Drop the previously bridged objects first: this does not touch the
      * backend, and doing it before the lease test keeps the early-out from
      * skipping the release. */
-    mgl::releaseBridgedObject(&sync->mtl_command_buffer);
+    mglRenderReleaseSync(glm_ctx, sync);
     MGLBackendLeaseScope lease(glm_ctx);
     if (!lease.ok()) return;
     MGLCommandBufferOwner* command_owner =
@@ -307,8 +309,13 @@ void mglRenderGetSync(GLMContext glm_ctx, Sync* sync) {
 
     MTL::CommandBuffer* command =
         static_cast<MTL::CommandBuffer*>(command_buffer);
-    command->retain();
-    sync->mtl_command_buffer = command;
+    /* Without state to hold it the command buffer still commits; the sync
+     * then reads as signaled. */
+    sync->backend = new (std::nothrow) MGLSyncBackend();
+    if (sync->backend) {
+        command->retain();
+        sync->backend->command_buffer = command;
+    }
 
     MGLRenderCommandBufferTransaction transaction = {};
     int result = mglRenderCommitCommandBufferTransaction(
@@ -320,7 +327,7 @@ void mglRenderGetSync(GLMContext glm_ctx, Sync* sync) {
     if (result != 0 &&
         transaction.result !=
             MGL_RENDER_COMMAND_BUFFER_TRANSACTION_COMMITTED) {
-        mgl::releaseBridgedObject(&sync->mtl_command_buffer);
+        mglRenderReleaseSync(glm_ctx, sync);
     }
 }
 

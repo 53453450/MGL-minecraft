@@ -13,6 +13,7 @@
 // values. All MTL::Buffer creation, contents access, cache ownership, and
 // release operations live in this translation unit.
 
+#include "mgl_backend_objects.h"
 #include "mgl_metal.h"
 #include "mgl_index_buffer.h"
 #include "mgl_buffer_map.h"   /* mglNoteBufferEncoded */
@@ -455,27 +456,32 @@ MGLIndexMetalHandle mglPreparedElementIndexBuffer(
     if (!source || source_count == 0u) return nullptr;
     const bool eligible = gl_buffer && gl_buffer->data.buffer_data &&
         !(gl_buffer->storage_flags & GL_MAP_PERSISTENT_BIT);
-    if (eligible && gl_buffer->mtl_uint16_expanded_data &&
-        gl_buffer->mtl_uint16_expanded_src_hash == gl_buffer->last_write_src_hash &&
-        gl_buffer->mtl_uint16_expanded_src_hash != 0u &&
-        gl_buffer->mtl_uint16_expanded_byte_count == source_count) {
+    MGLBufferBackend *cache = gl_buffer ? gl_buffer->backend : nullptr;
+    if (eligible && cache && cache->uint16_expanded_data &&
+        cache->uint16_expanded_src_hash == gl_buffer->last_write_src_hash &&
+        cache->uint16_expanded_src_hash != 0u &&
+        cache->uint16_expanded_byte_count == source_count) {
         if (io_offset) {
             if (source_offset > SIZE_MAX / sizeof(uint16_t)) return nullptr;
             *io_offset = source_offset * sizeof(uint16_t);
         }
         if (out_type) *out_type = 0u;
-        return gl_buffer->mtl_uint16_expanded_data;
+        return cache->uint16_expanded_data;
     }
     void *expanded = mglNewUInt16IndexBufferFromUInt8(device, source, source_count);
     if (!expanded) return nullptr;
-    if (eligible) {
-        if (gl_buffer->mtl_uint16_expanded_data) {
-            releaseObject(gl_buffer->mtl_uint16_expanded_data);
+    if (eligible && !cache) {
+        cache = new (std::nothrow) MGLBufferBackend();
+        gl_buffer->backend = cache;
+    }
+    if (eligible && cache) {
+        if (cache->uint16_expanded_data) {
+            releaseObject(cache->uint16_expanded_data);
         }
         static_cast<NS::Object *>(expanded)->retain();
-        gl_buffer->mtl_uint16_expanded_data = expanded;
-        gl_buffer->mtl_uint16_expanded_src_hash = gl_buffer->last_write_src_hash;
-        gl_buffer->mtl_uint16_expanded_byte_count = source_count;
+        cache->uint16_expanded_data = expanded;
+        cache->uint16_expanded_src_hash = gl_buffer->last_write_src_hash;
+        cache->uint16_expanded_byte_count = source_count;
     }
     if (io_offset) {
         if (source_offset > SIZE_MAX / sizeof(uint16_t)) return nullptr;

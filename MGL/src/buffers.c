@@ -352,13 +352,8 @@ void mglReleaseBufferStorage(Buffer *buf)
         }
     }
 
-    /* release cached UInt16 expanded index buffer */
-    mglSafeReleaseMetalObj(&buf->mtl_uint16_expanded_data);
-    buf->mtl_uint16_expanded_src_hash = 0ull;
-    buf->mtl_uint16_expanded_byte_count = 0u;
-
-    /* release the backend-owned CoW snapshot pool */
-    mglRenderReleaseBufferCowPool(buf);
+    /* release the backend state: CoW snapshot pool, expanded index copy */
+    mglRenderReleaseBufferBackend(buf);
 
     /* A no-copy MTLBuffer may remain alive in an in-flight command buffer.
      * Its deallocator owns the old VM range after this point. */

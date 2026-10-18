@@ -15,6 +15,7 @@
 #include <objc/runtime.h>
 
 #include "mgl_backend_lease_scope.h"
+#include "mgl_backend_objects.h"
 #include "mgl_renderer_backend.h"
 #include "mgl_render_api_lifecycle.h"
 #include "mgl_render_api_binding.h"
@@ -442,11 +443,16 @@ inline bool vertexConversionSource(Buffer* source,
 
 inline BufferCowPool* bufferCowPool(Buffer* owner, bool create) {
     if (!owner) return nullptr;
+    if (!owner->backend) {
+        if (!create) return nullptr;
+        owner->backend = new (std::nothrow) MGLBufferBackend();
+        if (!owner->backend) return nullptr;
+    }
     BufferCowPool* pool =
-        static_cast<BufferCowPool*>(owner->mtl_cow_pool);
+        static_cast<BufferCowPool*>(owner->backend->cow_pool);
     if (!pool && create) {
         pool = new (std::nothrow) BufferCowPool();
-        owner->mtl_cow_pool = pool;
+        owner->backend->cow_pool = pool;
     }
     return pool;
 }

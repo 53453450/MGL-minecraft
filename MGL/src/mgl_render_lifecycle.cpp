@@ -483,8 +483,10 @@ int mglRenderLoadAIRMainFunction(const unsigned char* bytes,
 
 void mglRenderReleaseSync(GLMContext glm_ctx, Sync* sync) {
     (void)glm_ctx;
-    if (!sync) return;
-    mgl::releaseBridgedObject(&sync->mtl_command_buffer);
+    if (!sync || !sync->backend) return;
+    mgl::releaseBridgedObject(&sync->backend->command_buffer);
+    delete sync->backend;
+    sync->backend = nullptr;
 }
 
 int mglRenderCreateDepthStencilState(void* depth_stencil_descriptor,

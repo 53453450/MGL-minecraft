@@ -44,12 +44,13 @@
 #endif
 #include "glm_params.h"
 
+struct MGLSyncBackend;
+
 typedef struct __GLsync {
     GLsizei name;
-    /* Retained Metal command buffer capturing all GL commands issued before the
-     * fence insertion point. The C++ sync path blocks on its completion. Stored as
-     * void* (CFBridgingRetain/Release) since this struct is used from plain C. */
-    void *mtl_command_buffer;
+    /* Backend state (the command buffer that holds every GL command issued
+     * before the fence).  Opaque here; see mgl_backend_objects.h. */
+    struct MGLSyncBackend *backend;
     /* reference count for deferred sync lifetime management.
      * - newSync sets refcount=1 (caller's GLsync handle)
      * - mglClientWaitSync/mglWaitSync retain at entry, release at exit, so a

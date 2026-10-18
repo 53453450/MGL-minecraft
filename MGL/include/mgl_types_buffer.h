@@ -138,6 +138,8 @@ typedef enum MGLBufferInitSource_t {
     kInitMapWrite
 } MGLBufferInitSource;
 
+struct MGLBufferBackend;
+
 typedef struct Buffer_t {
     GLuint name;
     GLenum target;
@@ -171,36 +173,10 @@ typedef struct Buffer_t {
     GLsizeiptr last_write_size;
     const void *last_write_src_ptr;
     uint64_t last_write_src_hash;
-    /* Cached UInt8→UInt16 expanded index buffer.
-     *
-     * Metal does not support GL_UNSIGNED_BYTE indices, so the element buffer
-     * must be expanded to UInt16 per draw.  This cache stores the expanded
-     * MTLBuffer keyed on (last_write_src_hash, sourceByteCount) so that
-     * unchanged EBOs skip the calloc + newBufferWithBytes + free on subsequent
-     * draws.
-     *
-     * Invalidation: every GL write path (glBufferData, glBufferSubData,
-     * glCopyBufferSubData, glMapBuffer unmap, glFlushMappedBufferRange) calls
-     * mglBufferMarkWrite which updates last_write_src_hash.  The cache-hit
-     * check compares the stored hash against the current last_write_src_hash.
-     *
-     * Safety exclusions (skip cache, always rebuild):
-     * - Persistent-mapped buffers (storage_flags & GL_MAP_PERSISTENT_BIT):
-     *   the app can modify contents through the persistent pointer without
-     *   any GL call, so last_write_src_hash would not update.
-     * - Buffers without CPU-side buffer_data: the source bytes come from a
-     *   Metal MTLBuffer whose contents may be modified by the GPU without
-     *   updating the hash.
-     *
-     * The stored pointer is retained via CFRetain (not CFBridgingRetain) so
-     * that ARC retains its own reference in the .m file; released via
-     * mglSafeReleaseMetalObj in the .c file (CFRelease under non-ARC). */
-    void       *mtl_uint16_expanded_data;       /* id<MTLBuffer> retained via CFRetain */
-    uint64_t    mtl_uint16_expanded_src_hash;
-    size_t      mtl_uint16_expanded_byte_count;
     /* Cached drawElements index-range scan (min/max) used by the drawElements
      * VBO-range guard.  Keyed on last_write_src_hash + (offset,count,type,
-     * restart) — the same invalidation contract as mtl_uint16_expanded_* :
+     * restart) — the same invalidation contract as the backend's expanded
+     * index copy (MGLBufferBackend):
      * only valid while the hash matches AND the bytes came from CPU-side
      * buffer_data (GPU-own buffers and persistent maps can change without a
      * GL call).  Skips the O(count) scan on every draw of unchanged EBOs. */
@@ -213,9 +189,10 @@ typedef struct Buffer_t {
     uint32_t    scan_cache_restart_index;
     uint8_t     scan_cache_restart_enabled;
     uint8_t     scan_cache_valid;
-    /* Backend-owned CoW pool. This is an opaque C++ allocation, not a CF object;
-     * release it only through mglRenderReleaseBufferCowPool. */
-    void *mtl_cow_pool;
+    /* Backend state kept beside the buffer's own storage (CoW snapshot pool,
+     * expanded index copy).  Opaque here; see mgl_backend_objects.h.  Release
+     * only through mglRenderReleaseBufferBackend. */
+    struct MGLBufferBackend *backend;
     void *mapped_ptr;
     GLboolean transient_batch_buffer;
     /* Program-owned storage for a default-block (glUniform*) location.  Small

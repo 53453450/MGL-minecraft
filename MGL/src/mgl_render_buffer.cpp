@@ -662,12 +662,15 @@ void mglRenderReleaseBufferMetalData(GLMContext glm_ctx, Buffer* buffer) {
     mgl::releaseBridgedObject(&buffer->data.mtl_data);
 }
 
-void mglRenderReleaseBufferCowPool(Buffer* buffer) {
-    if (!buffer || !buffer->mtl_cow_pool) return;
-    mgl::BufferCowPool* pool =
-        static_cast<mgl::BufferCowPool*>(buffer->mtl_cow_pool);
-    buffer->mtl_cow_pool = nullptr;
-    delete pool;
+void mglRenderReleaseBufferBackend(Buffer* buffer) {
+    if (!buffer || !buffer->backend) return;
+    MGLBufferBackend* backend = buffer->backend;
+    buffer->backend = nullptr;
+    delete static_cast<mgl::BufferCowPool*>(backend->cow_pool);
+    if (backend->uint16_expanded_data) {
+        static_cast<NS::Object*>(backend->uint16_expanded_data)->release();
+    }
+    delete backend;
 }
 
 Buffer* mglRenderAcquirePackedStructBuffer(const void* data,

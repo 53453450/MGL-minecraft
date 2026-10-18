@@ -11,6 +11,7 @@
 #include <chrono>
 #include <thread>
 
+#include "mgl_backend_objects.h"
 #include "mgl_render.h"
 #include "mgl_renderer_backend.h"
 #include "mgl_air_loader.h"
@@ -486,7 +487,7 @@ static int verifyBufferBinding(void) {
     id<MTLBuffer> firstCowBuffer =
         (__bridge id<MTLBuffer>)buffer.data.mtl_data;
     if (s_legacyBufferSubDataCount != 0 ||
-        buffer.data.mtl_data == initialBacking || !buffer.mtl_cow_pool ||
+        buffer.data.mtl_data == initialBacking || !(buffer.backend && buffer.backend->cow_pool) ||
         source[0] != cowValue || !firstCowBuffer.contents ||
         memcmp(firstCowBuffer.contents, source, sizeof(source)) != 0) {
         fprintf(stderr, "FAIL: Metal-cpp split-shadow COW snapshot\n");
@@ -516,12 +517,12 @@ static int verifyBufferBinding(void) {
         return 1;
     }
     mglRenderReleaseBufferMetalData(NULL, &buffer);
-    mglRenderReleaseBufferCowPool(&buffer);
+    mglRenderReleaseBufferBackend(&buffer);
     if (buffer.data.mtl_data != NULL) {
         fprintf(stderr, "FAIL: C++ buffer release did not clear backing\n");
         return 1;
     }
-    if (buffer.mtl_cow_pool != NULL) {
+    if ((buffer.backend && buffer.backend->cow_pool)) {
         fprintf(stderr, "FAIL: C++ buffer COW pool release did not clear state\n");
         return 1;
     }
@@ -564,7 +565,7 @@ static int verifyBufferBinding(void) {
             return 1;
         }
         mglRenderReleaseBufferMetalData(NULL, &capped);
-        mglRenderReleaseBufferCowPool(&capped);
+        mglRenderReleaseBufferBackend(&capped);
     }
 
     /* The rewrite pool may only hand back a snapshot whose Metal capacity
@@ -637,7 +638,7 @@ static int verifyBufferBinding(void) {
             return 1;
         }
         mglRenderReleaseBufferMetalData(NULL, &resized);
-        mglRenderReleaseBufferCowPool(&resized);
+        mglRenderReleaseBufferBackend(&resized);
     }
 
     Buffer direct = {};
@@ -683,7 +684,7 @@ static int verifyBufferBinding(void) {
             message, sizeof(message)) !=
             MGL_RENDER_BUFFER_OPERATION_HANDLED ||
         flushBuffer.data.mtl_data == flushInitialBacking ||
-        !flushBuffer.mtl_cow_pool) {
+        !(flushBuffer.backend && flushBuffer.backend->cow_pool)) {
         fprintf(stderr, "FAIL: C++ mapped range COW flush: %s\n",
                 message[0] ? message : "unknown");
         return 1;
@@ -696,7 +697,7 @@ static int verifyBufferBinding(void) {
         return 1;
     }
     mglRenderReleaseBufferMetalData(NULL, &flushBuffer);
-    mglRenderReleaseBufferCowPool(&flushBuffer);
+    mglRenderReleaseBufferBackend(&flushBuffer);
 
     Buffer plainUniform = {};
     uint32_t uniformValue = 101u;
@@ -751,7 +752,7 @@ static int verifyBufferBinding(void) {
         return 1;
     }
     mglRenderReleaseBufferMetalData(NULL, &smallDirty);
-    mglRenderReleaseBufferCowPool(&smallDirty);
+    mglRenderReleaseBufferBackend(&smallDirty);
 
     uint32_t largeSource[1024] = {};
     largeSource[0] = 121u;
@@ -787,7 +788,7 @@ static int verifyBufferBinding(void) {
         return 1;
     }
     mglRenderReleaseBufferMetalData(NULL, &largeDirty);
-    mglRenderReleaseBufferCowPool(&largeDirty);
+    mglRenderReleaseBufferBackend(&largeDirty);
 
     const size_t noCopyLength = 16384u;
     vm_address_t noCopyAddress = 0;
@@ -2607,7 +2608,8 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
     if (!queue || !commandBuffer) return 1;
 
     Sync sync = {};
-    sync.mtl_command_buffer = (void *)CFBridgingRetain(commandBuffer);
+    sync.backend = new MGLSyncBackend();
+    sync.backend->command_buffer = (void *)CFBridgingRetain(commandBuffer);
     [commandBuffer commit];
     unsigned int status = mglRenderGetSyncStatus(NULL, &sync);
     if (status != GL_SIGNALED && status != GL_UNSIGNALED) {
@@ -2616,7 +2618,7 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
         return 1;
     }
     mglRenderWaitForSync(NULL, &sync);
-    if (sync.mtl_command_buffer ||
+    if (sync.backend ||
         mglRenderGetSyncStatus(NULL, &sync) != GL_SIGNALED) {
         fprintf(stderr, "FAIL: sync wait did not release/signaled state\n");
         mglRenderReleaseSync(NULL, &sync);
@@ -2626,10 +2628,11 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
     Sync releaseOnly = {};
     id<MTLCommandBuffer> unsubmitted = [queue commandBuffer];
     if (unsubmitted) {
-        releaseOnly.mtl_command_buffer = (void *)CFBridgingRetain(unsubmitted);
+        releaseOnly.backend = new MGLSyncBackend();
+        releaseOnly.backend->command_buffer = (void *)CFBridgingRetain(unsubmitted);
     }
     mglRenderReleaseSync(NULL, &releaseOnly);
-    if (releaseOnly.mtl_command_buffer) {
+    if (releaseOnly.backend) {
         fprintf(stderr, "FAIL: sync release did not clear resources\n");
         return 1;
     }
@@ -2654,7 +2657,7 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
     void *next = mglRenderCommandBufferOwnerGetCurrent(commandOwner);
     unsigned int capturedStatus =
         mglRenderGetSyncStatus(&context, &captured);
-    if (!captured.mtl_command_buffer || !next || next == current ||
+    if (!(captured.backend && captured.backend->command_buffer) || !next || next == current ||
         (capturedStatus != GL_SIGNALED &&
          capturedStatus != GL_UNSIGNALED)) {
         fprintf(stderr, "FAIL: sync capture/owner rotation\n");
@@ -2665,7 +2668,7 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
         return 1;
     }
     mglRenderWaitForSync(&context, &captured);
-    if (captured.mtl_command_buffer ||
+    if (captured.backend ||
         mglRenderGetSyncStatus(&context, &captured) != GL_SIGNALED) {
         fprintf(stderr, "FAIL: captured sync wait/release\n");
         mglRenderDetachRuntimeOwners(&context);

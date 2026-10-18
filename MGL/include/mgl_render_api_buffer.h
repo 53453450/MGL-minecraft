@@ -107,7 +107,9 @@ int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length);
 
 void mglRenderReleaseBufferMetalData(GLMContext glm_ctx, Buffer *buffer);
 
-void mglRenderReleaseBufferCowPool(Buffer *buffer);
+/* Release the backend state kept for `buffer` (CoW snapshot pool, expanded
+ * index copy) and free it; the buffer keeps no backend state afterwards. */
+void mglRenderReleaseBufferBackend(Buffer *buffer);
 
 void mglRenderBufferSubData(GLMContext glm_ctx,
                                Buffer *buffer,

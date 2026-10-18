@@ -187,12 +187,13 @@ void mglRenderDeleteMTLObj(GLMContext glm_ctx, void* object) {
 void mglRenderWaitForSync(GLMContext glm_ctx, Sync* sync) {
     (void)glm_ctx;
     if (!sync) return;
-    if (sync->mtl_command_buffer) {
+    if (sync->backend && sync->backend->command_buffer) {
         MGLRenderCommandBufferState state = {};
         (void)mglRenderWaitCommandBufferState(
-            sync->mtl_command_buffer, &state);
-        mgl::releaseBridgedObject(&sync->mtl_command_buffer);
+            sync->backend->command_buffer, &state);
     }
+    /* Once the wait is over the sync keeps nothing for the backend. */
+    mglRenderReleaseSync(glm_ctx, sync);
 }
 
 
@@ -208,7 +209,7 @@ void mglRenderFlush(GLMContext glm_ctx, bool finish) {
     Sync boundary = {};
     mglRenderGetSync(glm_ctx, &boundary);
     if (finish) {
-        if (boundary.mtl_command_buffer) {
+        if (boundary.backend && boundary.backend->command_buffer) {
             mglRenderWaitForSync(glm_ctx, &boundary);
         } else {
             MGLRenderCommandBufferState state = {};
