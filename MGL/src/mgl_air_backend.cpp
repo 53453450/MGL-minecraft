@@ -48,7 +48,9 @@
 #include <vector>
 
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -18573,6 +18575,39 @@ extern "C" int mglAirCompileGLSLWithReflect(
 
 extern "C" void mglShaderFree(void *bytes) {
     free(bytes);
+}
+
+/* The LLVM IR text of a metallib this backend produced, or null when the
+ * bitcode cannot be read back.  The bytes are an MTLB container holding one
+ * function; its bitcode starts at the first "BC\xC0\xDE" magic.  Free the
+ * result with mglShaderFree. */
+extern "C" char *mglAirMetallibToIRText(const unsigned char *bytes,
+                                        size_t size) {
+    static const unsigned char magic[4] = {'B', 'C', 0xC0, 0xDE};
+    if (!bytes || size < sizeof(magic)) return nullptr;
+    size_t at = 0;
+    while (at + sizeof(magic) <= size && memcmp(bytes + at, magic, 4) != 0) {
+        at++;
+    }
+    if (at + sizeof(magic) > size) return nullptr;
+    llvm::LLVMContext ctx;
+    std::unique_ptr<llvm::MemoryBuffer> buf = llvm::MemoryBuffer::getMemBuffer(
+        llvm::StringRef(reinterpret_cast<const char *>(bytes) + at, size - at),
+        "metallib", false);
+    llvm::Expected<std::unique_ptr<llvm::Module>> mod =
+        llvm::parseBitcodeFile(buf->getMemBufferRef(), ctx);
+    if (!mod) {
+        llvm::consumeError(mod.takeError());
+        return nullptr;
+    }
+    std::string text;
+    llvm::raw_string_ostream os(text);
+    (*mod)->print(os, nullptr);
+    os.flush();
+    char *out = static_cast<char *>(malloc(text.size() + 1));
+    if (!out) return nullptr;
+    memcpy(out, text.c_str(), text.size() + 1);
+    return out;
 }
 
 /* Sema both stages; `varying_link` compares the outputs of `a` with the

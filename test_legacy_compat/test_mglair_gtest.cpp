@@ -1077,6 +1077,29 @@ TEST(Reflect, UnboundAttributeAvoidsBoundLocation) {
     mglAirReflectDestroy(lists);
 }
 
+TEST(Dump, MetallibToIRTextShowsTheKernelAndItsAttributes) {
+    static const char *src =
+        "#version 460 core\n"
+        "in vec3 pos;\n"
+        "void main() { gl_Position = vec4(pos, 1.0); }\n";
+    unsigned char *bytes = nullptr;
+    size_t size = 0;
+    char err[512] = {0};
+    ASSERT_EQ(0, mglShaderCompileGLSL(src, MGL_STAGE_VERTEX, &bytes, &size, err,
+                                      sizeof err))
+        << err;
+    char *ir = mglAirMetallibToIRText(bytes, size);
+    ASSERT_NE(nullptr, ir);
+    EXPECT_NE(nullptr, strstr(ir, "define"));
+    EXPECT_NE(nullptr, strstr(ir, "air.vertex_input"));
+    EXPECT_NE(nullptr, strstr(ir, "\"pos\""));
+    mglShaderFree(ir);
+    EXPECT_EQ(nullptr, mglAirMetallibToIRText(bytes, 3));
+    unsigned char junk[16] = {1, 2, 3};
+    EXPECT_EQ(nullptr, mglAirMetallibToIRText(junk, sizeof junk));
+    mglShaderFree(bytes);
+}
+
 TEST(Reflect, UnboundAttributeKeepsDeclarationOrderWithoutBinds) {
     static const char *src =
         "#version 460 core\n"

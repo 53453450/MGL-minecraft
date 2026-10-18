@@ -443,6 +443,10 @@ int mglAirCompileGLSLWithReflectInfoEx(
 /* Free bytes returned by mglShaderCompileGLSL. */
 void mglShaderFree(void *bytes);
 
+/* LLVM IR text of a metallib produced by this backend (null when the bitcode
+ * cannot be read back).  Free with mglShaderFree. */
+char *mglAirMetallibToIRText(const unsigned char *bytes, size_t size);
+
 /* Compare the vertex/fragment shader interfaces: uniforms always, and the
  * VS outputs against the FS inputs when `adjacent` (no geometry or
  * tessellation stage in between).  On success returns 0; on mismatch or a

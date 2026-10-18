@@ -2240,9 +2240,9 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     pptr->modules[stage].metallib_bytes = bytes;
     pptr->modules[stage].metallib_size = size;
     {
-        /* MGL_DUMP_SHADER_DIR=<dir>: keep every linked stage's source and
-         * metallib as prog<name>_stage<N>.{glsl,metallib}, so a pipeline
-         * the log names by program number can be reproduced. */
+        /* MGL_DUMP_SHADER_DIR=<dir>: keep every linked stage's source,
+         * metallib and its LLVM IR as prog<name>_stage<N>.{glsl,metallib,ll},
+         * so a pipeline the log names by program number can be reproduced. */
         const char *dump_dir = getenv("MGL_DUMP_SHADER_DIR");
         if (dump_dir && dump_dir[0]) {
             char path[1024];
@@ -2252,6 +2252,17 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             if (f) {
                 fwrite(shader->src, 1, strlen(shader->src), f);
                 fclose(f);
+            }
+            snprintf(path, sizeof path, "%s/prog%u_stage%d.ll", dump_dir,
+                     (unsigned)pptr->name, (int)stage);
+            char *ir_text = mglAirMetallibToIRText(bytes, size);
+            if (ir_text) {
+                f = fopen(path, "w");
+                if (f) {
+                    fputs(ir_text, f);
+                    fclose(f);
+                }
+                mglShaderFree(ir_text);
             }
             snprintf(path, sizeof path, "%s/prog%u_attribs.txt", dump_dir,
                      (unsigned)pptr->name);
