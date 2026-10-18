@@ -7,19 +7,8 @@
 #include "mgl_raster_orientation_plan.h"
 
 #include <stddef.h>
-#include <stdlib.h>
 
 #define MGL_RO_GL_UPPER_LEFT 0x8CA2u
-
-int mglFBOGLOrderEnabled(void)
-{
-    static int cached = -1;
-    if (cached < 0) {
-        const char *v = getenv("MGL_FBO_GL_ORDER");
-        cached = (v && v[0] == '0') ? 0 : 1;
-    }
-    return cached;
-}
 
 int mglRasterOrientationPlanBuild(const MGLRasterOrientationInput *in,
                                   MGLRasterOrientationPlan *out)

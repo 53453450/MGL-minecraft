@@ -20,7 +20,7 @@ static inline int mglRasterTargetStoresGLOrder(const GLMState *state)
 {
     /* A user framebuffer's attachments; the default framebuffer is the
      * window-system target. */
-    return state && state->framebuffer != NULL && mglFBOGLOrderEnabled();
+    return state && state->framebuffer != NULL;
 }
 
 static inline MGLRasterOrientationPlan

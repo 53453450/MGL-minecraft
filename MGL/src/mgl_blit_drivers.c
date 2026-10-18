@@ -39,7 +39,7 @@
 #include "mgl_blit_plan.h"         /* blit plan helpers */
 #include "mgl_texture_compat.h"   /* expansion helpers */
 #include "mgl_readback.h"         /* pixel-format predicates */
-#include "mgl_readback_policy.h"  /* mglRenderTargetStorageYFlipped */
+#include "mgl_readback_policy.h"  /* mglRenderTargetHasGPUContent */
 #include "mgl_raster_orientation_plan.h"  /* mglFBOGLOrderEnabled */
 #include "pixel_utils.h"          /* sizeForInternalFormat */
 #include "mgl_render_values.h"    /* storage/usage enums */
@@ -3177,8 +3177,8 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
     }
     /* A user framebuffer's attachments store GL rows when GL-order storage is
      * on; the default framebuffer keeps the drawable's Metal rows. */
-    const int src_gl_order = readfbo != NULL && mglFBOGLOrderEnabled();
-    const int dst_gl_order = drawfbo != NULL && mglFBOGLOrderEnabled();
+    const int src_gl_order = readfbo != NULL;
+    const int dst_gl_order = drawfbo != NULL;
     mglRenderBlitPlanApplyStorageOrder(&plan, src_gl_order, dst_gl_order);
     int src_x_forward = plan.src_x_forward;
     int src_y_forward = plan.src_y_forward;

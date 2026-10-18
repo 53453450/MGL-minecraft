@@ -24,7 +24,6 @@
 #include "pixel_utils.h"           /* mglPixelTypeDatumBytes */
 #include "mgl_readback.h"          /* mglMetalReadback* */
 #include "mgl_readback_policy.h"   /* depth/integer readback plans */
-#include "mgl_raster_orientation_plan.h"  /* mglFBOGLOrderEnabled */
 #include "mgl_renderer_backend.h"  /* mglRendererBackendGetDevice */
 #include "mgl_render_pass_manager.h"
 #include "mgl_renderer_ports.h"

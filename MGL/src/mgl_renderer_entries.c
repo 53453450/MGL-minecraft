@@ -119,7 +119,6 @@ static const int kMGLVerbosePipelineLogs = 0;
 
 /* C-safe headers the moved code needs. */
 #include "mgl_buffer_query.h"
-#include "mgl_coordinate.h"
 #include "mgl_draw_buffer.h"
 #include "mgl_focus_program.h"
 #include "mgl_program_resource.h"

@@ -565,14 +565,6 @@ int mglRenderTargetHasGPUContent(int is_render_target, uint32_t write_version) {
     return is_render_target && write_version != 0u;
 }
 
-int mglRenderTargetStorageYFlipped(int is_render_target, uint32_t write_version) {
-    /* GL-order render targets are never stored flipped. */
-    if (mglFBOGLOrderEnabled()) {
-        return 0;
-    }
-    return is_render_target && write_version != 0u;
-}
-
 uint32_t mglRenderMSAAArrayLayerStride(int layered, uint32_t textarget) {
     return layered && textarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY
                ? MGL_TEXTURE_MS_PLANE_STRIDE

@@ -122,15 +122,6 @@ static inline BOOL mglTraceRTYFlipDiagnosticsEnabled(void)
     return mglTraceLogIsEnabled() && mglEnvFlagEnabled("MGL_TRACE_RT_YFLIP");
 }
 
-static inline const char *mglYFlipDecisionName(MGLYFlipDecision decision)
-{
-    switch (decision) {
-        case MGL_YFLIP_USE_ORIGINAL: return "original";
-        case MGL_YFLIP_USE_SAMPLED_COPY: return "sampled-copy";
-        default: return "unknown";
-    }
-}
-
 /* === C functions defined in MGLRenderer.m, used by MGLRenderer+Draw.m === */
 uint64_t mglIndexTypeForGLType(GLenum type);
 Buffer *getElementBuffer(GLMContext ctx);

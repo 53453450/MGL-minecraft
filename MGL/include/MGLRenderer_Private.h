@@ -65,7 +65,6 @@
 #import "mgl_draw_buffer.h"
 #import "mgl_buffer_slots.h"
 #import "mgl_vertex_attrib_query.h"
-#import "mgl_coordinate.h"
 #import "mgl_shader_resource.h"
 #import "mgl_buffer_query.h"
 #import "mgl_focus_program.h"

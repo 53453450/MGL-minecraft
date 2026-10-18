@@ -45,12 +45,6 @@ typedef struct MGLRasterOrientationPlan {
                                       clip origin) */
 } MGLRasterOrientationPlan;
 
-/* FBO attachments store GL row order (the redesign in
- * docs/TODO_FBO_GL_ROW_ORDER_2026-10-18.md).  MGL_FBO_GL_ORDER=0 selects the
- * previous Metal-row storage with sampled copies while that path still exists.
- * Process-wide and read once. */
-int mglFBOGLOrderEnabled(void);
-
 /* Plan a draw's orientation.  Returns 0; -1 for a NULL argument. */
 int mglRasterOrientationPlanBuild(const MGLRasterOrientationInput *in,
                                   MGLRasterOrientationPlan *out);
