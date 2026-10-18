@@ -61,7 +61,7 @@ typedef struct GLMContextRec_t *GLMContext;
  */
 /* Plain integer (no u suffix): the pipeline archive key stringizes this macro,
  * and a suffix would end up inside the file name. */
-#define MGL_AIR_CODEGEN_EPOCH 3
+#define MGL_AIR_CODEGEN_EPOCH 4
 
 #ifdef __cplusplus
 extern "C" {

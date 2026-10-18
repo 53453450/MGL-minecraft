@@ -16,7 +16,7 @@ int mglFBOGLOrderEnabled(void)
     static int cached = -1;
     if (cached < 0) {
         const char *v = getenv("MGL_FBO_GL_ORDER");
-        cached = (v && v[0] != '\0' && v[0] != '0') ? 1 : 0;
+        cached = (v && v[0] == '0') ? 0 : 1;
     }
     return cached;
 }
