@@ -12,6 +12,7 @@
 
 #include "mgl_batch_path.h"
 #include "mgl_batch_restore.h"
+#include "mgl_binding_texture.h" /* MGL_TEXTURE_BIND_RETRY_PASSES */
 
 #include <limits.h>
 #include <string.h>
@@ -322,18 +323,23 @@ int mgl_batch_issue_apply_dyn_bindings(uint8_t vertex_count, uint8_t uniform_cou
         }
         if (!tex_ok) {
             tex_ok = ops->bind_tex_mapper && ops->bind_tex_mapper(ops->ctx);
-            if (!tex_ok && ops->restore_after_tex_upload) {
+            /* A stale sampled render-target copy is refreshed one per pass:
+             * the refresh closes the encoder, so restore it and bind again. */
+            for (unsigned pass = 0u;
+                 !tex_ok && ops->restore_after_tex_upload &&
+                 pass < MGL_TEXTURE_BIND_RETRY_PASSES;
+                 pass++) {
                 if (ops->refresh_owner) {
                     ops->refresh_owner(ops->ctx);
                 }
-                tex_ok = ops->restore_after_tex_upload(ops->ctx);
+                const int restored = ops->restore_after_tex_upload(ops->ctx);
                 if (ops->refresh_owner) {
                     ops->refresh_owner(ops->ctx);
                 }
-                if (tex_ok) {
-                    tex_ok =
-                        ops->bind_tex_mapper && ops->bind_tex_mapper(ops->ctx);
+                if (!restored) {
+                    break;
                 }
+                tex_ok = ops->bind_tex_mapper && ops->bind_tex_mapper(ops->ctx);
             }
             if (ops->refresh_owner) {
                 ops->refresh_owner(ops->ctx);
