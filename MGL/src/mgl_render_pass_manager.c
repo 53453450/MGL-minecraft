@@ -463,15 +463,6 @@ void mglPassManagerClearFboMatchCache(MGLRenderPassManager *manager)
     mglRenderClearFboMatchCache(manager->state->renderPassIdentityOwner);
 }
 
-void mglPassManagerSetCurrentDrawUsesRTSampledCopy(MGLRenderPassManager *manager,
-                                                   int uses_rt_sampled_copy)
-{
-    if (!manager) {
-        return;
-    }
-    manager->state->currentDrawUsesRTSampledCopy = uses_rt_sampled_copy;
-}
-
 void mglPassManagerSetDontCareFrameGeneration(MGLRenderPassManager *manager,
                                               uint32_t generation)
 {
@@ -512,5 +503,4 @@ void mglPassManagerShutdown(MGLRenderPassManager *manager)
 
     /* sync tracking list lives inside the C++ owner; its destructor frees it. */
     mglRenderDestroyPendingEventOwner(&state->pendingEventOwner);
-    state->currentDrawUsesRTSampledCopy = 0;
 }

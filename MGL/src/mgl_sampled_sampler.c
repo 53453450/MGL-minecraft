@@ -35,7 +35,7 @@
 #include "mgl_sampled_fallback.h" /* mglSampledFallbackTextureForExpectedType */
 #include "mgl_texture_compat.h"  /* pixel-format/kind compatibility */
 #include "mgl_rt_sync.h"         /* mglTextureCanUseGLSampledRenderTargetCopy */
-#include "mgl_trace_strategy.h"  /* mglTraceRTYFlipDiagnosticsEnabled */
+#include "mgl_trace_strategy.h"
 #include "mgl_trace_log.h"       /* mglTraceLogIsEnabled */
 #include "mgl_blit_drivers.h"    /* mglBlitFreshGLSampledRenderTargetCopyForSampling */
 #include "mgl_types_program.h"   /* Program */

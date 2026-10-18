@@ -60,7 +60,6 @@ typedef struct MGLProcessGLStateInputs {
 typedef struct MGLProcessGLStatePlan {
     MGLProcessGLStateResult result;
     MGLProcessGLStateClass process_class;
-    uint8_t clear_rt_sampled_copy;
     uint8_t rotate_finalized_command_buffer;
     uint8_t create_initial_command_buffer;
     uint8_t process_dirty_domains;
@@ -75,7 +74,6 @@ typedef struct MGLProcessGLStateAfterInputs {
     uint8_t frag_needs_fragcoord;
     uint8_t frag_needs_sample;
     uint8_t frag_needs_lod_bias;
-    uint8_t fragment_trace_uses_rt_sampled_copy;
 } MGLProcessGLStateAfterInputs;
 
 typedef struct MGLProcessGLStateAfterPlan {
@@ -89,7 +87,6 @@ typedef struct MGLProcessGLStateAfterPlan {
     uint8_t bind_frag_coord_slot;
     uint8_t bind_lod_bias_slot;
     uint8_t bind_sampler_wrap_slot;
-    uint8_t maybe_mark_rt_sampled_copy;
 } MGLProcessGLStateAfterPlan;
 
 MGLProcessGLStateClass mglRenderClassifyProcessGLState(int has_ctx,

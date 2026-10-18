@@ -49,22 +49,6 @@ bool mglFragmentTextureTraceBindingsHaveInterestingState(const MGLFragmentTextur
     return false;
 }
 
-bool mglFragmentTextureTraceBindingsUseRTSampledCopy(const MGLFragmentTextureTraceBinding *bindings,
-                                                     size_t count)
-{
-    if (!bindings) {
-        return false;
-    }
-
-    for (size_t i = 0; i < count; i++) {
-        if (bindings[i].used_sampled_copy) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 void mglClearFragmentTextureTraceFunctionalFlags(MGLFragmentTextureTraceBinding *bindings,
                                                   size_t count)
 {
@@ -72,7 +56,6 @@ void mglClearFragmentTextureTraceFunctionalFlags(MGLFragmentTextureTraceBinding 
         return;
     }
     /* Only clear the three fields that non-trace consumers read.
-     * used_sampled_copy — checked by mglFragmentTextureTraceBindingsUseRTSampledCopy.
      * rt_write_version  — checked by the batch-replay early-exit (slots 0..3).
      * used_fallback     — checked by mglFragmentTextureTraceBindingIsInteresting
      *                     (only called from trace-gated paths, but clearing it

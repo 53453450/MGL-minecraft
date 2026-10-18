@@ -79,8 +79,6 @@ void mglPassManagerSetFboMatchCacheResult(MGLRenderPassManager *manager,
                                           int result, uint32_t fbo_name,
                                           uint64_t generation);
 void mglPassManagerClearFboMatchCache(MGLRenderPassManager *manager);
-void mglPassManagerSetCurrentDrawUsesRTSampledCopy(MGLRenderPassManager *manager,
-                                                   int uses_rt_sampled_copy);
 void mglPassManagerSetDontCareFrameGeneration(MGLRenderPassManager *manager,
                                               uint32_t generation);
 void mglPassManagerIncrementDontCareFrameGenerationWithWrap(

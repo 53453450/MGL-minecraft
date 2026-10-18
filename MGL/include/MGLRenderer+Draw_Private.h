@@ -117,11 +117,6 @@ static inline bool mglShouldTraceCall(uint64_t count)
     return (count <= 80ull) || ((count % 500ull) == 0ull);
 }
 
-static inline BOOL mglTraceRTYFlipDiagnosticsEnabled(void)
-{
-    return mglTraceLogIsEnabled() && mglEnvFlagEnabled("MGL_TRACE_RT_YFLIP");
-}
-
 /* === C functions defined in MGLRenderer.m, used by MGLRenderer+Draw.m === */
 uint64_t mglIndexTypeForGLType(GLenum type);
 Buffer *getElementBuffer(GLMContext ctx);

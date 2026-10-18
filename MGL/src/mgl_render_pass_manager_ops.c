@@ -4340,11 +4340,7 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
         return 0;
     }
 
-    if (plan.clear_rt_sampled_copy) {
-        /* This flag is derived from the current draw's final fragment sampler
-         * binding.  Clear it before any early render-state refresh so the
-         * previous draw cannot disable culling while DIRTY_VAO/FBO is handled. */
-        mglPassManagerSetCurrentDrawUsesRTSampledCopy(manager, 0);
+    if (draw_command) {
         MGL_FRAME_INC(g_mglProcessDrawCallsSinceSwap);
     }
 
@@ -4452,11 +4448,6 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
     afterIn.frag_needs_lod_bias =
         fragmentProgram && mglProgramStageHasSamplers(fragmentProgram,
                                                      _FRAGMENT_SHADER)
-            ? 1u
-            : 0u;
-    afterIn.fragment_trace_uses_rt_sampled_copy =
-        mglFragmentTextureTraceBindingsUseRTSampledCopy(
-            areas.fragment_trace_bindings, TEXTURE_UNITS)
             ? 1u
             : 0u;
 
@@ -4717,11 +4708,6 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
             MGL_RENDER_BINDING_STAGE_FRAGMENT, kMGLSamplerWrapBufferIndex);
         mglRendererBindingInvalidateLastBoundFragmentBufferAtIndex(
             renderer, kMGLSamplerWrapBufferIndex);
-    }
-
-    if (after.maybe_mark_rt_sampled_copy) {
-        mglPassManagerSetCurrentDrawUsesRTSampledCopy(manager, 1);
-        mglRenderPassUpdateCurrentRenderEncoder(renderer);
     }
 
     const double processElapsedUs = (mglTraceClockNS() - processStartNS) / 1000.0;

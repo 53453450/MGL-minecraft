@@ -26,13 +26,6 @@ enum {
     MGL_BT_GL_TEXTURE_2D_MULTISAMPLE_ARRAY = 0x9102
 };
 
-/* mgl_coordinate.h MGL_YFLIP_* */
-enum {
-    MGL_BT_YFLIP_ORIGINAL = 0,
-    MGL_BT_YFLIP_SAMPLED_COPY = 1,
-    MGL_BT_YFLIP_ORIGINAL_AND_INJECT = 2
-};
-
 uint32_t mglRenderImageBindPixelFormat(uint32_t internalformat,
                                        uint32_t native_format,
                                        uint32_t mapped_bind_format) {
@@ -177,48 +170,6 @@ int mglBindingTexturePlanSampled(const MGLSampledTextureBindInput *in,
         }
         out->action = MGL_ST_ACTION_PROCEED;
         out->reason = MGL_ST_REASON_OK;
-        return 0;
-    }
-
-    if (in->phase == MGL_ST_PHASE_RT) {
-        if (in->used_type_fallback || !in->is_render_target) {
-            out->action = MGL_ST_ACTION_PROCEED;
-            out->reason = MGL_ST_REASON_OK;
-            return 0;
-        }
-        if (in->yflip != MGL_BT_YFLIP_SAMPLED_COPY) {
-            out->action = MGL_ST_ACTION_RT_ORIGINAL;
-            out->reason = MGL_ST_REASON_RT_ORIGINAL;
-            out->apply_base_level_view = in->want_base_level_on_original ? 1 : 0;
-            return 0;
-        }
-        /* Prefer an already-fresh usable copy. */
-        if (in->has_sampled_copy && in->copy_fresh && in->can_use_rt_copy &&
-            in->copy_type_ok && in->copy_kind_ok) {
-            out->action = MGL_ST_ACTION_RT_USE_COPY;
-            out->reason = MGL_ST_REASON_RT_COPY;
-            out->apply_base_level_view = 1;
-            return 0;
-        }
-        /* Repair attempt results (ObjC filled after freshGLSampled*). */
-        if (in->repaired_available) {
-            if (!in->repaired_fresh) {
-                out->action = MGL_ST_ACTION_RT_USE_COPY;
-                out->reason = MGL_ST_REASON_RT_REPAIR;
-                out->apply_base_level_view = 1;
-                return 0;
-            }
-            out->action = MGL_ST_ACTION_RT_RETRY;
-            out->reason = MGL_ST_REASON_RT_RETRY;
-            return 0;
-        }
-        if (in->can_use_rt_copy) {
-            out->action = MGL_ST_ACTION_RT_REPAIR;
-            out->reason = MGL_ST_REASON_RT_REPAIR;
-            return 0;
-        }
-        out->action = MGL_ST_ACTION_RT_GATE_MISS;
-        out->reason = MGL_ST_REASON_RT_GATE;
         return 0;
     }
 
@@ -536,27 +487,6 @@ void mglBindingTextureFillSamplerMaterializeInput(
     in->has_gl_sampler_mtl = has_gl_sampler_mtl ? 1 : 0;
     in->has_tex_params_mtl = has_tex_params_mtl ? 1 : 0;
     in->require_tex_params_mtl = require_tex_params_mtl ? 1 : 0;
-}
-
-void mglBindingTextureFillSampledRTInput(
-    MGLSampledTextureBindInput *in, int used_type_fallback, int is_render_target,
-    int yflip, int has_sampled_copy, int copy_fresh, int can_use_rt_copy,
-    int want_base_level_on_original, int copy_type_ok, int copy_kind_ok)
-{
-    if (!in) {
-        return;
-    }
-    memset(in, 0, sizeof(*in));
-    in->phase = MGL_ST_PHASE_RT;
-    in->used_type_fallback = used_type_fallback ? 1 : 0;
-    in->is_render_target = is_render_target ? 1 : 0;
-    in->yflip = yflip;
-    in->has_sampled_copy = has_sampled_copy ? 1 : 0;
-    in->copy_fresh = copy_fresh ? 1 : 0;
-    in->can_use_rt_copy = can_use_rt_copy ? 1 : 0;
-    in->want_base_level_on_original = want_base_level_on_original ? 1 : 0;
-    in->copy_type_ok = copy_type_ok ? 1 : 0;
-    in->copy_kind_ok = copy_kind_ok ? 1 : 0;
 }
 
 void mglBindingTextureFillStorageImageInput(

@@ -84,18 +84,6 @@ static void test_sampled_plan(void)
     expect(plan.action == MGL_ST_ACTION_TYPE_FALLBACK, "type fb");
 
     memset(&in, 0, sizeof(in));
-    in.phase = MGL_ST_PHASE_RT;
-    in.is_render_target = 1;
-    in.yflip = 1; /* SAMPLED_COPY */
-    in.has_sampled_copy = 1;
-    in.copy_fresh = 1;
-    in.can_use_rt_copy = 1;
-    in.copy_type_ok = 1;
-    in.copy_kind_ok = 1;
-    expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "rt");
-    expect(plan.action == MGL_ST_ACTION_RT_USE_COPY, "use copy");
-
-    memset(&in, 0, sizeof(in));
     in.phase = MGL_ST_PHASE_FINAL;
     in.has_bound_texture = 1;
     in.has_resource = 1;
@@ -246,31 +234,8 @@ static void test_sampler_materialize_plan(void)
            "cd fill copies every fact");
 }
 
-static void test_sampled_diag_and_rt_ports(void)
+static void test_sampled_diag_ports(void)
 {
-    MGLSampledTextureBindInput in;
-    MGLSampledTextureBindPlan plan;
-    memset(&in, 0, sizeof(in));
-    in.phase = MGL_ST_PHASE_RT;
-    in.is_render_target = 1;
-    in.yflip = 0; /* ORIGINAL */
-    in.want_base_level_on_original = 1;
-    expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "rt orig");
-    expect(plan.action == MGL_ST_ACTION_RT_ORIGINAL, "rt orig act");
-    expect(plan.apply_base_level_view == 1, "base view");
-
-    memset(&in, 0, sizeof(in));
-    in.phase = MGL_ST_PHASE_RT;
-    in.is_render_target = 1;
-    in.yflip = 1;
-    in.has_sampled_copy = 1;
-    in.copy_fresh = 1;
-    in.can_use_rt_copy = 1;
-    in.copy_type_ok = 1;
-    in.copy_kind_ok = 1;
-    expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "rt copy");
-    expect(plan.apply_base_level_view == 1, "copy view");
-
     MGLSampledDiagGateInput din;
     MGLSampledDiagGatePlan dplan;
     memset(&din, 0, sizeof(din));
@@ -401,10 +366,6 @@ static void test_o33_fill_emit_ports(void)
     mglBindingTextureFillSamplerMaterializeInput(&sm, 0, 1, 1, 0, 1, 0, 0);
     expect(sm.has_gl_sampler == 1 && sm.unit_in_range == 1, "sm fill");
 
-    MGLSampledTextureBindInput rt;
-    mglBindingTextureFillSampledRTInput(&rt, 0, 1, 1, 1, 1, 1, 1, 1, 1);
-    expect(rt.phase == MGL_ST_PHASE_RT && rt.copy_fresh == 1, "rt fill");
-
     MGLStorageImageBindInput si;
     mglBindingTextureFillStorageImageInput(&si, MGL_SI_PASS_BIND, 0, 1, 2, 1, 9,
                                            1, 0, 0, 3, 4, 5, 32);
@@ -447,7 +408,7 @@ int main(void)
     test_attrib_plan();
     test_warmup_gates();
     test_sampler_materialize_plan();
-    test_sampled_diag_and_rt_ports();
+    test_sampled_diag_ports();
     test_sampled_final_helpers();
     test_sampled_gate_compat_fill();
     test_apply_masks();

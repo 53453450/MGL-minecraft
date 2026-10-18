@@ -78,7 +78,6 @@ static void test_continue_cb_and_after(void)
     in.command_buffer_status = MGL_PGL_CB_STATUS_COMMITTED;
     expect(mglRenderProcessGLState(&in, &plan) == 0, "continue plan");
     expect(plan.result == MGL_PGL_RESULT_CONTINUE, "continue");
-    expect(plan.clear_rt_sampled_copy == 1u, "clear RT flag");
     expect(plan.rotate_finalized_command_buffer == 1u, "rotate finalized CB");
     expect(plan.process_dirty_domains == 1u, "dirty domains");
 
@@ -101,14 +100,12 @@ static void test_continue_cb_and_after(void)
     after_in.encoder_has_current = 1u;
     after_in.frag_needs_fragcoord = 1u;
     after_in.frag_needs_lod_bias = 1u;
-    after_in.fragment_trace_uses_rt_sampled_copy = 1u;
     expect(mglRenderProcessGLStateAfterDirty(&after_in, &after) == 0, "after ok");
     expect(after.result == MGL_PGL_RESULT_CONTINUE, "after continue");
     expect(after.validate_attachments == 1u, "validate");
     expect(after.set_pipeline == 1u, "set pipeline");
     expect(after.bind_frag_coord_slot == 1u, "fragcoord");
     expect(after.bind_lod_bias_slot == 1u, "lod bias");
-    expect(after.maybe_mark_rt_sampled_copy == 1u, "rt sampled");
 }
 
 int main(void)

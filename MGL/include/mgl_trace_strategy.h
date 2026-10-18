@@ -83,8 +83,6 @@ bool mglFragmentTextureTraceBindingsHaveInterestingState(const MGLFragmentTextur
                                                          size_t count);
 
 /* Returns true if any binding in the array used a sampled copy. */
-bool mglFragmentTextureTraceBindingsUseRTSampledCopy(const MGLFragmentTextureTraceBinding *bindings,
-                                                     size_t count);
 
 /* Emits a trace-log line summarizing up to 4 fragment texture trace bindings.
  * No-op when trace logging is disabled or no binding has interesting state. */

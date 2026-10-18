@@ -45,7 +45,6 @@ typedef struct MGLCommandState_t {
     void *_Nullable detachedCommandBufferSubmission;
     MGLMDIScratchOwner *_Nullable mdiArgsScratchOwner;
     MGLRenderEncoderOwner *_Nullable currentRenderEncoderOwner;
-    uint8_t currentDrawUsesRTSampledCopy;
     MGLPendingEventOwner *_Nullable pendingEventOwner;
     /* Cache for currentRenderPassMatchesCurrentFramebuffer.
      * lastFboMatchFboName == 0 means "invalid cache, recompute".

@@ -54,10 +54,6 @@ int mglRenderProcessGLState(const MGLProcessGLStateInputs *in,
         return 0;
     }
 
-    if (in->draw_command) {
-        out->clear_rt_sampled_copy = 1u;
-    }
-
     out->process_class = mglRenderClassifyProcessGLState(
         1, in->draw_command ? 1 : 0, in->has_vao ? 1 : 0,
         in->dirty_state ? 1 : 0);
@@ -134,9 +130,6 @@ int mglRenderProcessGLStateAfterDirty(const MGLProcessGLStateAfterInputs *in,
     }
     if (in->draw_command) {
         out->bind_sampler_wrap_slot = 1u;
-    }
-    if (in->draw_command && in->fragment_trace_uses_rt_sampled_copy) {
-        out->maybe_mark_rt_sampled_copy = 1u;
     }
     out->result = MGL_PGL_RESULT_CONTINUE;
     return 0;

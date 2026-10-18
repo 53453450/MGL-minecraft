@@ -89,7 +89,6 @@ int mglBindingTexturePlanStorageImage(const MGLStorageImageBindInput *in,
 enum {
     MGL_ST_PHASE_GATE = 0,   /* OOR / skip before materialize */
     MGL_ST_PHASE_COMPAT = 1, /* type / data-kind after MTL texture */
-    MGL_ST_PHASE_RT = 2,     /* render-target Y-flip path */
     MGL_ST_PHASE_FINAL = 3   /* nil fallback + queue texture/sampler */
 };
 
@@ -98,11 +97,6 @@ enum {
     MGL_ST_ACTION_PROCEED,          /* materialize / continue phase */
     MGL_ST_ACTION_TYPE_FALLBACK,    /* replace with expected-type fallback */
     MGL_ST_ACTION_KIND_FALLBACK,    /* replace with expected-kind fallback */
-    MGL_ST_ACTION_RT_USE_COPY,      /* bind fresh sampled copy */
-    MGL_ST_ACTION_RT_REPAIR,        /* ObjC rebuilds copy; may retry */
-    MGL_ST_ACTION_RT_RETRY,         /* encoder rotated; caller returns false */
-    MGL_ST_ACTION_RT_ORIGINAL,      /* keep original (or inject path) */
-    MGL_ST_ACTION_RT_GATE_MISS,     /* copy wanted but unavailable */
     MGL_ST_ACTION_NIL_FALLBACK,     /* missing texture → fallback */
     MGL_ST_ACTION_QUEUE             /* queue texture (+ optional sampler) */
 };
@@ -113,11 +107,6 @@ enum {
     MGL_ST_REASON_SKIP_RESOURCE,
     MGL_ST_REASON_TYPE_MISMATCH,
     MGL_ST_REASON_KIND_MISMATCH,
-    MGL_ST_REASON_RT_COPY,
-    MGL_ST_REASON_RT_REPAIR,
-    MGL_ST_REASON_RT_RETRY,
-    MGL_ST_REASON_RT_ORIGINAL,
-    MGL_ST_REASON_RT_GATE,
     MGL_ST_REASON_NIL,
     MGL_ST_REASON_QUEUE
 };
@@ -134,19 +123,7 @@ typedef struct MGLSampledTextureBindInput {
     uint32_t mtl_type;
     uint32_t expected_type;
     int format_kind_ok; /* pixel format compatible with expected kind */
-    /* RT */
     int used_type_fallback;
-    int is_render_target;
-    int yflip; /* MGL_YFLIP_* */
-    int has_sampled_copy;
-    int copy_fresh;
-    int can_use_rt_copy;
-    int copy_type_ok;
-    int copy_kind_ok;
-    int repaired_available;
-    int repaired_fresh; /* after repair: content fresh → RETRY else USE_COPY */
-    /* Fragment ORIGINAL path wants base-level view on live RT. */
-    int want_base_level_on_original;
     /* FINAL */
     int has_bound_texture;
     int has_combined_sampler;
@@ -166,8 +143,6 @@ typedef struct MGLSampledTextureBindPlan {
     int mark_bound;
     int mark_fallback;
     int mark_nil;
-    /* RT apply ports (ObjC thin set*). */
-    int apply_base_level_view; /* viewForBaseLevel on chosen MTL texture */
     int force_default_sampler; /* FINAL: depth-fallback → default sampler */
 } MGLSampledTextureBindPlan;
 
@@ -331,10 +306,6 @@ void mglBindingTextureFillSamplerMaterializeInput(
     int has_gl_sampler, int gl_sampler_dirty, int has_gl_sampler_mtl,
     int has_tex_params_mtl, int require_tex_params_mtl);
 
-void mglBindingTextureFillSampledRTInput(
-    MGLSampledTextureBindInput *in, int used_type_fallback, int is_render_target,
-    int yflip, int has_sampled_copy, int copy_fresh, int can_use_rt_copy,
-    int want_base_level_on_original, int copy_type_ok, int copy_kind_ok);
 
 void mglBindingTextureFillStorageImageInput(
     MGLStorageImageBindInput *in, int pass, int skip_resource, int has_resource,
@@ -495,10 +466,6 @@ void mglBindingLogTexBufferBind(
     uint64_t expected_type, uint64_t lookup_type, const void *mtl,
     uint64_t mtl_type, uint64_t w, uint64_t h, uint64_t format,
     const void *sampler);
-void mglBindingLogRTYFlipDecision(
-    const char *stage, uint32_t program, const char *name, uint32_t binding,
-    uint32_t unit, uint32_t tex, const char *label, const char *decision_name,
-    int decision, uint32_t rt_ver, uint32_t copy_ver, int has_copy);
 void mglBindingLogRTSampleCopySample(
     uint64_t hit, uint64_t bind_call, uint32_t program, uint32_t vs,
     uint32_t fs, const char *name, uint32_t binding, uint32_t unit,
