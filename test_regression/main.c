@@ -62,7 +62,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 228
+#define MAX_TESTS 229
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -30211,6 +30211,160 @@ static int test_generate_mipmap_render_target(unsigned char *pixels, const char 
     return fail ? 1 : 0;
 }
 
+/* One frame of the call pattern a shader-pack renderer (Iris) uses on its
+ * render targets: DSA-created framebuffers over textures allocated with
+ * glTexImage2D, a multi-attachment gbuffer pass with a shared depth texture,
+ * a depth copy, composite passes that ping-pong between a main and an alt
+ * texture, a mipmap regeneration of a rendered target, a final pass into the
+ * main color texture through a bare framebuffer, a swap copy, and a draw of
+ * the result to the window.  Two frames run back to back. */
+static int test_iris_like_frame(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "out vec2 uv;\n"
+        "void main() { vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }\n";
+    GLuint pg = link_program(vs,
+        "#version 330 core\nin vec2 uv;\n"
+        "layout(location = 0) out vec4 o0;\nlayout(location = 1) out vec4 o1;\nlayout(location = 2) out vec4 o2;\n"
+        "void main() { o0 = vec4(0.2, 0.4, 0.6, 1.0); o1 = vec4(-0.5, 0.5, 0.0, 1.0);\n"
+        "  o2 = vec4(0.8, 0.1, 0.3, 1.0); gl_FragDepth = 0.5; }\n");
+    GLuint pc1 = link_program(vs,
+        "#version 330 core\nuniform sampler2D c0;\nuniform sampler2D c3;\nin vec2 uv;\nout vec4 o;\n"
+        "void main() { o = vec4(texture(c0, uv).rgb * 0.5 + texture(c3, uv).rgb * 0.5, 1.0); }\n");
+    GLuint pc2 = link_program(vs,
+        "#version 330 core\nuniform sampler2D c0;\nuniform sampler2D c3;\nuniform sampler2D dt;\nin vec2 uv;\nout vec4 o;\n"
+        "void main() { float d = texelFetch(dt, ivec2(gl_FragCoord.xy), 0).r;\n"
+        "  o = vec4(texture(c0, uv).rgb * 0.5 + textureLod(c3, uv, 2.0).rgb * 0.5 + (d > 0.49 ? 0.1 : 0.0), 1.0); }\n");
+    GLuint pfin = link_program(vs,
+        "#version 330 core\nuniform sampler2D c0;\nin vec2 uv;\nout vec4 o;\n"
+        "void main() { o = vec4(texture(c0, uv).rgb, 1.0); }\n");
+    GLuint pwin = link_program(vs,
+        "#version 330 core\nuniform sampler2D s;\nin vec2 uv;\nout vec4 o;\n"
+        "void main() { o = texture(s, uv); }\n");
+    if (!pg || !pc1 || !pc2 || !pfin || !pwin) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    const int W = 64, H = 64;
+    GLuint tex[8] = {0};  /* c0 main, c0 alt, c1, c3, main color, mc depth, depthtex1, spare */
+    glGenTextures(8, tex);
+    const GLenum ifmt[5] = {GL_R11F_G11F_B10F, GL_R11F_G11F_B10F, GL_RGB8_SNORM, GL_RGBA8, GL_RGBA8};
+    const GLenum fmt[5] = {GL_RGB, GL_RGB, GL_RGB, GL_RGBA, GL_RGBA};
+    for (int i = 0; i < 5; i++) {
+        glBindTexture(GL_TEXTURE_2D, tex[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, ifmt[i], W, H, 0, fmt[i], GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    glBindTexture(GL_TEXTURE_2D, tex[5]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, W, H, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, tex[6]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, W, H, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    GLuint fbg = 0, fbc1 = 0, fbc2 = 0, fbfin = 0, fbalt = 0;
+    glCreateFramebuffers(1, &fbg);
+    glNamedFramebufferTexture(fbg, GL_COLOR_ATTACHMENT0, tex[0], 0);
+    glNamedFramebufferTexture(fbg, GL_COLOR_ATTACHMENT1, tex[2], 0);
+    glNamedFramebufferTexture(fbg, GL_COLOR_ATTACHMENT2, tex[3], 0);
+    glNamedFramebufferTexture(fbg, GL_DEPTH_ATTACHMENT, tex[5], 0);
+    GLenum db3[3] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
+    glNamedFramebufferDrawBuffers(fbg, 3, db3);
+    glCreateFramebuffers(1, &fbc1);
+    glNamedFramebufferTexture(fbc1, GL_COLOR_ATTACHMENT0, tex[1], 0);
+    GLenum db1 = GL_COLOR_ATTACHMENT0;
+    glNamedFramebufferDrawBuffers(fbc1, 1, &db1);
+    glNamedFramebufferReadBuffer(fbc1, GL_COLOR_ATTACHMENT0);
+    fbalt = fbc1;
+    glCreateFramebuffers(1, &fbc2);
+    glNamedFramebufferTexture(fbc2, GL_COLOR_ATTACHMENT0, tex[0], 0);
+    glNamedFramebufferDrawBuffers(fbc2, 1, &db1);
+    glCreateFramebuffers(1, &fbfin);
+    glNamedFramebufferTexture(fbfin, GL_COLOR_ATTACHMENT0, tex[4], 0);   /* bare: no draw buffers call */
+
+    int fail = 0;
+    for (int frame = 0; frame < 2; frame++) {
+        /* clear the gbuffer targets */
+        glBindFramebuffer(GL_FRAMEBUFFER, fbg);
+        glViewport(0, 0, W, H);
+        glClearColor(0.f, 0.f, 0.f, 0.f);
+        glClearDepth(1.0);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        /* gbuffer pass */
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glUseProgram(pg);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDisable(GL_DEPTH_TEST);
+        /* depth copy: glCopyImageSubData main depth -> depthtex1 */
+        glCopyImageSubData(tex[5], GL_TEXTURE_2D, 0, 0, 0, 0, tex[6], GL_TEXTURE_2D, 0, 0, 0, 0, W, H, 1);
+        /* composite 1: read c0 main + c3, write c0 alt */
+        glBindFramebuffer(GL_FRAMEBUFFER, fbc1);
+        glViewport(0, 0, W, H);
+        glUseProgram(pc1);
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, tex[0]);
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, tex[3]);
+        glUniform1i(glGetUniformLocation(pc1, "c0"), 0);
+        glUniform1i(glGetUniformLocation(pc1, "c3"), 1);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        /* mipmaps of c3 */
+        glGenerateTextureMipmap(tex[3]);
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, tex[3]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        /* composite 2: read c0 alt, c3 (mip), depthtex1; write c0 main */
+        glBindFramebuffer(GL_FRAMEBUFFER, fbc2);
+        glViewport(0, 0, W, H);
+        glUseProgram(pc2);
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, tex[1]);
+        glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, tex[6]);
+        glUniform1i(glGetUniformLocation(pc2, "c0"), 0);
+        glUniform1i(glGetUniformLocation(pc2, "c3"), 1);
+        glUniform1i(glGetUniformLocation(pc2, "dt"), 2);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, tex[3]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        /* final: bare framebuffer over the main color texture */
+        glBindFramebuffer(GL_FRAMEBUFFER, fbfin);
+        glViewport(0, 0, W, H);
+        glUseProgram(pfin);
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, tex[0]);
+        glUniform1i(glGetUniformLocation(pfin, "c0"), 0);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        /* swap copy: alt framebuffer -> c0 main texture */
+        glBindFramebuffer(GL_FRAMEBUFFER, fbalt);
+        glBindTexture(GL_TEXTURE_2D, tex[0]);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, W, H);
+        /* present: draw the main color texture to the window */
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, W, H);
+        glClearColor(0.f, 0.f, 0.f, 1.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glUseProgram(pwin);
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, tex[4]);
+        glUniform1i(glGetUniformLocation(pwin, "s"), 0);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        unsigned char px[4] = {0};
+        glReadPixels(10, 10, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        /* expected (0.75, 0.275, 0.475) */
+        if (abs((int)px[0] - 191) > 5 || abs((int)px[1] - 70) > 5 || abs((int)px[2] - 121) > 5) {
+            fprintf(stderr, "iris_like_frame: frame %d window pixel %u,%u,%u (want ~191,70,121)\n",
+                    frame, px[0], px[1], px[2]);
+            fail |= 1 << frame;
+        }
+    }
+    glActiveTexture(GL_TEXTURE0);
+    return fail ? 1 : 0;
+}
+
 static int test_dfdy_orientation(unsigned char *pixels, const char *out_path)
 {
     (void)out_path;
@@ -30667,6 +30821,7 @@ static const TestCase TESTS[] = {
                     test_pixel_format_bpp_table),
     SELF_CHECK_TEST("sample_mask_state_key", test_sample_mask_state_key),
     SELF_CHECK_TEST("dfdy_orientation", test_dfdy_orientation),
+    SELF_CHECK_TEST("iris_like_frame", test_iris_like_frame),
     SELF_CHECK_TEST("generate_mipmap_render_target", test_generate_mipmap_render_target),
     SELF_CHECK_TEST("interpolate_at_offset_orientation",
                     test_interpolate_at_offset_orientation),
