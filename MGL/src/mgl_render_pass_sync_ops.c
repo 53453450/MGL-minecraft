@@ -84,10 +84,6 @@
 extern int mglEnvFlagEnabled(const char *name);
 extern GLuint mglRendererSafeFramebufferName(GLMContext ctx);
 extern uint32_t mglMaybeInvertMTLWinding(uint32_t winding, bool inverted);
-extern int mglFramebufferLooksLikeGLSampledCopyRenderTarget(GLMContext ctx,
-                                                           Framebuffer *fb,
-                                                           Texture **color_out,
-                                                           Texture **depth_out);
 extern Program *mglResolveProgramFromState(GLMContext ctx);
 extern void *mglRenderPassDiscardStubFragmentFunction(uint32_t value_class);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
@@ -858,7 +854,6 @@ void mglRenderPassUpdateCurrentRenderEncoder(void *renderer)
         mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
     }
 
-    int rtSampledCopyDraw = commandState->currentDrawUsesRTSampledCopy;
     int defaultFramebufferSampledPass =
         mglRenderSkipCullForSampledPass(
             state->framebuffer ? 1 : 0, state->caps.depth_test ? 1 : 0,
@@ -866,12 +861,10 @@ void mglRenderPassUpdateCurrentRenderEncoder(void *renderer)
                                               _SAMPLED_IMAGE_RES) > 0
                 ? 1
                 : 0,
-            rtSampledCopyDraw ? 1 : 0) != 0 &&
-        !rtSampledCopyDraw;
+            0) != 0;
 
     uint32_t cull_mode = mglRenderCullModeFromGL(
-        (state->caps.cull_face && !defaultFramebufferSampledPass &&
-         !rtSampledCopyDraw)
+        (state->caps.cull_face && !defaultFramebufferSampledPass)
             ? 1
             : 0,
         (uint32_t)state->var.cull_face_mode);
@@ -897,25 +890,6 @@ void mglRenderPassUpdateCurrentRenderEncoder(void *renderer)
                   (unsigned)(ctx ? state->draw_buffer : 0u));
         }
     }
-    if (state->caps.cull_face && rtSampledCopyDraw) {
-        static uint64_t s_rtSampledCopyCullBypassCount = 0;
-        uint64_t hit = ++s_rtSampledCopyCullBypassCount;
-        if (hit <= 64ull || (hit % 256ull) == 0ull) {
-            mglTraceLog("RT_SAMPLE_COPY_CULL_BYPASS hit=%llu program=%u pipelineProgram=%u fbo=%u rpFbo=%u depth(test=%d write=%d func=0x%x) blend=%d cullFace=0x%x frontFace=0x%x",
-                        (unsigned long long)hit,
-                        (unsigned)(ctx ? mglCurrentRenderProgramKey(ctx) : 0u),
-                        (unsigned)cacheState->pipelineProgramName,
-                        (unsigned)(ctx ? mglRendererSafeFramebufferName(ctx) : 0u),
-                        (unsigned)commandState->renderPassFramebufferName,
-                        (ctx && state->caps.depth_test) ? 1 : 0,
-                        (ctx && state->var.depth_writemask) ? 1 : 0,
-                        (unsigned)(ctx ? state->var.depth_func : 0u),
-                        (ctx && state->caps.blend) ? 1 : 0,
-                        (unsigned)(ctx ? state->var.cull_face_mode : 0u),
-                        (unsigned)(ctx ? state->var.front_face : 0u));
-        }
-    }
-
     if (state->caps.depth_clamp)
     {
         mglRenderSetDepthClipModeForOwner(
@@ -1158,62 +1132,6 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
                     metalVy += (GLdouble)sy - 0.5;
                 } else {
                     metalVy -= (GLdouble)sy - 0.5;
-                }
-            }
-
-            Texture *guiRTColor = NULL;
-            Texture *guiRTDepth = NULL;
-            int guiRTPass =
-                mglTraceLogIsEnabled() &&
-                mglFramebufferLooksLikeGLSampledCopyRenderTarget(ctx,
-                                                                 state->framebuffer,
-                                                                 &guiRTColor,
-                                                                 &guiRTDepth);
-            if (guiRTPass) {
-                static uint64_t s_guiRTEncoderStateLogCount = 0;
-                uint64_t hit = ++s_guiRTEncoderStateLogCount;
-                if (hit <= 128ull || (hit % 256ull) == 0ull) {
-                    Program *program = mglResolveProgramFromState(ctx);
-                    void *c0 = mglRsColorTextureFor(commandState, 0);
-                    void *d0 = mglRsDepthTextureFor(commandState);
-                    mglTraceLog("RT_SAMPLE_COPY_ENCODER hit=%llu fbo=%u rpFbo=%u program=%u rtTex=%u label=\"%s\" depthTex=%u depthLabel=\"%s\" "
-                          "pass=%lux%lu c0=%p fmt=%lu depth=%p fmt=%lu "
-                          "loadStore(c=%s/%s d=%s/%s) clipOrigin=0x%x "
-                          "scissor(en=%d raw=%d,%d,%d,%d metal=%d,%d,%d,%d) "
-                          "viewport(raw=%.1f,%.1f,%.1f,%.1f metal=%.1f,%.1f,%.1f,%.1f) "
-                          "depth(test=%d write=%d func=0x%x) blend=%d cull=%d levels=%u mips=%u mipmapped=%u",
-                          (unsigned long long)hit,
-                          state->framebuffer ? (unsigned)state->framebuffer->name : 0u,
-                          (unsigned)commandState->renderPassFramebufferName,
-                          program ? (unsigned)program->name : (unsigned)state->program_name,
-                          (unsigned)mglTraceTextureName((Texture *)guiRTColor),
-                          mglTraceTextureLabel((Texture *)guiRTColor),
-                          (unsigned)mglTraceTextureName((Texture *)guiRTDepth),
-                          mglTraceTextureLabel((Texture *)guiRTDepth),
-                          (unsigned long)passWidth,
-                          (unsigned long)passHeight,
-                          c0,
-                          (unsigned long)(c0 ? mglRsTextureInfo(c0).pixel_format : MGLPixelFormatInvalid),
-                          d0,
-                          (unsigned long)(d0 ? mglRsTextureInfo(d0).pixel_format : MGLPixelFormatInvalid),
-                          mglLoadActionName(mglRsLoadActionFor(commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLLoadActionDontCare)),
-                          mglStoreActionName(mglRsStoreActionFor(commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, MGLStoreActionDontCare)),
-                          mglLoadActionName(mglRsLoadActionFor(commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare)),
-                          mglStoreActionName(mglRsStoreActionFor(commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLStoreActionDontCare)),
-                          state->var.clip_origin,
-                          state->caps.scissor_test ? 1 : 0,
-                          rawSx, rawSy, rawSw, rawSh,
-                          sx0, metalSy0, sw0, sh0,
-                          rawVx, rawVy, rawVw, rawVh,
-                          vx, metalVy, vw, vh,
-                          state->caps.depth_test ? 1 : 0,
-                          state->var.depth_writemask ? 1 : 0,
-                          (unsigned)state->var.depth_func,
-                          state->caps.blend ? 1 : 0,
-                          state->caps.cull_face ? 1 : 0,
-                          guiRTColor ? (unsigned)guiRTColor->num_levels : 0u,
-                          guiRTColor ? (unsigned)guiRTColor->mipmap_levels : 0u,
-                          guiRTColor ? (unsigned)guiRTColor->mipmapped : 0u);
                 }
             }
 

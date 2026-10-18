@@ -879,18 +879,6 @@ Texture *mglTraceFramebufferAttachmentTexture(GLMContext glctx, FBOAttachment *a
     return NULL;
 }
 
-void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level)
-{
-    if (!tex || !tex->mtl_gl_sampled_data) {
-        return;
-    }
-    if (level < 32u) {
-        tex->mtl_gl_sampled_dirty_mip_mask |= (uint32_t)1u << level;
-    } else {
-        tex->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
-    }
-}
-
 
 /* mglMarkTextureLevelRenderTargetWritten macro moved to MGLRenderer_Private.h */
 

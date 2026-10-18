@@ -68,10 +68,6 @@ GLboolean mglGetCPUFormatTypeForInternalFormat(GLenum internalformat,
                                                GLenum *outFormat,
                                                GLenum *outType);
 
-/* Mark one mip of the Y-flip sampled copy stale after CPU or RT content change.
- * Impl in MGLRenderer.m. No-op when no sampled copy exists yet. */
-void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level);
-
 /* RT Metal-fill marker — inline because it's small and called from
  * both MGLRenderer.m and MGLRenderer+Blit.m / MGLRenderer+Texture.m. */
 static inline void mglMarkTextureLevelMetalFilled(Texture *tex, GLuint level, size_t uploadSize)
@@ -91,17 +87,7 @@ static inline void mglMarkTextureLevelMetalFilled(Texture *tex, GLuint level, si
 
     if (tex->is_render_target) {
         tex->mtl_render_target_write_version++;
-        mglMarkGLSampledCopyLevelDirty(tex, level);
     }
-}
-
-/* Version match alone is not freshness: dirty mips must be empty too. */
-static inline BOOL mglGLSampledCopyContentFresh(const Texture *tex)
-{
-    return tex != NULL &&
-           tex->mtl_gl_sampled_data != NULL &&
-           tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version &&
-           tex->mtl_gl_sampled_dirty_mip_mask == 0u;
 }
 
 /* === RT-write marker — used by Blit.m, Texture.m, Draw.m, RenderPass.m ===
@@ -130,15 +116,6 @@ static inline BOOL mglGLSampledCopyContentFresh(const Texture *tex)
                                                         reason:(const char *)reason;
 - (id)depthFloatTextureForDepthStencilReadback:(id)sourceTexture
                                                     reason:(const char *)reason;
-
-// === GL sampled render target copy management ===
-/* textureCanUseGLSampledRenderTargetCopy:source: is now
- * mglBlitTextureCanUseGLSampledRenderTargetCopy (mgl_blit_sampled_copy.h). */
-/* updateGLSampledRenderTargetCopyForTexture:source:reason: is now the C
- * function mglBlitUpdateGLSampledRenderTargetCopy (mgl_blit_sampled_copy.h). */
-/* freshGLSampledRenderTargetCopyForSampling:… is C now
- * (mglBlitFreshGLSampledRenderTargetCopyForSampling, mgl_blit_drivers.h);
- * its only caller is MGLRenderer+BindingState.m. */
 
 @end
 

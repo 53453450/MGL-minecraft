@@ -34,7 +34,6 @@
 #include "mgl_texture_backend.h"
 
 /* Restated from the ObjC private headers (rules 7 / 26). */
-extern void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level);
 extern signed char mglEnvFlagEnabled(const char *name);
 
 /* The .m's file-local constants this TU needs (values copied verbatim). */
@@ -92,11 +91,10 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
     texLevel->last_src_hash = 0ull;
 
     tex->mtl_render_target_write_version++;
-    mglMarkGLSampledCopyLevelDirty(tex, level);
 
     if (tex->name == 8u && mglEnvFlagEnabled("MGL_TRACE_RT_WRITE_MARKS")) {
         void *mtlTexture = mglTextureMtl(tex) ? (mglTextureMtl(tex)) : NULL;
-        mglTraceLog("RT_WRITE_MARK tex=%u level=%u oldRtVer=%u newRtVer=%u caller=%s:%d mtl=%p fmt=%lu size=%lux%lu dirty=0x%x sampledVer=%u copy=%p",
+        mglTraceLog("RT_WRITE_MARK tex=%u level=%u oldRtVer=%u newRtVer=%u caller=%s:%d mtl=%p fmt=%lu size=%lux%lu dirty=0x%x",
                     (unsigned)tex->name,
                     (unsigned)level,
                     (unsigned)oldRenderTargetWriteVersion,
@@ -107,9 +105,7 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
                     (unsigned long)(mtlTexture ? mglRendererTextureFieldFormat(mtlTexture) : MGL_RENDERER_PIXEL_FORMAT_INVALID),
                     (unsigned long)(mtlTexture ? mglRendererTextureFieldWidth(mtlTexture) : 0),
                     (unsigned long)(mtlTexture ? mglRendererTextureFieldHeight(mtlTexture) : 0),
-                    (unsigned)tex->dirty_bits,
-                    (unsigned)tex->mtl_gl_sampled_write_version,
-                    tex->mtl_gl_sampled_data);
+                    (unsigned)tex->dirty_bits);
     }
 
     /*

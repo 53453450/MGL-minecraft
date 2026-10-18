@@ -2548,7 +2548,6 @@ bool mglCompressedSubImageUpdate(GLMContext ctx,
     lvl->last_src_ptr = resolved_src;
     lvl->last_src_hash = resolved_src ? mglHashBytesSampled(resolved_src, (size_t)imageSize) : 0ull;
     tex->dirty_bits |= DIRTY_TEXTURE_DATA;
-    mglReleaseGLSampledTextureCopy(ctx, tex, "compressedTexSubImage");
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
     return true;
 }

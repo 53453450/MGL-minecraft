@@ -364,37 +364,6 @@ Texture *findTexture(GLMContext ctx, GLuint texture)
     return ptr;
 }
 
-void mglReleaseGLSampledTextureCopy(GLMContext ctx, Texture *tex, const char *reason)
-{
-    if (!tex) {
-        return;
-    }
-
-    if (tex->mtl_gl_sampled_data) {
-        if (ctx) {
-            mglRendererDeleteMetalObject(ctx, tex->mtl_gl_sampled_data);
-        }
-        tex->mtl_gl_sampled_data = NULL;
-    }
-    tex->mtl_gl_sampled_width = 0u;
-    tex->mtl_gl_sampled_height = 0u;
-    tex->mtl_gl_sampled_format = 0u;
-    tex->mtl_gl_sampled_write_version = 0u;
-
-    if (reason && tex->is_render_target) {
-        static uint64_t s_release_sampled_copy_logs = 0u;
-        uint64_t hit = ++s_release_sampled_copy_logs;
-        if (hit <= 32u || (hit % 512u) == 0u) {
-            fprintf(stderr,
-                    "MGL RT-SAMPLE-COPY release tex=%u reason=%s rtVersion=%u hit=%" PRIu64 "\n",
-                    tex->name,
-                    reason,
-                    tex->mtl_render_target_write_version,
-                    hit);
-        }
-    }
-}
-
 static GLboolean mglTextureUnitHasAnyBinding(GLMContext ctx, GLuint unit)
 {
     if (!ctx || unit >= TEXTURE_UNITS) {
@@ -1768,12 +1737,6 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
         mglTextureBackendEnsure(tex)->mtl_data = NULL;
     }
 
-    if (tex->mtl_gl_sampled_data)
-    {
-        mglRendererDeleteMetalObject(ctx, tex->mtl_gl_sampled_data);
-        tex->mtl_gl_sampled_data = NULL;
-    }
-
     if (mglTextureSamplerState(tex))
     {
         mglRendererDeleteMetalObject(ctx, mglTextureSamplerState(tex));
@@ -1861,13 +1824,7 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
     tex->complete = GL_FALSE;
     tex->num_levels = 0;
     tex->mipmap_levels = 0;
-    tex->mtl_gl_sampled_data = NULL;
-    tex->mtl_gl_sampled_width = 0;
-    tex->mtl_gl_sampled_height = 0;
-    tex->mtl_gl_sampled_format = 0;
-    tex->mtl_gl_sampled_write_version = 0;
     tex->mtl_render_target_write_version = 0;
-    tex->mtl_gl_sampled_dirty_mip_mask = 0u;
     tex->metal_data_authoritative = GL_FALSE;
     tex->texture_buffer = NULL;
     tex->texture_buffer_offset = 0;
@@ -3338,7 +3295,6 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
     }
 
     tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
-    mglReleaseGLSampledTextureCopy(ctx, tex, "texImage");
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
 
     /* Populate depth_shadow for depth internal formats so that
@@ -4070,7 +4026,6 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         lvl->metal_data_authoritative = GL_FALSE;
         lvl->last_init_source = resolved_unpack_buf ? kTexSubImagePBO : kTexSubImageCPU;
         tex->dirty_bits |= DIRTY_TEXTURE_DATA;
-        mglReleaseGLSampledTextureCopy(ctx, tex, "texSubImage-RGTC");
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
         return true;
     }
@@ -4303,7 +4258,6 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         lvl->last_upload_size = required_bytes;
         lvl->last_src_ptr = resolved_src;
         lvl->last_src_hash = dst_hash;
-        mglReleaseGLSampledTextureCopy(ctx, tex, "texSubImage-PBO");
         mglTextureViewFamilyWritten(tex);
 
         if (trace_upload) {
@@ -4386,13 +4340,6 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
     } else {
         tex->dirty_bits |= DIRTY_TEXTURE_DATA;
-    }
-    /* Direct Metal upload to an RT already rebuilt the Y-flip sampled copy
-     * inside mtlTexSubImageBytes.  Releasing it here forced color1+ to wait
-     * for a later sample-gate repair and left feedback sampling racing the
-     * live attachment (texture_barrier). */
-    if (!(uploaded_direct && tex->is_render_target && tex->mtl_gl_sampled_data)) {
-        mglReleaseGLSampledTextureCopy(ctx, tex, resolved_unpack_buf ? "texSubImage-PBO" : "texSubImage-CPU");
     }
     mglTextureViewFamilyWritten(tex);
 
@@ -5206,7 +5153,6 @@ void mglClearTexImage(GLMContext ctx, GLuint texture, GLint level, GLenum format
     GLsizei depth = (GLsizei)MAX(lvl->depth, 1u);
     if (mglClearTextureLevelCPU(lvl, tex->internalformat, 0, 0, 0, width, height, depth, format, type, data)) {
         tex->dirty_bits |= DIRTY_TEXTURE_DATA;
-        mglReleaseGLSampledTextureCopy(ctx, tex, "glClearTexImage-CPU");
         return;
     }
     
@@ -5311,7 +5257,6 @@ void mglClearTexSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoff
 
     if (mglClearTextureLevelCPU(lvl, tex->internalformat, xoffset, yoffset, zoffset, width, height, depth, format, type, data)) {
         tex->dirty_bits |= DIRTY_TEXTURE_DATA;
-        mglReleaseGLSampledTextureCopy(ctx, tex, "glClearTexSubImage-CPU");
         return;
     }
     
@@ -6764,9 +6709,6 @@ void mglTextureViewFamilyWritten(Texture *writer)
         }
         member->is_render_target = GL_TRUE;
         member->mtl_render_target_write_version++;
-        if (member->mtl_gl_sampled_data) {
-            member->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
-        }
     }
 }
 

@@ -196,7 +196,6 @@ static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
         return false;
     }
     mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(tex)->mtl_data);
-    mglTextureReleaseGLSampledCopy(tex);
     mglTextureBackendEnsure(tex)->mtl_data = view;
     if (source != mglTextureViewParent(tex)) {
         mglTextureBindReleaseAlias(mglTextureViewParent(tex));
@@ -313,7 +312,6 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                     continue;
                 }
                 mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(v)->mtl_data);
-                mglTextureReleaseGLSampledCopy(v);
                 if (mglTextureViewParent(v)) {
                     mglTextureBindReleaseAlias(mglTextureViewParent(v));
                     mglTextureBackendEnsure(v)->view_parent = NULL;
@@ -325,7 +323,6 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
             void *oldTexture = mglTextureBindRetainAlias(existingTexture);
 
             mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(tex)->mtl_data);
-            mglTextureReleaseGLSampledCopy(tex);
 
             /* Create a new texture with correct usage.  Don't set
              * DIRTY_TEXTURE_DATA so that createMTLTextureFromGLTexture
@@ -477,7 +474,6 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
         {
             if (textureNeedsRebuild) {
                 mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(tex)->mtl_data);
-                mglTextureReleaseGLSampledCopy(tex);
             }
         }
 

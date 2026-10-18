@@ -199,13 +199,6 @@ typedef struct Texture_t {
     GLuint samples;
     GLboolean fixed_sample_locations;
     TextureFace faces[6];
-    void    *mtl_gl_sampled_data;
-    GLuint  mtl_gl_sampled_width;
-    GLuint  mtl_gl_sampled_height;
-    GLuint  mtl_gl_sampled_format;
-    GLuint  mtl_gl_sampled_levels;
-    GLuint  mtl_gl_sampled_write_version;
-    uint32_t mtl_gl_sampled_dirty_mip_mask;
     GLuint  mtl_render_target_write_version;
     /* DontCare inference: renderer frame generation at which this
      * texture was last written as a render target. Compared against the

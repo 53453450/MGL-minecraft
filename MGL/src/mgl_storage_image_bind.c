@@ -40,7 +40,6 @@
 #include "mgl_binding_texture.h"  /* storage-image plan */
 #include "mgl_binding_policy.h"   /* mglRenderResourceMetalSlot */
 #include "mgl_texture_bind.h"     /* mglRendererBindMTLTexture */
-#include "mgl_blit_sampled_copy.h"
 #include "mgl_types_state.h"      /* mglMarkRendererDirtyBits + DIRTY_* */
 #include "mgl_metal_ref.h"        /* shared metal reference helpers */
 #include "glm_context.h"          /* RETURN_FALSE_ON_FAILURE */

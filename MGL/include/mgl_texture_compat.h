@@ -150,9 +150,6 @@ GLuint mglTextureUnitForSampledResource(MGLShaderResource *sampled_resource,
                                         Program *program, GLuint metal_binding,
                                         int stage);
 
-/* Release the GL-sampled render-target copy a texture keeps and clear its
- * bookkeeping (former -[MGLRenderer releaseGLSampledRenderTargetCopyForTexture:]). */
-void mglTextureReleaseGLSampledCopy(Texture *tex);
 /* Mark a texture level as written as a render target (the ObjC header wraps it
  * in the mglMarkTextureLevelRenderTargetWritten(tex, level) macro; C calls the
  * Impl with an explicit caller tag). */

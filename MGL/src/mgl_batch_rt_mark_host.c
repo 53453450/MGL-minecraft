@@ -108,78 +108,6 @@ static int mglBatchRtMarkHostRpHas(void *v, void *mtl)
     return 0;
 }
 
-static void mglBatchRtMarkTraceWriteMark(GLMContext ctx, void *renderer,
-                                         Texture *tex, Framebuffer *fbo,
-                                         FBOAttachment *attachment,
-                                         uint64_t hit)
-{
-    if (!tex || !fbo || !attachment || !ctx) {
-        return;
-    }
-    Program *program = mglResolveProgramFromState(ctx);
-    Texture *rtColor = NULL, *rtDepth = NULL;
-    (void)mglFramebufferLooksLikeGLSampledCopyRenderTarget(ctx, fbo, &rtColor,
-                                                           &rtDepth);
-    void *colorMTL = mglTextureMtl(tex);
-    void *depthMTL = (rtDepth && mglTextureMtl(rtDepth)) ? mglTextureMtl(rtDepth) : NULL;
-    void *owner = mglRendererCommandStateFor(renderer)->renderPassStateOwner;
-    void *rpColor0 = mglRenderGetRenderPassAttachmentTextureOwner(
-        owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
-    void *rpDepth = mglRenderGetRenderPassAttachmentTextureOwner(
-        owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
-    MGLRenderTextureInfo colorInfo = {0};
-    if (colorMTL) {
-        (void)mglRenderGetTextureInfo(colorMTL, &colorInfo);
-    }
-    TextureLevel *lvl = mglTextureAttachmentLevel(tex, attachment->level);
-    MGLBatchTraceStatePod state;
-    memset(&state, 0, sizeof(state));
-    for (int i = 0; i < 4; i++) {
-        state.viewport[i] = (int32_t)ctx->active_state->viewport[i];
-    }
-    state.scissor_test = ctx->active_state->caps.scissor_test ? 1 : 0;
-    for (int i = 0; i < 4; i++) {
-        state.scissor[i] = (int32_t)ctx->active_state->var.scissor_box[i];
-    }
-    state.depth_test = ctx->active_state->caps.depth_test ? 1 : 0;
-    state.depth_write = ctx->active_state->var.depth_writemask ? 1 : 0;
-    state.depth_func = (uint32_t)ctx->active_state->var.depth_func;
-    state.blend = ctx->active_state->caps.blend ? 1 : 0;
-    state.cull = ctx->active_state->caps.cull_face ? 1 : 0;
-    for (int i = 0; i < 4; i++) {
-        state.color_mask[i] = ctx->active_state->var.color_writemask[0][i] ? 1 : 0;
-    }
-    MGLBatchTraceRtWriteView v = {
-        .hit = hit,
-        .fbo_name = fbo->name,
-        .program = program ? program->name
-                           : (ctx ? ctx->active_state->program_name : 0u),
-        .rt_tex = mglTraceTextureName(tex),
-        .rt_label = mglTraceTextureLabel(tex),
-        .depth_tex = mglTraceTextureName(rtDepth),
-        .depth_label = mglTraceTextureLabel(rtDepth),
-        .level = attachment->level,
-        .ever = lvl ? lvl->ever_written : 0u,
-        .full = lvl ? lvl->has_initialized_data : 0u,
-        .source = lvl ? lvl->last_init_source : 0u,
-        .levels = tex ? tex->num_levels : 0u,
-        .mips = tex ? tex->mipmap_levels : 0u,
-        .mipmapped = tex ? tex->mipmapped : 0u,
-        .mtl_color = colorMTL,
-        .fmt = (uint64_t)colorInfo.pixel_format,
-        .width = colorInfo.width,
-        .height = colorInfo.height,
-        .rp_color = rpColor0,
-        .rp_depth = rpDepth,
-        .depth_mtl = depthMTL,
-    };
-    mgl_batch_trace_copy_state_to_rt(&v, &state);
-    char line[1536];
-    if (mgl_batch_trace_format_rt_write_mark(line, sizeof(line), &v) > 0) {
-        mglTraceLog("%s", line);
-    }
-}
-
 void mglBatchRtMarkColorAttachmentWritten(void *renderer, GLMContext ctx,
                                           uint32_t attachment_index)
 {
@@ -194,16 +122,6 @@ void mglBatchRtMarkColorAttachmentWritten(void *renderer, GLMContext ctx,
     Texture *tex = mglRendererAttachmentTextureFor(ctx, attachment);
     mglMarkTextureLevelRenderTargetWrittenImpl(tex, attachment->level,
                                               __func__, __LINE__);
-    if (mgl_batch_rt_should_diag_attachment0(
-            attachment_index, mglTraceLogIsEnabled() ? 1 : 0,
-            mglTextureCanUseGLSampledRenderTargetCopy(tex) ? 1 : 0)) {
-        static uint64_t s_mglBatchRtWriteMarkCount = 0;
-        uint64_t hit = ++s_mglBatchRtWriteMarkCount;
-        if (mgl_batch_rt_should_trace_write_mark(hit)) {
-            mglBatchRtMarkTraceWriteMark(ctx, renderer, tex, fbo, attachment,
-                                         hit);
-        }
-    }
 }
 
 void mglBatchRtMarkCurrentFramebufferDrawAttachments(void *renderer,

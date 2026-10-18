@@ -23,7 +23,6 @@
 #include "glm_context.h"
 #include "mgl_blit_color_state.h"
 #include "mgl_blit_drivers.h"
-#include "mgl_blit_sampled_copy.h"
 #include "mgl_env_flag.h"
 #include "mgl_gpu_recovery.h"
 #include "mgl_pixel_format.h"

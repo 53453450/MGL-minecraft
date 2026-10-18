@@ -57,7 +57,6 @@
 #include "mgl_metal_ref.h"        /* mglSafeReleaseMetalObj */
 #include "mgl_texture_bind.h"     /* mglRendererBindMTLTexture */
 #include "mgl_texture_readback_clear.h" /* pending FBO clear application */
-#include "mgl_blit_sampled_copy.h" /* mglBlitUpdateGLSampledRenderTargetCopy */
 #include "mgl_trace_log.h"         /* mglTraceLog */
 #include "mgl_types_state.h"       /* GL boolean helper */
 #include "mgl_pso_format_class.h"
@@ -65,7 +64,6 @@
 
 /* Declared next to its definition in the Objective-C
  * MGLRenderer+Blit_Private.h; repeated here for the C twin below. */
-extern void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level);
 
 /* Record that `level` of `tex` was written by a GL copy
  * (glCopyImageSubData / its 3D workaround), which writes through Metal.
@@ -104,7 +102,6 @@ static void mglBdMarkTextureLevelCopied(Texture *tex, GLuint level)
     if (mglRenderTargetHasGPUContent(tex->is_render_target ? 1 : 0,
                                        tex->mtl_render_target_write_version)) {
         tex->mtl_render_target_write_version++;
-        mglMarkGLSampledCopyLevelDirty(tex, level);
         mglTextureViewFamilyWritten(tex);
     }
 }
@@ -880,7 +877,6 @@ static void mglBdMarkTextureLevelMetalFilled(Texture *tex, GLuint level,
     if (mglRenderTargetHasGPUContent(tex->is_render_target ? 1 : 0,
                                        tex->mtl_render_target_write_version)) {
         tex->mtl_render_target_write_version++;
-        mglMarkGLSampledCopyLevelDirty(tex, level);
     }
 }
 
@@ -1120,8 +1116,6 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
     mglBdMarkTextureLevelMetalFilled(tex, (GLuint)level, 0);
     mglBdSyncCopyTexSubImageCPU(renderer, tex, dest_texture, slice, level,
                                 xoffset, yoffset, width, height);
-    (void)mglBlitUpdateGLSampledRenderTargetCopy(
-        renderer, tex, dest_texture, "copy_tex_sub_image_blit");
     tex->dirty_bits &= ~(DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL);
     mglMarkRendererDirtyBits(&glm_ctx->state, DIRTY_TEX | DIRTY_TEX_BINDING);
     return true;
@@ -2494,11 +2488,7 @@ bool mglBlitResolveFramebufferAttachments(
                 return false;
             }
         }
-        /* The blit plans address the source as flipped storage too. */
-        if (!mglBlitFlipRenderTargetStorageForFirstWrite(renderer,
-                                                         read_texture_object)) {
-            return false;
-        }
+        mglRenderTargetMarkGPUAuthoritative(read_texture_object);
         readtexid = mglTextureMtl(read_texture_object);
         if (!readtexid) {
             fprintf(stderr,
@@ -2559,11 +2549,7 @@ bool mglBlitResolveFramebufferAttachments(
                     "to Metal\n");
             return false;
         }
-        /* The blit plans address the destination as flipped storage. */
-        if (!mglBlitFlipRenderTargetStorageForFirstWrite(renderer,
-                                                         draw_texture_object)) {
-            return false;
-        }
+        mglRenderTargetMarkGPUAuthoritative(draw_texture_object);
         drawtexid = mglTextureMtl(draw_texture_object);
         if (!drawtexid) {
             fprintf(stderr,
@@ -2925,17 +2911,12 @@ bool mglBlitFramebufferScaledColorWithState(void *renderer,
         mglMarkTextureLevelRenderTargetWrittenImpl(
             draw_texture_object, draw_fbo_attachment->level, __func__,
             __LINE__);
-        (void)mglBlitUpdateGLSampledRenderTargetCopy(
-            renderer, draw_texture_object, drawtexid, "blit_framebuffer_scaled");
     }
     /* When the source is also a render target, refresh its sampled copy so
      * future fragment-shader samples see useCopy=1 instead of falling back to
      * the direct texture (useCopy=0). */
     if (read_texture_object && read_texture_object->is_render_target &&
         readtexid) {
-        (void)mglBlitUpdateGLSampledRenderTargetCopy(
-            renderer, read_texture_object, readtexid,
-            "blit_framebuffer_scaled_src");
     }
     return true;
 }
@@ -3585,8 +3566,6 @@ void mglBlitCopyTexSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
     mglBdMarkTextureLevelMetalFilled(tex, (GLuint)level, bgra_size);
     mglBdSyncCopyTexSubImageCPU(renderer, tex, texture, slice, level, xoffset,
                                 yoffset, width, height);
-    (void)mglBlitUpdateGLSampledRenderTargetCopy(renderer, tex, texture,
-                                                 "copy_tex_sub_image");
     tex->dirty_bits &= ~(DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL);
     if (glm_ctx) {
         mglMarkRendererDirtyBits(&glm_ctx->state,
@@ -3594,176 +3573,6 @@ void mglBlitCopyTexSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
     }
 }
 
-/* === sampled render-target copy repair (P0-1, log 150) =================== */
-
-/* -freshGLSampledRenderTargetCopyForSampling:source:stage:program:binding:
- *  unit:expectedType:expectedKind:
- *
- * Returns a BORROWED handle (the texture or the renderer owns the sampled
- * copy), or NULL — the method's +0 `id` return. */
-void *mglBlitFreshGLSampledRenderTargetCopyForSampling(
-    void *renderer, Texture *tex, void *source, const char *stage,
-    GLuint program_name, GLuint binding, GLuint unit, uint32_t expected_type,
-    uint32_t expected_kind)
-{
-    MGLRendererStateView areas;
-    mglRendererFillStateView(renderer, &areas);
-
-    if (!tex || !source || !mglTextureCanUseGLSampledRenderTargetCopy(tex)) {
-        return NULL;
-    }
-    if (tex->mtl_render_target_write_version == 0u) {
-        return NULL;
-    }
-
-    void *sampled_copy = tex->mtl_gl_sampled_data;
-    int copy_type_ok =
-        sampled_copy &&
-        (expected_type == 0 ||
-         mglBdTextureInfo(sampled_copy).texture_type == expected_type) &&
-        mglTexturePixelFormatCompatibleWithExpectedDataKind(
-            mglRenderSampledViewPixelFormat(
-                tex->params.depth_stencil_mode,
-                mglBdTextureInfo(sampled_copy).pixel_format),
-            expected_kind);
-    if (sampled_copy && mglBdGLSampledCopyContentFresh(tex) && copy_type_ok) {
-        return sampled_copy;
-    }
-
-    int is_fb_attachment = mglTextureIsAttachmentOfFramebuffer(
-        areas.command ? areas.command->renderPassFramebuffer : NULL, tex);
-
-    /* Feedback sampling of a color attachment mid-pass must keep the pre-pass
-     * Y-flip copy.  Rebuilding from the live RT between drawArrays (version miss
-     * after MarkRenderTargetWritten) feeds already-written texels back into
-     * later draws and breaks KHR-GL46.texture_barrier same-texel-rw (cover-once
-     * across multiple draws, no barrier).  glTextureBarrier / end_render_pass
-     * refresh the copy instead. */
-    if (is_fb_attachment && copy_type_ok) {
-        if (mglTraceLogIsEnabled()) {
-            mglTraceLog(
-                "RT_SAMPLE_COPY_REPAIR_KEEP stage=%s program=%u binding=%u "
-                "unit=%u tex=%u label=\"%s\" "
-                "reason=fb-attachment-prepass-copy writeVer=%u rtVer=%u",
-                stage ? stage : "", (unsigned)program_name, (unsigned)binding,
-                (unsigned)unit, (unsigned)tex->name, mglTraceTextureLabel(tex),
-                (unsigned)tex->mtl_gl_sampled_write_version,
-                (unsigned)tex->mtl_render_target_write_version);
-        }
-        return sampled_copy;
-    }
-
-    if (mglRenderPassCurrentRenderPassUsesTexture(renderer, source) &&
-        !is_fb_attachment) {
-        /* The texture is used by the current render pass in a non-attachment
-         * role (e.g. bound to another sampler).  We cannot safely end and
-         * restore the pass in this case because the texture might be written by
-         * the pass itself. */
-        if (mglTraceLogIsEnabled()) {
-            mglTraceLog(
-                "RT_SAMPLE_COPY_REPAIR_SKIP stage=%s program=%u binding=%u "
-                "unit=%u tex=%u label=\"%s\" "
-                "reason=current-pass-uses-texture writeVer=%u rtVer=%u",
-                stage ? stage : "", (unsigned)program_name, (unsigned)binding,
-                (unsigned)unit, (unsigned)tex->name, mglTraceTextureLabel(tex),
-                (unsigned)tex->mtl_gl_sampled_write_version,
-                (unsigned)tex->mtl_render_target_write_version);
-        }
-        return NULL;
-    }
-
-    if (is_fb_attachment) {
-        if (mglTraceLogIsEnabled()) {
-            mglTraceLog(
-                "RT_SAMPLE_COPY_REPAIR_ATTEMPT stage=%s program=%u binding=%u "
-                "unit=%u tex=%u label=\"%s\" reason=fb-attachment writeVer=%u "
-                "rtVer=%u",
-                stage ? stage : "", (unsigned)program_name, (unsigned)binding,
-                (unsigned)unit, (unsigned)tex->name, mglTraceTextureLabel(tex),
-                (unsigned)tex->mtl_gl_sampled_write_version,
-                (unsigned)tex->mtl_render_target_write_version);
-        }
-    }
-
-    int had_render_encoder =
-        mglRenderEncoderOwnerHasCurrent(
-            areas.command ? areas.command->currentRenderEncoderOwner : NULL) == 1;
-    if (had_render_encoder) {
-        mglRendererEndRenderEncodingLocked(renderer);
-    }
-
-    /* texSubImage may leave DIRTY_TEXTURE_DATA after releasing the sampled copy
-     * (direct MTL upload skipped/failed).  Rebuild the Y-flip copy from Metal
-     * only after flushing CPU backing, otherwise feedback sampling sees the
-     * previous clear/RT contents (KHR-GL46.texture_barrier). */
-    if ((tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0 && mglTextureMtl(tex) &&
-        !tex->metal_data_authoritative) {
-        void *dirty_metal = mglTextureMtl(tex);
-        int flushed = 0;
-        if (mglRenderTextureTargetIs2D((uint32_t)tex->target) &&
-            mglBdTextureInfo(dirty_metal).texture_type == MGLTextureType2D &&
-            !mglTextureUploadNeedsSwizzleBake(tex)) {
-            flushed = mglTextureUploadFullCPUData(
-                renderer, tex, dirty_metal, "sample_gate_miss_repair.dirty");
-        }
-        if (flushed) {
-            tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
-            if (tex->is_render_target) {
-                tex->mtl_render_target_write_version++;
-                mglMarkGLSampledCopyLevelDirty(tex, 0u);
-            }
-        }
-    }
-
-    sampled_copy = tex->mtl_gl_sampled_data;
-    if (!(sampled_copy && mglBdGLSampledCopyContentFresh(tex) &&
-          (expected_type == 0 ||
-           mglBdTextureInfo(sampled_copy).texture_type == expected_type) &&
-          mglTexturePixelFormatCompatibleWithExpectedDataKind(
-              mglRenderSampledViewPixelFormat(
-                  tex->params.depth_stencil_mode,
-                  mglBdTextureInfo(sampled_copy).pixel_format),
-              expected_kind))) {
-        source = mglTextureMtl(tex);
-        if (source) {
-            (void)mglBlitUpdateGLSampledRenderTargetCopy(
-                renderer, tex, source, "sample_gate_miss_repair");
-        }
-        sampled_copy = tex->mtl_gl_sampled_data;
-    }
-
-    if (had_render_encoder &&
-        mglRenderEncoderOwnerHasCurrent(
-            areas.command ? areas.command->currentRenderEncoderOwner : NULL) !=
-            1) {
-        if (!mglRenderPassRestoreRenderEncoderAfterTextureUpload(
-                renderer, "sample_gate_miss_repair")) {
-            return NULL;
-        }
-    }
-
-    int fresh =
-        sampled_copy && mglBdGLSampledCopyContentFresh(tex) &&
-        (expected_type == 0 ||
-         mglBdTextureInfo(sampled_copy).texture_type == expected_type) &&
-        mglTexturePixelFormatCompatibleWithExpectedDataKind(
-            mglRenderSampledViewPixelFormat(
-                tex->params.depth_stencil_mode,
-                mglBdTextureInfo(sampled_copy).pixel_format),
-            expected_kind);
-    if (mglTraceLogIsEnabled()) {
-        mglTraceLog(
-            "RT_SAMPLE_COPY_REPAIR stage=%s program=%u binding=%u unit=%u tex=%u "
-            "label=\"%s\" ok=%d copy=%p writeVer=%u rtVer=%u expectedType=%lu",
-            stage ? stage : "", (unsigned)program_name, (unsigned)binding,
-            (unsigned)unit, (unsigned)tex->name, mglTraceTextureLabel(tex),
-            fresh ? 1 : 0, sampled_copy,
-            (unsigned)tex->mtl_gl_sampled_write_version,
-            (unsigned)tex->mtl_render_target_write_version,
-            (unsigned long)expected_type);
-    }
-    return fresh ? sampled_copy : NULL;
-}
 
 /* The glBlitFramebuffer backend entry (was the tail of MGLRenderer+Blit.m).
  * The Objective-C side had a two-line lease inline in MGLRenderer_Private.h;

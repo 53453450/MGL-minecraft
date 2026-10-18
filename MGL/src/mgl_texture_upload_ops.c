@@ -69,12 +69,8 @@ static MGLRenderTextureInfo mglPdTextureInfo(void *texture)
 
 /* The Objective-C header's mglMarkTextureLevelMetalFilled is a static inline
  * there; this is the C twin (same shape as mgl_blit_drivers.c's). */
-extern void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level);
 extern int mglRendererShouldSkipGPUOperations(void *renderer);
 extern const char *mglCommandBufferStatusName(uint32_t status);
-extern int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
-                                                void *texture,
-                                                const char *reason);
 extern bool mglRendererBindMTLTexture(void *renderer, Texture *tex);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
 
@@ -94,7 +90,6 @@ static void mglUpMarkTextureLevelMetalFilled(Texture *tex, GLuint level,
     tex_level->last_src_hash = 0ull;
     if (tex->is_render_target) {
         tex->mtl_render_target_write_version++;
-        mglMarkGLSampledCopyLevelDirty(tex, level);
         mglTextureViewFamilyWritten(tex);
     }
 }
@@ -939,9 +934,6 @@ int mglTextureUploadFullCPUData(void *renderer, Texture *tex, void *texture,
         }
         if (uploaded) {
             uploadedAny = true;
-            /* CPU refreshed Metal mip while a Y-flip sampled copy may still
-             * hold the previous RT contents for that level. */
-            mglMarkGLSampledCopyLevelDirty(tex, op->level);
         } else {
             failedAny = true;
         }
@@ -2879,8 +2871,6 @@ int mglTextureUploadDirty(void *renderer, Texture *tex, void *texture,
 
             if (levelSkipped)
                 anyLevelSkipped = 1;
-            else
-                mglMarkGLSampledCopyLevelDirty(tex, (GLuint)level);
         }
     }
 
@@ -3606,8 +3596,6 @@ int mglTextureSubImageBytes(void *renderer, GLMContext glm_ctx,
         mglUpMarkTextureLevelMetalFilled(tex, level, packedBytes);
         void *source = mglTextureMtl(tex);
         if (source) {
-            (void)mglBlitUpdateGLSampledRenderTargetCopy(
-                renderer, tex, source, "texSubImage_metal_fill");
         }
     }
     free(packedUpload);

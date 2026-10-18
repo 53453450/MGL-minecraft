@@ -19,7 +19,7 @@
 #include "mgl_attachment_binding.h" /* mglRendererBindFramebufferAttachmentTextures */
 #include "mgl_renderer_binding_ops.h"  /* binding set / invalidate entries */
 #include "mgl_blit_pipelines.h"     /* mglBlitClearRectPipeline / DepthState */
-#include "mgl_blit_sampled_copy.h"  /* mglBlitFlipRenderTargetStorageForFirstWrite */
+#include "mgl_rt_sync.h"  /* mglRenderTargetMarkGPUAuthoritative */
 #include "mgl_metal_ref.h"          /* mglReleaseMetalObjNoNull */
 #include "mgl_draw_buffer.h"        /* mglMetal* draw-buffer mapping */
 #include "mgl_renderer_backend.h"
@@ -283,17 +283,14 @@ static int mglPdClearColorIsInteger(void *texture)
     return kind == MGLTextureDataKindUint || kind == MGLTextureDataKindSint;
 }
 
-/* The clear draws address the attachment as flipped render-target storage. */
 static int mglPdBindClearTarget(void *renderer, Texture *tex)
 {
     tex->is_render_target = 1;
     if (!mglRendererBindMTLTexture(renderer, tex) || !mglTextureMtl(tex)) {
         return 0;
     }
-    if (tex->mtl_render_target_write_version == 0u) {
-        mglRendererEndRenderEncodingLocked(renderer);
-    }
-    return mglBlitFlipRenderTargetStorageForFirstWrite(renderer, tex);
+    mglRenderTargetMarkGPUAuthoritative(tex);
+    return 1;
 }
 
 /* Clears reach every layer of a layered attachment (§9.8). */

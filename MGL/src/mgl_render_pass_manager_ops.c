@@ -51,7 +51,6 @@
 #include "mgl_renderer_ports.h"
 #include "mgl_renderer_binding_ops.h"      /* mglRendererBindingInvalidateLastBoundState */
 #include "mgl_trace_strategy.h"         /* mglClearFragmentTraceBindingsForRenderer */
-#include "mgl_blit_sampled_copy.h"      /* GLSampled copies refresh */
 
 #include <stdio.h>
 #include <stdarg.h>   /* va_list for the GLSL source builder */
@@ -1079,9 +1078,7 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
             if (!mglTextureMtl(tex)) {
                 continue;
             }
-            if (!mglBlitFlipRenderTargetStorageForFirstWrite(renderer, tex)) {
-                return false;
-            }
+            mglRenderTargetMarkGPUAuthoritative(tex);
 
             MGLMetalAttachmentSubresource subresource =
                 mglMetalAttachmentSubresourceForAttachment(
@@ -1155,9 +1152,7 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
             }
         }
         if (tex && mglTextureMtl(tex)) {
-            if (!mglBlitFlipRenderTargetStorageForFirstWrite(renderer, tex)) {
-                return false;
-            }
+            mglRenderTargetMarkGPUAuthoritative(tex);
             MGLMetalAttachmentSubresource subresource =
                 mglMetalAttachmentSubresourceForAttachment(&fbo->depth);
             const int32_t msOffset =
@@ -1185,9 +1180,7 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
             }
         }
         if (tex && mglTextureMtl(tex)) {
-            if (!mglBlitFlipRenderTargetStorageForFirstWrite(renderer, tex)) {
-                return false;
-            }
+            mglRenderTargetMarkGPUAuthoritative(tex);
             MGLMetalAttachmentSubresource subresource =
                 mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
             const int32_t msOffset =

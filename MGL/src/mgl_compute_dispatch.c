@@ -36,7 +36,6 @@
 #include "mgl_renderer_ports.h"     /* state areas + host entries */
 #include "mgl_renderer_backend.h"   /* mglRendererProcessBuffer, context lookup */
 #include "mgl_texture_bind.h"       /* mglRendererBindMTLTexture */
-#include "mgl_blit_sampled_copy.h"
 #include "mgl_compute_pipeline_cache.h" /* mglGetOrCreateProgramComputePipeline */
 #include "mgl_binding_stage.h"      /* MGLStageBindingCopyBackList */
 #include "mgl_buffer_slots.h"       /* kMGLMaxBufferSlots */

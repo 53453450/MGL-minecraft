@@ -41,7 +41,6 @@
 #include "mgl_render.h"            /* compute encoders, blit encodes */
 #include "mgl_blit_plan.h"         /* blit plan helpers */
 #include "mgl_blit_pipelines.h"    /* mglBlitMsaaIntegerResolvePipeline */
-#include "mgl_blit_sampled_copy.h" /* mglBlitUpdateGLSampledRenderTargetCopy */
 #include "mgl_readback.h"          /* integer-color format predicates */
 #include "mgl_texture_compat.h"   /* mglMarkTextureLevelRenderTargetWritten */
 #include "mgl_state_compat.h"   /* mglNearlyEqual */
@@ -438,18 +437,6 @@ void mglBlitDirectColorWithState(void *renderer, const MGLBlitColorState *st)
         mglMarkTextureLevelRenderTargetWrittenImpl(
             draw_texture_object, draw_fbo_attachment->level,
             "mgl_blit_color_paths.c", __LINE__);
-        (void)mglBlitUpdateGLSampledRenderTargetCopy(
-            renderer, draw_texture_object, drawtexid, "blit_framebuffer_copy");
-    }
-    /* When the source is also a render target, refresh its sampled copy
-     * so future fragment-shader samples use the synchronized copy instead
-     * of falling back to the direct texture (useCopy=0). Skip this when we
-     * must not become the sampled copy of the (multisample) source object. */
-    if (read_texture_object && read_texture_object->is_render_target && readtexid &&
-        !did_msaa_resolve) {
-        (void)mglBlitUpdateGLSampledRenderTargetCopy(
-            renderer, read_texture_object, readtexid,
-            "blit_framebuffer_copy_src");
     }
 }
 
@@ -522,9 +509,6 @@ bool mglBlitIntegerColorWithState(void *renderer, const MGLBlitColorState *st)
             mglMarkTextureLevelRenderTargetWrittenImpl(
                 draw_texture_object, draw_fbo_attachment->level,
                 "mgl_blit_color_paths.c", __LINE__);
-            (void)mglBlitUpdateGLSampledRenderTargetCopy(
-                renderer, draw_texture_object, drawtexid,
-                "blit_framebuffer_integer_msaa");
         }
         return true;
     }
@@ -581,9 +565,6 @@ bool mglBlitIntegerColorWithState(void *renderer, const MGLBlitColorState *st)
             mglMarkTextureLevelRenderTargetWrittenImpl(
                 draw_texture_object, draw_fbo_attachment->level,
                 "mgl_blit_color_paths.c", __LINE__);
-            (void)mglBlitUpdateGLSampledRenderTargetCopy(
-                renderer, draw_texture_object, drawtexid,
-                "blit_framebuffer_integer_direct");
         }
         return true;
     }
@@ -736,17 +717,13 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
             depth_read_object->is_render_target = true;
             depth_draw_object->is_render_target = true;
         }
-        /* Both attachments belong to user framebuffers, so they share one
-         * storage row order: GL rows when GL-order storage is on, otherwise
-         * flipped render-target storage. */
-        const int gl_rows = mglFBOGLOrderEnabled();
+        /* Both attachments belong to user framebuffers and store GL rows. */
+        const int gl_rows = 1;
         if (depth_read_object && depth_draw_object &&
             mglRendererBindMTLTexture(renderer, depth_read_object) &&
-            mglRendererBindMTLTexture(renderer, depth_draw_object) &&
-            mglBlitFlipRenderTargetStorageForFirstWrite(renderer,
-                                                        depth_read_object) &&
-            mglBlitFlipRenderTargetStorageForFirstWrite(renderer,
-                                                        depth_draw_object)) {
+            mglRendererBindMTLTexture(renderer, depth_draw_object)) {
+            mglRenderTargetMarkGPUAuthoritative(depth_read_object);
+            mglRenderTargetMarkGPUAuthoritative(depth_draw_object);
             void *depth_read_texture = mglTextureMtl(depth_read_object);
             void *depth_draw_texture = mglTextureMtl(depth_draw_object);
             MGLMetalAttachmentSubresource depth_read_subresource =
