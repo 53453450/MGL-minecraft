@@ -2391,6 +2391,20 @@ static bool mglCopyImageIsTextureComplete(const Texture *tex, GLenum target)
 	if (max < base)
 		return false;
 
+	/* GL 4.6 section 8.17: only a mipmapped minification filter makes the
+	 * levels above the base level part of completeness.  A texture sampled
+	 * with NEAREST or LINEAR is complete with its base level alone. */
+	switch (tex->params.min_filter) {
+	case GL_NEAREST_MIPMAP_NEAREST:
+	case GL_LINEAR_MIPMAP_NEAREST:
+	case GL_NEAREST_MIPMAP_LINEAR:
+	case GL_LINEAR_MIPMAP_LINEAR:
+		break;
+	default:
+		max = base;
+		break;
+	}
+
 	/* Check that all levels from base to max are complete. */
 	for (GLuint i = base; i <= max; i++) {
 		if (!tex->faces[0].levels[i].complete)
