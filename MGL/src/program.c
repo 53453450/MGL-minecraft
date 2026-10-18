@@ -3493,7 +3493,8 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
              * drive the sample params.  gl_NumSamples counts for the params
              * but not for per-sample MS values, matching the old scans. */
             const GLuint fsBits = pptr->air_builtin_mask[_FRAGMENT_SHADER];
-            if (fsBits & (MGL_AIR_BUILTIN_FRAG_COORD | MGL_AIR_BUILTIN_POINT_COORD))
+            if (fsBits & (MGL_AIR_BUILTIN_FRAG_COORD | MGL_AIR_BUILTIN_POINT_COORD |
+                          MGL_AIR_BUILTIN_DERIV_Y))
                 pptr->usesFragCoordParams = GL_TRUE;
             if (fsBits & (MGL_AIR_BUILTIN_NUM_SAMPLES |
                           MGL_AIR_BUILTIN_SAMPLE_ID |

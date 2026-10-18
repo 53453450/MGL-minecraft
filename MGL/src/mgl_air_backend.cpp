@@ -1653,6 +1653,21 @@ static llvm::Value *flipMultisampleStorageRow(Codegen &cg, llvm::Value *tex,
     return cg.b->CreateInsertElement(coord, row, cg.b->getInt32(1));
 }
 
+/* GL's dFdy runs toward +y in window space; scale Metal's by the sign the
+ * fragment parameters publish for the target's row order. */
+static llvm::Value *applyDerivYSign(Codegen &cg, llvm::Value *dy)
+{
+    if (!dy || !cg.derivYSign) return dy;
+    llvm::Value *sign = cg.derivYSign;
+    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(dy->getType())) {
+        llvm::Value *splat = llvm::UndefValue::get(vt);
+        for (uint32_t i = 0; i < vt->getNumElements(); i++)
+            splat = cg.b->CreateInsertElement(splat, sign, i);
+        sign = splat;
+    }
+    return cg.b->CreateFMul(dy, sign);
+}
+
 /* emitExpr / interpolateAt declared early for call sites. */
 llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals);
@@ -9913,10 +9928,12 @@ static bool emitCallDerivativeBuiltins(
                 std::string fn = is_y
                     ? std::string("air.dfdy.v") + std::to_string(n) + "f32"
                     : std::string("air.dfdx.v") + std::to_string(n) + "f32";
-                return (*out = callAirFn(cg, fn.c_str(), et, {v}), true);
+                llvm::Value *d = callAirFn(cg, fn.c_str(), et, {v});
+                return (*out = is_y ? applyDerivYSign(cg, d) : d, true);
             }
-            return (*out = callAirFn(cg, is_y ? "air.dfdy.f32" : "air.dfdx.f32",
-                             et, {v}), true);
+            llvm::Value *d = callAirFn(cg, is_y ? "air.dfdy.f32" : "air.dfdx.f32",
+                                       et, {v});
+            return (*out = is_y ? applyDerivYSign(cg, d) : d, true);
         }
         if (strcmp(name, "interpolateAtCentroid") == 0 ||
             strcmp(name, "interpolateAtSample") == 0 ||
@@ -12786,6 +12803,7 @@ static llvm::Value *emitInterpolateAtOffsetValue(Codegen &cg, llvm::Value *v,
         dy = callAirFn(cg, "air.dfdy.f32", et, {v});
     }
     if (!dx || !dy) return nullptr;
+    dy = applyDerivYSign(cg, dy);
     llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
     llvm::Value *ox = cg.b->CreateExtractElement(offsetXY, cg.b->getInt32(0));
     llvm::Value *oy = cg.b->CreateExtractElement(offsetXY, cg.b->getInt32(1));
@@ -13984,7 +14002,14 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
      * carries {height, lower_left, num_samples, sample_buffers,
      * point_coord_lower_left} so the FS can flip Y (see RenderPass
      * fragCoordParams). */
-    const bool needFragCoordParams = usesFragCoord;
+    const bool usesDerivY =
+        !isVS && !isTES && !isKernel &&
+        (mglFrontendBuiltinUsed(&mod, tu, "dFdy") ||
+         mglFrontendBuiltinUsed(&mod, tu, "dFdyFine") ||
+         mglFrontendBuiltinUsed(&mod, tu, "dFdyCoarse") ||
+         mglFrontendBuiltinUsed(&mod, tu, "interpolateAtOffset") ||
+         mglFrontendBuiltinUsed(&mod, tu, "interpolateAtSample"));
+    const bool needFragCoordParams = usesFragCoord || usesDerivY;
     const bool needParamsBuffer =
         needFragCoordParams || needSampleParams || usesPointCoord;
     const bool usesWorkGroupID =
@@ -15179,6 +15204,20 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                     cg.b->CreateSelect(useFlip, flipped, y);
                 cg.fragPos = cg.b->CreateInsertElement(
                     cg.fragPos, newY, cg.b->getInt32(1));
+            }
+            if (usesDerivY) {
+                /* Metal differentiates along its screen rows.  A window-system
+                 * target with a lower-left origin counts rows downward, so GL's
+                 * dFdy (toward +y) is the negative of Metal's there. */
+                llvm::Value *lowerLeftY = cg.b->CreateAlignedLoad(
+                    f32,
+                    cg.b->CreateGEP(f32, fptr, cg.b->getInt32(1)),
+                    llvm::Align(4));
+                cg.derivYSign = cg.b->CreateSelect(
+                    cg.b->CreateFCmpOGT(lowerLeftY,
+                                        llvm::ConstantFP::get(f32, 0.5)),
+                    llvm::ConstantFP::get(f32, -1.0),
+                    llvm::ConstantFP::get(f32, 1.0));
             }
             if (usesPointCoord) {
                 /* Metal point_coord has GL's UPPER_LEFT orientation. */
@@ -18327,6 +18366,12 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_INTERPOLATE_AT_SAMPLE;
     if (mglFrontendBuiltinUsed(mod, tu, "interpolateAtOffset"))
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_INTERPOLATE_AT_OFFSET;
+    if (mglFrontendBuiltinUsed(mod, tu, "dFdy") ||
+        mglFrontendBuiltinUsed(mod, tu, "dFdyFine") ||
+        mglFrontendBuiltinUsed(mod, tu, "dFdyCoarse") ||
+        mglFrontendBuiltinUsed(mod, tu, "interpolateAtOffset") ||
+        mglFrontendBuiltinUsed(mod, tu, "interpolateAtSample"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_DERIV_Y;
     if (mglFrontendStageUsesSampleInterpolation(mod, tu))
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_SAMPLE_INTERPOLATION;
     if (stage_info->uses_tess_level)

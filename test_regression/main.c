@@ -30596,11 +30596,9 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("pixel_format_bpp_table",
                     test_pixel_format_bpp_table),
     SELF_CHECK_TEST("sample_mask_state_key", test_sample_mask_state_key),
-    /* Phase 0 probes of the FBO row-order redesign; explicit-only until the
-     * redesign makes them pass (docs/TODO_FBO_GL_ROW_ORDER_2026-10-18.md). */
-    EXPLICIT_SELF_CHECK_TEST("dfdy_orientation", test_dfdy_orientation),
-    EXPLICIT_SELF_CHECK_TEST("interpolate_at_offset_orientation",
-                             test_interpolate_at_offset_orientation),
+    SELF_CHECK_TEST("dfdy_orientation", test_dfdy_orientation),
+    SELF_CHECK_TEST("interpolate_at_offset_orientation",
+                    test_interpolate_at_offset_orientation),
     SELF_CHECK_TEST("draw_buffer_texture_attachment",
                     test_draw_buffer_texture_attachment),
     /* depth_test/stencil use probe-style fns (test_depth_probe /

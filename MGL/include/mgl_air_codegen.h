@@ -172,6 +172,9 @@ struct Codegen {
     /* Slot 30: {num_samples, sample_buffers}. sample_buffers==0 means
      * non-MSAA FB; GL ignores gl_SampleMask writes in that case. */
     llvm::Value *fragSampleParams = nullptr;
+    /* +1 / -1 applied to dFdy: -1 on a window-system target whose rows count
+     * downward (see MGL_AIR_BUILTIN_DERIV_Y). Null outside fragment stages. */
+    llvm::Value *derivYSign = nullptr;
     bool usesClipDistance = false;       /* vertex writes gl_ClipDistance */
     bool emulateClipDiscard = false;     /* FS discards interpolated clip < 0 */
     uint32_t cullDistancePassthroughCount = 0; /* VS flat outs / FS ins */

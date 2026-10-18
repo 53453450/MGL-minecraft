@@ -61,7 +61,7 @@ typedef struct GLMContextRec_t *GLMContext;
  */
 /* Plain integer (no u suffix): the pipeline archive key stringizes this macro,
  * and a suffix would end up inside the file name. */
-#define MGL_AIR_CODEGEN_EPOCH 2
+#define MGL_AIR_CODEGEN_EPOCH 3
 
 #ifdef __cplusplus
 extern "C" {
@@ -111,6 +111,10 @@ enum {
     MGL_AIR_BUILTIN_BASE_VERTEX    = 1u << 17, /* gl_BaseVertex(ARB)         */
     MGL_AIR_BUILTIN_BASE_INSTANCE  = 1u << 18, /* gl_BaseInstance(ARB)       */
     MGL_AIR_BUILTIN_DRAW_ID        = 1u << 19, /* gl_DrawID(ARB)             */
+    /* dFdy* / interpolateAtOffset / interpolateAtSample: their Y direction
+     * follows the target's row order, which the stage learns at draw time
+     * from the fragment parameter buffer. */
+    MGL_AIR_BUILTIN_DERIV_Y        = 1u << 20,
 };
 
 typedef struct MGLAIRStageInfo {
