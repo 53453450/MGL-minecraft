@@ -42,6 +42,12 @@ extern "C" {
 uint32_t mglSizeForType(uint32_t type);
 uint32_t mglNumComponentsForFormat(uint32_t format);
 
+/* Decompose an integer internal format into component count / width / signedness.
+ * Returns 0 on success, -1 when the format is not an integer colour format. */
+int mglRenderIntegerFormatLayout(
+    uint32_t internal_format, uint32_t* out_components,
+    uint32_t* out_component_bytes, int* out_signed);
+
 /* Readback acceptance: which GL transfer types the fixed-width readback
  * narrowers can decode, and which output slots a GL format's components map
  * to.  Tables only; the byte shuffling stays in the backend. */

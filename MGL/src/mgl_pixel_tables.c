@@ -10,6 +10,7 @@
  */
 
 #include "mgl_pixel_format.h"
+#include "mgl_render_api_texture.h"
 
 #include <stdio.h>
 
@@ -327,6 +328,126 @@ int mglReadbackUnorm8PackedTypeAccepted(uint32_t type) {
         case GL_UNSIGNED_INT_2_10_10_10_REV:
         case GL_UNSIGNED_INT_10F_11F_11F_REV:
         case GL_UNSIGNED_INT_5_9_9_9_REV:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+uint32_t mglRenderStoredColorComponents(uint32_t internal_format) {
+    uint32_t components = mglNumComponentsForFormat(internal_format);
+    return components > 0u ? components : 4u;
+}
+
+int mglRenderIntegerFormatLayout(
+    uint32_t internal_format, uint32_t* out_components,
+    uint32_t* out_component_bytes, int* out_signed) {
+    if (!out_components || !out_component_bytes || !out_signed) {
+        return -1;
+    }
+    *out_components = 0;
+    *out_component_bytes = 0;
+    *out_signed = 0;
+    switch (internal_format) {
+        case GL_R8I:
+        case GL_RG8I:
+        case GL_RGB8I:
+        case GL_RGBA8I:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 1u;
+            *out_signed = 1;
+            return 0;
+        case GL_R8UI:
+        case GL_RG8UI:
+        case GL_RGB8UI:
+        case GL_RGBA8UI:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 1u;
+            *out_signed = 0;
+            return 0;
+        case GL_R16I:
+        case GL_RG16I:
+        case GL_RGB16I:
+        case GL_RGBA16I:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 2u;
+            *out_signed = 1;
+            return 0;
+        case GL_R16UI:
+        case GL_RG16UI:
+        case GL_RGB16UI:
+        case GL_RGBA16UI:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 2u;
+            *out_signed = 0;
+            return 0;
+        case GL_R32I:
+        case GL_RG32I:
+        case GL_RGB32I:
+        case GL_RGBA32I:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 4u;
+            *out_signed = 1;
+            return 0;
+        case GL_R32UI:
+        case GL_RG32UI:
+        case GL_RGB32UI:
+        case GL_RGBA32UI:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 4u;
+            *out_signed = 0;
+            return 0;
+        default:
+            return -1;
+    }
+}
+
+int mglRenderTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
+                                                       int swizzled) {
+    if (!swizzled) {
+        return 0;
+    }
+    switch (internal_format) {
+        case GL_R8:
+        case GL_R8_SNORM:
+        case GL_R16:
+        case GL_R16_SNORM:
+        case GL_R16F:
+        case GL_R32F:
+        case GL_R8I:
+        case GL_R8UI:
+        case GL_R16I:
+        case GL_R16UI:
+        case GL_R32I:
+        case GL_R32UI:
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+int mglRenderTextureUploadNeedsSingleChannelSwizzleBake(
+    uint32_t internal_format, int swizzled) {
+    if (!swizzled) {
+        return 0;
+    }
+    switch (internal_format) {
+        case GL_R8:
+        case GL_R8_SNORM:
+        case GL_R16:
+        case GL_R16_SNORM:
+        case GL_R16F:
+        case GL_R32F:
+        case GL_R16UI:
+        case GL_R32UI:
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
             return 1;
         default:
             return 0;

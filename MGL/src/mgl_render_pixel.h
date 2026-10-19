@@ -18,9 +18,6 @@ int64_t mglRenderReadIntegerTexelComponent( const uint8_t* texel, uint32_t compo
 void mglRenderWriteIntegerTexelComponent( uint8_t* texel, uint32_t component, uint32_t component_bytes, int is_signed, int64_t value);
 
 
-int mglRenderIntegerFormatLayout(
-    uint32_t internal_format, uint32_t* out_components,
-    uint32_t* out_component_bytes, int* out_signed);
 int mglRenderPixelFormatMatchesSwizzleBakeStorage(
     uint32_t internal_format, uint32_t storage_pixel_format);
 int32_t mglRenderResolveR8IntegerSwizzledComponent(

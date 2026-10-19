@@ -2475,11 +2475,7 @@ uint8_t mglRenderResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red) {
 
 
 
-extern "C"
-uint32_t mglRenderStoredColorComponents(uint32_t internal_format) {
-    uint32_t components = mglNumComponentsForFormat(internal_format);
-    return components > 0u ? components : 4u;
-}
+
 
 
 
