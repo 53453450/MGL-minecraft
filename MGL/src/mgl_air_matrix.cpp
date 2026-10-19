@@ -423,6 +423,37 @@ llvm::Value *emitMatrixBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
         }
         return out;
     }
+    if (op == MGL_OP_DIV) {
+        /* GLSL 4.60 §5.9: matrix division is component-wise, with a matrix or
+         * a scalar on either side (sema rejects mismatched shapes). */
+        if (larr && rarr) {
+            llvm::Value *out = llvm::UndefValue::get(l->getType());
+            for (uint32_t c = 0; c < colCount(larr); c++) {
+                llvm::Value *lc = cg.b->CreateExtractValue(l, c);
+                llvm::Value *rc = cg.b->CreateExtractValue(r, c);
+                out = cg.b->CreateInsertValue(out, cg.b->CreateFDiv(lc, rc), c);
+            }
+            return out;
+        }
+        llvm::Value *arr = larr ? l : r;
+        llvm::Value *s = larr ? r : l;
+        if (s->getType()->isVectorTy()) {
+            s = cg.b->CreateExtractElement(
+                s, llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0));
+        }
+        auto *arrTy = llvm::cast<llvm::ArrayType>(arr->getType());
+        llvm::Value *out = llvm::UndefValue::get(arrTy);
+        const uint32_t rows = rowCount(arrTy);
+        const bool scalarOnRight = larr != nullptr;
+        for (uint32_t c = 0; c < colCount(arrTy); c++) {
+            llvm::Value *col = cg.b->CreateExtractValue(arr, c);
+            llvm::Value *bs = cg.b->CreateVectorSplat(rows, s);
+            llvm::Value *m = scalarOnRight ? cg.b->CreateFDiv(col, bs)
+                                           : cg.b->CreateFDiv(bs, col);
+            out = cg.b->CreateInsertValue(out, m, c);
+        }
+        return out;
+    }
     if ((op == MGL_OP_EQ || op == MGL_OP_NE) && larr && rarr) {
         /* GLSL 4.60 §5.9: mat == / != → scalar bool (all elements). */
         uint32_t cols = colCount(larr);

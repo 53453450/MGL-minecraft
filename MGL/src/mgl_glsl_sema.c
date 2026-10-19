@@ -4331,6 +4331,25 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                            op_name(e->u.binary.op));
                 return NULL;
             }
+            /* GLSL 4.60 §5.9: a matrix divides component-wise by a scalar or
+             * by a matrix of the same shape, and a scalar divides a matrix
+             * component-wise.  result_numeric() only knows scalar and vector
+             * shapes, so it would type `mat3 / float` as float (BSL's
+             * inverseMatrix returns mat3(...)/det).  '%' has no matrix form. */
+            if (l->kind == MGLIR_TYPE_MATRIX || r->kind == MGLIR_TYPE_MATRIX) {
+                if (e->u.binary.op != MGL_OP_DIV) {
+                    sema_error(s, e->line, "'%%' requires integer operands");
+                    return NULL;
+                }
+                if (l->kind == MGLIR_TYPE_MATRIX &&
+                    r->kind == MGLIR_TYPE_MATRIX &&
+                    (l->cols != r->cols || l->rows != r->rows)) {
+                    sema_error(s, e->line,
+                               "matrix division requires matching dimensions");
+                    return NULL;
+                }
+                return l->kind == MGLIR_TYPE_MATRIX ? l : r;
+            }
             if (e->u.binary.op == MGL_OP_MOD &&
                 (l->scalar == MGLIR_SCALAR_FLOAT || l->scalar == MGLIR_SCALAR_DOUBLE)) {
                 sema_error(s, e->line, "'%%' requires integer operands");
