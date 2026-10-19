@@ -40,6 +40,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "mgl_metal_ref.h"
+#include "mgl_debug_fbo_stats.h"
 #include <mach/mach_init.h>
 #include <mach/vm_map.h>
 
@@ -800,6 +801,7 @@ void MGLswapBuffers(GLMContext ctx)
 {
     static uint64_t s_mglSwapBuffersCalls = 0;
     uint64_t call = ++s_mglSwapBuffersCalls;
+    mglDebugFboStatsSetFrame(call);
 
     if (ctx == NULL)
         ctx = _ctx;
@@ -822,6 +824,11 @@ void MGLswapBuffers(GLMContext ctx)
                             (unsigned)ctx->state.program_name);
     }
 
+    if (ctx->state.framebuffer) {
+        mglDebugFboStatsOnDrawFramebufferChange(ctx, ctx->state.framebuffer);
+    }
+    mglDebugFboStatsAtSwap(ctx, (GLuint)ctx->state.viewport[2],
+                           (GLuint)ctx->state.viewport[3]);
     mglRendererSwapBuffers(ctx);
 }
 

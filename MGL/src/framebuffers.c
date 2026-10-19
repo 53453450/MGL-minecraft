@@ -34,6 +34,7 @@
 #include <stdint.h>
 #include <math.h>
 #include "mgl_env_flag.h"
+#include "mgl_debug_fbo_stats.h"
 
 #include "glm_context.h"
 #include "draw_command.h"
@@ -922,6 +923,11 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
 
     oldDrawFbo = STATE(framebuffer);
     oldReadFbo = STATE(readbuffer);
+
+    if ((target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER) &&
+        oldDrawFbo && framebuffer != oldDrawFbo->name) {
+        mglDebugFboStatsOnDrawFramebufferChange(ctx, oldDrawFbo);
+    }
 
     VertexArray *currentVAO = STATE(vao);
     /* Table membership implies live memory (VAOs leave the table before
