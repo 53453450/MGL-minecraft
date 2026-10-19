@@ -7,10 +7,10 @@ C1 MGL/src/rendering.c 4
 C1 MGL/src/shaders.c 2
 C1 MGL/src/textures.c 22
 C2 MGL/src/mgl_batch_dyn_bind_encode.c 1
-C2 MGL/src/mgl_render_binding.cpp 83
+C2 MGL/src/mgl_render_binding.cpp 63
 C2 MGL/src/mgl_render_buffer.cpp 60
 C2 MGL/src/mgl_render_command.cpp 4
-C2 MGL/src/mgl_render_draw.cpp 100
+C2 MGL/src/mgl_render_draw.cpp 71
 C2 MGL/src/mgl_render_lifecycle.cpp 66
 C2 MGL/src/mgl_render_pixel.cpp 165
 C2 MGL/src/mgl_render_query.cpp 19
