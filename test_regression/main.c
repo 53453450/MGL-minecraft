@@ -21680,8 +21680,12 @@ static int test_texture_gather_incomplete(unsigned char *pixels,
         return 1;
     }
 
-    float texels[16];
-    for (int i = 0; i < 16; i++) texels[i] = 0.25f * (float)(i + 1);
+    /* 4x4 RGBA32F requires 4*4*4 floats; the old 16-float buffer made the
+     * driver's (correct) row reads overrun the stack (ASan:
+     * mgl_texture_transfer.c:598). */
+    float texels[4 * 4 * 4];
+    for (int i = 0; i < (int)(sizeof(texels) / sizeof(texels[0])); i++)
+        texels[i] = 0.25f * (float)(i + 1);
     GLuint tex = 0, color = 0, fbo = 0, vao = 0;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -24432,7 +24436,8 @@ static int test_image_size_tess_discard(unsigned char *pixels, const char *out_p
     glDrawArrays(GL_PATCHES, 0, 1);
     glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
     glFinish();
-    GLint tes_got[8] = {0};
+    /* result is a 1x7 RGBA32I texture: glGetTexImage writes 28 ints. */
+    GLint tes_got[28] = {0};
     glBindTexture(GL_TEXTURE_2D, result);
     glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA_INTEGER, GL_INT, tes_got);
     /* mip 1 of 32x16 is 16x8 */
@@ -24457,7 +24462,7 @@ static int test_image_size_tess_discard(unsigned char *pixels, const char *out_p
     glDrawArrays(GL_PATCHES, 0, 1);
     glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
     glFinish();
-    GLint tcs_got[8] = {0};
+    GLint tcs_got[28] = {0};
     glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA_INTEGER, GL_INT, tcs_got);
     if (tcs_got[0] != 16 || tcs_got[1] != 8) {
         fprintf(stderr, "image_size_tess_discard: TCS 2D %d %d want 16 8\n",
@@ -25097,8 +25102,9 @@ static int test_large_uniform_array(unsigned char *pixels, const char *out_path)
                 fail |= 4;
             }
         }
-        GLuint zero = 0;
-        glClearBufferuiv(GL_COLOR, 0, &zero);
+        /* GL_COLOR takes four unsigned ints, not one. */
+        GLuint zero[4] = {0u, 0u, 0u, 0u};
+        glClearBufferuiv(GL_COLOR, 0, zero);
         glDrawArrays(GL_POINTS, 0, 1);
         GLuint got = 0;
         glReadPixels(0, 0, 1, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, &got);
