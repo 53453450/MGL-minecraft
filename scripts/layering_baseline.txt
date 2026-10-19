@@ -12,7 +12,7 @@ C2 MGL/src/mgl_render_buffer.cpp 60
 C2 MGL/src/mgl_render_command.cpp 4
 C2 MGL/src/mgl_render_draw.cpp 100
 C2 MGL/src/mgl_render_lifecycle.cpp 66
-C2 MGL/src/mgl_render_pixel.cpp 310
+C2 MGL/src/mgl_render_pixel.cpp 217
 C2 MGL/src/mgl_render_query.cpp 19
 C2 MGL/src/mgl_render_readback.cpp 60
 C2 MGL/src/mgl_render_texture.cpp 125

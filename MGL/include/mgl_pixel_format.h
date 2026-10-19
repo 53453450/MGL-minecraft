@@ -41,6 +41,17 @@ extern "C" {
 #endif
 uint32_t mglSizeForType(uint32_t type);
 uint32_t mglNumComponentsForFormat(uint32_t format);
+
+/* Readback acceptance: which GL transfer types the fixed-width readback
+ * narrowers can decode, and which output slots a GL format's components map
+ * to.  Tables only; the byte shuffling stays in the backend. */
+int mglReadbackFormatChannelMap(uint32_t format, int* slots, int src_idx[4]);
+int mglPixelTypeIsPacked(uint32_t type);
+int mglReadbackRGB10A2TypeAccepted(uint32_t type);
+int mglReadbackRG11B10TypeAccepted(uint32_t type);
+int mglReadback16or32TypeAccepted(uint32_t type);
+int mglReadbackUnorm8ScalarTypeAccepted(uint32_t type);
+int mglReadbackUnorm8PackedTypeAccepted(uint32_t type);
 #ifdef __cplusplus
 }
 #endif

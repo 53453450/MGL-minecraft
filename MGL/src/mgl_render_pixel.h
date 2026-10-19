@@ -18,14 +18,6 @@ int64_t mglRenderReadIntegerTexelComponent( const uint8_t* texel, uint32_t compo
 void mglRenderWriteIntegerTexelComponent( uint8_t* texel, uint32_t component, uint32_t component_bytes, int is_signed, int64_t value);
 
 
-int mglReadbackFormatChannelMap(uint32_t format, int* slots,
-                                          int src_idx[4]);
-int mglPixelTypeIsPacked(uint32_t type);
-int mglReadbackRGB10A2TypeAccepted(uint32_t type);
-int mglReadbackRG11B10TypeAccepted(uint32_t type);
-int mglReadback16or32TypeAccepted(uint32_t type);
-int mglReadbackUnorm8ScalarTypeAccepted(uint32_t type);
-int mglReadbackUnorm8PackedTypeAccepted(uint32_t type);
 int mglRenderIntegerFormatLayout(
     uint32_t internal_format, uint32_t* out_components,
     uint32_t* out_component_bytes, int* out_signed);

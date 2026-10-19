@@ -182,3 +182,153 @@ uint32_t mglNumComponentsForFormat(uint32_t format) {
             return 4u;
     }
 }
+
+int mglReadbackFormatChannelMap(uint32_t format, int* slots,
+                                          int src_idx[4]) {
+    if (!slots || !src_idx) return 0;
+    src_idx[0] = src_idx[1] = src_idx[2] = src_idx[3] = 0;
+    switch (format) {
+        case GL_RGBA: *slots = 4; src_idx[0]=0; src_idx[1]=1; src_idx[2]=2; src_idx[3]=3; return 1;
+        case GL_BGRA: *slots = 4; src_idx[0]=2; src_idx[1]=1; src_idx[2]=0; src_idx[3]=3; return 1;
+        case GL_RGB:  *slots = 3; src_idx[0]=0; src_idx[1]=1; src_idx[2]=2; return 1;
+        case GL_BGR:  *slots = 3; src_idx[0]=2; src_idx[1]=1; src_idx[2]=0; return 1;
+        case GL_RG:   *slots = 2; src_idx[0]=0; src_idx[1]=1; return 1;
+        case GL_RED:  *slots = 1; src_idx[0]=0; return 1;
+        case GL_GREEN: *slots = 1; src_idx[0]=1; return 1;
+        case GL_BLUE:  *slots = 1; src_idx[0]=2; return 1;
+        case GL_ALPHA: *slots = 1; src_idx[0]=3; return 1;
+        default: return 0;
+    }
+}
+
+int mglPixelTypeIsPacked(uint32_t type) {
+    switch (type) {
+        case GL_UNSIGNED_BYTE_3_3_2:
+        case GL_UNSIGNED_BYTE_2_3_3_REV:
+        case GL_UNSIGNED_SHORT_5_6_5:
+        case GL_UNSIGNED_SHORT_5_6_5_REV:
+        case GL_UNSIGNED_SHORT_4_4_4_4:
+        case GL_UNSIGNED_SHORT_4_4_4_4_REV:
+        case GL_UNSIGNED_SHORT_5_5_5_1:
+        case GL_UNSIGNED_SHORT_1_5_5_5_REV:
+        case GL_UNSIGNED_INT_8_8_8_8:
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+        case GL_UNSIGNED_INT_10_10_10_2:
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
+        case GL_UNSIGNED_INT_24_8:
+        case GL_FLOAT_32_UNSIGNED_INT_24_8_REV:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+int mglReadbackRGB10A2TypeAccepted(uint32_t type) {
+    switch (type) {
+        case GL_UNSIGNED_BYTE:
+        case GL_BYTE:
+        case GL_UNSIGNED_SHORT:
+        case GL_SHORT:
+        case GL_UNSIGNED_INT:
+        case GL_INT:
+        case GL_FLOAT:
+        case GL_HALF_FLOAT:
+        case GL_UNSIGNED_INT_10_10_10_2:
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
+        case GL_UNSIGNED_INT_8_8_8_8:
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+int mglReadbackRG11B10TypeAccepted(uint32_t type) {
+    switch (type) {
+        case GL_UNSIGNED_BYTE:
+        case GL_BYTE:
+        case GL_UNSIGNED_SHORT:
+        case GL_SHORT:
+        case GL_UNSIGNED_INT:
+        case GL_INT:
+        case GL_FLOAT:
+        case GL_HALF_FLOAT:
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
+        case GL_UNSIGNED_INT_8_8_8_8:
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+int mglReadback16or32TypeAccepted(uint32_t type) {
+    switch (type) {
+        case GL_UNSIGNED_BYTE:
+        case GL_BYTE:
+        case GL_UNSIGNED_SHORT:
+        case GL_SHORT:
+        case GL_UNSIGNED_INT:
+        case GL_INT:
+        case GL_FLOAT:
+        case GL_HALF_FLOAT:
+        case GL_UNSIGNED_BYTE_3_3_2:
+        case GL_UNSIGNED_BYTE_2_3_3_REV:
+        case GL_UNSIGNED_SHORT_5_6_5:
+        case GL_UNSIGNED_SHORT_5_6_5_REV:
+        case GL_UNSIGNED_SHORT_4_4_4_4:
+        case GL_UNSIGNED_SHORT_4_4_4_4_REV:
+        case GL_UNSIGNED_SHORT_5_5_5_1:
+        case GL_UNSIGNED_SHORT_1_5_5_5_REV:
+        case GL_UNSIGNED_INT_8_8_8_8:
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+        case GL_UNSIGNED_INT_10_10_10_2:
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+int mglReadbackUnorm8ScalarTypeAccepted(uint32_t type) {
+    switch (type) {
+        case GL_BYTE:
+        case GL_SHORT:
+        case GL_INT:
+        case GL_UNSIGNED_INT:
+        case GL_UNSIGNED_SHORT:
+        case GL_HALF_FLOAT:
+        case GL_FLOAT:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+int mglReadbackUnorm8PackedTypeAccepted(uint32_t type) {
+    switch (type) {
+        case GL_UNSIGNED_BYTE_3_3_2:
+        case GL_UNSIGNED_BYTE_2_3_3_REV:
+        case GL_UNSIGNED_SHORT_5_6_5:
+        case GL_UNSIGNED_SHORT_5_6_5_REV:
+        case GL_UNSIGNED_SHORT_4_4_4_4:
+        case GL_UNSIGNED_SHORT_4_4_4_4_REV:
+        case GL_UNSIGNED_SHORT_5_5_5_1:
+        case GL_UNSIGNED_SHORT_1_5_5_5_REV:
+        case GL_UNSIGNED_INT_8_8_8_8:
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+        case GL_UNSIGNED_INT_10_10_10_2:
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
+            return 1;
+        default:
+            return 0;
+    }
+}
