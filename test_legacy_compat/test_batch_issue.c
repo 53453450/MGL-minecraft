@@ -132,8 +132,6 @@ static void test_encode_fold(void)
     expect(d.element_draws == 1u && d.element_indices == 5ull, "elem stats");
     expect(mgl_batch_rt_should_cross_mark(0, 1) == 1, "cross mark");
     expect(mgl_batch_rt_should_cross_mark(1, 1) == 0, "already marked");
-    expect(mgl_batch_rt_should_diag_attachment0(0, 1, 1) == 1, "diag0");
-    expect(mgl_batch_rt_should_diag_attachment0(1, 1, 1) == 0, "diag1");
 }
 
 static void test_stream_index_and_sampler(void)
@@ -597,9 +595,9 @@ static void test_sync_resource(void)
 
 static void test_trace_helpers(void)
 {
-    expect(mgl_batch_trace_should_emit(0, 1, 1, 1) == 0, "trace off");
-    expect(mgl_batch_trace_should_emit(1, 0, 0, 0) == 0, "no reason");
-    expect(mgl_batch_trace_should_emit(1, 1, 0, 0) == 1, "log replay");
+    expect(mgl_batch_trace_should_emit(0, 1, 1) == 0, "trace off");
+    expect(mgl_batch_trace_should_emit(1, 0, 0) == 0, "no reason");
+    expect(mgl_batch_trace_should_emit(1, 1, 0) == 1, "log replay");
     expect(mgl_batch_trace_is_submit_phase("SUBMIT") == 1, "submit phase");
     expect(mgl_batch_trace_is_submit_phase("READY") == 0, "ready not submit");
     MGLBatchTraceBatchView bv;
@@ -644,10 +642,10 @@ int main(void)
                MGL_BATCH_FLUSH_PERF_NONE,
            "mdi perf kind none");
     {
-        MGLBatchTraceFsSlot slots[4] = {{1u, 0u}, {0u, 0u}, {0u, 0u}, {0u, 1u}};
-        int has_rt = 0, used_copy = 0;
-        mgl_batch_trace_fs_slot_flags(slots, 4, &has_rt, &used_copy);
-        expect(has_rt == 1 && used_copy == 1, "fs slot flags");
+        MGLBatchTraceFsSlot slots[4] = {{1u}, {0u}, {0u}, {0u}};
+        int has_rt = 0;
+        mgl_batch_trace_fs_slot_flags(slots, 4, &has_rt);
+        expect(has_rt == 1, "fs slot flags");
     }
 
     if (g_fails) {

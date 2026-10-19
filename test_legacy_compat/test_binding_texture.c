@@ -350,10 +350,10 @@ void mglBindingLogTexBufferBind(uint64_t a, uint32_t b, uint32_t c, uint32_t d,
 { (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;(void)j;(void)k;(void)l;(void)m;(void)n;(void)o; }
 void mglBindingLogRTSampleCopySample(uint64_t a, uint64_t b, uint32_t c, uint32_t d,
     uint32_t e, const char *f, uint32_t g, uint32_t h, uint32_t i, const char *j,
-    int k, int l, const void *m, const void *n, const void *o, const void *p,
-    uint64_t q, uint64_t r, uint64_t s, uint64_t t, uint32_t u, uint32_t v,
-    const void *w, const void *x)
-{ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;(void)j;(void)k;(void)l;(void)m;(void)n;(void)o;(void)p;(void)q;(void)r;(void)s;(void)t;(void)u;(void)v;(void)w;(void)x; }
+    int k, const void *l, const void *m, const void *n,
+    uint64_t o, uint64_t p, uint64_t q, uint64_t r, uint32_t s, uint32_t t,
+    const void *u, const void *v)
+{ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;(void)j;(void)k;(void)l;(void)m;(void)n;(void)o;(void)p;(void)q;(void)r;(void)s;(void)t;(void)u;(void)v; }
 void mglBindingLogMipDiagFrag(uint32_t a, uint32_t b, uint32_t c, uint32_t d,
     const char *e, uint32_t f, uint32_t g, double h, double i, double j, uint32_t k,
     uint32_t l, uint32_t m, uint64_t n, uint64_t o, uint64_t p, const void *q, int r,
@@ -373,9 +373,8 @@ static void test_o33_fill_emit_ports(void)
 
     uint8_t frag[128];
     memset(frag, 0xab, sizeof(frag));
-    mglBindingTextureWriteFragTrace(frag, 7, 3, 2, 11, 100, 200, (void *)1,
-                                    (void *)2, (void *)3, (void *)4, 64, 32, 9, 2,
-                                    1, 0);
+    mglBindingTextureWriteFragTrace(frag, 7, 3, 2, 11, 100, (void *)1,
+                                    (void *)2, (void *)3, 64, 32, 9, 2, 0);
     expect(frag[0] != 0xab, "frag trace wrote");
 
     MGLSampledDiagEmitInput ein;
@@ -383,7 +382,7 @@ static void test_o33_fill_emit_ports(void)
     mglBindingTextureFillSampledDiagEmitCore(
         &ein, "fragment", 1, 2, 3, "InSampler", 0, 1, -1, 0, 13, 0xde1, 1, 2, 2,
         0, 0, 0, 0, 0, 2, 16, 16, 0, 4, 4, 1, 16, 1, 1, 0, 0, 0, 0, 0, 13, 1, 0, 0,
-        0, 0, 0, 1, 0, 1, 10, 0, 0, 0, 0);
+        0, 0, 0, 1, 0, 1, 10, 0, 0, 0);
     expect(ein.stage_is_fragment == 1 && ein.gl_tex == 13u, "diag core");
     MGLSampledDiagEmitResult eres;
     mglBindingTextureEmitSampledDiagPorts(&ein, &eres);
