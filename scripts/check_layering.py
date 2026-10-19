@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Layering lint for MGL (docs/AUDIT_LAYERING_2026-10-17.md, section 5.3).
 
-Four rules, each a count of offending source lines per file:
+Six rules, each a count of offending source lines per file:
 
   C1  L0 forwarding files must not mention Metal handles or release them:
       `mtl_*` identifiers, `MTL::`, `mglSafeReleaseMetalObj`.
@@ -13,6 +13,10 @@ Four rules, each a count of offending source lines per file:
   C5  Only the drivers that change renderer state hold MGLRendererStateAreas;
       everything else takes the read-only MGLRendererStateView.  The count of
       areas references per file may not grow, and a new file starts at zero.
+  C6  Only the blit plan may assign a row-order field
+      (`src_metal_y`/`dst_metal_y`/`scaled_dst_metal_y`/`blit_needs_flip`).
+      Consumers read them; deriving one elsewhere recreates the second
+      orientation source the GL-order work removed.
 
 Comments are ignored.  scripts/layering_baseline.txt records the counts that
 existed when the check was added ("rule path count").  A file may not exceed
@@ -64,6 +68,13 @@ C4_RE = re.compile(r'\bvoid\s*\*\s*mtl_\w+\s*;')
 # Renderer state: the mutable areas (see mgl_renderer_ports.h).
 C5_RE = re.compile(r'\bMGLRendererStateAreas\b|\bmglRendererFillStateAreas\b')
 
+# Blit plan ownership (C6).  The plan is the only place allowed to derive a
+# row-order field from the per-side storage bits.
+C6_RE = re.compile(
+    r'(?:->|\.)\s*(?:src_metal_y|dst_metal_y|scaled_dst_metal_y|blit_needs_flip)'
+    r'\s*=')
+C6_OWNER = 'mgl_render_command.cpp'
+
 COMMENT_RE = re.compile(
     r'/\*.*?\*/|//[^\n]*', re.S)
 
@@ -92,6 +103,8 @@ def targets():
     for p in sorted(SRC.iterdir()):
         if p.suffix in ('.c', '.cpp', '.m', '.mm'):
             yield 'C5', p, C5_RE
+            if p.name != C6_OWNER:
+                yield 'C6', p, C6_RE
 
 
 def collect():

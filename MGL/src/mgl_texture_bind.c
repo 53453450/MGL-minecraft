@@ -111,9 +111,9 @@ static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
         }
         /* Any view may become an attachment, and a Metal view inherits its
          * parent's usage.  is_render_target is raised only for the
-         * content-preserving rebuild: left set, later uploads would bump the
-         * render-target write version and mark never-rendered storage as
-         * Y-flipped. */
+         * content-preserving rebuild: left set, a later upload would bump the
+         * render-target write version and claim GPU content that no pass
+         * wrote. */
         MGLRenderTextureInfo rootInfo = {0};
         if (!root->is_render_target &&
             mglRenderGetTextureInfo(mglTextureMtl(root), &rootInfo) == 0 &&

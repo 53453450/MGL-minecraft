@@ -408,9 +408,9 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_MAX_SAMPLE_MASK_WORDS,&glm_ctx->active_state->var.max_sample_mask_words);
     glGetIntegerv(GL_TEXTURE_BINDING_2D_MULTISAMPLE,&glm_ctx->active_state->var.texture_binding_2d_multisample);
     glGetIntegerv(GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY,&glm_ctx->active_state->var.texture_binding_2d_multisample_array);
-    glGetIntegerv(GL_MAX_COLOR_TEXTURE_SAMPLES,&glm_ctx->active_state->var.max_color_texture_samples);
-    glGetIntegerv(GL_MAX_DEPTH_TEXTURE_SAMPLES,&glm_ctx->active_state->var.max_depth_texture_samples);
-    glGetIntegerv(GL_MAX_INTEGER_SAMPLES,&glm_ctx->active_state->var.max_integer_samples);
+    /* The four sample limits are seeded below from the GL minimum and then
+     * replaced by mglApplyBackendSampleLimits once the Metal device exists;
+     * the host GL library's values were a second source that always lost. */
     glGetIntegerv(GL_MAX_DUAL_SOURCE_DRAW_BUFFERS,&glm_ctx->active_state->var.max_dual_source_draw_buffers);
     glGetIntegerv(GL_SAMPLER_BINDING,&glm_ctx->active_state->var.sampler_binding);
     glGetIntegerv(GL_MAX_TESS_CONTROL_UNIFORM_BLOCKS,&glm_ctx->active_state->var.max_tess_control_uniform_blocks);
