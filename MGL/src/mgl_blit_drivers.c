@@ -2910,6 +2910,38 @@ bool mglBlitFramebufferScaledColorWithState(void *renderer,
 
 /* === blitFramebuffer dispatch (P0-1, log 148) ============================ */
 
+/* Whether the render pass path wrote `level` of `tex`.  Draws and clears mark
+ * the level through mglMarkTextureLevelRenderTargetWrittenImpl (face 0);
+ * uploads and copies leave a different last_init_source.  Every allocated
+ * face is scanned so a cube or cube-array attachment rendered on a non-zero
+ * face still counts. */
+static int mglBdLevelWrittenByRenderPass(const Texture *tex, GLuint level)
+{
+    if (!tex) {
+        return 0;
+    }
+    if (tex->view_root) {
+        /* A view keeps its own level records and they are not refreshed when a
+         * draw or clear writes the root, so keep the conservative answer the
+         * pre-GL-order code used for every source. */
+        return mglRenderTargetHasGPUContent(tex->is_render_target ? 1 : 0,
+                                            tex->mtl_render_target_write_version);
+    }
+    if (tex->num_levels == 0u || level >= tex->num_levels) {
+        return 0;
+    }
+    for (GLuint face = 0u; face < 6u; face++) {
+        if (!tex->faces[face].levels) {
+            continue;
+        }
+        if (tex->faces[face].levels[level].last_init_source ==
+            kTexRenderTargetWrite) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* -(void)mtlBlitFramebuffer:srcX0:srcY0:srcX1:srcY1:dstX0:dstY0:dstX1:dstY1:
  *  mask:filter: */
 void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0,
@@ -3102,14 +3134,10 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
      * behind -- a 3D or 1D source makes it bail with "subresource/type
      * unsupported" and the blit copies nothing (KHR-GL46.geometry_shader
      * .blitting.*). */
-    const TextureLevel *read_level =
-        read_texture_object
-            ? mglTextureAttachmentLevel(read_texture_object,
-                                        read_subresource.level)
-            : NULL;
     const int needs_render_target_sync_blit =
         read_texture_object && read_texture_object->is_render_target &&
-        read_level && read_level->last_init_source == kTexRenderTargetWrite;
+        mglBdLevelWrittenByRenderPass(read_texture_object,
+                                      read_subresource.level);
 
     if (read_subresource.level >=
             mglBdTextureInfo(readtexid).mipmap_level_count ||
