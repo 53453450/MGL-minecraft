@@ -3091,13 +3091,25 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
         }
     }
 
-    /* A source that has been rendered into goes through the render-pass
-     * (scaled) path: a MTLBlitCommandEncoder may read stale tile memory on
-     * tile-based Apple GPUs when the render target was written by a preceding
-     * pass. */
+    /* A source whose level was last written by a render pass goes through the
+     * render-pass (scaled) path: a MTLBlitCommandEncoder may read stale tile
+     * memory on tile-based Apple GPUs when the render target was written by a
+     * preceding pass.  "The GPU holds the content" is not that predicate:
+     * uploads, copies and this function's own
+     * mglRenderTargetMarkGPUAuthoritative() call all set
+     * mtl_render_target_write_version without any pass having written the
+     * level, and the scaled path cannot address the texture types those leave
+     * behind -- a 3D or 1D source makes it bail with "subresource/type
+     * unsupported" and the blit copies nothing (KHR-GL46.geometry_shader
+     * .blitting.*). */
+    const TextureLevel *read_level =
+        read_texture_object
+            ? mglTextureAttachmentLevel(read_texture_object,
+                                        read_subresource.level)
+            : NULL;
     const int needs_render_target_sync_blit =
         read_texture_object && read_texture_object->is_render_target &&
-        read_texture_object->mtl_render_target_write_version > 0u;
+        read_level && read_level->last_init_source == kTexRenderTargetWrite;
 
     if (read_subresource.level >=
             mglBdTextureInfo(readtexid).mipmap_level_count ||
