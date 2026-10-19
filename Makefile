@@ -997,6 +997,21 @@ $(build_dir)/test_blit_plan: test_legacy_compat/test_blit_plan.c \
 test-blit-plan: $(build_dir)/test_blit_plan
 	$(build_dir)/test_blit_plan
 
+$(build_dir)/test_sampler_plan: test_legacy_compat/test_sampler_plan.c \
+	MGL/src/mgl_sampler_plan.c MGL/include/mgl_sampler_plan.h
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_sampler_plan.c \
+		MGL/src/mgl_sampler_plan.c \
+		-o $@
+
+test-sampler-plan: $(build_dir)/test_sampler_plan
+	$(build_dir)/test_sampler_plan
+
+
 $(build_dir)/test_binding_stage: test_legacy_compat/test_binding_stage.c \
 	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h
 	@mkdir -p $(dir $@)
@@ -1391,6 +1406,7 @@ test-all:
 	$(MAKE) build_dir=$(build_dir) verify-gl-api
 	$(MAKE) build_dir=$(build_dir) check-c-duplicates
 	$(MAKE) build_dir=$(build_dir) check-layering
+	$(MAKE) build_dir=$(build_dir) test-sampler-plan
 	$(MAKE) build_dir=$(build_dir) test-state-invariants
 	$(MAKE) build_dir=$(build_dir) test-state-dataflow
 	$(MAKE) build_dir=$(build_dir) test-state-snapshot-share
