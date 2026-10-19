@@ -20,8 +20,6 @@ void mglRenderWriteIntegerTexelComponent( uint8_t* texel, uint32_t component, ui
 
 int mglReadbackFormatChannelMap(uint32_t format, int* slots,
                                           int src_idx[4]);
-uint32_t mglSizeForType(uint32_t type);
-uint32_t mglNumComponentsForFormat(uint32_t format);
 int mglPixelTypeIsPacked(uint32_t type);
 int mglReadbackRGB10A2TypeAccepted(uint32_t type);
 int mglReadbackRG11B10TypeAccepted(uint32_t type);

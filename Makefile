@@ -1236,7 +1236,8 @@ test-mcrepro: $(build_dir)/test_mcrepro
 # the smoke gate compiled itself; ObjC-zeroing moved them to C). pixel_utils.c
 # goes the same way because it does not compile as Objective-C++.
 METALCPP_C_SRC := MGL/src/mgl_binding_texture_log.c MGL/src/mgl_trace_log.c \
-                  MGL/src/pixel_utils.c MGL/src/mgl_env_flag.c
+                  MGL/src/pixel_utils.c MGL/src/mgl_env_flag.c \
+                  MGL/src/mgl_pixel_tables.c
 # The platform shell is C++ (log 210): it cannot go through the smoke gate's
 # -x objective-c++ -fobjc-arc invocation any more, so it is compiled to its own
 # objects first and linked with -x none like the other C sources.
@@ -1280,6 +1281,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_buffer_slots.c \
 	MGL/src/mgl_sync.c \
 	MGL/src/mgl_texture_plan.c MGL/include/mgl_texture_plan.h \
+	MGL/src/mgl_pixel_tables.c MGL/include/mgl_pixel_format.h \
 	MGL/src/mgl_buffer_transient.c \
 	$(METALCPP_C_OBJ)
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \

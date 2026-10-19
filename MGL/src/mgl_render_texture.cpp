@@ -7,6 +7,7 @@
 #include "mgl_render_api_readback.h"
 #include "mgl_render_api_lifecycle.h"
 #include "mgl_render_pixel.h"
+#include "mgl_pixel_format.h"
 extern "C" {
 #include "pixel_utils.h"
 }

@@ -21,6 +21,7 @@
 #include "mgl_metal.h"
 #include "mgl_render.h"
 #include "mgl_render_pixel.h"
+#include "mgl_pixel_format.h"
 extern "C" {
 #include "pixel_utils.h"
 }

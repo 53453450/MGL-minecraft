@@ -32,6 +32,19 @@
 #define MGL_FLOAT11  0x8FF0u
 #define MGL_FLOAT10  0x8FF1u
 
+/* GL format/type tables: how many components a pixel-transfer format carries
+ * and how many bytes one element of a transfer type occupies.  Pure GL
+ * semantics, no Metal knowledge — the backend consumes them.  C linkage:
+ * the definitions live in mgl_pixel_format.c and the callers are C++ TUs. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+uint32_t mglSizeForType(uint32_t type);
+uint32_t mglNumComponentsForFormat(uint32_t format);
+#ifdef __cplusplus
+}
+#endif
+
 typedef struct MGLCPUPixelComponent_t {
     GLenum type;
     GLuint bits;
