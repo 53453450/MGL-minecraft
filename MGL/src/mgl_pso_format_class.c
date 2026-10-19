@@ -201,14 +201,6 @@ int mglRenderColorAttachmentBitSet(uint32_t bitfield, uint32_t index) {
     return ((bitfield >> index) & 1u) != 0u ? 1 : 0;
 }
 
-int mglRenderSampledRTNeedsCopy(int is_rt, uint32_t write_version) {
-    return is_rt && write_version != 0u ? 1 : 0;
-}
-
-int mglRenderSampledRTCopyStale(uint32_t sampled_version, uint32_t rt_version) {
-    return sampled_version != rt_version ? 1 : 0;
-}
-
 int mglRenderNativeAttribIndexValid(uint32_t index) {
     return index < 32u ? 1 : 0;
 }

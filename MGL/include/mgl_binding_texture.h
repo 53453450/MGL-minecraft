@@ -326,10 +326,10 @@ void mglBindingTextureFillSampledDiagGateInput(
 void mglBindingTextureWriteFragTrace(
     void *out, uint32_t gl_texture_name, uint32_t sampler_unit,
     uint32_t metal_binding, uint32_t program_name, uint32_t rt_write_version,
-    uint32_t sampled_write_version, void *gl_texture_ptr, void *mtl_texture_ptr,
-    void *direct_mtl_texture_ptr, void *sampled_copy_ptr, uint64_t width,
+    void *gl_texture_ptr, void *mtl_texture_ptr,
+    void *direct_mtl_texture_ptr, uint64_t width,
     uint64_t height, uint64_t pixel_format, uint64_t texture_type,
-    int used_sampled_copy, int used_fallback);
+    int used_fallback);
 
 /* Sampled diag emit ports @C (calls existing log helpers; texture_log frozen). */
 typedef struct MGLSampledDiagEmitInput {
@@ -379,9 +379,7 @@ typedef struct MGLSampledDiagEmitInput {
     int do_focused;
     int do_trace_file;
     uint64_t bind_call;
-    int used_sampled_copy_trace;
     const void *direct_for_trace;
-    const void *copy_for_trace;
     const char *rt_label;
     uint32_t draw_fbo;
     uint32_t rp_fbo;
@@ -411,7 +409,7 @@ void mglBindingTextureFillSampledDiagEmitCore(
     uint32_t ptr_tex, int stage_is_fragment, int is_gui_rt_copy_eligible,
     int focused_loading_window, int vertex_focus_program, int is_texel_buffer,
     int level0_suspicious_zero, int level0_never_written, int level0_uninit,
-    int has_bound_texture, uint64_t bind_call, int used_sampled_copy_trace,
+    int has_bound_texture, uint64_t bind_call,
     uint32_t draw_fbo, uint32_t rp_fbo, uint32_t unit_buffer_tex);
 
 /* MIP_DIAG: rate on signature change; returns 1 if logged. */
@@ -469,8 +467,8 @@ void mglBindingLogTexBufferBind(
 void mglBindingLogRTSampleCopySample(
     uint64_t hit, uint64_t bind_call, uint32_t program, uint32_t vs,
     uint32_t fs, const char *name, uint32_t binding, uint32_t unit,
-    uint32_t rt_tex, const char *label, int fallback, int use_copy,
-    const void *ptr, const void *mtl, const void *direct, const void *copy,
+    uint32_t rt_tex, const char *label, int fallback,
+    const void *ptr, const void *mtl, const void *direct,
     uint64_t fmt, uint64_t type, uint64_t w, uint64_t h, uint32_t draw_fbo,
     uint32_t rp_fbo, const void *rp_color, const void *rp_depth);
 

@@ -33,32 +33,19 @@ int mgl_batch_rt_should_cross_mark(int already_marked, int attachment_active)
     return !already_marked && attachment_active;
 }
 
-int mgl_batch_rt_should_diag_attachment0(uint32_t attachment_index,
-                                         int trace_enabled, int can_use_copy)
-{
-    return attachment_index == 0u && trace_enabled && can_use_copy;
-}
-
 void mgl_batch_trace_fs_slot_flags(const MGLBatchTraceFsSlot *slots, uint32_t n,
-                                   int *has_rt_out, int *used_copy_out)
+                                   int *has_rt_out)
 {
     int has_rt = 0;
-    int used_copy = 0;
     if (slots) {
         for (uint32_t i = 0; i < n; i++) {
             if (slots[i].rt_write_version != 0u) {
                 has_rt = 1;
             }
-            if (slots[i].used_sampled_copy) {
-                used_copy = 1;
-            }
         }
     }
     if (has_rt_out) {
         *has_rt_out = has_rt;
-    }
-    if (used_copy_out) {
-        *used_copy_out = used_copy;
     }
 }
 
@@ -70,52 +57,30 @@ int mgl_batch_trace_format_texslots_line(
     if (!buf || buflen == 0u || !slots) {
         return -1;
     }
+    char slot_text[4][192];
+    for (int i = 0; i < 4; i++) {
+        snprintf(slot_text[i], sizeof(slot_text[i]),
+                 "s%d(tex=%u unit=%u prog=%u mtl=%p direct=%p fallback=%u "
+                 "rtVer=%u size=%llux%llu fmt=%llu type=%llu)",
+                 i, (unsigned)slots[i].gl_texture_name,
+                 (unsigned)slots[i].sampler_unit,
+                 (unsigned)slots[i].program_name, slots[i].mtl_texture_ptr,
+                 slots[i].direct_mtl_texture_ptr,
+                 (unsigned)slots[i].used_fallback,
+                 (unsigned)slots[i].rt_write_version,
+                 (unsigned long long)slots[i].width,
+                 (unsigned long long)slots[i].height,
+                 (unsigned long long)slots[i].pixel_format,
+                 (unsigned long long)slots[i].texture_type);
+    }
     return snprintf(
         buf, buflen,
         "REPLAY_CMD_TEXSLOTS flush=%llu batch=%u cmd=%u program=%u vs=%u fs=%u "
-        "pipelineProgram=%u "
-        "s0(tex=%u unit=%u prog=%u mtl=%p direct=%p copy=%p useCopy=%u fallback=%u "
-        "rtVer=%u sampledVer=%u size=%llux%llu fmt=%llu type=%llu) "
-        "s1(tex=%u unit=%u prog=%u mtl=%p direct=%p copy=%p useCopy=%u fallback=%u "
-        "rtVer=%u sampledVer=%u size=%llux%llu fmt=%llu type=%llu) "
-        "s2(tex=%u unit=%u prog=%u mtl=%p direct=%p copy=%p useCopy=%u fallback=%u "
-        "rtVer=%u sampledVer=%u size=%llux%llu fmt=%llu type=%llu) "
-        "s3(tex=%u unit=%u prog=%u mtl=%p direct=%p copy=%p useCopy=%u fallback=%u "
-        "rtVer=%u sampledVer=%u size=%llux%llu fmt=%llu type=%llu)",
-        (unsigned long long)flush_id, (unsigned)batch_index, (unsigned)cmd_index,
-        (unsigned)program, (unsigned)vs, (unsigned)fs, (unsigned)pipe_program,
-        (unsigned)slots[0].gl_texture_name, (unsigned)slots[0].sampler_unit,
-        (unsigned)slots[0].program_name, slots[0].mtl_texture_ptr,
-        slots[0].direct_mtl_texture_ptr, slots[0].sampled_copy_ptr,
-        (unsigned)slots[0].used_sampled_copy, (unsigned)slots[0].used_fallback,
-        (unsigned)slots[0].rt_write_version, (unsigned)slots[0].sampled_write_version,
-        (unsigned long long)slots[0].width, (unsigned long long)slots[0].height,
-        (unsigned long long)slots[0].pixel_format,
-        (unsigned long long)slots[0].texture_type,
-        (unsigned)slots[1].gl_texture_name, (unsigned)slots[1].sampler_unit,
-        (unsigned)slots[1].program_name, slots[1].mtl_texture_ptr,
-        slots[1].direct_mtl_texture_ptr, slots[1].sampled_copy_ptr,
-        (unsigned)slots[1].used_sampled_copy, (unsigned)slots[1].used_fallback,
-        (unsigned)slots[1].rt_write_version, (unsigned)slots[1].sampled_write_version,
-        (unsigned long long)slots[1].width, (unsigned long long)slots[1].height,
-        (unsigned long long)slots[1].pixel_format,
-        (unsigned long long)slots[1].texture_type,
-        (unsigned)slots[2].gl_texture_name, (unsigned)slots[2].sampler_unit,
-        (unsigned)slots[2].program_name, slots[2].mtl_texture_ptr,
-        slots[2].direct_mtl_texture_ptr, slots[2].sampled_copy_ptr,
-        (unsigned)slots[2].used_sampled_copy, (unsigned)slots[2].used_fallback,
-        (unsigned)slots[2].rt_write_version, (unsigned)slots[2].sampled_write_version,
-        (unsigned long long)slots[2].width, (unsigned long long)slots[2].height,
-        (unsigned long long)slots[2].pixel_format,
-        (unsigned long long)slots[2].texture_type,
-        (unsigned)slots[3].gl_texture_name, (unsigned)slots[3].sampler_unit,
-        (unsigned)slots[3].program_name, slots[3].mtl_texture_ptr,
-        slots[3].direct_mtl_texture_ptr, slots[3].sampled_copy_ptr,
-        (unsigned)slots[3].used_sampled_copy, (unsigned)slots[3].used_fallback,
-        (unsigned)slots[3].rt_write_version, (unsigned)slots[3].sampled_write_version,
-        (unsigned long long)slots[3].width, (unsigned long long)slots[3].height,
-        (unsigned long long)slots[3].pixel_format,
-        (unsigned long long)slots[3].texture_type);
+        "pipelineProgram=%u %s %s %s %s",
+        (unsigned long long)flush_id, (unsigned)batch_index,
+        (unsigned)cmd_index, (unsigned)program, (unsigned)vs, (unsigned)fs,
+        (unsigned)pipe_program, slot_text[0], slot_text[1], slot_text[2],
+        slot_text[3]);
 }
 
 int mgl_batch_trace_format_batch_line(char *buf, size_t buflen,
@@ -248,7 +213,7 @@ int mgl_batch_trace_format_rt_write_mark(char *buf, size_t buflen,
     if (!buf || buflen == 0u || !v) return -1;
     return snprintf(
         buf, buflen,
-        "RT_SAMPLE_COPY_WRITE_MARK hit=%llu fbo=%u program=%u rtTex=%u "
+        "RT_WRITE_MARK hit=%llu fbo=%u program=%u rtTex=%u "
         "label=\"%s\" depthTex=%u depthLabel=\"%s\" viewport=%d,%d,%d,%d "
         "scissor(en=%d box=%d,%d,%d,%d) depth(test=%d write=%d func=0x%x) "
         "blend=%d cull=%d colorMask=%d%d%d%d level=%u "
@@ -333,9 +298,9 @@ void mgl_batch_rt_run_draw_attachments(const MGLBatchRtDrawMarkOps *ops)
 }
 
 int mgl_batch_trace_should_emit(int log_enabled, int should_log_replay,
-                                int fs_has_rt, int fs_used_copy)
+                                int fs_has_rt)
 {
-    return log_enabled && (should_log_replay || fs_has_rt || fs_used_copy);
+    return log_enabled && (should_log_replay || fs_has_rt);
 }
 
 int mgl_batch_trace_is_submit_phase(const char *phase)
@@ -452,9 +417,6 @@ void mgl_batch_rt_mark_one_attachment(uint32_t attachment_index,
     }
     if (ops->mark_level) {
         ops->mark_level(ops->ctx);
-    }
-    if (ops->yflip && ops->apply_yflip) {
-        ops->apply_yflip(ops->ctx);
     }
     if (ops->should_diag && diag_hit_inout && ops->emit_diag) {
         const uint64_t hit = ++(*diag_hit_inout);

@@ -39,19 +39,14 @@ int mgl_batch_rt_should_trace_write_mark(uint64_t hit);
 /* Cross-check candidate: active attachment not already marked by draw-buffers. */
 int mgl_batch_rt_should_cross_mark(int already_marked, int attachment_active);
 
-/* Whether attachment0 write-mark should emit RT_SAMPLE_COPY diag. */
-int mgl_batch_rt_should_diag_attachment0(uint32_t attachment_index,
-                                         int trace_enabled, int can_use_copy);
 
-
-/* Trace early-exit: any of N FS slots has RT write or used sampled copy. */
+/* Trace early-exit: any of N FS slots is sampling a render target. */
 typedef struct MGLBatchTraceFsSlot {
     uint32_t rt_write_version;
-    uint8_t used_sampled_copy;
 } MGLBatchTraceFsSlot;
 
 void mgl_batch_trace_fs_slot_flags(const MGLBatchTraceFsSlot *slots, uint32_t n,
-                                   int *has_rt_out, int *used_copy_out);
+                                   int *has_rt_out);
 
 typedef struct MGLBatchTraceTexSlotView {
     uint32_t gl_texture_name;
@@ -59,11 +54,8 @@ typedef struct MGLBatchTraceTexSlotView {
     uint32_t program_name;
     const void *mtl_texture_ptr;
     const void *direct_mtl_texture_ptr;
-    const void *sampled_copy_ptr;
-    uint8_t used_sampled_copy;
     uint8_t used_fallback;
     uint32_t rt_write_version;
-    uint32_t sampled_write_version;
     uint64_t width;
     uint64_t height;
     uint64_t pixel_format;
@@ -290,7 +282,7 @@ void mglBatchRtMarkCurrentFramebufferDrawAttachments(void *renderer,
 /* ---- A3: trace fill helpers (shrink replay_trace ObjC) ---- */
 
 int mgl_batch_trace_should_emit(int log_enabled, int should_log_replay,
-                                int fs_has_rt, int fs_used_copy);
+                                int fs_has_rt);
 int mgl_batch_trace_is_submit_phase(const char *phase);
 
 void mgl_batch_trace_batch_fill_key_flags(
@@ -329,8 +321,6 @@ void mgl_batch_trace_cmd_set_units(MGLBatchTraceCmdView *v, uint32_t u0a,
 typedef struct MGLBatchRtMarkOneOps {
     void *ctx;
     void (*mark_level)(void *ctx);
-    int yflip;
-    void (*apply_yflip)(void *ctx);
     int should_diag;
     void (*emit_diag)(void *ctx, uint64_t hit);
 } MGLBatchRtMarkOneOps;

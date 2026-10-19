@@ -53,7 +53,7 @@ extern "C" {
 
 /* === Fragment texture trace binding === */
 
-/* Per-slot diagnostic record for RT_SAMPLE_COPY binding decisions.
+/* Per-slot diagnostic record for render-target texture bindings.
  * Populated by MGLRenderer.m during fragment-stage texture binding;
  * classified and formatted by this module. */
 typedef struct MGLFragmentTextureTraceBinding_t {
@@ -62,16 +62,13 @@ typedef struct MGLFragmentTextureTraceBinding_t {
     GLuint metal_binding;
     GLuint program_name;
     GLuint rt_write_version;
-    GLuint sampled_write_version;
     void *gl_texture_ptr;
     void *mtl_texture_ptr;
     void *direct_mtl_texture_ptr;
-    void *sampled_copy_ptr;
     size_t width;
     size_t height;
     size_t pixel_format;
     size_t texture_type;
-    uint8_t used_sampled_copy;
     uint8_t used_fallback;
 } MGLFragmentTextureTraceBinding;
 
@@ -93,12 +90,10 @@ void mglTraceFragmentTextureTraceBindings(const char *tag,
                                           GLuint program,
                                           GLuint pipelineProgram);
 
-/* Clears only the functional flag fields (used_sampled_copy,
- * rt_write_version, used_fallback) that non-trace consumers read —
- * mglFragmentTextureTraceBindingsUseRTSampledCopy and the batch-replay
- * early-exit check.  Use this instead of a full-struct memset when trace
- * logging is disabled: it touches ~384 bytes (3 fields × 128 slots) vs
- * ~12 KB for the full array zero. */
+/* Clears only the functional flag fields (rt_write_version, used_fallback)
+ * that non-trace consumers read — the batch-replay early-exit check.  Use
+ * this instead of a full-struct memset when trace logging is disabled: it
+ * touches ~1 KB (2 fields × 128 slots) vs ~24 KB for the full array zero. */
 void mglClearFragmentTextureTraceFunctionalFlags(MGLFragmentTextureTraceBinding *bindings,
                                                   size_t count);
 

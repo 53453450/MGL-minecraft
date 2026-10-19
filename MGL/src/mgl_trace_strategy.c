@@ -27,10 +27,7 @@ bool mglFragmentTextureTraceBindingIsInteresting(const MGLFragmentTextureTraceBi
 {
     return binding &&
            (binding->rt_write_version != 0u ||
-            binding->sampled_write_version != 0u ||
-            binding->used_sampled_copy ||
-            binding->used_fallback ||
-            binding->sampled_copy_ptr != NULL);
+            binding->used_fallback != 0u);
 }
 
 bool mglFragmentTextureTraceBindingsHaveInterestingState(const MGLFragmentTextureTraceBinding *bindings,
@@ -55,13 +52,12 @@ void mglClearFragmentTextureTraceFunctionalFlags(MGLFragmentTextureTraceBinding 
     if (!bindings || count == 0) {
         return;
     }
-    /* Only clear the three fields that non-trace consumers read.
+    /* Only clear the two fields that non-trace consumers read.
      * rt_write_version  — checked by the batch-replay early-exit (slots 0..3).
      * used_fallback     — checked by mglFragmentTextureTraceBindingIsInteresting
      *                     (only called from trace-gated paths, but clearing it
      *                     here keeps the early-exit fast path consistent). */
     for (size_t i = 0; i < count; i++) {
-        bindings[i].used_sampled_copy = 0u;
         bindings[i].rt_write_version = 0u;
         bindings[i].used_fallback = 0u;
     }
@@ -95,18 +91,15 @@ void mglTraceFragmentTextureTraceBindings(const char *tag,
     for (size_t i = 0; i < 4; i++) {
         const MGLFragmentTextureTraceBinding *s = slots[i];
         snprintf(slotLines[i], sizeof(slotLines[i]),
-                 "s%zu(tex=%u unit=%u prog=%u mtl=%p direct=%p copy=%p useCopy=%u fallback=%u rtVer=%u sampledVer=%u size=%lux%lu fmt=%lu type=%lu)",
+                 "s%zu(tex=%u unit=%u prog=%u mtl=%p direct=%p fallback=%u rtVer=%u size=%lux%lu fmt=%lu type=%lu)",
                  i,
                  (unsigned)s->gl_texture_name,
                  (unsigned)s->sampler_unit,
                  (unsigned)s->program_name,
                  s->mtl_texture_ptr,
                  s->direct_mtl_texture_ptr,
-                 s->sampled_copy_ptr,
-                 (unsigned)s->used_sampled_copy,
                  (unsigned)s->used_fallback,
                  (unsigned)s->rt_write_version,
-                 (unsigned)s->sampled_write_version,
                  (unsigned long)s->width,
                  (unsigned long)s->height,
                  (unsigned long)s->pixel_format,
@@ -114,7 +107,7 @@ void mglTraceFragmentTextureTraceBindings(const char *tag,
     }
 
     mglTraceLogCategory(MGL_TRACE_CAT_BINDING,
-                        "RT_SAMPLE_COPY_SLOTS_%s reason=%s program=%u pipelineProgram=%u %s %s %s %s",
+                        "RT_BINDING_SLOTS_%s reason=%s program=%u pipelineProgram=%u %s %s %s %s",
                         tag ? tag : "STATE",
                         reason ? reason : "",
                         (unsigned)program,

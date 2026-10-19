@@ -5,8 +5,8 @@
  * current GL state (see mgl_raster_orientation_plan.h).
  *
  * mglRasterTargetStoresGLOrder is the single place that decides whether the
- * current draw target stores GL row order.  Under MGL_FBO_GL_ORDER=1 that is
- * every user framebuffer; by default every target is Metal row order
+ * current draw target stores GL row order: every user framebuffer does, and
+ * only the window-system target keeps Metal row order
  * (docs/TODO_FBO_GL_ROW_ORDER_2026-10-18.md).
  */
 

@@ -489,8 +489,7 @@ void mglSampledEmitDiagPorts(
     void *sampler, int used_fallback, uint32_t expected_type,
     uint32_t lookup_type, uint64_t bind_call, GLuint program_name,
     GLuint vertex_program_name, GLuint fragment_program_name,
-    int used_sampled_copy_trace, void *direct_texture_for_trace,
-    void *sampled_copy_for_trace, uint64_t *focused_counter,
+    void *direct_texture_for_trace, uint64_t *focused_counter,
     uint64_t *trace_file_counter)
 {
     MGLRendererStateAreas areas;
@@ -556,7 +555,6 @@ void mglSampledEmitDiagPorts(
         ptr && mglRenderTextureTargetIsBuffer((uint32_t)ptr->target) ? 1 : 0,
         level0 && level0->suspicious_zero_upload, level0 && !level0->ever_written,
         level0 && !level0->has_initialized_data, texture ? 1 : 0, bind_call,
-        used_sampled_copy_trace ? 1 : 0,
         ctx && state->framebuffer ? state->framebuffer->name : 0u,
         areas.command ? areas.command->renderPassFramebufferName : 0u,
         texture_unit < TEXTURE_UNITS
@@ -574,7 +572,6 @@ void mglSampledEmitDiagPorts(
         mglProgramNeedsTraceLog(program) &&
         mglShouldLogTraceFileBindingForProgram(program, trace_file_counter);
     ein.direct_for_trace = direct_texture_for_trace;
-    ein.copy_for_trace = sampled_copy_for_trace;
     ein.rt_label = mglTraceTextureLabel(ptr);
     ein.rp_color = mglRenderGetRenderPassAttachmentTextureOwner(
         areas.command ? areas.command->renderPassStateOwner : NULL,
@@ -702,9 +699,7 @@ bool mglSampledBindTexturesForStage(
         void *texture = NULL;
         void *sampler = is_fragment ? NULL : default_sampler;
         void *direct_texture_for_trace = NULL;
-        void *sampled_copy_for_trace = NULL;
         int used_fallback = 0;
-        int used_sampled_copy = 0;
 
         if (ptr) {
             if (is_fragment) {
@@ -723,9 +718,6 @@ bool mglSampledBindTexturesForStage(
                         program_name, program_binding, sample_program,
                         &used_fallback_raw);
                     used_fallback = used_fallback_raw ? 1 : 0;
-                }
-                if (used_fallback) {
-                    used_sampled_copy = 0;
                 }
                 sampler = mglSampledSamplerMaterialize(
                     renderer, ptr, texture_unit,
@@ -746,7 +738,7 @@ bool mglSampledBindTexturesForStage(
                             ptr->params.max_level,
                             texture ? mglSsTextureMipmapLevelCount(texture)
                                     : 0u,
-                            (uint64_t)(uintptr_t)texture, used_sampled_copy ? 1 : 0,
+                            (uint64_t)(uintptr_t)texture, 0,
                             0u, 0u, 0),
                         texture_unit, program_binding, fragment_program_name, ptr->name,
                         gl_sampler ? "gl_sampler" : "texParams",
@@ -759,7 +751,7 @@ bool mglSampledBindTexturesForStage(
                         texture ? mglSsTextureWidth(texture) : 0u,
                         texture ? mglSsTextureHeight(texture) : 0u,
                         texture,
-                        ptr->is_render_target ? 1 : 0, used_sampled_copy ? 1 : 0,
+                        ptr->is_render_target ? 1 : 0, 0,
                         0u, 0u,
                         ptr->mtl_render_target_write_version,
                         0u);
@@ -810,7 +802,6 @@ bool mglSampledBindTexturesForStage(
                 fallback++;
                 if (is_fragment) {
                     used_fallback = 1;
-                    used_sampled_copy = 0;
                     mglFocusLoadingProgram(fragment_program_name, "sample-fallback",
                                            bind_call);
                     static uint64_t s_frag_fb_log = 0;
@@ -872,17 +863,16 @@ bool mglSampledBindTexturesForStage(
                 &areas.fragment_trace_bindings[program_binding],
                 ptr ? ptr->name : 0u, texture_unit, program_binding, sample_program_name,
                 ptr ? ptr->mtl_render_target_write_version : 0u,
-                0u, ptr,
+                ptr,
                 texture,
                 (direct_texture_for_trace ? direct_texture_for_trace
                                                        : texture),
-                sampled_copy_for_trace,
                 texture ? mglSsTextureWidth(texture) : 0u,
                 texture ? mglSsTextureHeight(texture) : 0u,
                 texture ? mglSsTexturePixelFormat(texture)
                         : MGL_BINDING_PIXEL_FORMAT_INVALID,
                 texture ? mglSsTextureType(texture) : 0u,
-                used_sampled_copy ? 1 : 0, used_fallback ? 1 : 0);
+                used_fallback ? 1 : 0);
         }
 
         mglSampledEmitDiagPorts(
@@ -891,9 +881,8 @@ bool mglSampledBindTexturesForStage(
             texture, sampler,
             used_fallback ? 1 : 0, expected_type, lookup_type, bind_call,
             sample_program_name, vertex_program_name,
-            is_fragment ? fragment_program_name : 0u, used_sampled_copy ? 1 : 0,
+            is_fragment ? fragment_program_name : 0u,
             direct_texture_for_trace,
-            sampled_copy_for_trace,
             &s_focused_sampled_logs[is_fragment ? 1 : 0],
             &s_trace_file_sampled_logs[is_fragment ? 1 : 0]);
 

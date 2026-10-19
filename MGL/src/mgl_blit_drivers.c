@@ -40,7 +40,7 @@
 #include "mgl_texture_compat.h"   /* expansion helpers */
 #include "mgl_readback.h"         /* pixel-format predicates */
 #include "mgl_readback_policy.h"  /* mglRenderTargetHasGPUContent */
-#include "mgl_raster_orientation_plan.h"  /* mglFBOGLOrderEnabled */
+#include "mgl_raster_orientation_plan.h"  /* raster orientation plan */
 #include "pixel_utils.h"          /* sizeForInternalFormat */
 #include "mgl_render_values.h"    /* storage/usage enums */
 #include "mgl_region_value.h"     /* MGLOriginValue / MGLSizeValue / regions */
@@ -71,15 +71,11 @@
  * Every other Metal-side writer in this file records its write the same way
  * (mglBdMarkTextureLevelMetalFilled above, mglMarkTextureLevelRenderTargetWritten
  * for drawn RTs).  The copy path was the exception: it left
- * mtl_render_target_write_version un-bumped and the sampled-copy mip mask
- * clean, so for a texture that is both an FBO attachment and sampled, the
- * sampled copy kept satisfying the freshness gate
- *     sampled_data != NULL
- *   ∧ sampled_write_version == render_target_write_version
- *   ∧ dirty_mip_mask == 0
- * while holding pre-copy pixels -- i.e. exactly the permanent staleness
- * described in docs/SILENT_GAP_AUDIT_2026-09-17.md §5.2 (F7), whose CPU-upload
- * writer was fixed there but whose blit writer was not.
+ * mtl_render_target_write_version un-bumped and never claimed the level, so a
+ * later reader still preferred the CPU level and a blit reading it saw neither
+ * GPU content nor render-pass provenance -- i.e. exactly the permanent
+ * staleness described in docs/SILENT_GAP_AUDIT_2026-09-17.md §5.2 (F7), whose
+ * CPU-upload writer was fixed there but whose blit writer was not.
  *
  * The mutation set deliberately mirrors mglBdMarkTextureLevelMetalFilled rather
  * than the full mglMarkTextureLevelRenderTargetWrittenImpl: a copy initialises

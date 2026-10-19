@@ -25,15 +25,13 @@ static void mglBatchFsFlags(MGLFragmentTextureTraceBinding *b0,
                             MGLFragmentTextureTraceBinding *b1,
                             MGLFragmentTextureTraceBinding *b2,
                             MGLFragmentTextureTraceBinding *b3,
-                            int *has_rt, int *used_copy)
+                            int *has_rt)
 {
     const MGLBatchTraceFsSlot slots[4] = {
-        {b0->rt_write_version, b0->used_sampled_copy ? 1u : 0u},
-        {b1->rt_write_version, b1->used_sampled_copy ? 1u : 0u},
-        {b2->rt_write_version, b2->used_sampled_copy ? 1u : 0u},
-        {b3->rt_write_version, b3->used_sampled_copy ? 1u : 0u},
+        {b0->rt_write_version}, {b1->rt_write_version},
+        {b2->rt_write_version}, {b3->rt_write_version},
     };
-    mgl_batch_trace_fs_slot_flags(slots, 4, has_rt, used_copy);
+    mgl_batch_trace_fs_slot_flags(slots, 4, has_rt);
 }
 static void mglBatchFillStatePod(GLMContext glm_ctx, MGLBatchTraceStatePod *s)
 {
@@ -58,10 +56,8 @@ static MGLBatchTraceTexSlotView mglBatchTexSlotView(const MGLFragmentTextureTrac
         .gl_texture_name = b->gl_texture_name, .sampler_unit = b->sampler_unit,
         .program_name = b->program_name, .mtl_texture_ptr = b->mtl_texture_ptr,
         .direct_mtl_texture_ptr = b->direct_mtl_texture_ptr,
-        .sampled_copy_ptr = b->sampled_copy_ptr,
-        .used_sampled_copy = b->used_sampled_copy ? 1u : 0u,
         .used_fallback = b->used_fallback ? 1u : 0u,
-        .rt_write_version = b->rt_write_version, .sampled_write_version = b->sampled_write_version,
+        .rt_write_version = b->rt_write_version,
         .width = b->width, .height = b->height, .pixel_format = b->pixel_format,
         .texture_type = b->texture_type,
     };
@@ -87,12 +83,12 @@ void mglBatchTraceReplayBatch(void *renderer, MGLDrawBatch *batch,
     Program *drawProgram = mglTraceResolveDrawProgram(glm_ctx);
     MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
     MGLFragmentTextureTraceBinding *earlyFs = areas.fragment_trace_bindings;
-    int earlyFsSlotHasRT = 0, earlyFsSlotUsedCopy = 0;
+    int earlyFsSlotHasRT = 0;
     mglBatchFsFlags(earlyFs, earlyFs + 1, earlyFs + 2, earlyFs + 3,
-                    &earlyFsSlotHasRT, &earlyFsSlotUsedCopy);
+                    &earlyFsSlotHasRT);
     if (!mgl_batch_trace_should_emit(mglTraceLogIsEnabled() ? 1 : 0,
             mglTraceShouldLogReplay(glm_ctx, drawProgram) ? 1 : 0,
-            earlyFsSlotHasRT, earlyFsSlotUsedCopy))
+            earlyFsSlotHasRT))
         return;
     VertexArray *vao = mglRendererGetValidatedVAO(glm_ctx, "replay.batch.trace");
     Framebuffer *fbo = glm_ctx->active_state->framebuffer;
@@ -147,12 +143,12 @@ void mglBatchTraceReplayCommand(void *renderer, MGLDrawBatch *batch,
     if (!batch || !cmd || !glm_ctx) return;
     MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
     MGLFragmentTextureTraceBinding *fs0 = areas.fragment_trace_bindings;
-    int earlyFsSlotHasRT = 0, earlyFsSlotUsedCopy = 0;
-    mglBatchFsFlags(fs0, fs0 + 1, fs0 + 2, fs0 + 3, &earlyFsSlotHasRT, &earlyFsSlotUsedCopy);
+    int earlyFsSlotHasRT = 0;
+    mglBatchFsFlags(fs0, fs0 + 1, fs0 + 2, fs0 + 3, &earlyFsSlotHasRT);
     Program *drawProgram = mglTraceResolveDrawProgram(glm_ctx);
     if (!mgl_batch_trace_should_emit(mglTraceLogIsEnabled() ? 1 : 0,
             mglTraceShouldLogReplay(glm_ctx, drawProgram) ? 1 : 0,
-            earlyFsSlotHasRT, earlyFsSlotUsedCopy))
+            earlyFsSlotHasRT))
         return;
     Buffer *ebo = mglDrawCommandUsesElements(cmd) ? mglDrawCommandElementBuffer(glm_ctx, cmd) : NULL;
     GLuint eboName = mglBatchSafeName(ebo, sizeof(*ebo), ebo ? ebo->name : 0u);
@@ -175,8 +171,8 @@ void mglBatchTraceReplayCommand(void *renderer, MGLDrawBatch *batch,
     mglTraceTextureLevelSummary(color0Texture, color0Attachment ? color0Attachment->level : 0u,
                                 &cEver, &cFull, &cSource);
     mglTraceTextureLevelSummary(depthTexture, fbo ? fbo->depth.level : 0u, &dEver, &dFull, &dSource);
-    int fsSlotHasRT = 0, fsSlotUsedCopy = 0;
-    mglBatchFsFlags(fs0, fs0 + 1, fs0 + 2, fs0 + 3, &fsSlotHasRT, &fsSlotUsedCopy);
+    int fsSlotHasRT = 0;
+    mglBatchFsFlags(fs0, fs0 + 1, fs0 + 2, fs0 + 3, &fsSlotHasRT);
     MGLBatchTraceCmdView v; memset(&v, 0, sizeof(v));
     v.phase = phase; v.reason = reason; v.flush_id = flush_id;
     v.batch_index = batch_index; v.command_index = command_index;
@@ -223,7 +219,7 @@ void mglBatchTraceReplayCommand(void *renderer, MGLDrawBatch *batch,
     char line[3072];
     if (mgl_batch_trace_format_cmd_line(line, sizeof(line), &v) > 0) mglTraceLog("%s", line);
     if (mgl_batch_trace_is_submit_phase(phase) &&
-        (fsSlotHasRT || fsSlotUsedCopy || mglProgramNeedsBindingTrace(fragmentProgram))) {
+        (fsSlotHasRT || mglProgramNeedsBindingTrace(fragmentProgram))) {
         MGLBatchTraceTexSlotView slots[4] = {
             mglBatchTexSlotView(fs0), mglBatchTexSlotView(fs0 + 1),
             mglBatchTexSlotView(fs0 + 2), mglBatchTexSlotView(fs0 + 3),
@@ -236,13 +232,13 @@ void mglBatchTraceReplayCommand(void *renderer, MGLDrawBatch *batch,
                 fragmentProgram ? fragmentProgram->name : 0u,
                 areas.pipeline_cache->pipelineProgramName, slots) > 0)
             mglTraceLog("%s", texline);
-        if ((fsSlotHasRT || fsSlotUsedCopy) && fragmentProgram) {
+        if (fsSlotHasRT && fragmentProgram) {
             char dumpReason[128];
             snprintf(dumpReason, sizeof(dumpReason), "texslot-submit-fs-%u-flush-%llu-cmd-%u",
                      (unsigned)fragmentProgram->name, (unsigned long long)flush_id,
                      (unsigned)command_index);
             mglWriteProgramMSLDump(fragmentProgram, dumpReason);
-        } else if ((fsSlotHasRT || fsSlotUsedCopy) && drawProgram) {
+        } else if (fsSlotHasRT && drawProgram) {
             char dumpReason[128];
             snprintf(dumpReason, sizeof(dumpReason), "texslot-submit-program-%u-flush-%llu-cmd-%u",
                      (unsigned)drawProgram->name, (unsigned long long)flush_id,
@@ -254,6 +250,6 @@ void mglBatchTraceReplayCommand(void *renderer, MGLDrawBatch *batch,
         Program *attribProgram = vertexProgram ? vertexProgram : drawProgram;
         mglTraceReplayCommandVertexAttribSamples(
             glm_ctx, attribProgram, cmd, ebo, flush_id, batch_index, command_index,
-            fsSlotHasRT || fsSlotUsedCopy);
+            fsSlotHasRT);
     }
 }

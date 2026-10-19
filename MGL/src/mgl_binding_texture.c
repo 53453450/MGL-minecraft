@@ -545,26 +545,23 @@ typedef struct MGLBindingFragTraceLayout {
     uint32_t metal_binding;
     uint32_t program_name;
     uint32_t rt_write_version;
-    uint32_t sampled_write_version;
     void *gl_texture_ptr;
     void *mtl_texture_ptr;
     void *direct_mtl_texture_ptr;
-    void *sampled_copy_ptr;
     uint64_t width;
     uint64_t height;
     uint64_t pixel_format;
     uint64_t texture_type;
-    uint8_t used_sampled_copy;
     uint8_t used_fallback;
 } MGLBindingFragTraceLayout;
 
 void mglBindingTextureWriteFragTrace(
     void *out, uint32_t gl_texture_name, uint32_t sampler_unit,
     uint32_t metal_binding, uint32_t program_name, uint32_t rt_write_version,
-    uint32_t sampled_write_version, void *gl_texture_ptr, void *mtl_texture_ptr,
-    void *direct_mtl_texture_ptr, void *sampled_copy_ptr, uint64_t width,
+    void *gl_texture_ptr, void *mtl_texture_ptr,
+    void *direct_mtl_texture_ptr, uint64_t width,
     uint64_t height, uint64_t pixel_format, uint64_t texture_type,
-    int used_sampled_copy, int used_fallback)
+    int used_fallback)
 {
     MGLBindingFragTraceLayout layout;
     if (!out) {
@@ -576,16 +573,13 @@ void mglBindingTextureWriteFragTrace(
     layout.metal_binding = metal_binding;
     layout.program_name = program_name;
     layout.rt_write_version = rt_write_version;
-    layout.sampled_write_version = sampled_write_version;
     layout.gl_texture_ptr = gl_texture_ptr;
     layout.mtl_texture_ptr = mtl_texture_ptr;
     layout.direct_mtl_texture_ptr = direct_mtl_texture_ptr;
-    layout.sampled_copy_ptr = sampled_copy_ptr;
     layout.width = width;
     layout.height = height;
     layout.pixel_format = pixel_format;
     layout.texture_type = texture_type;
-    layout.used_sampled_copy = used_sampled_copy ? 1u : 0u;
     layout.used_fallback = used_fallback ? 1u : 0u;
     memcpy(out, &layout, sizeof(layout));
 }
@@ -605,7 +599,7 @@ void mglBindingTextureFillSampledDiagEmitCore(
     uint32_t ptr_tex, int stage_is_fragment, int is_gui_rt_copy_eligible,
     int focused_loading_window, int vertex_focus_program, int is_texel_buffer,
     int level0_suspicious_zero, int level0_never_written, int level0_uninit,
-    int has_bound_texture, uint64_t bind_call, int used_sampled_copy_trace,
+    int has_bound_texture, uint64_t bind_call,
     uint32_t draw_fbo, uint32_t rp_fbo, uint32_t unit_buffer_tex)
 {
     if (!in) {
@@ -656,7 +650,6 @@ void mglBindingTextureFillSampledDiagEmitCore(
     in->level0_uninit = level0_uninit ? 1 : 0;
     in->has_bound_texture = has_bound_texture ? 1 : 0;
     in->bind_call = bind_call;
-    in->used_sampled_copy_trace = used_sampled_copy_trace ? 1 : 0;
     in->draw_fbo = draw_fbo;
     in->rp_fbo = rp_fbo;
     in->unit_buffer_tex = unit_buffer_tex;
@@ -770,8 +763,8 @@ void mglBindingTextureEmitSampledDiagPorts(
             s_guiRTSampleLogCount, in->bind_call, in->program_name,
             in->vertex_program_name, in->fragment_program_name,
             in->sampled_name, in->program_binding, in->texture_unit, in->ptr_tex,
-            in->rt_label, in->used_fallback, in->used_sampled_copy_trace,
-            in->ptr, in->mtl, in->direct_for_trace, in->copy_for_trace,
+            in->rt_label, in->used_fallback,
+            in->ptr, in->mtl, in->direct_for_trace,
             in->mtl_format, in->mtl_type, in->mtl_w, in->mtl_h, in->draw_fbo,
             in->rp_fbo, in->rp_color, in->rp_depth);
     }

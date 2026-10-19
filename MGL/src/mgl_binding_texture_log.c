@@ -145,20 +145,20 @@ void mglBindingLogRTSampleCopy(const MGLBindingRTCopyLog *log)
 void mglBindingLogRTSampleCopySample(
     uint64_t hit, uint64_t bind_call, uint32_t program, uint32_t vs,
     uint32_t fs, const char *name, uint32_t binding, uint32_t unit,
-    uint32_t rt_tex, const char *label, int fallback, int use_copy,
-    const void *ptr, const void *mtl, const void *direct, const void *copy,
+    uint32_t rt_tex, const char *label, int fallback,
+    const void *ptr, const void *mtl, const void *direct,
     uint64_t fmt, uint64_t type, uint64_t w, uint64_t h, uint32_t draw_fbo,
     uint32_t rp_fbo, const void *rp_color, const void *rp_depth)
 {
     mglTraceLog(
-        "RT_SAMPLE_COPY_SAMPLE hit=%llu bindCall=%llu program=%u vs=%u fs=%u "
-        "name=%s binding=%u unit=%u rtTex=%u label=\"%s\" fallback=%d useCopy=%d "
-        "ptr=%p mtl=%p direct=%p copy=%p fmt=%lu type=%lu size=%lux%lu drawFbo=%u "
+        "RT_BINDING_SAMPLE hit=%llu bindCall=%llu program=%u vs=%u fs=%u "
+        "name=%s binding=%u unit=%u rtTex=%u label=\"%s\" fallback=%d "
+        "ptr=%p mtl=%p direct=%p fmt=%lu type=%lu size=%lux%lu drawFbo=%u "
         "rpFbo=%u rpColor=%p rpDepth=%p",
         (unsigned long long)hit, (unsigned long long)bind_call, (unsigned)program,
         (unsigned)vs, (unsigned)fs, name ? name : "", (unsigned)binding,
-        (unsigned)unit, (unsigned)rt_tex, label ? label : "", fallback, use_copy,
-        ptr, mtl, direct, copy, (unsigned long)fmt, (unsigned long)type,
+        (unsigned)unit, (unsigned)rt_tex, label ? label : "", fallback,
+        ptr, mtl, direct, (unsigned long)fmt, (unsigned long)type,
         (unsigned long)w, (unsigned long)h, (unsigned)draw_fbo, (unsigned)rp_fbo,
         rp_color, rp_depth);
 }

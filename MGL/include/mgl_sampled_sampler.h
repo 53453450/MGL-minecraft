@@ -57,8 +57,7 @@ void mglSampledEmitDiagPorts(
     void *sampler, int used_fallback, uint32_t expected_type,
     uint32_t lookup_type, uint64_t bind_call, GLuint program_name,
     GLuint vertex_program_name, GLuint fragment_program_name,
-    int used_sampled_copy_trace, void *direct_texture_for_trace,
-    void *sampled_copy_for_trace, uint64_t *focused_counter,
+    void *direct_texture_for_trace, uint64_t *focused_counter,
     uint64_t *trace_file_counter);
 
 /* Separate samplers (fragment) plus array-element textures/samplers for both

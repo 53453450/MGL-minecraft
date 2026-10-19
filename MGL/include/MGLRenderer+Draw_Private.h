@@ -176,8 +176,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                         bindStage:(uint32_t)metalBindStage;
 - (bool)bindStorageImagesForVertexProgram:(Program *)vertexProgram
                           fragmentProgram:(Program *)fragmentProgram;
-/* applySampledRenderTargetCopyPlan:… is C now (mglSampledRenderTargetCopyPlan,
- * mgl_sampled_sampler.h); log 152. */
 /* bindActiveTexturesToMTL is now mglBatchBindActiveTexturesToMTL
  * (mgl_batch_issue.h). */
 

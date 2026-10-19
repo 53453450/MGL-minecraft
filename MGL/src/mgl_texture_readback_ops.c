@@ -739,8 +739,8 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
         goto done;
     }
 
-    /* Match float GetTexImage: map the GL rect onto flipped Metal storage
-     * before the blit (full-height reads keep origin 0). */
+    /* Window-system targets store Metal rows, so remap the GL rect onto them
+     * before the blit; FBO attachments already store GL rows (origin 0). */
     int64_t metalY = minY;
     if (flipRows) {
         uint64_t levelHeight = mglPdTextureInfo(sourceTexture).height;
@@ -777,9 +777,8 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
         goto done;
     }
 
-    /* Rendered integer RT storage is Y-flipped like float RTs once
-     * mglBlitFlipRenderTargetStorageForFirstWrite has run; convert unflips
-     * to GL bottom-up. */
+    /* flipRows is set only for the window-system framebuffer; an FBO
+     * attachment is addressed in GL rows, which is what the convert expects. */
     mglPdTextureCopyTextureToBuffer(
         blit, sourceTexture, mtlSlice, mipmapLevel,
         mglTextureOrigin((uint64_t)minX, (uint64_t)metalY, 0u),

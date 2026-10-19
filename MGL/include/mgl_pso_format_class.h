@@ -78,8 +78,6 @@ int mglRenderClearColorWriteMasks(int rasterizer_discard, int tess_capture,
                                   int cull_capture);
 int mglRenderNeedsVertexDescriptor(int geometry_expansion, int tess_compute);
 int mglRenderColorAttachmentBitSet(uint32_t bitfield, uint32_t index);
-int mglRenderSampledRTNeedsCopy(int is_rt, uint32_t write_version);
-int mglRenderSampledRTCopyStale(uint32_t sampled_version, uint32_t rt_version);
 int mglRenderNativeAttribIndexValid(uint32_t index);
 uint32_t mglRenderNativeAttribStepFunction(void);
 int mglRenderSkipUnboundAttrib(int uses_current, int has_binding);
