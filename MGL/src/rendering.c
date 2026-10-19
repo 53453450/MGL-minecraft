@@ -967,6 +967,15 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
     }
 
     if (mglShouldTraceClearCall(callCount)) {
+        /* GL_COLOR supplies four values; GL_DEPTH supplies one.  Reading
+         * value[1..3] unconditionally was a global-buffer-overflow (ASan:
+         * rendering.c:981).  Just like 'color' above, make the trace values
+         * buffer-dependent. */
+        const GLboolean color_values = (buffer == GL_COLOR) ? GL_TRUE : GL_FALSE;
+        const double value0 = (double)value[0];
+        const double value1 = color_values ? (double)value[1] : 0.0;
+        const double value2 = color_values ? (double)value[2] : 0.0;
+        const double value3 = color_values ? (double)value[3] : 0.0;
         mglTraceLogExternal("CLEAR_BUFFERFV call=%llu buffer=0x%x drawbuffer=%d fbo=%u scissor(test=%d box=%d,%d,%d,%d) value=(%.6f,%.6f,%.6f,%.6f) depthWrite=%d dirty=0x%x",
                             (unsigned long long)callCount,
                             (unsigned)buffer,
@@ -977,10 +986,10 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
                             (int)STATE(var).scissor_box[1],
                             (int)STATE(var).scissor_box[2],
                             (int)STATE(var).scissor_box[3],
-                            value ? (double)value[0] : 0.0,
-                            value ? (double)value[1] : 0.0,
-                            value ? (double)value[2] : 0.0,
-                            value ? (double)value[3] : 0.0,
+                            value0,
+                            value1,
+                            value2,
+                            value3,
                             STATE(var).depth_writemask ? 1 : 0,
                             (unsigned)STATE(dirty_bits));
     }
