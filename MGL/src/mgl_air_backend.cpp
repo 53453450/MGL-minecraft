@@ -15810,9 +15810,14 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
      * glUniform* is visible.  (GLSL default initializers still need CPU-side
      * seeding at link; do not bufferStore here or every invocation would
      * overwrite glUniform uploads.) */
-    for (uint32_t i = 0; i < tu->decl_count; i++) {
-        MGLDecl *d = tu->decls[i];
-        if (!d || !d->name || d->body || !d->init) continue;
+    /* A declaration `T a = x, b = y;` is a chain of declarators; every one of
+     * them needs its initializer (the parser links the 2nd and later through
+     * next_declarator). */
+    bool globalInitFailed = false;
+    for (uint32_t i = 0; i < tu->decl_count && !globalInitFailed; i++) {
+      for (MGLDecl *d = tu->decls[i]; d && !globalInitFailed;
+           d = d->next_declarator) {
+        if (!d->name || d->body || !d->init) continue;
         const MGLIRSymbol *gs = findSymbol(&mod, d->name);
         if (!gs || gs->is_function) continue;
         if (gs->qualifiers & (MGL_AST_Q_BUFFER |
@@ -15834,8 +15839,10 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             if (!arrTy || !arrTy->isArrayTy())
                 continue;
             llvm::Value *gv = emitExpr(cg, d->init, &mod, locals);
-            if (!gv)
+            if (!gv) {
+                globalInitFailed = true;
                 break;
+            }
             llvm::Value *ptr = cg.b->CreateAlloca(
                 arrTy, nullptr, std::string(d->name) + ".garr");
             cg.b->CreateAlignedStore(gv, ptr, llvm::Align(4));
@@ -15844,7 +15851,10 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             continue;
         }
         llvm::Value *gv = emitExpr(cg, d->init, &mod, locals);
-        if (!gv) break;
+        if (!gv) {
+            globalInitFailed = true;
+            break;
+        }
         cg.lvalues[d->name] = gv;
         locals[d->name] = gt;
         /* Register the folded global's IR type as well.  exprIRType() treats a
@@ -15858,6 +15868,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
          * shader that reads `gl_Fog.<member>` (deferred1/composite fog) hit
          * this. */
         cg.localIRTypes[d->name] = gs->type;
+      }
     }
     if (isTCS) {
         cg.lvalues["gl_TessLevelOuter"] = llvm::UndefValue::get(

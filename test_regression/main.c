@@ -62,7 +62,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 230
+#define MAX_TESTS 231
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -30442,6 +30442,57 @@ static int test_rt_keeps_uploaded_data(unsigned char *pixels, const char *out_pa
     return fail ? 1 : 0;
 }
 
+/* `T a = x, b = y;` at global scope initializes every declarator, in the
+ * vertex and in the fragment stage.  Complementary's sky shader declares
+ * `vec3 nmscRainM = vec3(0.0), ndscRainM = vec3(0.0);`; the second one was
+ * never initialized and fed NaN into the whole sky. */
+static int test_global_multi_declarator_init(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "float va = 0.25, vb = 0.5;\n"
+        "vec3 vc = vec3(0.1), vd = vec3(0.2, 0.4, 0.6);\n"
+        "flat out vec2 vcol;\n"
+        "void main() { vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  vcol = vec2(vb, vd.y); gl_Position = vec4(p, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 330 core\n"
+        "flat in vec2 vcol;\n"
+        "float ga = 0.25, gb = 0.5, gc = 0.75;\n"
+        "vec3 gv = vec3(0.1), gw = vec3(0.2, 0.4, 0.6);\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(gb + vcol.x * 0.0, gc, gw.z, vcol.y); }\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) return 2;
+    GLuint vao = 0, tex = 0, fbo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    fbo = make_fbo(16, 16, &tex);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, 16, 16);
+    glClearColor(0.f, 0.f, 0.f, 0.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(prog);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    unsigned char px[4] = {0};
+    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    /* gb = 0.5, gc = 0.75, gw.z = 0.6, vd.y = 0.4 */
+    int fail = 0;
+    if (abs((int)px[0] - 128) > 2 || abs((int)px[1] - 191) > 2 ||
+        abs((int)px[2] - 153) > 2 || abs((int)px[3] - 102) > 2) {
+        fprintf(stderr, "global_multi_declarator_init: got %u,%u,%u,%u (want ~128,191,153,102)\n",
+                px[0], px[1], px[2], px[3]);
+        fail = 1;
+    }
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    return fail;
+}
+
 static int test_dfdy_orientation(unsigned char *pixels, const char *out_path)
 {
     (void)out_path;
@@ -30898,6 +30949,7 @@ static const TestCase TESTS[] = {
                     test_pixel_format_bpp_table),
     SELF_CHECK_TEST("sample_mask_state_key", test_sample_mask_state_key),
     SELF_CHECK_TEST("dfdy_orientation", test_dfdy_orientation),
+    SELF_CHECK_TEST("global_multi_declarator_init", test_global_multi_declarator_init),
     SELF_CHECK_TEST("rt_keeps_uploaded_data", test_rt_keeps_uploaded_data),
     SELF_CHECK_TEST("iris_like_frame", test_iris_like_frame),
     SELF_CHECK_TEST("generate_mipmap_render_target", test_generate_mipmap_render_target),
