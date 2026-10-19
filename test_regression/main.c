@@ -62,7 +62,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 229
+#define MAX_TESTS 230
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -30365,6 +30365,83 @@ static int test_iris_like_frame(unsigned char *pixels, const char *out_path)
     return fail ? 1 : 0;
 }
 
+/* A texture that was specified with client data and is then attached to a
+ * framebuffer keeps that data when the framebuffer is first used (here by a
+ * draw that discards every fragment) and when it is read back, blitted or
+ * copied from. */
+static int test_rt_keeps_uploaded_data(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() { vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0); }\n";
+    GLuint pdiscard = link_program(vs,
+        "#version 330 core\nout vec4 c;\nvoid main() { discard; c = vec4(0.0); }\n");
+    if (!pdiscard) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    static unsigned char data[16 * 16 * 4];
+    for (int y = 0; y < 16; y++)
+        for (int x = 0; x < 16; x++) {
+            data[(y * 16 + x) * 4 + 0] = (unsigned char)(10 + y);
+            data[(y * 16 + x) * 4 + 1] = (unsigned char)(100 + x);
+            data[(y * 16 + x) * 4 + 2] = 50;
+            data[(y * 16 + x) * 4 + 3] = 255;
+        }
+    int fail = 0;
+    for (int variant = 0; variant < 3; variant++) {
+        GLuint ta = 0, tb = 0, fa = 0, fb = 0;
+        glGenTextures(1, &ta); glBindTexture(GL_TEXTURE_2D, ta);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glGenTextures(1, &tb); glBindTexture(GL_TEXTURE_2D, tb);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glGenFramebuffers(1, &fa); glBindFramebuffer(GL_FRAMEBUFFER, fa);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ta, 0);
+        glGenFramebuffers(1, &fb); glBindFramebuffer(GL_FRAMEBUFFER, fb);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tb, 0);
+        /* first use of A's framebuffer: a pass in which nothing is written */
+        glBindFramebuffer(GL_FRAMEBUFFER, fa);
+        glViewport(0, 0, 16, 16);
+        glUseProgram(pdiscard);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        unsigned char px[4] = {0};
+        if (variant == 0) {           /* read back through the framebuffer */
+            glReadPixels(3, 5, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        } else if (variant == 1) {    /* blit A -> B, read B */
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, fa);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fb);
+            glBlitFramebuffer(0, 0, 16, 16, 0, 0, 16, 16, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+            glReadPixels(3, 5, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        } else {                      /* glCopyTexSubImage2D A -> B, read B */
+            glBindFramebuffer(GL_FRAMEBUFFER, fa);
+            glBindTexture(GL_TEXTURE_2D, tb);
+            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, 16, 16);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+            glReadPixels(3, 5, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        }
+        if (px[0] != 15 || px[1] != 103 || px[2] != 50) {
+            fprintf(stderr, "rt_keeps_uploaded_data: variant %d read %u,%u,%u (want 15,103,50)\n",
+                    variant, px[0], px[1], px[2]);
+            fail |= 1 << variant;
+        }
+        /* and GetTexImage of the attached texture */
+        static unsigned char img[16 * 16 * 4];
+        glBindTexture(GL_TEXTURE_2D, ta);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, img);
+        if (img[(5 * 16 + 3) * 4] != 15) {
+            fprintf(stderr, "rt_keeps_uploaded_data: variant %d GetTexImage %u (want 15)\n", variant, img[(5 * 16 + 3) * 4]);
+            fail |= 8 << variant;
+        }
+    }
+    return fail ? 1 : 0;
+}
+
 static int test_dfdy_orientation(unsigned char *pixels, const char *out_path)
 {
     (void)out_path;
@@ -30821,6 +30898,7 @@ static const TestCase TESTS[] = {
                     test_pixel_format_bpp_table),
     SELF_CHECK_TEST("sample_mask_state_key", test_sample_mask_state_key),
     SELF_CHECK_TEST("dfdy_orientation", test_dfdy_orientation),
+    SELF_CHECK_TEST("rt_keeps_uploaded_data", test_rt_keeps_uploaded_data),
     SELF_CHECK_TEST("iris_like_frame", test_iris_like_frame),
     SELF_CHECK_TEST("generate_mipmap_render_target", test_generate_mipmap_render_target),
     SELF_CHECK_TEST("interpolate_at_offset_orientation",
