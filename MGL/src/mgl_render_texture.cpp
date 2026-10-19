@@ -7,6 +7,7 @@
 #include "mgl_render_api_readback.h"
 #include "mgl_render_api_lifecycle.h"
 #include "mgl_render_pixel.h"
+#include "mgl_sampler_plan.h"
 #include "mgl_pixel_format.h"
 extern "C" {
 #include "pixel_utils.h"
@@ -1232,95 +1233,51 @@ int mglRenderCreateSamplerForGL(const TextureParameter* params,
         return -1;
     }
 
-    MTL::SamplerMinMagFilter minFilter;
-    MTL::SamplerMipFilter mipFilter = MTL::SamplerMipFilterNotMipmapped;
-    switch (params->min_filter) {
-        case GL_NEAREST:
-            minFilter = MTL::SamplerMinMagFilterNearest;
-            break;
-        case GL_LINEAR:
-            minFilter = MTL::SamplerMinMagFilterLinear;
-            break;
-        case GL_NEAREST_MIPMAP_NEAREST:
-            minFilter = MTL::SamplerMinMagFilterNearest;
-            mipFilter = MTL::SamplerMipFilterNearest;
-            break;
-        case GL_LINEAR_MIPMAP_NEAREST:
-            minFilter = MTL::SamplerMinMagFilterLinear;
-            mipFilter = MTL::SamplerMipFilterNearest;
-            break;
-        case GL_NEAREST_MIPMAP_LINEAR:
-            minFilter = MTL::SamplerMinMagFilterNearest;
-            mipFilter = MTL::SamplerMipFilterLinear;
-            break;
-        case GL_LINEAR_MIPMAP_LINEAR:
-            minFilter = MTL::SamplerMinMagFilterLinear;
-            mipFilter = MTL::SamplerMipFilterLinear;
-            break;
-        default:
-            if (err && errcap) snprintf(err, errcap,
-                                        "invalid GL min filter=0x%x",
-                                        params->min_filter);
-            return -1;
-    }
-
-    MTL::SamplerMinMagFilter magFilter;
-    switch (params->mag_filter) {
-        case GL_NEAREST:
-            magFilter = MTL::SamplerMinMagFilterNearest;
-            break;
-        case GL_LINEAR:
-            magFilter = MTL::SamplerMinMagFilterLinear;
-            break;
-        default:
-            if (err && errcap) snprintf(err, errcap,
-                                        "invalid GL mag filter=0x%x",
-                                        params->mag_filter);
-            return -1;
-    }
-
-    auto addressModeForGL = [&](GLenum value,
-                                MTL::SamplerAddressMode* out) -> bool {
-        if (!out) return false;
-        switch (value) {
-            case GL_CLAMP_TO_EDGE:
-                *out = MTL::SamplerAddressModeClampToEdge;
-                return true;
-            case GL_CLAMP_TO_BORDER:
-                *out = MTL::SamplerAddressModeClampToBorderColor;
-                return true;
-            case GL_MIRRORED_REPEAT:
-                *out = MTL::SamplerAddressModeMirrorRepeat;
-                return true;
-            case GL_REPEAT:
-                *out = MTL::SamplerAddressModeRepeat;
-                return true;
-            case GL_MIRROR_CLAMP_TO_EDGE:
-                *out = MTL::SamplerAddressModeMirrorClampToEdge;
-                return true;
-            default:
-                return false;
-        }
-    };
-
-    MTL::SamplerAddressMode sAddress;
-    MTL::SamplerAddressMode tAddress;
-    MTL::SamplerAddressMode rAddress;
-    if (!addressModeForGL(params->wrap_s, &sAddress) ||
-        !addressModeForGL(params->wrap_t, &tAddress) ||
-        !addressModeForGL(params->wrap_r, &rAddress)) {
-        if (err && errcap) snprintf(err, errcap,
-                                    "invalid GL sampler address mode");
+    /* GL state is resolved by the L1 plan; this function only maps MGL values
+     * to Metal enums (docs/AUDIT_LAYERING_2026-10-17.md §5.1). */
+    MGLSamplerPlan plan;
+    if (mglSamplerPlanBuild(params, target, &plan) < 0) {
+        if (err && errcap) snprintf(err, errcap, "invalid sampler parameters");
         return -1;
     }
 
+    const MTL::SamplerMinMagFilter minFilter =
+        plan.min_filter == MGL_SAMPLER_FILTER_LINEAR
+            ? MTL::SamplerMinMagFilterLinear
+            : MTL::SamplerMinMagFilterNearest;
+    const MTL::SamplerMinMagFilter magFilter =
+        plan.mag_filter == MGL_SAMPLER_FILTER_LINEAR
+            ? MTL::SamplerMinMagFilterLinear
+            : MTL::SamplerMinMagFilterNearest;
+    MTL::SamplerMipFilter mipFilter = MTL::SamplerMipFilterNotMipmapped;
+    if (plan.mip_filter == MGL_SAMPLER_MIP_NEAREST) {
+        mipFilter = MTL::SamplerMipFilterNearest;
+    } else if (plan.mip_filter == MGL_SAMPLER_MIP_LINEAR) {
+        mipFilter = MTL::SamplerMipFilterLinear;
+    }
+
+    auto addressMode = [](uint8_t value) -> MTL::SamplerAddressMode {
+        switch (value) {
+            case MGL_SAMPLER_WRAP_CLAMP_TO_BORDER:
+                return MTL::SamplerAddressModeClampToBorderColor;
+            case MGL_SAMPLER_WRAP_MIRRORED_REPEAT:
+                return MTL::SamplerAddressModeMirrorRepeat;
+            case MGL_SAMPLER_WRAP_CLAMP_TO_EDGE:
+                return MTL::SamplerAddressModeClampToEdge;
+            case MGL_SAMPLER_WRAP_MIRROR_CLAMP_TO_EDGE:
+                return MTL::SamplerAddressModeMirrorClampToEdge;
+            default:
+                return MTL::SamplerAddressModeRepeat;
+        }
+    };
+    const MTL::SamplerAddressMode sAddress = addressMode(plan.wrap_s);
+    const MTL::SamplerAddressMode tAddress = addressMode(plan.wrap_t);
+    const MTL::SamplerAddressMode rAddress = addressMode(plan.wrap_r);
+
     MTL::SamplerBorderColor borderColor =
         MTL::SamplerBorderColorTransparentBlack;
-    const bool hasBorder = params->wrap_s == GL_CLAMP_TO_BORDER ||
-                           params->wrap_t == GL_CLAMP_TO_BORDER ||
-                           params->wrap_r == GL_CLAMP_TO_BORDER;
-    if (hasBorder) {
-        const float* color = params->border_color;
+    if (plan.any_wrap_border) {
+        const float* color = plan.border_color;
         if (color[0] == 0.0f && color[1] == 0.0f &&
             color[2] == 0.0f && color[3] == 1.0f) {
             borderColor = MTL::SamplerBorderColorOpaqueBlack;
@@ -1339,28 +1296,11 @@ int mglRenderCreateSamplerForGL(const TextureParameter* params,
         }
     }
 
-    MTL::CompareFunction compare = MTL::CompareFunctionNever;
-    if (params->compare_mode == GL_COMPARE_REF_TO_TEXTURE) {
-        switch (params->compare_func) {
-            case GL_NEVER: compare = MTL::CompareFunctionNever; break;
-            case GL_LESS: compare = MTL::CompareFunctionLess; break;
-            case GL_EQUAL: compare = MTL::CompareFunctionEqual; break;
-            case GL_LEQUAL: compare = MTL::CompareFunctionLessEqual; break;
-            case GL_GREATER: compare = MTL::CompareFunctionGreater; break;
-            case GL_NOTEQUAL: compare = MTL::CompareFunctionNotEqual; break;
-            case GL_GEQUAL: compare = MTL::CompareFunctionGreaterEqual; break;
-            case GL_ALWAYS: compare = MTL::CompareFunctionAlways; break;
-            default:
-                if (err && errcap) snprintf(err, errcap,
-                                            "invalid GL compare function");
-                return -1;
-        }
-    } else if (params->compare_mode != GL_NONE) {
-        if (err && errcap) snprintf(err, errcap,
-                                    "invalid GL compare mode=0x%x",
-                                    params->compare_mode);
-        return -1;
-    }
+    /* MGL compare values are Metal's order shifted by one (NONE = 0). */
+    const MTL::CompareFunction compare =
+        plan.compare == MGL_SAMPLER_COMPARE_NONE
+            ? MTL::CompareFunctionNever
+            : (MTL::CompareFunction)(plan.compare - 1);
 
     mgl::Renderer& renderer = mgl::renderer();
     std::lock_guard<std::mutex> lock(renderer.mutex);
@@ -1385,20 +1325,17 @@ int mglRenderCreateSamplerForGL(const TextureParameter* params,
     descriptor->setBorderColor(borderColor);
     descriptor->setCompareFunction(compare);
     descriptor->setMaxAnisotropy(
-        params->max_anisotropy > 1.0f
+        plan.max_anisotropy > 1.0f
             ? std::min<NS::UInteger>(16u,
                                      std::max<NS::UInteger>(
                                          1u, static_cast<NS::UInteger>(
-                                                 params->max_anisotropy)))
+                                                 plan.max_anisotropy)))
             : 1u);
-    descriptor->setLodMinClamp(params->min_lod < 0.0f ? 0.0f : params->min_lod);
-    descriptor->setLodMaxClamp(params->max_lod >= 1000.0f
-                                   ? 1e9f : params->max_lod);
-    if (target == GL_TEXTURE_RECTANGLE) {
+    descriptor->setLodMinClamp(plan.min_lod < 0.0f ? 0.0f : plan.min_lod);
+    descriptor->setLodMaxClamp(plan.max_lod >= 1000.0f ? 1e9f : plan.max_lod);
+    if (!plan.normalized_coordinates) {
         descriptor->setNormalizedCoordinates(false);
-        if (params->wrap_s != GL_CLAMP_TO_EDGE ||
-            params->wrap_t != GL_CLAMP_TO_EDGE ||
-            params->wrap_r != GL_CLAMP_TO_EDGE) {
+        if (!plan.all_wrap_clamp_to_edge) {
             descriptor->setSAddressMode(MTL::SamplerAddressModeClampToEdge);
             descriptor->setTAddressMode(MTL::SamplerAddressModeClampToEdge);
             descriptor->setRAddressMode(MTL::SamplerAddressModeClampToEdge);
