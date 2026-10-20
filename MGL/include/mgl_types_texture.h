@@ -210,7 +210,6 @@ typedef struct Texture_t {
      * than the real texture.  Lets callers that check "did creation succeed?"
      * distinguish a real texture from the silent substitute, and keeps the
      * degraded state observable instead of indistinguishable from success. */
-    GLboolean mtl_data_is_fallback;
     Buffer  *texture_buffer;
     GLintptr texture_buffer_offset;
     GLsizeiptr texture_buffer_size;

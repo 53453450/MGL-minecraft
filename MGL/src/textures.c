@@ -4736,7 +4736,7 @@ void texStorage(GLMContext ctx, Texture *tex, GLuint faces, GLsizei levels, GLbo
      * installs a non-NULL gradient substitute on failure, so the one "loud"
      * failure report in the texture-creation paths was defeated by the very
      * mechanism it was meant to catch.  Reject the substitute too. */
-    ERROR_CHECK_RETURN(mglTextureMtl(tex) && !tex->mtl_data_is_fallback, GL_OUT_OF_MEMORY);
+    ERROR_CHECK_RETURN(mglTextureMtl(tex) && !mglTextureStorageIsFallback(tex), GL_OUT_OF_MEMORY);
 }
 
 void mglTexStorage1D(GLMContext ctx, GLenum target, GLsizei levels, GLenum internalformat, GLsizei width)
@@ -6856,7 +6856,7 @@ void mglTextureView(GLMContext ctx, GLuint texture, GLenum target, GLuint origte
         if (root_ms) {
             root->is_render_target = GL_FALSE;
         }
-        ERROR_CHECK_RETURN(mglTextureMtl(root) && !root->mtl_data_is_fallback,
+        ERROR_CHECK_RETURN(mglTextureMtl(root) && !mglTextureStorageIsFallback(root),
                            GL_OUT_OF_MEMORY);
         root->metal_data_authoritative = GL_TRUE;
     }

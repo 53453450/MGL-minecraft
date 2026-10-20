@@ -84,4 +84,15 @@ mglTextureBackendEnsure(Texture *texture)
     return texture->backend;
 }
 
+static inline int mglTextureStorageIsFallback(const Texture *texture)
+{
+    return (texture && texture->backend && texture->backend->storage_is_fallback)
+               ? 1 : 0;
+}
+
+static inline void mglTextureSetStorageIsFallback(Texture *texture, int value)
+{
+    mglTextureBackendEnsure(texture)->storage_is_fallback = value ? 1u : 0u;
+}
+
 #endif /* MGL_TEXTURE_BACKEND_H */

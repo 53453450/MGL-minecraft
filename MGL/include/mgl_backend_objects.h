@@ -101,6 +101,8 @@ struct MGLTextureBackend {
      * retained owner texture the view was last built from, compared to see
      * whether the view must be rebuilt. */
     void *view_parent;
+    /* The current Metal texture is the fallback texture, not real storage. */
+    uint8_t storage_is_fallback;
 };
 
 /* Image unit: the Metal texture view (or 3D slice staging texture) bound for
