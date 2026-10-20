@@ -710,9 +710,6 @@ int mglRenderExpandQuadArrayLineIndices(
 }
 
 
-
-
-
 extern "C"
 int mglRenderExpandTriangleFanIndices(
     const uint8_t* bytes, uint32_t elem_width, uint32_t count,
@@ -910,9 +907,6 @@ uint32_t mglRenderStencilSwizzleStoragePixelFormat(void) {
 }
 
 
-
-
-
 extern "C"
 uint32_t mglRenderMTLSwizzleForGLSwizzle(uint32_t gl_swizzle,
                                             uint32_t components) {
@@ -1047,15 +1041,6 @@ uint32_t mglRenderIntegerAttribConversionFormat(
 }
 
 
-
-
-
-
-
-
-
-
-
 int mglWideSrcChannelCount(MTL::PixelFormat pf) {
     switch (pf) {
         case MTL::PixelFormatR32Float:
@@ -1077,9 +1062,6 @@ int mglWideSrcChannelCount(MTL::PixelFormat pf) {
             return 0;
     }
 }
-
-
-
 
 
 extern "C"
@@ -1312,7 +1294,6 @@ int mglRenderTextureSwizzleUsesUploadBake(
     }
     return 0;
 }
-
 
 
 extern "C"

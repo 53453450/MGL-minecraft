@@ -68,7 +68,6 @@ void mglRenderBindBuffer(GLMContext glm_ctx, Buffer* buffer) {
 }
 
 
-
 void mglRenderBindProgram(GLMContext glm_ctx, Program* program) {
     (void)glm_ctx;
     int failedStage = -1;
@@ -116,7 +115,6 @@ int mglRenderEncodeStageBindingCopyBacks(
     }
     return 0;
 }
-
 
 
 uint32_t mglRenderAttribFormatOrFallback(uint32_t planned, uint32_t type,
@@ -341,7 +339,6 @@ uint32_t mglRenderBuildCurrentVertexAttribBytes(
         }
     }
 }
-
 
 
 extern "C" uint32_t mglRenderPlanVertexAttribOffset(
@@ -1803,9 +1800,6 @@ int mglRenderBindingGetStats(MGLBindingState * binding_state, MGLRenderBindingSt
     memcpy(stats_out, &state->stats, sizeof(*stats_out));
     return 0;
 }
-
-extern "C"
-
 
 extern "C"
 uint64_t mglRenderVertexAttribElementBytes(uint64_t gl_type, uint32_t size) {

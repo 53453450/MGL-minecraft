@@ -143,7 +143,6 @@ int mglRenderIndexStreamFits(uint64_t offset, uint64_t count, uint32_t elem_byte
 }
 
 
-
 int mglRenderIndexTypeIsU8(uint32_t type) {
     return type == GL_UNSIGNED_BYTE ? 1 : 0;
 }
@@ -199,9 +198,6 @@ uint32_t mglRenderMTLIndexTypeForGLType(uint32_t gl_type) {
 }
 
 extern "C"
-
-
-extern "C"
 uint32_t mglRenderTessRoundLevelForSpacing(uint32_t spacing,
                                               uint32_t ceil_level) {
     return mglTessRoundLevelForSpacing(spacing, ceil_level);
@@ -252,7 +248,6 @@ uint32_t mglRenderTessControlPointLocationFormat(uint64_t gl_type) {
             return mglRenderTessControlPointFormat(gl_type);
     }
 }
-
 
 
 extern "C"
@@ -567,12 +562,6 @@ uint32_t mglRenderReadGLIndexValue(const uint8_t* bytes, uint32_t elem_width,
     }
     return 0u;
 }
-
-extern "C"
-
-
-extern "C"
-
 
 extern "C"
 uint64_t mglRenderQuadTriangleIndexCount(uint64_t source_vertex_count) {
