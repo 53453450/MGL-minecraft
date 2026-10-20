@@ -5,6 +5,8 @@
 > `mgl_render_objc.h`、`MGLMetal*Ref` 和 smoke 对 transition adapter 的依赖已删除。
 > 施工期 checker 与 baseline 脚本已在 M3 完成后删除，不再作为长期维护接口；
 > 当前验证入口为 `make -j4 lib`、`make test-all` 和 `git diff --check`。
+> **2026-10-20 起** `make test-all` 末尾会构建并运行 231 例 `test_regression`（它内联头里的状态助手，
+> 结构体布局变化后必须重建），因此这条命令现在同时覆盖单元级与端到端回归。
 > 历史阶段编号、checker 和 A/B 数字仅保留在下方完成记录，不代表当前验证契约。
 >
 > 适用分支：当前工作区（`lgpl`）
