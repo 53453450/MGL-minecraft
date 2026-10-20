@@ -120,8 +120,6 @@ typedef struct BufferData_t {
     GLuint          dirty_bits;
     size_t          buffer_size;
     vm_address_t    buffer_data;
-    /* True when a no-copy MTLBuffer deallocator owns buffer_data. */
-    GLboolean       mtl_owns_buffer_data;
 } BufferData;
 
 #define BUFFER_IMMUTABLE_STORAGE_FLAG   0x1

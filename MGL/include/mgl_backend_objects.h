@@ -133,6 +133,8 @@ struct MGLBufferBackend {
     void *uint16_expanded_data;
     uint64_t uint16_expanded_src_hash;
     size_t uint16_expanded_byte_count;
+    /* The no-copy MTLBuffer's deallocator owns the CPU range in BufferData. */
+    uint8_t owns_cpu_storage;
 };
 
 #ifdef __cplusplus

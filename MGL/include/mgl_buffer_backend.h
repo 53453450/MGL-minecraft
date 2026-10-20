@@ -54,4 +54,17 @@ mglBufferBackendEnsure(Buffer *buffer)
     return buffer->backend;
 }
 
+/* Whether the backend's no-copy MTLBuffer deallocator owns the CPU range in
+ * BufferData (so the GL layer must not vm_deallocate it). */
+static inline int mglBufferBackendOwnsCPUStorage(const Buffer *buffer)
+{
+    return (buffer && buffer->backend && buffer->backend->owns_cpu_storage)
+               ? 1 : 0;
+}
+
+static inline void mglBufferBackendSetOwnsCPUStorage(Buffer *buffer, int owns)
+{
+    mglBufferBackendEnsure(buffer)->owns_cpu_storage = owns ? 1u : 0u;
+}
+
 #endif /* MGL_BUFFER_BACKEND_H */

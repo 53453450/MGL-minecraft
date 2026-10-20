@@ -6791,14 +6791,14 @@ static int test_persistent_map_rss_soak(unsigned char *pixels,
     GLMContext ctx = MGLgetCurrentContext();
     internal = ctx ? ctx->active_state->buffers[_ARRAY_BUFFER] : NULL;
     if (!internal || !mglBufferMtl(internal) ||
-        !internal->data.mtl_owns_buffer_data ||
+        !mglBufferBackendOwnsCPUStorage(internal) ||
         internal->mapped_ptr != mapped) {
         fprintf(stderr,
                 "persistent_map_rss_soak: no-copy backing not established "
                 "(buffer=%p mtl=%p owns=%u mapped=%p expected=%p)\n",
                 (void *)internal,
                 internal ? mglBufferMtl(internal) : NULL,
-                internal ? (unsigned)internal->data.mtl_owns_buffer_data : 0u,
+                internal ? (unsigned)mglBufferBackendOwnsCPUStorage(internal) : 0u,
                 internal ? internal->mapped_ptr : NULL,
                 mapped);
         rc = 4;
@@ -6825,12 +6825,12 @@ static int test_persistent_map_rss_soak(unsigned char *pixels,
                            2 * sizeof(float));
         glDrawArrays(GL_TRIANGLES, 0, 3);
         if (mglBufferMtl(internal) != stable_mtl_data ||
-            !internal->data.mtl_owns_buffer_data) {
+            !mglBufferBackendOwnsCPUStorage(internal)) {
             fprintf(stderr,
                     "persistent_map_rss_soak: Metal backing changed at %u "
                     "(%p -> %p owns=%u)\n",
                     i + 1u, stable_mtl_data, mglBufferMtl(internal),
-                    (unsigned)internal->data.mtl_owns_buffer_data);
+                    (unsigned)mglBufferBackendOwnsCPUStorage(internal));
             rc = 6;
             goto cleanup;
         }

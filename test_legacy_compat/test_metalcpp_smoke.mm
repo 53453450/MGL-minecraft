@@ -452,7 +452,7 @@ static int verifyBufferBinding(void) {
     char message[128] = {0};
     if (mglRenderBindBufferStorage(&buffer, message, sizeof(message)) !=
             MGL_RENDER_BUFFER_BOUND ||
-        !mglBufferMtl(&buffer) || buffer.data.mtl_owns_buffer_data) {
+        !mglBufferMtl(&buffer) || mglBufferBackendOwnsCPUStorage(&buffer)) {
         fprintf(stderr, "FAIL: C++ buffer binder: %s\n",
                 message[0] ? message : "unknown");
         return 1;
@@ -813,7 +813,7 @@ static int verifyBufferBinding(void) {
     noCopy.data.buffer_data = noCopyAddress;
     noCopy.storage_flags = GL_CLIENT_STORAGE_BIT;
     mglRenderBindBuffer(NULL, &noCopy);
-    if (!mglBufferMtl(&noCopy) || !noCopy.data.mtl_owns_buffer_data) {
+    if (!mglBufferMtl(&noCopy) || !mglBufferBackendOwnsCPUStorage(&noCopy)) {
         vm_deallocate((vm_map_t)mach_task_self(), noCopyAddress,
                       (vm_size_t)noCopyLength);
         fprintf(stderr, "FAIL: no-copy buffer C++ callback bind\n");

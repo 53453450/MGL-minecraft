@@ -335,7 +335,7 @@ void mglReleaseBufferStorage(Buffer *buf)
 {
     if (!buf) return;
 
-    GLboolean metal_owns_cpu_backing = buf->data.mtl_owns_buffer_data;
+    GLboolean metal_owns_cpu_backing = mglBufferBackendOwnsCPUStorage(buf);
     /* The Metal buffer belongs to the backend record; it is released when
      * mglRenderReleaseBufferBackend tears that record down below. */
 
@@ -361,7 +361,8 @@ void mglReleaseBufferStorage(Buffer *buf)
      * Its deallocator owns the old VM range after this point. */
     buf->data.buffer_data = 0;
     buf->data.buffer_size = 0;
-    buf->data.mtl_owns_buffer_data = GL_FALSE;
+    /* The ownership bit went away with the backend record above; writing it
+     * here would allocate a fresh record just to zero a byte. */
 }
 
 void mglReleaseBufferReference(GLMContext ctx, Buffer *buf)
@@ -997,7 +998,7 @@ bool clearBufferData(GLMContext ctx, Buffer *ptr, GLenum internalformat, GLintpt
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
 
-    if (ptr->data.mtl_owns_buffer_data) {
+    if (mglBufferBackendOwnsCPUStorage(ptr)) {
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
     }
@@ -2141,7 +2142,7 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
 
-    if (ptr->data.mtl_owns_buffer_data) {
+    if (mglBufferBackendOwnsCPUStorage(ptr)) {
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
     }
@@ -2311,7 +2312,7 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
 
-    if (ptr->data.mtl_owns_buffer_data) {
+    if (mglBufferBackendOwnsCPUStorage(ptr)) {
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
     }
@@ -2466,7 +2467,7 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
     mglFlushPendingDrawsForBufferRange(ctx, dst_buf, writeOffset, size);
     mglFlushPendingDrawsForBufferRange(ctx, src_buf, readOffset, size);
 
-    if (dst_buf->data.mtl_owns_buffer_data) {
+    if (mglBufferBackendOwnsCPUStorage(dst_buf)) {
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
     }

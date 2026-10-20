@@ -34,7 +34,7 @@ void *mglBufferTransientAdopt(Buffer *buffer, void *mtl_buffer,
     buffer->data.buffer_data = 0;
     buffer->data.buffer_size = padded_size;
     buffer->data.dirty_bits = 0;
-    buffer->data.mtl_owns_buffer_data = GL_FALSE;
+    mglBufferBackendSetOwnsCPUStorage(buffer, GL_FALSE);
     buffer->has_initialized_data = GL_TRUE;
     buffer->ever_written = GL_TRUE;
     return previous;
