@@ -1260,6 +1260,13 @@ int mglPipelineCacheResetCaches(void *pipeline_cache_object)
     return 1;
 }
 
+MGLFragmentTextureTraceBinding *mglRendererFragmentTraceBindings(void *renderer)
+{
+    MGLRendererIvars *ivars = mglRendererIvars((MGLObjectId)renderer);
+    return ivars ? &ivars->_resourceFallback.fragmentTextureTraceBindings[0]
+                 : NULL;
+}
+
 /* Port: drop the pipeline-cache entries.  Implemented here so callers never
  * need the state areas (and the cache object) to reach the cache. */
 void mglRendererResetPipelineCaches(void *renderer)

@@ -302,6 +302,10 @@ void mglRendererSetTraceReplayIdentity(void *renderer, uint64_t flush_id,
                                        uint32_t batch_index);
 void mglRendererSetDefaultDrawBufferSize(void *renderer, uint32_t draw_buffer,
                                          uint32_t width, uint32_t height);
+/* The per-texture-unit fragment trace buffer (trace logging and teardown).
+ * Returns the TEXTURE_UNITS entries the trace code fills, or NULL. */
+MGLFragmentTextureTraceBinding *mglRendererFragmentTraceBindings(void *renderer);
+
 /* Drop the pipeline-cache entries (device reset / recovery). */
 void mglRendererResetPipelineCaches(void *renderer);
 

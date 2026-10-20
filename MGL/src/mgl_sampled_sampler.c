@@ -629,8 +629,8 @@ bool mglSampledBindTexturesForStage(
     int trace_bind, GLuint *bound_count, GLuint *fallback_count,
     GLuint *nil_count, GLuint *sampler_count, GLuint *sampled_count_out)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     void *binding_state_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
@@ -860,7 +860,7 @@ bool mglSampledBindTexturesForStage(
             sample_program ? sample_program->name : program_name;
         if (is_fragment && program_binding < TEXTURE_UNITS) {
             mglBindingTextureWriteFragTrace(
-                &areas.fragment_trace_bindings[program_binding],
+                &mglRendererFragmentTraceBindings(renderer)[program_binding],
                 ptr ? ptr->name : 0u, texture_unit, program_binding, sample_program_name,
                 ptr ? mglTextureWriteVersion(ptr) : 0u,
                 ptr,
@@ -1113,8 +1113,8 @@ void *mglRendererStorageImageTexture(void *base_texture, ImageUnit *iu)
 bool mglBindTexturesToCurrentRenderEncoder(void *renderer,
                                            const MGLEncodeContext *enc_ctx)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     void *binding_state_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
@@ -1145,18 +1145,18 @@ bool mglBindTexturesToCurrentRenderEncoder(void *renderer,
     if (mglTraceLogIsEnabled()) {
         mglTraceFragmentTextureTraceBindings("CLEAR",
                                              "bind_textures_begin",
-                                             areas.fragment_trace_bindings,
+                                             mglRendererFragmentTraceBindings(renderer),
                                              TEXTURE_UNITS,
                                              ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
                                              areas.pipeline_cache->pipelineProgramName);
 
         /* The areas field is a pointer, so sizeof() would zero 8 bytes; the
          * .m original zeroed the whole TEXTURE_UNITS-entry array. */
-        memset(areas.fragment_trace_bindings, 0,
-               sizeof(*areas.fragment_trace_bindings) * TEXTURE_UNITS);
+        memset(mglRendererFragmentTraceBindings(renderer), 0,
+               sizeof(*mglRendererFragmentTraceBindings(renderer)) * TEXTURE_UNITS);
     } else {
         mglClearFragmentTextureTraceFunctionalFlags(
-            areas.fragment_trace_bindings, TEXTURE_UNITS);
+            mglRendererFragmentTraceBindings(renderer), TEXTURE_UNITS);
     }
 
     const int vertexResourceStage = areas.tess_native_tes_active

@@ -214,9 +214,10 @@ bool mglShouldLogTraceFileBindingForProgram(Program *program, uint64_t *counter)
  * blocks in -[MGLRenderer endRenderEncodingLocked]. */
 void mglClearFragmentTraceBindingsForRenderer(void *renderer, const char *reason)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
-    MGLFragmentTextureTraceBinding *bindings = areas.fragment_trace_bindings;
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
+    MGLFragmentTextureTraceBinding *bindings =
+        mglRendererFragmentTraceBindings(renderer);
     if (!bindings) {
         return;
     }
