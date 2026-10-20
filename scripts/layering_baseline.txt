@@ -21,7 +21,7 @@ C5 MGL/src/mgl_pso_build_ops.c 7
 C5 MGL/src/mgl_render_pass_manager_ops.c 61
 C5 MGL/src/mgl_render_pass_sync_ops.c 25
 C5 MGL/src/mgl_renderer_ports.c 22
-C5 MGL/src/mgl_sampled_sampler.c 11
+C5 MGL/src/mgl_sampled_sampler.c 4
 C5 MGL/src/mgl_tess_dispatch.c 9
 C5 MGL/src/mgl_trace_strategy.c 2
 C5 MGL/src/mgl_vertex_layout.c 4

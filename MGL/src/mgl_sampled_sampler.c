@@ -68,12 +68,12 @@ enum { kMaxFragmentSamplerSlots = 16 };
 extern signed char mglEnvFlagEnabled(const char *name);
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C (same twin as mgl_tess_dispatch.c). */
-static GLMState *mglSsState(const MGLRendererStateAreas *areas)
+static GLMState *mglSsState(const MGLRendererCoreState *core, GLMContext ctx)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
+    if (core && core->activeState) {
+        return core->activeState;
     }
-    return areas->ctx ? areas->ctx->active_state : NULL;
+    return ctx ? ctx->active_state : NULL;
 }
 
 static uint64_t mglSsTextureWidth(void *texture)
@@ -109,12 +109,12 @@ void *mglSampledSamplerMaterialize(void *renderer, Texture *ptr,
                                    GLuint program_name, GLuint program_binding,
                                    const char *stage, void *texture)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
 
     Sampler *gl_sampler = (texture_unit < TEXTURE_UNITS)
-                              ? mglSsState(&areas)->texture_samplers[texture_unit]
+                              ? mglSsState(areas.core, areas.ctx)->texture_samplers[texture_unit]
                               : NULL;
     MGLSamplerMaterializeInput in = {0};
     mglBindingTextureFillSamplerMaterializeInput(
@@ -305,8 +305,8 @@ bool mglSampledBindSeparateSamplersAndArrayTextures(
     GLuint *separate_sampler_count, GLuint *bound_separate_samplers)
 {
     (void)vertex_program_name;
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     void *binding_state_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
@@ -492,10 +492,10 @@ void mglSampledEmitDiagPorts(
     void *direct_texture_for_trace, uint64_t *focused_counter,
     uint64_t *trace_file_counter)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
-    GLMState *state = mglSsState(&areas);
+    GLMState *state = mglSsState(areas.core, areas.ctx);
 
     TextureLevel *level0 = mglTraceTextureBaseLevel(ptr);
     int expected_index = (int)mglRenderTextureIndexForMetalType(
@@ -690,7 +690,7 @@ bool mglSampledBindTexturesForStage(
         /* §11.1.3.5: an incomplete texture samples as (0,0,0,1), which is
          * what the missing-texture fallback below holds. */
         if (ptr && texture_unit < TEXTURE_UNITS) {
-            const Sampler *unit_sampler = mglSsState(&areas)->texture_samplers[texture_unit];
+            const Sampler *unit_sampler = mglSsState(areas.core, areas.ctx)->texture_samplers[texture_unit];
             const TextureParameter *sp = unit_sampler ? &unit_sampler->params : &ptr->params;
             if (!mglTextureSamplingComplete(ptr, sp->min_filter, sp->mag_filter)) {
                 ptr = NULL;
@@ -726,7 +726,7 @@ bool mglSampledBindTexturesForStage(
                     texture);
                 if (mglMipDiagEnabled() && texture_unit < TEXTURE_UNITS) {
                     Sampler *gl_sampler =
-                        mglSsState(&areas)->texture_samplers[texture_unit];
+                        mglSsState(areas.core, areas.ctx)->texture_samplers[texture_unit];
                     const TextureParameter *effective =
                         gl_sampler ? &gl_sampler->params : &ptr->params;
                     static uint64_t s_frag_sampler_state[TEXTURE_UNITS];
