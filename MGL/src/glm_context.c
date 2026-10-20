@@ -1130,3 +1130,13 @@ static void mgl_auto_cleanup(void)
         fprintf(stderr, "MGL INFO: Auto-cleanup completed\n");
     }
 }
+
+GLboolean glmDefaultFramebufferHasDepth(GLMContext ctx)
+{
+    return (ctx && ctx->depth_format.mtl_pixel_format > 0) ? GL_TRUE : GL_FALSE;
+}
+
+GLboolean glmDefaultFramebufferHasStencil(GLMContext ctx)
+{
+    return (ctx && ctx->stencil_format.mtl_pixel_format > 0) ? GL_TRUE : GL_FALSE;
+}

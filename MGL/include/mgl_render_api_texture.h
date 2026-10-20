@@ -660,6 +660,10 @@ int mglRenderCreateFilterSampler(uint32_t nearest, void **sampler_out);
 
 /* Translate GL texture parameters into a Metal-cpp sampler descriptor and
  * create the sampler without exposing MTL::* through this C ABI. */
+/* Release the texture's Metal backing so the next bind recreates it (used when
+ * the storage description changes, e.g. a renderbuffer's sample count). */
+void mglRenderTextureDropBacking(Texture *texture);
+
 int mglRenderCreateSamplerForGL(const TextureParameter *params,
                                    uint32_t target,
                                    void **sampler_out,

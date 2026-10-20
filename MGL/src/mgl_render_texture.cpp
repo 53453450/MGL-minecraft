@@ -59,6 +59,7 @@ extern "C" {
 #include <Block.h>
 #include <objc/runtime.h>
 #include "mgl_texture_backend.h"
+#include "mgl_metal_ref.h"
 
 int mglRenderGetTextureInfo(const void *texture,
                                MGLRenderTextureInfo *info_out) {
@@ -1219,6 +1220,17 @@ int mglRenderCreateSampler(void* sampler_descriptor,
     if (!sampler) return -1;
     *sampler_out = sampler;
     return 0;
+}
+
+extern "C"
+void mglRenderTextureDropBacking(Texture* texture) {
+    if (!texture) {
+        return;
+    }
+    struct MGLTextureBackend* backend = mglTextureBackendEnsure(texture);
+    if (backend->mtl_data) {
+        mglSafeReleaseMetalObj(&backend->mtl_data);
+    }
 }
 
 int mglRenderCreateSamplerForGL(const TextureParameter* params,

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-3.0-only */
 #include "mgl_metal.h"
+#include "mgl_metal_ref.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_buffer.h"
 #include "mgl_pso_format_class.h"
@@ -667,6 +668,9 @@ void mglRenderReleaseBufferBackend(Buffer* buffer) {
     if (!buffer || !buffer->backend) return;
     MGLBufferBackend* backend = buffer->backend;
     buffer->backend = nullptr;
+    if (backend->mtl_data) {
+        mglSafeReleaseMetalObj(&backend->mtl_data);
+    }
     delete static_cast<mgl::BufferCowPool*>(backend->cow_pool);
     if (backend->uint16_expanded_data) {
         static_cast<NS::Object*>(backend->uint16_expanded_data)->release();

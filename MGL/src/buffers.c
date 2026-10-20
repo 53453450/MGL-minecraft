@@ -336,9 +336,8 @@ void mglReleaseBufferStorage(Buffer *buf)
     if (!buf) return;
 
     GLboolean metal_owns_cpu_backing = buf->data.mtl_owns_buffer_data;
-    if (buf->backend) {
-        mglSafeReleaseMetalObj((void **)&buf->backend->mtl_data);
-    }
+    /* The Metal buffer belongs to the backend record; it is released when
+     * mglRenderReleaseBufferBackend tears that record down below. */
 
     if (buf->data.buffer_data && buf->data.buffer_size > 0 &&
         !metal_owns_cpu_backing) {

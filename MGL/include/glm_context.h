@@ -276,6 +276,12 @@ void destroyGLMContext(GLMContext ctx);
 extern "C" {
 #endif
 void mglApplyBackendSampleLimits(GLMContext ctx, uint64_t max_sample_count);
+
+/* Does the window-system framebuffer have a depth / stencil attachment?  The
+ * GL entry points ask this instead of reading the storage pixel format, which
+ * is the context's business (docs/AUDIT_LAYERING_2026-10-17.md LY-03). */
+GLboolean glmDefaultFramebufferHasDepth(GLMContext ctx);
+GLboolean glmDefaultFramebufferHasStencil(GLMContext ctx);
 #ifdef __cplusplus
 }
 #endif

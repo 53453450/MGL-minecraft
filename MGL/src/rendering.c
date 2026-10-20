@@ -2936,7 +2936,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
     {
         case GL_STENCIL_INDEX:
             if (!STATE(readbuffer)) {
-                ERROR_CHECK_RETURN(ctx->stencil_format.mtl_pixel_format > 0, GL_INVALID_OPERATION);
+                ERROR_CHECK_RETURN(glmDefaultFramebufferHasStencil(ctx), GL_INVALID_OPERATION);
             } else {
                 ERROR_CHECK_RETURN(STATE(readbuffer)->stencil.texture != 0, GL_INVALID_OPERATION);
             }
@@ -2944,7 +2944,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
 
         case GL_DEPTH_COMPONENT:
             if (!STATE(readbuffer)) {
-                ERROR_CHECK_RETURN(ctx->depth_format.mtl_pixel_format > 0, GL_INVALID_OPERATION);
+                ERROR_CHECK_RETURN(glmDefaultFramebufferHasDepth(ctx), GL_INVALID_OPERATION);
             } else {
                 ERROR_CHECK_RETURN(STATE(readbuffer)->depth.texture != 0, GL_INVALID_OPERATION);
             }
@@ -2952,8 +2952,8 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
 
         case GL_DEPTH_STENCIL:
             if (!STATE(readbuffer)) {
-                ERROR_CHECK_RETURN((ctx->depth_format.mtl_pixel_format > 0) &&
-                                   (ctx->stencil_format.mtl_pixel_format > 0), GL_INVALID_OPERATION);
+                ERROR_CHECK_RETURN(glmDefaultFramebufferHasDepth(ctx) &&
+                                   glmDefaultFramebufferHasStencil(ctx), GL_INVALID_OPERATION);
             } else {
                 ERROR_CHECK_RETURN(STATE(readbuffer)->depth.texture != 0 &&
                                    STATE(readbuffer)->stencil.texture != 0, GL_INVALID_OPERATION);

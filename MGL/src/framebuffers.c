@@ -37,6 +37,7 @@
 #include "mgl_debug_fbo_stats.h"
 
 #include "glm_context.h"
+#include "mgl_render_api_texture.h"  /* mglRenderTextureDropBacking */
 #include "draw_command.h"
 #include "mgl_safety.h"
 #include "mgl_metal_ref.h"
@@ -3337,11 +3338,9 @@ void mglRenderbufferStorageMultisample(GLMContext ctx, GLenum target, GLsizei sa
     {
         Texture *tex = STATE(renderbuffer)->tex;
         tex->samples = mglRenderbufferStorageSamples(ctx, samples);
-        if (mglTextureMtl(tex)) {
-            /* Drop any premature single-sample Metal texture so the next
-             * FBO bind recreates with Multisample → array-emulated planes. */
-            mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(tex)->mtl_data);
-        }
+        /* Drop any premature single-sample Metal texture so the next FBO bind
+         * recreates with Multisample → array-emulated planes. */
+        mglRenderTextureDropBacking(tex);
         tex->dirty_bits |= DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA;
     }
 }
