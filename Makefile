@@ -1423,6 +1423,10 @@ test-all:
 	$(MAKE) build_dir=$(build_dir) test-batch-icb
 	$(MAKE) build_dir=$(build_dir) test-batch-restore
 	$(MAKE) build_dir=$(build_dir) test-batch-issue
+	# The 231-case suite links the dylib and inlines state helpers, so it must
+	# be rebuilt whenever a struct layout changes; running it here keeps a
+	# stale binary from masking (or faking) a regression.
+	$(MAKE) build_dir=$(build_dir) test-regression
 	$(MAKE) build_dir=$(build_dir) test-process-gl-state-plan
 	$(MAKE) build_dir=$(build_dir) test-render-pass-clear-plan
 	$(MAKE) build_dir=$(build_dir) test-buffer-plan

@@ -199,24 +199,9 @@ typedef struct Texture_t {
     GLuint samples;
     GLboolean fixed_sample_locations;
     TextureFace faces[6];
-    GLuint  mtl_render_target_write_version;
-    /* DontCare inference: renderer frame generation at which this
-     * texture was last written as a render target. Compared against the
-     * renderer's current generation to decide "first render-target use this
-     * frame" (a frame's first write can skip loading prior tile contents). */
-    GLuint  mtl_rt_frame_generation;
     GLboolean metal_data_authoritative; // set when Metal texture data is more recent than CPU data (e.g. after copyImageSubData blit)
-    /* Reserved: these three slots used to hold backend bookkeeping that now
-     * lives in MGLTextureBackend.  Kept so the struct layout does not shift
-     * under code that still writes the old offsets (see
-     * docs/AUDIT_LAYERING_2026-10-17.md §8.8); never read. */
-    GLuint  reserved_write_version;
-    GLuint  reserved_rt_frame_generation;
-    GLboolean reserved_storage_is_fallback;
-    /* F22/F24: set when mtl_data holds the emergency fallback gradient rather
-     * than the real texture.  Lets callers that check "did creation succeed?"
-     * distinguish a real texture from the silent substitute, and keeps the
-     * degraded state observable instead of indistinguishable from success. */
+    /* F22/F24's fallback flag lives in MGLTextureBackend::storage_is_fallback:
+     * it describes the Metal storage, not the GL object. */
     Buffer  *texture_buffer;
     GLintptr texture_buffer_offset;
     GLsizeiptr texture_buffer_size;
