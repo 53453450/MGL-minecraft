@@ -238,6 +238,13 @@ Texture *newTexObj(GLMContext ctx, GLenum target)
 
     bzero(ptr, sizeof(Texture));
 
+    /* The backend record lives as long as the object rather than being created
+     * on first write: binding and copy paths read backend bookkeeping and must
+     * not depend on an earlier write having allocated the record.  Failure
+     * leaves it NULL and mglTextureBackendEnsure still covers that. */
+    ptr->backend = (struct MGLTextureBackend *)calloc(
+        1, sizeof(struct MGLTextureBackend));
+
     ptr->name = TEX_OBJ_RES_NAME;
     if (ctx)
         ptr->identity_generation = ctx->state.texture_table.deletion_generation;
