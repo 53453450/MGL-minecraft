@@ -96,8 +96,8 @@ static void mglBdMarkTextureLevelCopied(Texture *tex, GLuint level)
     tex_level->last_src_ptr = NULL;
     tex_level->last_src_hash = 0ull;
     if (mglRenderTargetHasGPUContent(tex->is_render_target ? 1 : 0,
-                                       tex->mtl_render_target_write_version)) {
-        tex->mtl_render_target_write_version++;
+                                       mglTextureWriteVersion(tex))) {
+        mglTextureBumpWriteVersion(tex);
         mglTextureViewFamilyWritten(tex);
     }
 }
@@ -568,9 +568,9 @@ bool mglBlitCopyImageSubDataCpuToCpu(
 
     /* Rendered storage holds rows the CPU level lacks, Y-flipped. */
     if (mglRenderTargetHasGPUContent(src_tex->is_render_target ? 1 : 0,
-                                       src_tex->mtl_render_target_write_version) ||
+                                       mglTextureWriteVersion(src_tex)) ||
         mglRenderTargetHasGPUContent(dst_tex->is_render_target ? 1 : 0,
-                                       dst_tex->mtl_render_target_write_version)) {
+                                       mglTextureWriteVersion(dst_tex))) {
         return false;
     }
 
@@ -871,8 +871,8 @@ static void mglBdMarkTextureLevelMetalFilled(Texture *tex, GLuint level,
     tex_level->last_src_ptr = NULL;
     tex_level->last_src_hash = 0ull;
     if (mglRenderTargetHasGPUContent(tex->is_render_target ? 1 : 0,
-                                       tex->mtl_render_target_write_version)) {
-        tex->mtl_render_target_write_version++;
+                                       mglTextureWriteVersion(tex))) {
+        mglTextureBumpWriteVersion(tex);
     }
 }
 
@@ -885,7 +885,7 @@ static void mglBdSyncCopyTexSubImageCPU(void *renderer, Texture *tex,
                                         size_t height)
 {
     if (mglRenderTargetHasGPUContent(tex->is_render_target ? 1 : 0,
-                                       tex->mtl_render_target_write_version)) {
+                                       mglTextureWriteVersion(tex))) {
         return;
     }
     const uint32_t type = mglBdTextureInfo(dest_texture).texture_type;
@@ -2023,7 +2023,7 @@ static void mglBdPushCpuShadowRegionToMetalSource(
 {
     if (!renderer || !src_tex || !src_texture || src_tex->metal_data_authoritative ||
         mglRenderTargetHasGPUContent(src_tex->is_render_target ? 1 : 0,
-                                       src_tex->mtl_render_target_write_version)) {
+                                       mglTextureWriteVersion(src_tex))) {
         return;
     }
     if (!src_tex->faces || (size_t)src_level >= src_tex->num_levels) {
@@ -2921,7 +2921,7 @@ static int mglBdLevelWrittenByRenderPass(const Texture *tex, GLuint level)
          * draw or clear writes the root, so keep the conservative answer the
          * pre-GL-order code used for every source. */
         return mglRenderTargetHasGPUContent(tex->is_render_target ? 1 : 0,
-                                            tex->mtl_render_target_write_version);
+                                            mglTextureWriteVersion(tex));
     }
     if (tex->num_levels == 0u || level >= tex->num_levels) {
         return 0;
@@ -3277,12 +3277,10 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
                         ? 1
                         : 0,
                     read_texture_object
-                        ? (unsigned)read_texture_object
-                              ->mtl_render_target_write_version
+                        ? (unsigned)mglTextureWriteVersion(read_texture_object)
                         : 0u,
                     draw_texture_object
-                        ? (unsigned)draw_texture_object
-                              ->mtl_render_target_write_version
+                        ? (unsigned)mglTextureWriteVersion(draw_texture_object)
                         : 0u,
                     0u, 0u,
                     readtexid,

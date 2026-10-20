@@ -95,4 +95,31 @@ static inline void mglTextureSetStorageIsFallback(Texture *texture, int value)
     mglTextureBackendEnsure(texture)->storage_is_fallback = value ? 1u : 0u;
 }
 
+static inline uint32_t mglTextureWriteVersion(const Texture *texture)
+{
+    return (texture && texture->backend)
+               ? texture->backend->render_target_write_version : 0u;
+}
+
+static inline void mglTextureSetWriteVersion(Texture *texture, uint32_t value)
+{
+    mglTextureBackendEnsure(texture)->render_target_write_version = value;
+}
+
+static inline void mglTextureBumpWriteVersion(Texture *texture)
+{
+    mglTextureBackendEnsure(texture)->render_target_write_version++;
+}
+
+static inline uint32_t mglTextureRtGeneration(const Texture *texture)
+{
+    return (texture && texture->backend) ? texture->backend->rt_frame_generation
+                                         : 0u;
+}
+
+static inline void mglTextureSetRtGeneration(Texture *texture, uint32_t value)
+{
+    mglTextureBackendEnsure(texture)->rt_frame_generation = value;
+}
+
 #endif /* MGL_TEXTURE_BACKEND_H */

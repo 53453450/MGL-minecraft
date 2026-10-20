@@ -1848,7 +1848,7 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
     tex->complete = GL_FALSE;
     tex->num_levels = 0;
     tex->mipmap_levels = 0;
-    tex->mtl_render_target_write_version = 0;
+    mglTextureSetWriteVersion(tex, 0);
     tex->metal_data_authoritative = GL_FALSE;
     tex->texture_buffer = NULL;
     tex->texture_buffer_offset = 0;
@@ -6028,7 +6028,7 @@ static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
     /* Deferred draws mark their render-target writes when flushed. */
     mglFlushPendingDraws(ctx);
     bool render_target_needs_readback =
-        (tex->is_render_target && tex->mtl_render_target_write_version != 0u) ||
+        (tex->is_render_target && mglTextureWriteVersion(tex) != 0u) ||
         tex->metal_data_authoritative ||
         lvl->metal_data_authoritative;
 
@@ -6329,7 +6329,7 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
 
     mglFlushPendingDraws(ctx);
     bool gpu_authoritative =
-        (tex->is_render_target && tex->mtl_render_target_write_version != 0u) ||
+        (tex->is_render_target && mglTextureWriteVersion(tex) != 0u) ||
         tex->metal_data_authoritative ||
         lvl->metal_data_authoritative;
 
@@ -6723,7 +6723,7 @@ void mglTextureViewFamilyWritten(Texture *writer)
     Texture *root = writer ? (writer->view_root ? writer->view_root : writer) : NULL;
     if (!root || root->view_count == 0u ||
         !mglRenderTargetHasGPUContent(writer->is_render_target,
-                                        writer->mtl_render_target_write_version)) {
+                                        mglTextureWriteVersion(writer))) {
         return;
     }
     for (GLuint i = 0; i <= root->view_count; i++) {
@@ -6732,7 +6732,7 @@ void mglTextureViewFamilyWritten(Texture *writer)
             continue;
         }
         member->is_render_target = GL_TRUE;
-        member->mtl_render_target_write_version++;
+        mglTextureBumpWriteVersion(member);
     }
 }
 
@@ -6887,9 +6887,9 @@ void mglTextureView(GLMContext ctx, GLuint texture, GLenum target, GLuint origte
     view->view_num_layers = layers;
     view->immutable_levels = orig->immutable_levels;
     if (mglRenderTargetHasGPUContent(orig->is_render_target,
-                                       orig->mtl_render_target_write_version)) {
+                                       mglTextureWriteVersion(orig))) {
         view->is_render_target = GL_TRUE;
-        view->mtl_render_target_write_version = 1u;
+        mglTextureSetWriteVersion(view, 1u);
     }
 
     GLuint depth = orig->target == GL_TEXTURE_3D ? base->depth : 1u;

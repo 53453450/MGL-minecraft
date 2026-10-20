@@ -707,10 +707,9 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
         int colorFirstUseThisFrame = 0;
         if (dontCareLoadEnabled && attachmentTextureForClear) {
             colorFirstUseThisFrame =
-                (attachmentTextureForClear->mtl_rt_frame_generation !=
+                (mglTextureRtGeneration(attachmentTextureForClear) !=
                  commandState->dontCareFrameGeneration);
-            attachmentTextureForClear->mtl_rt_frame_generation =
-                commandState->dontCareFrameGeneration;
+            mglTextureSetRtGeneration(attachmentTextureForClear, commandState->dontCareFrameGeneration);
         }
         MGLRenderPassLoadStoreInput loadStore = {0};
         loadStore.attachment_kind = MGL_RP_ATTACHMENT_COLOR;

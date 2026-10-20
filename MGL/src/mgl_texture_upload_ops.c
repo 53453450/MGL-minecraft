@@ -89,7 +89,7 @@ static void mglUpMarkTextureLevelMetalFilled(Texture *tex, GLuint level,
     tex_level->last_src_ptr = NULL;
     tex_level->last_src_hash = 0ull;
     if (tex->is_render_target) {
-        tex->mtl_render_target_write_version++;
+        mglTextureBumpWriteVersion(tex);
         mglTextureViewFamilyWritten(tex);
     }
 }
@@ -3585,7 +3585,7 @@ int mglTextureSubImageBytes(void *renderer, GLMContext glm_ctx,
     }
     if (uploaded && mglRenderTargetHasGPUContent(
                         tex->is_render_target ? 1 : 0,
-                        tex->mtl_render_target_write_version)) {
+                        mglTextureWriteVersion(tex))) {
         /* Direct CPU→Metal refresh of an FBO-attached texture must invalidate
          * the Y-flip sampled copy.  textures.c also releases the copy, but
          * bumping write_version keeps any concurrent/lazy refresh coherent

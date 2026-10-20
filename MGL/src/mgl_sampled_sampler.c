@@ -753,7 +753,7 @@ bool mglSampledBindTexturesForStage(
                         texture,
                         ptr->is_render_target ? 1 : 0, 0,
                         0u, 0u,
-                        ptr->mtl_render_target_write_version,
+                        mglTextureWriteVersion(ptr),
                         0u);
                 }
             } else {
@@ -862,7 +862,7 @@ bool mglSampledBindTexturesForStage(
             mglBindingTextureWriteFragTrace(
                 &areas.fragment_trace_bindings[program_binding],
                 ptr ? ptr->name : 0u, texture_unit, program_binding, sample_program_name,
-                ptr ? ptr->mtl_render_target_write_version : 0u,
+                ptr ? mglTextureWriteVersion(ptr) : 0u,
                 ptr,
                 texture,
                 (direct_texture_for_trace ? direct_texture_for_trace

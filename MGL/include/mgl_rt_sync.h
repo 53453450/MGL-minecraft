@@ -20,6 +20,7 @@
 #define MGL_RT_SYNC_H
 
 #include "glm_context.h"
+#include "mgl_texture_backend.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,8 +32,8 @@ extern "C" {
 static inline void mglRenderTargetMarkGPUAuthoritative(Texture *tex)
 {
     if (tex && tex->is_render_target &&
-        tex->mtl_render_target_write_version == 0u) {
-        tex->mtl_render_target_write_version = 1u;
+        mglTextureWriteVersion(tex) == 0u) {
+        mglTextureSetWriteVersion(tex, 1u);
     }
 }
 
@@ -40,7 +41,7 @@ static inline void mglRenderTargetMarkGPUAuthoritative(Texture *tex)
 static inline int mglTextureHasGPUContent(const Texture *tex)
 {
     return tex && tex->is_render_target &&
-           tex->mtl_render_target_write_version != 0u;
+           mglTextureWriteVersion(tex) != 0u;
 }
 
 #ifdef __cplusplus

@@ -80,7 +80,7 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
         return;
     }
 
-    GLuint oldRenderTargetWriteVersion = tex->mtl_render_target_write_version;
+    GLuint oldRenderTargetWriteVersion = mglTextureWriteVersion(tex);
 
     mglRenderMarkTextureLevelWritten(&texLevel->ever_written,
                                      &texLevel->has_initialized_data,
@@ -90,7 +90,7 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
     texLevel->last_src_ptr = NULL;
     texLevel->last_src_hash = 0ull;
 
-    tex->mtl_render_target_write_version++;
+    mglTextureBumpWriteVersion(tex);
 
     if (tex->name == 8u && mglEnvFlagEnabled("MGL_TRACE_RT_WRITE_MARKS")) {
         void *mtlTexture = mglTextureMtl(tex) ? (mglTextureMtl(tex)) : NULL;
@@ -98,7 +98,7 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
                     (unsigned)tex->name,
                     (unsigned)level,
                     (unsigned)oldRenderTargetWriteVersion,
-                    (unsigned)tex->mtl_render_target_write_version,
+                    (unsigned)mglTextureWriteVersion(tex),
                     caller ? caller : "(unknown)",
                     line,
                     mtlTexture,

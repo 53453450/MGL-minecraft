@@ -69,7 +69,7 @@ static MGLBatchTraceAttPod mglBatchAttPod(uint32_t tex, uint32_t target, uint32_
         .tex = tex, .target = target, .level = level, .ptr = t,
         .w = t ? t->width : 0u, .h = t ? t->height : 0u, .mtl = t ? mglTextureMtl(t) : NULL,
         .ever = ever, .full = full, .source = source,
-        .rt_ver = t ? t->mtl_render_target_write_version : 0u,
+        .rt_ver = t ? mglTextureWriteVersion(t) : 0u,
         .sampled_ver = 0u,
     };
 }

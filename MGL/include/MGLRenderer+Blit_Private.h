@@ -37,6 +37,7 @@
 
 #import "MGLRenderer.h"
 #include "mgl_render_api_texture.h"
+#include "mgl_texture_backend.h"
 
 /* === Shader parameter structs ===
  * Used by blit/copy/resolve pipelines in MGLRenderer+Blit.m and MGLRenderer.m.
@@ -86,7 +87,7 @@ static inline void mglMarkTextureLevelMetalFilled(Texture *tex, GLuint level, si
     texLevel->last_src_hash = 0ull;
 
     if (tex->is_render_target) {
-        tex->mtl_render_target_write_version++;
+        mglTextureBumpWriteVersion(tex);
     }
 }
 

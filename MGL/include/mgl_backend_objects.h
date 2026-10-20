@@ -103,6 +103,10 @@ struct MGLTextureBackend {
     void *view_parent;
     /* The current Metal texture is the fallback texture, not real storage. */
     uint8_t storage_is_fallback;
+    /* Generation of the last render-pass write (0 = never written). */
+    uint32_t render_target_write_version;
+    /* Renderer frame in which a clear last stamped the texture (0 = never). */
+    uint32_t rt_frame_generation;
 };
 
 /* Image unit: the Metal texture view (or 3D slice staging texture) bound for
