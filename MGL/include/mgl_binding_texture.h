@@ -366,7 +366,7 @@ typedef struct MGLSampledDiagEmitInput {
     const void *ptr;
     uint32_t ptr_tex;
     const void *sampler;
-    uint64_t mtl_format;
+    uint64_t pixel_format;
     int stage_is_fragment;
     int is_gui_rt_copy_eligible;
     int focused_loading_window;
@@ -403,7 +403,7 @@ void mglBindingTextureFillSampledDiagEmitCore(
     int used_fallback, uint64_t expected_type, uint64_t lookup_type,
     int expected_index, uint32_t unit_active, uint32_t unit_expected,
     uint32_t unit_2d, uint32_t unit_cube, uint64_t mtl_type, uint64_t mtl_w,
-    uint64_t mtl_h, uint64_t mtl_format, uint32_t l0w, uint32_t l0h, uint32_t l0d,
+    uint64_t mtl_h, uint64_t pixel_format, uint32_t l0w, uint32_t l0h, uint32_t l0d,
     uint64_t l0_bytes, uint32_t l0_ever, uint32_t l0_full, uint32_t l0_zero,
     uint32_t l0_source, uint64_t l0_upload, uint64_t l0_hash, uint64_t l0_data_hash,
     uint32_t ptr_tex, int stage_is_fragment, int is_gui_rt_copy_eligible,

@@ -122,4 +122,11 @@ static inline void mglTextureSetRtGeneration(Texture *texture, uint32_t value)
     mglTextureBackendEnsure(texture)->rt_frame_generation = value;
 }
 
+/* Forget the Metal handle without releasing it (the caller has already handed
+ * it to the renderer's deferred deletion, or knows it is already gone). */
+static inline void mglTextureForgetMtlData(Texture *texture)
+{
+    mglTextureBackendEnsure(texture)->mtl_data = NULL;
+}
+
 #endif /* MGL_TEXTURE_BACKEND_H */

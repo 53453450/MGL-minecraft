@@ -129,7 +129,7 @@ typedef struct Shader_t {
     GLuint name;
     GLuint type;
     GLuint glm_type;
-    const char *mtl_shader_type_name;
+    const char *shader_type_name;
     size_t src_len;
     const char *src;
     GLboolean compile_success;

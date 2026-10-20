@@ -510,10 +510,10 @@ Texture *getTex(GLMContext ctx, GLuint name, GLenum target)
 bool checkInternalFormatForMetal(GLMContext ctx, GLuint internalformat)
 {
     // see if we can actually use this internal format
-    GLenum mtl_format;
-    mtl_format = mtlFormatForGLInternalFormat(internalformat);
+    GLenum pixel_format;
+    pixel_format = mtlFormatForGLInternalFormat(internalformat);
 
-    if (mtl_format == MGLPixelFormatInvalid)
+    if (pixel_format == MGLPixelFormatInvalid)
     {
         // Only warn once per format to reduce log spam during capability probing
         static unsigned warned_formats[64] = {0};
@@ -1651,7 +1651,7 @@ void generateMipmaps(GLMContext ctx, GLuint texture, GLenum target)
             lvl->height = h;
             lvl->depth = d;
             lvl->pitch = pixel_size * lvl->width;
-            lvl->mtl_format = ptr->faces[face].levels[0].mtl_format;
+            lvl->pixel_format = ptr->faces[face].levels[0].pixel_format;
             lvl->data_size = lvl->pitch * MAX(lvl->height, 1u) * MAX(lvl->depth, 1u);
             lvl->has_initialized_data = GL_FALSE;
             lvl->ever_written = GL_FALSE;
@@ -1758,7 +1758,7 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
     if (mglTextureMtl(tex))
     {
         mglRendererDeleteMetalObject(ctx, mglTextureMtl(tex));
-        mglTextureBackendEnsure(tex)->mtl_data = NULL;
+        mglTextureForgetMtlData(tex);
     }
 
     if (mglTextureSamplerState(tex))
@@ -2079,7 +2079,7 @@ static bool mglTextureStorageMultisampleMetadata(GLMContext ctx,
     lvl->height = (GLuint)height;
     lvl->depth = (GLuint)depth;
     lvl->pitch = 0;
-    lvl->mtl_format = 0;
+    lvl->pixel_format = 0;
     lvl->data_size = 0;
     lvl->data = 0;
     lvl->has_initialized_data = GL_FALSE;
@@ -7048,7 +7048,7 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
         tex->height = 1;
         tex->depth = 1;
         tex->complete = GL_FALSE;
-        mglTextureBackendEnsure(tex)->mtl_data = NULL;
+        mglTextureForgetMtlData(tex);
         tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX | DIRTY_TEX_BINDING);
         return;
@@ -7115,7 +7115,7 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
     if (mglTextureMtl(tex))
     {
         mglRendererDeleteMetalObject(ctx, mglTextureMtl(tex));
-        mglTextureBackendEnsure(tex)->mtl_data = NULL;
+        mglTextureForgetMtlData(tex);
     }
 
     tex->texture_buffer = buf;

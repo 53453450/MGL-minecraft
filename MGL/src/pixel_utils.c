@@ -3084,7 +3084,7 @@ extern GLint mglCompressedInternalFormatToSizedUncompressed(GLint internalformat
 
 uint32_t mtlPixelFormatForGLTex(Texture * tex)
 {
-    uint32_t mtl_format;
+    uint32_t pixel_format;
     GLenum internal_format;
 
     if (!tex)
@@ -3116,8 +3116,8 @@ uint32_t mtlPixelFormatForGLTex(Texture * tex)
         internal_format = (GLenum)mglCompressedInternalFormatToSizedUncompressed((GLint)internal_format);
     }
 
-    mtl_format = mtlFormatForGLInternalFormat(internal_format);
-    if (mtl_format == MGLPixelFormatInvalid)
+    pixel_format = mtlFormatForGLInternalFormat(internal_format);
+    if (pixel_format == MGLPixelFormatInvalid)
     {
         fprintf(stderr,
                 "MGL WARNING: mtlPixelFormatForGLTex texture %u unsupported internal format 0x%x\n",
@@ -3126,7 +3126,7 @@ uint32_t mtlPixelFormatForGLTex(Texture * tex)
         return MGLPixelFormatInvalid;
     }
 
-    return mtl_format;
+    return pixel_format;
 }
 
 #include <math.h>

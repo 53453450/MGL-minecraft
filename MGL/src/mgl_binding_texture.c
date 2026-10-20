@@ -593,7 +593,7 @@ void mglBindingTextureFillSampledDiagEmitCore(
     int used_fallback, uint64_t expected_type, uint64_t lookup_type,
     int expected_index, uint32_t unit_active, uint32_t unit_expected,
     uint32_t unit_2d, uint32_t unit_cube, uint64_t mtl_type, uint64_t mtl_w,
-    uint64_t mtl_h, uint64_t mtl_format, uint32_t l0w, uint32_t l0h, uint32_t l0d,
+    uint64_t mtl_h, uint64_t pixel_format, uint32_t l0w, uint32_t l0h, uint32_t l0d,
     uint64_t l0_bytes, uint32_t l0_ever, uint32_t l0_full, uint32_t l0_zero,
     uint32_t l0_source, uint64_t l0_upload, uint64_t l0_hash, uint64_t l0_data_hash,
     uint32_t ptr_tex, int stage_is_fragment, int is_gui_rt_copy_eligible,
@@ -627,7 +627,7 @@ void mglBindingTextureFillSampledDiagEmitCore(
     in->mtl_type = mtl_type;
     in->mtl_w = mtl_w;
     in->mtl_h = mtl_h;
-    in->mtl_format = mtl_format;
+    in->pixel_format = pixel_format;
     in->l0w = l0w;
     in->l0h = l0h;
     in->l0d = l0d;
@@ -739,7 +739,7 @@ void mglBindingTextureEmitSampledDiagPorts(
             s_texelBufferBindLogs, in->program_name, in->program_binding,
             in->texture_unit, in->ptr_tex, in->unit_active, in->unit_buffer_tex,
             in->expected_type, in->lookup_type, in->mtl, in->mtl_type, in->mtl_w,
-            in->mtl_h, in->mtl_format, in->sampler);
+            in->mtl_h, in->pixel_format, in->sampler);
     }
     if (dplan.log_detail) {
         uint64_t *ctr =
@@ -765,7 +765,7 @@ void mglBindingTextureEmitSampledDiagPorts(
             in->sampled_name, in->program_binding, in->texture_unit, in->ptr_tex,
             in->rt_label, in->used_fallback,
             in->ptr, in->mtl, in->direct_for_trace,
-            in->mtl_format, in->mtl_type, in->mtl_w, in->mtl_h, in->draw_fbo,
+            in->pixel_format, in->mtl_type, in->mtl_w, in->mtl_h, in->draw_fbo,
             in->rp_fbo, in->rp_color, in->rp_depth);
     }
     if (dplan.log_readback && in->mtl && out) {

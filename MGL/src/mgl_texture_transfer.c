@@ -2386,7 +2386,7 @@ bool mglStoreCompressedTextureImage(GLMContext ctx,
      * MGLPixelFormat texture.  For unknown/uncompressed formats this falls
      * back to 0 (the historic behaviour). */
     lvl->pitch = mglCompressedBytesPerRowOf(internalformat, width);
-    lvl->mtl_format = 0u;
+    lvl->pixel_format = 0u;
     lvl->complete = true;
     lvl->has_initialized_data = resolved_src ? GL_TRUE : GL_FALSE;
     lvl->ever_written = resolved_src ? GL_TRUE : GL_FALSE;

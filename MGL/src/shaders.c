@@ -109,8 +109,8 @@ Shader *newShader(GLMContext ctx, GLenum type, GLuint shader)
     ptr->glm_type = glShaderTypeToGLMType(type);
 
     snprintf(shader_type_name, sizeof(shader_type_name), "%s_%d", getShaderTypeStr(ptr->glm_type), shader);
-    ptr->mtl_shader_type_name = strdup(shader_type_name);
-    /* If strdup fails (OOM), ptr->mtl_shader_type_name stays NULL.  This is
+    ptr->shader_type_name = strdup(shader_type_name);
+    /* If strdup fails (OOM), ptr->shader_type_name stays NULL.  This is
      * safe: the field is only ever passed to free() in the shader teardown
      * path and is never dereferenced, so a NULL value is a harmless no-op. */
 
@@ -197,7 +197,7 @@ void mglShaderReplaceFrontendTU(Shader *ptr, struct MGLTranslationUnit *tu)
 void mglFreeShader(GLMContext ctx, Shader *ptr)
 {
     (void)ctx;
-    free((void *)ptr->mtl_shader_type_name);
+    free((void *)ptr->shader_type_name);
     free((void *)ptr->src);
     if (ptr->log) free(ptr->log);
     free(ptr->frontend_diagnostics);

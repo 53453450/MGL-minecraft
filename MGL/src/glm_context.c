@@ -146,21 +146,21 @@ GLMContext mglGetContext(void)
     return _ctx;
 }
 
-static GLuint mglLinearDefaultFramebufferFormat(GLuint mtl_format)
+static GLuint mglLinearDefaultFramebufferFormat(GLuint pixel_format)
 {
-    switch (mtl_format) {
+    switch (pixel_format) {
         case kMGLMGLPixelFormatRGBA8Unorm_sRGB:
             return kMGLMGLPixelFormatRGBA8Unorm;
         case kMGLMGLPixelFormatBGRA8Unorm_sRGB:
             return kMGLMGLPixelFormatBGRA8Unorm;
         default:
-            return mtl_format;
+            return pixel_format;
     }
 }
 
-static GLuint mglSRGBDefaultFramebufferFormat(GLuint mtl_format)
+static GLuint mglSRGBDefaultFramebufferFormat(GLuint pixel_format)
 {
-    switch (mtl_format) {
+    switch (pixel_format) {
         case kMGLMGLPixelFormatRGBA8Unorm:
         case kMGLMGLPixelFormatRGBA8Unorm_sRGB:
             return kMGLMGLPixelFormatRGBA8Unorm_sRGB;
@@ -168,15 +168,15 @@ static GLuint mglSRGBDefaultFramebufferFormat(GLuint mtl_format)
         case kMGLMGLPixelFormatBGRA8Unorm_sRGB:
             return kMGLMGLPixelFormatBGRA8Unorm_sRGB;
         default:
-            return mtl_format;
+            return pixel_format;
     }
 }
 
 static GLuint mglDefaultFramebufferFormatForGLFormatType(GLenum format, GLenum type)
 {
-    GLuint mtl_format = mtlPixelFormatForGLFormatType(format, type);
-    if (mtl_format != kMGLMGLPixelFormatInvalid) {
-        return mtl_format;
+    GLuint pixel_format = mtlPixelFormatForGLFormatType(format, type);
+    if (pixel_format != kMGLMGLPixelFormatInvalid) {
+        return pixel_format;
     }
 
     switch (type) {
@@ -202,7 +202,7 @@ static GLuint mglDefaultFramebufferFormatForGLFormatType(GLenum format, GLenum t
             break;
     }
 
-    return mtl_format;
+    return pixel_format;
 }
 
 void MGLsetDefaultFramebufferSRGBCapable(GLMContext ctx, GLboolean capable)

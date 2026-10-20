@@ -127,7 +127,7 @@ typedef struct TextureLevel_t {
     GLuint height;
     GLuint depth;
     size_t pitch;
-    GLuint mtl_format;
+    GLuint pixel_format;
     size_t  data_size;
     vm_address_t data;
     GLboolean has_initialized_data;

@@ -254,7 +254,7 @@ static GLboolean mglFlushPendingColorClearToTexture(GLMContext ctx, FBOAttachmen
     size_t row_bytes;
     size_t row_pitch;
     size_t required_size;
-    uint32_t mtl_format;
+    uint32_t pixel_format;
     GLubyte r, g, b, a;
     GLubyte pixel[4];
     GLboolean bgra;
@@ -348,9 +348,9 @@ static GLboolean mglFlushPendingColorClearToTexture(GLMContext ctx, FBOAttachmen
     b = mglClampClearComponentToByte(att->clear_color[2]);
     a = mglClampClearComponentToByte(att->clear_color[3]);
 
-    mtl_format = mtlFormatForGLInternalFormat(tex->internalformat);
-    bgra = (mtl_format == MGLPixelFormatBGRA8Unorm ||
-            mtl_format == MGLPixelFormatBGRA8Unorm_sRGB);
+    pixel_format = mtlFormatForGLInternalFormat(tex->internalformat);
+    bgra = (pixel_format == MGLPixelFormatBGRA8Unorm ||
+            pixel_format == MGLPixelFormatBGRA8Unorm_sRGB);
 
     pixel[0] = bgra ? b : r;
     pixel[1] = g;
