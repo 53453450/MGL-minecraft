@@ -3328,11 +3328,7 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         internalformat != GL_STENCIL_INDEX8 &&
         internalformat != GL_STENCIL_INDEX &&
         internalformat != GL_DEPTH_STENCIL) {
-        GLuint mtl_fmt = mtlFormatForGLInternalFormat(internalformat);
-        if (mtl_fmt == MGLPixelFormatDepth16Unorm ||
-            mtl_fmt == MGLPixelFormatDepth32Float ||
-            mtl_fmt == MGLPixelFormatDepth24Unorm_Stencil8 ||
-            mtl_fmt == MGLPixelFormatDepth32Float_Stencil8) {
+        if (mglInternalFormatCarriesDepth(internalformat)) {
             if (!tex->depth_shadow ||
                 tex->depth_shadow_width != tex->width ||
                 tex->depth_shadow_height != tex->height) {

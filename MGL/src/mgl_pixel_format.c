@@ -486,6 +486,25 @@ bool mglInternalFormatIsDepthStencil(GLint internalformat)
     }
 }
 
+/* True when the format's storage actually carries depth samples (the
+ * depth-only formats and the two packed depth-stencil ones).  Stencil-only
+ * formats and the unsized GL_DEPTH_COMPONENT/GL_DEPTH_STENCIL aliases are not
+ * included: they have no depth pixels to shadow. */
+bool mglInternalFormatCarriesDepth(GLint internalformat)
+{
+    switch (internalformat) {
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+            return true;
+        default:
+            return false;
+    }
+}
+
 /* Returns true if the internal format is a combined depth-stencil format
  * (i.e. has both depth and stencil components).  Used by GetTexImage and
  * ReadPixels to validate GL_DEPTH_STENCIL read format. */

@@ -89,6 +89,9 @@ bool mglIsValidPixelTransferType(GLenum type);
 bool mglInternalFormatIsInteger(GLint internalformat);
 bool mglInternalFormatIsUnsignedInteger(GLint internalformat);
 bool mglInternalFormatIsDepthStencil(GLint internalformat);
+
+/* Has depth samples in storage (depth-only or packed depth-stencil). */
+bool mglInternalFormatCarriesDepth(GLint internalformat);
 bool mglInternalFormatIsCombinedDepthStencil(GLint internalformat);
 int mglExternalSourceIndexForComponent(GLenum format, GLuint component);
 /* GL RGB-only formats whose Metal storage pads an alpha channel (e.g.
