@@ -13,6 +13,7 @@
  */
 
 #include "mgl_renderer_ports.h"
+#include "mgl_gpu_recovery.h"
 #include <stdatomic.h>
 #include "mgl_render_api_command.h"
 #include "mgl_render_api_binding.h"

@@ -302,6 +302,8 @@ void mglRendererSetTraceReplayIdentity(void *renderer, uint64_t flush_id,
                                        uint32_t batch_index);
 void mglRendererSetDefaultDrawBufferSize(void *renderer, uint32_t draw_buffer,
                                          uint32_t width, uint32_t height);
+/* Drop the pipeline-cache entries (device reset / recovery). */
+void mglRendererResetPipelineCaches(void *renderer);
 
 /* === Read-only view of the same state ======================================
  * Most drivers only look at the renderer's state.  They take this view, whose

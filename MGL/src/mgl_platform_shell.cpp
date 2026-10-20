@@ -1260,6 +1260,18 @@ int mglPipelineCacheResetCaches(void *pipeline_cache_object)
     return 1;
 }
 
+/* Port: drop the pipeline-cache entries.  Implemented here so callers never
+ * need the state areas (and the cache object) to reach the cache. */
+void mglRendererResetPipelineCaches(void *renderer)
+{
+    MGLRendererIvars *ivars = mglRendererIvars((MGLObjectId)renderer);
+    if (!ivars || !ivars->_pipelineCache) {
+        return;
+    }
+    (void)mglPipelineCacheResetCaches(ivars->_pipelineCache);
+}
+
+
 /* === exception-guarded C bodies =========================================
  * @try/@catch has no C form, but a C++ catch(...) catches the NSException the
  * same way (rule 67); the object comes back from the exception bridge. */
