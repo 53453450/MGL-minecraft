@@ -11,6 +11,7 @@
 
 #include "mgl_pixel_format.h"
 #include "mgl_render_api_texture.h"
+#include "mgl_render_api_readback.h"
 
 #include <stdio.h>
 
@@ -452,4 +453,99 @@ int mglRenderTextureUploadNeedsSingleChannelSwizzleBake(
         default:
             return 0;
     }
+}
+
+int mglRenderReadbackGLTypeAccepted(uint32_t type) {
+    switch (type) {
+        case GL_UNSIGNED_BYTE:
+        case GL_UNSIGNED_INT_8_8_8_8:
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+        case GL_FLOAT:
+        case GL_BYTE:
+        case GL_SHORT:
+        case GL_INT:
+        case GL_UNSIGNED_INT:
+        case GL_UNSIGNED_SHORT:
+        case GL_HALF_FLOAT:
+        case GL_UNSIGNED_BYTE_3_3_2:
+        case GL_UNSIGNED_BYTE_2_3_3_REV:
+        case GL_UNSIGNED_SHORT_5_6_5:
+        case GL_UNSIGNED_SHORT_5_6_5_REV:
+        case GL_UNSIGNED_SHORT_4_4_4_4:
+        case GL_UNSIGNED_SHORT_4_4_4_4_REV:
+        case GL_UNSIGNED_SHORT_5_5_5_1:
+        case GL_UNSIGNED_SHORT_1_5_5_5_REV:
+        case GL_UNSIGNED_INT_10_10_10_2:
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+int mglRenderReadbackTypeIsCore(uint32_t type) {
+    return type == GL_UNSIGNED_BYTE || type == GL_BYTE ||
+                   type == GL_UNSIGNED_SHORT || type == GL_SHORT ||
+                   type == GL_UNSIGNED_INT || type == GL_INT ||
+                   type == GL_FLOAT || type == GL_HALF_FLOAT
+               ? 1
+               : 0;
+}
+
+int mglRenderReadbackTypeAllowsRGB10A2(uint32_t type) {
+    return mglRenderReadbackTypeIsCore(type) ||
+                   type == GL_UNSIGNED_INT_10_10_10_2 ||
+                   type == GL_UNSIGNED_INT_2_10_10_10_REV ||
+                   type == GL_UNSIGNED_INT_5_9_9_9_REV ||
+                   type == GL_UNSIGNED_INT_8_8_8_8 ||
+                   type == GL_UNSIGNED_INT_8_8_8_8_REV
+               ? 1
+               : 0;
+}
+
+int mglRenderReadbackTypeAllowsRG11B10(uint32_t type) {
+    return mglRenderReadbackTypeIsCore(type) ||
+                   type == GL_UNSIGNED_INT_10F_11F_11F_REV ||
+                   type == GL_UNSIGNED_INT_5_9_9_9_REV ||
+                   type == GL_UNSIGNED_INT_8_8_8_8 ||
+                   type == GL_UNSIGNED_INT_8_8_8_8_REV
+               ? 1
+               : 0;
+}
+
+int mglRenderReadbackTypeAllows16or32(uint32_t type) {
+    return mglRenderReadbackTypeIsCore(type) ||
+                   type == GL_UNSIGNED_BYTE_3_3_2 ||
+                   type == GL_UNSIGNED_BYTE_2_3_3_REV ||
+                   type == GL_UNSIGNED_SHORT_5_6_5 ||
+                   type == GL_UNSIGNED_SHORT_5_6_5_REV ||
+                   type == GL_UNSIGNED_SHORT_4_4_4_4 ||
+                   type == GL_UNSIGNED_SHORT_4_4_4_4_REV ||
+                   type == GL_UNSIGNED_SHORT_5_5_5_1 ||
+                   type == GL_UNSIGNED_SHORT_1_5_5_5_REV ||
+                   type == GL_UNSIGNED_INT_8_8_8_8 ||
+                   type == GL_UNSIGNED_INT_8_8_8_8_REV ||
+                   type == GL_UNSIGNED_INT_10_10_10_2 ||
+                   type == GL_UNSIGNED_INT_2_10_10_10_REV ||
+                   type == GL_UNSIGNED_INT_10F_11F_11F_REV ||
+                   type == GL_UNSIGNED_INT_5_9_9_9_REV
+               ? 1
+               : 0;
+}
+
+int mglRenderReadbackTypeIsWideScalar(uint32_t type) {
+    return type == GL_BYTE || type == GL_SHORT || type == GL_INT ||
+                   type == GL_UNSIGNED_INT || type == GL_UNSIGNED_SHORT ||
+                   type == GL_HALF_FLOAT || type == GL_FLOAT
+               ? 1
+               : 0;
+}
+
+int mglRenderReadbackTypeIsPacked(uint32_t type) {
+    return mglRenderReadbackTypeAllows16or32(type) &&
+                   !mglRenderReadbackTypeIsCore(type)
+               ? 1
+               : 0;
 }
