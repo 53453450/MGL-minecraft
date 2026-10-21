@@ -1017,55 +1017,28 @@ int mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
 
 int mglRenderPixelFormatMatchesSwizzleBakeStorage(
     uint32_t internal_format, uint32_t storage_pixel_format) {
-    const uint32_t expected =
-        mglRenderSingleChannelSwizzleStoragePixelFormat(internal_format);
-    if (expected != static_cast<uint32_t>(MTL::PixelFormatInvalid) &&
-        expected == storage_pixel_format) {
+    const uint32_t single = mglRenderStorageClassToMetal(
+        mglSingleChannelSwizzleStorageClass(internal_format));
+    if (single != static_cast<uint32_t>(MTL::PixelFormatInvalid) &&
+        single == storage_pixel_format) {
         return 1;
     }
     if (mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
             internal_format, 1) != 0) {
-        /* Multi-channel integer bake keeps the native storage format. */
-        switch (internal_format) {
-            case GL_RG8I:
-            case GL_RGB8I:
-            case GL_RGBA8I:
-                return storage_pixel_format ==
-                    static_cast<uint32_t>(MTL::PixelFormatRGBA8Sint);
-            case GL_RG8UI:
-            case GL_RGB8UI:
-            case GL_RGBA8UI:
-                return storage_pixel_format ==
-                    static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint);
-            case GL_RG16I:
-            case GL_RGB16I:
-            case GL_RGBA16I:
-                return storage_pixel_format ==
-                    static_cast<uint32_t>(MTL::PixelFormatRGBA16Sint);
-            case GL_RG16UI:
-            case GL_RGB16UI:
-            case GL_RGBA16UI:
-                return storage_pixel_format ==
-                    static_cast<uint32_t>(MTL::PixelFormatRGBA16Uint);
-            case GL_RG32I:
-            case GL_RGB32I:
-            case GL_RGBA32I:
-                return storage_pixel_format ==
-                    static_cast<uint32_t>(MTL::PixelFormatRGBA32Sint);
-            case GL_RG32UI:
-            case GL_RGB32UI:
-            case GL_RGBA32UI:
-                return storage_pixel_format ==
-                    static_cast<uint32_t>(MTL::PixelFormatRGBA32Uint);
-            default:
-                break;
-        }
+        /* Multi-channel integer bake keeps the native storage format, which is
+         * exactly the integer storage class of this format. */
+        const uint32_t multi = mglRenderStorageClassToMetal(
+            mglIntegerMultiChannelSwizzleStorageClass(internal_format));
+        return multi != static_cast<uint32_t>(MTL::PixelFormatInvalid) &&
+                       multi == storage_pixel_format
+                   ? 1
+                   : 0;
     }
     if (mglInternalFormatIsSizedPackedDepthStencil(internal_format)) {
         return storage_pixel_format ==
-                   static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint) ||
+                   mglRenderStorageClassToMetal(MGL_PIXEL_STORAGE_RGBA8_UINT) ||
                storage_pixel_format ==
-                   static_cast<uint32_t>(MTL::PixelFormatRGBA32Float);
+                   mglRenderStorageClassToMetal(MGL_PIXEL_STORAGE_RGBA32_FLOAT);
     }
     return 0;
 }
