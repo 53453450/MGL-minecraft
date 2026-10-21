@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-3.0-only */
 #include "mgl_metal.h"
+#include "mgl_pixel_format.h"
 #include "mgl_render_api_texture.h"
 #include "mgl_render_api_pixel.h"
 #include "mgl_render_api_lifecycle.h"
@@ -228,71 +229,16 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
         return NULL;
     }
 
-    uint32_t dst_component_bytes = 1u;
-    int dst_signed = 0;
-    uint32_t src_component_bytes = 1u;
-    int src_signed = 0;
-    switch (internal_format) {
-        case GL_R8:
-        case GL_R8_SNORM:
-            dst_component_bytes = 1u;
-            src_component_bytes = 1u;
-            break;
-        case GL_R8I:
-            dst_component_bytes = 1u;
-            src_component_bytes = 1u;
-            dst_signed = 1;
-            src_signed = 1;
-            break;
-        case GL_R8UI:
-            dst_component_bytes = 1u;
-            src_component_bytes = 1u;
-            break;
-        case GL_R16:
-        case GL_R16_SNORM:
-        case GL_R16F:
-            dst_component_bytes = 2u;
-            src_component_bytes = 2u;
-            break;
-        case GL_R16I:
-            dst_component_bytes = 2u;
-            src_component_bytes = 2u;
-            dst_signed = 1;
-            src_signed = 1;
-            break;
-        case GL_R16UI:
-            dst_component_bytes = 2u;
-            src_component_bytes = 2u;
-            break;
-        case GL_R32F:
-        case GL_R32I:
-            dst_component_bytes = 4u;
-            src_component_bytes = 4u;
-            dst_signed = (internal_format == GL_R32I);
-            src_signed = dst_signed;
-            break;
-        case GL_R32UI:
-            dst_component_bytes = 4u;
-            src_component_bytes = 4u;
-            break;
-        case GL_DEPTH_COMPONENT16:
-            dst_component_bytes = 2u;
-            src_component_bytes = 2u;
-            break;
-        case GL_DEPTH_COMPONENT24:
-        case GL_DEPTH_COMPONENT32:
-        case GL_DEPTH_COMPONENT32F:
-        case GL_DEPTH24_STENCIL8:
-            dst_component_bytes = 4u;
-            src_component_bytes = 4u;
-            break;
-        case GL_DEPTH32F_STENCIL8:
-            dst_component_bytes = 4u;
-            src_component_bytes = 5u;
-            break;
-        default:
-            return NULL;
+    const MGLSingleChannelUploadLayout layout =
+        mglSingleChannelSwizzleUploadLayout(internal_format);
+    if (!layout.valid) {
+        return NULL;
     }
+    const uint32_t dst_component_bytes = layout.dst_component_bytes;
+    const uint32_t src_component_bytes = layout.src_component_bytes;
+    const int dst_signed = layout.dst_signed;
+    const int src_signed = layout.src_signed;
+    (void)dst_signed;
 
     const size_t dst_pixel_bytes = 4u * dst_component_bytes;
     const size_t src_pixel_bytes = src_component_bytes;

@@ -243,6 +243,80 @@ static inline bool mglReadbackTypeCarriesAlpha(uint32_t type)
     }
 }
 
+/* Component layout of a single-channel format that is baked into an RGBA
+ * storage texture: how wide the source and destination components are and
+ * whether they are signed.  `valid` is false for formats without a bake. */
+typedef struct MGLSingleChannelUploadLayout {
+    uint32_t dst_component_bytes;
+    uint32_t src_component_bytes;
+    int dst_signed;
+    int src_signed;
+    bool valid;
+} MGLSingleChannelUploadLayout;
+
+static inline MGLSingleChannelUploadLayout
+mglSingleChannelSwizzleUploadLayout(uint32_t internal_format)
+{
+    MGLSingleChannelUploadLayout out = {1u, 1u, 0, 0, true};
+    switch (internal_format) {
+        case GL_R8:
+        case GL_R8_SNORM: break;
+        case GL_R8I:
+            out.dst_signed = 1;
+            out.src_signed = 1;
+            break;
+        case GL_R8UI: break;
+        case GL_R16:
+        case GL_R16_SNORM:
+        case GL_R16F:
+            out.dst_component_bytes = 2u;
+            out.src_component_bytes = 2u;
+            break;
+        case GL_R16I:
+            out.dst_component_bytes = 2u;
+            out.src_component_bytes = 2u;
+            out.dst_signed = 1;
+            out.src_signed = 1;
+            break;
+        case GL_R16UI:
+            out.dst_component_bytes = 2u;
+            out.src_component_bytes = 2u;
+            break;
+        case GL_R32F:
+        case GL_R32I:
+            out.dst_component_bytes = 4u;
+            out.src_component_bytes = 4u;
+            out.dst_signed = (internal_format == GL_R32I) ? 1 : 0;
+            out.src_signed = out.dst_signed;
+            break;
+        case GL_R32UI:
+            out.dst_component_bytes = 4u;
+            out.src_component_bytes = 4u;
+            break;
+        case GL_DEPTH_COMPONENT16:
+            out.dst_component_bytes = 2u;
+            out.src_component_bytes = 2u;
+            break;
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH24_STENCIL8:
+            out.dst_component_bytes = 4u;
+            out.src_component_bytes = 4u;
+            break;
+        case GL_DEPTH32F_STENCIL8:
+            out.dst_component_bytes = 4u;
+            out.src_component_bytes = 5u;
+            break;
+        default:
+            out.valid = false;
+            out.dst_component_bytes = 0u;
+            out.src_component_bytes = 0u;
+            break;
+    }
+    return out;
+}
+
 bool mglInternalFormatIsDepthStencil(GLint internalformat);
 
 /* Has depth samples in storage (depth-only or packed depth-stencil). */
