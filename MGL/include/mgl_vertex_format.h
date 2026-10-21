@@ -126,6 +126,58 @@ static inline uint32_t mglRenderPrimitiveClassForGLMode(uint32_t mode)
     }
 }
 
+/* How the client stores one attribute component.  The backend asks this
+ * instead of comparing GL enums, so the GL vocabulary stays in the frontend. */
+typedef enum MGLVertexFetchKind {
+    MGL_VFETCH_KIND_INVALID = 0,
+    MGL_VFETCH_KIND_S8,
+    MGL_VFETCH_KIND_U8,
+    MGL_VFETCH_KIND_S16,
+    MGL_VFETCH_KIND_U16,
+    MGL_VFETCH_KIND_S32,
+    MGL_VFETCH_KIND_U32,
+    MGL_VFETCH_KIND_F16,
+    MGL_VFETCH_KIND_F32,
+    MGL_VFETCH_KIND_F64,
+    MGL_VFETCH_KIND_FIXED,
+    MGL_VFETCH_KIND_PACKED_10_10_10_2,
+    MGL_VFETCH_KIND_PACKED_10F_11F_11F,
+    MGL_VFETCH_KIND_PACKED_2_10_10_10_REV,
+    MGL_VFETCH_KIND_PACKED_2_10_10_10_REV_INT
+} MGLVertexFetchKind;
+
+static inline MGLVertexFetchKind mglVertexFetchKindForGLType(uint32_t type)
+{
+    switch (type) {
+        case GL_BYTE: return MGL_VFETCH_KIND_S8;
+        case GL_UNSIGNED_BYTE: return MGL_VFETCH_KIND_U8;
+        case GL_SHORT: return MGL_VFETCH_KIND_S16;
+        case GL_UNSIGNED_SHORT: return MGL_VFETCH_KIND_U16;
+        case GL_INT: return MGL_VFETCH_KIND_S32;
+        case GL_UNSIGNED_INT: return MGL_VFETCH_KIND_U32;
+        case GL_HALF_FLOAT: return MGL_VFETCH_KIND_F16;
+        case GL_FLOAT: return MGL_VFETCH_KIND_F32;
+        case GL_DOUBLE: return MGL_VFETCH_KIND_F64;
+        case GL_FIXED: return MGL_VFETCH_KIND_FIXED;
+        case GL_UNSIGNED_INT_10_10_10_2:
+            return MGL_VFETCH_KIND_PACKED_10_10_10_2;
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+            return MGL_VFETCH_KIND_PACKED_10F_11F_11F;
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+            return MGL_VFETCH_KIND_PACKED_2_10_10_10_REV;
+        case GL_INT_2_10_10_10_REV:
+            return MGL_VFETCH_KIND_PACKED_2_10_10_10_REV_INT;
+        default: return MGL_VFETCH_KIND_INVALID;
+    }
+}
+
+/* The "BGRA" pseudo-size GL passes to glVertexAttribPointer for packed color
+ * data.  Kept here so the backend can test it without naming the enum. */
+static inline bool mglVertexAttribSizeIsBGRA(uint32_t size)
+{
+    return size == GL_BGRA;
+}
+
 /* GL index type -> element width (2 or 4), 0 when unsupported. */
 static inline uint32_t mglRenderIndexElementClass(uint32_t gl_type)
 {

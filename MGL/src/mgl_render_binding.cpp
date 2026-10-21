@@ -125,10 +125,11 @@ uint32_t mglRenderAttribFormatOrFallback(uint32_t planned, uint32_t type,
 }
 
 int mglRenderAttribNeedsConversion(int long_attr, uint32_t type, int integer) {
-    if (long_attr || type == GL_DOUBLE) {
+    const MGLVertexFetchKind kind = mglVertexFetchKindForGLType(type);
+    if (long_attr || kind == MGL_VFETCH_KIND_F64) {
         return 1;
     }
-    if (!integer && (type == GL_INT || type == GL_UNSIGNED_INT)) {
+    if (!integer && (kind == MGL_VFETCH_KIND_S32 || kind == MGL_VFETCH_KIND_U32)) {
         return 1;
     }
     return 0;
@@ -139,24 +140,29 @@ int mglRenderAttribNeedsConvertedMetalStream(uint32_t type, int integer,
     if (mglRenderAttribNeedsConversion(0, type, integer)) {
         return 1;
     }
-    if (type == GL_FIXED || type == GL_UNSIGNED_INT_10_10_10_2 ||
-        type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+    const MGLVertexFetchKind kind = mglVertexFetchKindForGLType(type);
+    if (kind == MGL_VFETCH_KIND_FIXED ||
+        kind == MGL_VFETCH_KIND_PACKED_10_10_10_2 ||
+        kind == MGL_VFETCH_KIND_PACKED_10F_11F_11F) {
         return 1;
     }
-    if (type == GL_UNSIGNED_INT_2_10_10_10_REV ||
-        type == GL_INT_2_10_10_10_REV) {
-        return (!normalized || size == GL_BGRA) ? 1 : 0;
+    if (kind == MGL_VFETCH_KIND_PACKED_2_10_10_10_REV ||
+        kind == MGL_VFETCH_KIND_PACKED_2_10_10_10_REV_INT) {
+        return (!normalized || mglVertexAttribSizeIsBGRA(size)) ? 1 : 0;
     }
     return 0;
 }
 
 int mglRenderAttribColorUByteNeedsNormalize(uint32_t type, uint32_t size,
                                             int already_norm) {
-    return !already_norm && type == GL_UNSIGNED_BYTE && size == 4u ? 1 : 0;
+    return !already_norm && mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_U8 &&
+                   size == 4u
+               ? 1
+               : 0;
 }
 
 uint32_t mglRenderAttribEffectiveNormalized(uint32_t already, int needs) {
-    return needs ? GL_TRUE : already;
+    return needs ? 1u : already;   /* GL_TRUE */
 }
 
 double mglRenderDecodeVertexAttribComponent(const uint8_t *src, uint32_t type,
