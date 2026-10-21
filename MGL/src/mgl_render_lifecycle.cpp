@@ -167,6 +167,8 @@ uint8_t* mglRenderCreateStencilSwizzledUpload(
     if (!dst) {
         return NULL;
     }
+    const MGLUploadResolverKind resolver =
+        mglSingleChannelUploadResolver(internal_format);
     const uint8_t* src = static_cast<const uint8_t*>(src_data);
     for (size_t row = 0; row < height; row++) {
         const uint8_t* src_row = src + row * src_bytes_per_row;
@@ -175,7 +177,7 @@ uint8_t* mglRenderCreateStencilSwizzledUpload(
             const uint8_t* in = src_row + x * src_pixel_bytes;
             uint8_t* out = dst_row + x * dst_pixel_bytes;
             uint8_t stencil = 0u;
-            if (internal_format == GL_DEPTH24_STENCIL8) {
+            if (resolver == MGL_UPLOAD_RESOLVER_DEPTH24_8) {
                 uint32_t packed = 0u;
                 memcpy(&packed, in, sizeof(uint32_t));
                 stencil = (uint8_t)(packed & 0xffu);
@@ -231,6 +233,8 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
 
     const MGLSingleChannelUploadLayout layout =
         mglSingleChannelSwizzleUploadLayout(internal_format);
+    const MGLUploadResolverKind resolver =
+        mglSingleChannelUploadResolver(internal_format);
     if (!layout.valid) {
         return NULL;
     }
@@ -261,7 +265,7 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
         const uint8_t* src_row = src + row * src_bytes_per_row;
         for (size_t x = 0; x < width; x++) {
             uint8_t* out = dst_row + x * dst_pixel_bytes;
-            if (internal_format == GL_R8) {
+            if (resolver == MGL_UPLOAD_RESOLVER_UNORM8) {
                 const uint8_t red = src_row[x * src_pixel_bytes];
                 out[0] = mglRenderResolveR8SwizzledComponent(swizzle_r, red);
                 out[1] = mglRenderResolveR8SwizzledComponent(swizzle_g, red);
@@ -269,7 +273,7 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
                 out[3] = mglRenderResolveR8SwizzledComponent(swizzle_a, red);
                 continue;
             }
-            if (internal_format == GL_R8_SNORM) {
+            if (resolver == MGL_UPLOAD_RESOLVER_SNORM8) {
                 const uint8_t red = src_row[x * src_pixel_bytes];
                 out[0] = mglRenderResolveR8SnormSwizzledComponent(swizzle_r, red);
                 out[1] = mglRenderResolveR8SnormSwizzledComponent(swizzle_g, red);
@@ -277,7 +281,7 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
                 out[3] = mglRenderResolveR8SnormSwizzledComponent(swizzle_a, red);
                 continue;
             }
-            if (internal_format == GL_R16) {
+            if (resolver == MGL_UPLOAD_RESOLVER_UNORM16) {
                 const uint16_t red =
                     *(const uint16_t*)(const void*)(src_row + x * src_pixel_bytes);
                 *(uint16_t*)(void*)(out + 0) =
@@ -290,7 +294,7 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
                     mglRenderResolveR16UnormSwizzledComponent(swizzle_a, red);
                 continue;
             }
-            if (internal_format == GL_R16_SNORM) {
+            if (resolver == MGL_UPLOAD_RESOLVER_SNORM16) {
                 const int16_t red =
                     *(const int16_t*)(const void*)(src_row + x * src_pixel_bytes);
                 *(uint16_t*)(void*)(out + 0) =
@@ -303,7 +307,7 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
                     mglRenderResolveR16SnormSwizzledComponent(swizzle_a, red);
                 continue;
             }
-            if (internal_format == GL_R16F) {
+            if (resolver == MGL_UPLOAD_RESOLVER_HALF) {
                 const uint16_t red =
                     *(const uint16_t*)(const void*)(src_row + x * src_pixel_bytes);
                 *(uint16_t*)(void*)(out + 0) =
@@ -316,10 +320,7 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
                     mglRenderResolveR16FloatSwizzledComponent(swizzle_a, red);
                 continue;
             }
-            if (internal_format == GL_R32F ||
-                internal_format == GL_DEPTH_COMPONENT24 ||
-                internal_format == GL_DEPTH_COMPONENT32 ||
-                internal_format == GL_DEPTH_COMPONENT32F) {
+            if (resolver == MGL_UPLOAD_RESOLVER_FLOAT32) {
                 const uint32_t red =
                     *(const uint32_t*)(const void*)(src_row + x * src_pixel_bytes);
                 *(uint32_t*)(void*)(out + 0) =
@@ -332,7 +333,7 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
                     mglRenderResolveR32FloatSwizzledComponent(swizzle_a, red);
                 continue;
             }
-            if (internal_format == GL_DEPTH_COMPONENT16) {
+            if (resolver == MGL_UPLOAD_RESOLVER_DEPTH16) {
                 const uint16_t red =
                     *(const uint16_t*)(const void*)(src_row + x * src_pixel_bytes);
                 *(uint16_t*)(void*)(out + 0) =
@@ -345,7 +346,7 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
                     mglRenderResolveR16UnormSwizzledComponent(swizzle_a, red);
                 continue;
             }
-            if (internal_format == GL_DEPTH24_STENCIL8) {
+            if (resolver == MGL_UPLOAD_RESOLVER_DEPTH24_8) {
                 const uint32_t red =
                     mglRenderDepth24Stencil8ToFloatBits(src_row + x * src_pixel_bytes);
                 *(uint32_t*)(void*)(out + 0) =
@@ -358,7 +359,7 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
                     mglRenderResolveR32FloatSwizzledComponent(swizzle_a, red);
                 continue;
             }
-            if (internal_format == GL_DEPTH32F_STENCIL8) {
+            if (resolver == MGL_UPLOAD_RESOLVER_DEPTH32F_8) {
                 const uint32_t red =
                     *(const uint32_t*)(const void*)(src_row + x * src_pixel_bytes);
                 *(uint32_t*)(void*)(out + 0) =

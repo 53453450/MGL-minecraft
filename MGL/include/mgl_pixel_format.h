@@ -243,6 +243,42 @@ static inline bool mglReadbackTypeCarriesAlpha(uint32_t type)
     }
 }
 
+/* Which resolver a single-channel bake uses for one texel.  One kind per
+ * distinct reader, so the upload loop compares kinds instead of GL formats. */
+typedef enum MGLUploadResolverKind {
+    MGL_UPLOAD_RESOLVER_INTEGER = 0,   /* generic signed/unsigned integer path */
+    MGL_UPLOAD_RESOLVER_UNORM8,
+    MGL_UPLOAD_RESOLVER_SNORM8,
+    MGL_UPLOAD_RESOLVER_UNORM16,
+    MGL_UPLOAD_RESOLVER_SNORM16,
+    MGL_UPLOAD_RESOLVER_HALF,
+    MGL_UPLOAD_RESOLVER_FLOAT32,
+    MGL_UPLOAD_RESOLVER_DEPTH16,
+    MGL_UPLOAD_RESOLVER_DEPTH24_8,
+    MGL_UPLOAD_RESOLVER_DEPTH32F_8
+} MGLUploadResolverKind;
+
+static inline MGLUploadResolverKind
+mglSingleChannelUploadResolver(uint32_t internal_format)
+{
+    switch (internal_format) {
+        case GL_R8: return MGL_UPLOAD_RESOLVER_UNORM8;
+        case GL_R8_SNORM: return MGL_UPLOAD_RESOLVER_SNORM8;
+        case GL_R16: return MGL_UPLOAD_RESOLVER_UNORM16;
+        case GL_R16_SNORM: return MGL_UPLOAD_RESOLVER_SNORM16;
+        case GL_R16F: return MGL_UPLOAD_RESOLVER_HALF;
+        case GL_R32F:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+            return MGL_UPLOAD_RESOLVER_FLOAT32;
+        case GL_DEPTH_COMPONENT16: return MGL_UPLOAD_RESOLVER_DEPTH16;
+        case GL_DEPTH24_STENCIL8: return MGL_UPLOAD_RESOLVER_DEPTH24_8;
+        case GL_DEPTH32F_STENCIL8: return MGL_UPLOAD_RESOLVER_DEPTH32F_8;
+        default: return MGL_UPLOAD_RESOLVER_INTEGER;
+    }
+}
+
 /* Component layout of a single-channel format that is baked into an RGBA
  * storage texture: how wide the source and destination components are and
  * whether they are signed.  `valid` is false for formats without a bake. */
