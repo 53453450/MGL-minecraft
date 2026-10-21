@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-3.0-only */
 #include "mgl_metal.h"
+#include "mgl_draw_buffer.h"
 #include "mgl_metal_ref.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_buffer.h"
@@ -399,27 +400,7 @@ int mglRenderHasDirtyBufferBit(uint32_t dirty_bits) {
 
 int mglRenderDefaultReadBufferIndex(uint32_t read_buffer, uint32_t *out) {
     uint32_t idx = 0u;
-    int known = 1;
-    switch (read_buffer) {
-    case GL_FRONT:
-    case GL_BACK:
-        idx = 0u; /* _FRONT */
-        break;
-    case GL_FRONT_LEFT:
-    case GL_BACK_LEFT:
-    case GL_LEFT:
-        idx = 2u; /* _FRONT_LEFT */
-        break;
-    case GL_FRONT_RIGHT:
-    case GL_BACK_RIGHT:
-    case GL_RIGHT:
-        idx = 3u; /* _FRONT_RIGHT */
-        break;
-    default:
-        known = 0;
-        idx = 0u;
-        break;
-    }
+    const int known = mglDrawBufferDefaultSlot(read_buffer, &idx) ? 1 : 0;
     if (out) {
         *out = idx;
     }
@@ -428,16 +409,17 @@ int mglRenderDefaultReadBufferIndex(uint32_t read_buffer, uint32_t *out) {
 
 int mglRenderFBOReadBufferValid(uint32_t read_buffer, uint32_t max_color,
                                 uint32_t max_attach) {
-    if (read_buffer == GL_NONE) {
+    if (mglDrawBufferIsNone(read_buffer)) {
         return 0;
     }
-    if (read_buffer < GL_COLOR_ATTACHMENT0) {
+    uint32_t index = 0u;
+    if (!mglDrawBufferColorAttachmentIndex(read_buffer, &index)) {
         return 0;
     }
-    if (read_buffer >= GL_COLOR_ATTACHMENT0 + max_color) {
+    if (index >= max_color) {
         return 0;
     }
-    if (read_buffer >= GL_COLOR_ATTACHMENT0 + max_attach) {
+    if (index >= max_attach) {
         return 0;
     }
     return 1;
@@ -445,36 +427,31 @@ int mglRenderFBOReadBufferValid(uint32_t read_buffer, uint32_t max_color,
 
 int mglRenderDefaultDrawBufferIndex(uint32_t draw_buffer, uint32_t *out) {
     uint32_t idx = 0u;
-    int known = 1;
-    if (mglRenderDefaultReadBufferIndex(draw_buffer, &idx)) {
+    if (mglDrawBufferDefaultSlot(draw_buffer, &idx)) {
         if (out) {
             *out = idx;
         }
         return 1;
     }
-    switch (draw_buffer) {
-    case GL_FRONT_AND_BACK:
-    case GL_COLOR_ATTACHMENT0:
-    case GL_NONE:
-        idx = 0u; /* _FRONT */
-        break;
-    default:
-        known = 0;
-        idx = 0u;
-        break;
-    }
+    uint32_t attach = 0u;
+    const int known =
+        (mglDrawBufferIsFrontAndBack(draw_buffer) ||
+         (mglDrawBufferColorAttachmentIndex(draw_buffer, &attach) && attach == 0u) ||
+         mglDrawBufferIsNone(draw_buffer))
+            ? 1
+            : 0;
     if (out) {
-        *out = idx;
+        *out = 0u;
     }
     return known;
 }
 
 uint32_t mglRenderEmptyDrawBuffer(void) {
-    return GL_NONE;
+    return mglDrawBufferNoneEnum();
 }
 
 uint32_t mglRenderDefaultFrontBuffer(void) {
-    return GL_FRONT;
+    return mglDrawBufferFrontEnum();
 }
 
 int mglRenderShouldPresentDrawBuffer(uint32_t draw_buffer) {
@@ -483,15 +460,17 @@ int mglRenderShouldPresentDrawBuffer(uint32_t draw_buffer) {
 
 int mglRenderDrawBufferIsColorAttachment(uint32_t draw_buffer, uint32_t max,
                                          uint32_t *out_index) {
-    if (draw_buffer >= GL_COLOR_ATTACHMENT0 &&
-        draw_buffer < GL_COLOR_ATTACHMENT0 + max &&
-        draw_buffer < GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
-        if (out_index) {
-            *out_index = draw_buffer - GL_COLOR_ATTACHMENT0;
-        }
-        return 1;
+    uint32_t index = 0u;
+    if (!mglDrawBufferColorAttachmentIndex(draw_buffer, &index)) {
+        return 0;
     }
-    return 0;
+    if (index >= max || index >= MAX_COLOR_ATTACHMENTS) {
+        return 0;
+    }
+    if (out_index) {
+        *out_index = index;
+    }
+    return 1;
 }
 
 int mglRenderDrawBufferIsDefaultFBOCompat(uint32_t draw_buffer) {
