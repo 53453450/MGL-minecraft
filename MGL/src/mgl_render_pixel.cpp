@@ -744,78 +744,38 @@ float mglRenderSnorm8ToFloat(int8_t value) {
     return (float)value / 127.0f;
 }
 
+/* Storage class -> MTL::PixelFormat for the RGBA-expanded swizzle bakes. */
+static uint32_t mglRenderStorageClassToMetal(MGLPixelStorageClass cls)
+{
+    switch (cls) {
+        case MGL_PIXEL_STORAGE_RGBA8_UNORM: return (uint32_t)MTL::PixelFormatRGBA8Unorm;
+        case MGL_PIXEL_STORAGE_RGBA8_SNORM: return (uint32_t)MTL::PixelFormatRGBA8Snorm;
+        case MGL_PIXEL_STORAGE_RGBA8_UINT: return (uint32_t)MTL::PixelFormatRGBA8Uint;
+        case MGL_PIXEL_STORAGE_RGBA8_SINT: return (uint32_t)MTL::PixelFormatRGBA8Sint;
+        case MGL_PIXEL_STORAGE_RGBA16_UNORM: return (uint32_t)MTL::PixelFormatRGBA16Unorm;
+        case MGL_PIXEL_STORAGE_RGBA16_SNORM: return (uint32_t)MTL::PixelFormatRGBA16Snorm;
+        case MGL_PIXEL_STORAGE_RGBA16_UINT: return (uint32_t)MTL::PixelFormatRGBA16Uint;
+        case MGL_PIXEL_STORAGE_RGBA16_SINT: return (uint32_t)MTL::PixelFormatRGBA16Sint;
+        case MGL_PIXEL_STORAGE_RGBA16_FLOAT: return (uint32_t)MTL::PixelFormatRGBA16Float;
+        case MGL_PIXEL_STORAGE_RGBA32_UINT: return (uint32_t)MTL::PixelFormatRGBA32Uint;
+        case MGL_PIXEL_STORAGE_RGBA32_SINT: return (uint32_t)MTL::PixelFormatRGBA32Sint;
+        case MGL_PIXEL_STORAGE_RGBA32_FLOAT: return (uint32_t)MTL::PixelFormatRGBA32Float;
+        default: return (uint32_t)MTL::PixelFormatInvalid;
+    }
+}
+
 extern "C"
 uint32_t mglRenderSingleChannelSwizzleStoragePixelFormat(
     uint32_t internal_format) {
-    switch (internal_format) {
-        case GL_R8I:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Sint);
-        case GL_R16I:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Sint);
-        case GL_R32I:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Sint);
-        case GL_R8UI:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint);
-        case GL_R16UI:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Uint);
-        case GL_R32UI:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Uint);
-        case GL_R8:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Unorm);
-        case GL_R8_SNORM:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Snorm);
-        case GL_R16:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Unorm);
-        case GL_R16_SNORM:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Snorm);
-        case GL_R16F:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Float);
-        case GL_R32F:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Float);
-        case GL_DEPTH_COMPONENT16:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Unorm);
-        case GL_DEPTH_COMPONENT24:
-        case GL_DEPTH_COMPONENT32:
-        case GL_DEPTH_COMPONENT32F:
-        case GL_DEPTH24_STENCIL8:
-        case GL_DEPTH32F_STENCIL8:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Float);
-        default:
-            return static_cast<uint32_t>(MTL::PixelFormatInvalid);
-    }
+    return mglRenderStorageClassToMetal(
+        mglSingleChannelSwizzleStorageClass(internal_format));
 }
 
 extern "C"
 uint32_t mglRenderIntegerMultiChannelSwizzleStoragePixelFormat(
     uint32_t internal_format) {
-    switch (internal_format) {
-        case GL_RG8I:
-        case GL_RGB8I:
-        case GL_RGBA8I:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Sint);
-        case GL_RG16I:
-        case GL_RGB16I:
-        case GL_RGBA16I:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Sint);
-        case GL_RG32I:
-        case GL_RGB32I:
-        case GL_RGBA32I:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Sint);
-        case GL_RG8UI:
-        case GL_RGB8UI:
-        case GL_RGBA8UI:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint);
-        case GL_RG16UI:
-        case GL_RGB16UI:
-        case GL_RGBA16UI:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Uint);
-        case GL_RG32UI:
-        case GL_RGB32UI:
-        case GL_RGBA32UI:
-            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Uint);
-        default:
-            return static_cast<uint32_t>(MTL::PixelFormatInvalid);
-    }
+    return mglRenderStorageClassToMetal(
+        mglIntegerMultiChannelSwizzleStorageClass(internal_format));
 }
 
 extern "C"

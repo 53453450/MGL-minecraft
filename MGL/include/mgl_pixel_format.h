@@ -88,6 +88,80 @@ bool mglIsValidPixelTransferFormat(GLenum format);
 bool mglIsValidPixelTransferType(GLenum type);
 bool mglInternalFormatIsInteger(GLint internalformat);
 bool mglInternalFormatIsUnsignedInteger(GLint internalformat);
+/* Storage class of the RGBA-expanded texture a swizzle bake writes into.  The
+ * backend maps these to MTL::PixelFormat; the GL internal formats that select
+ * them stay on this side (C2). */
+typedef enum MGLPixelStorageClass {
+    MGL_PIXEL_STORAGE_INVALID = 0,
+    MGL_PIXEL_STORAGE_RGBA8_UNORM,
+    MGL_PIXEL_STORAGE_RGBA8_SNORM,
+    MGL_PIXEL_STORAGE_RGBA8_UINT,
+    MGL_PIXEL_STORAGE_RGBA8_SINT,
+    MGL_PIXEL_STORAGE_RGBA16_UNORM,
+    MGL_PIXEL_STORAGE_RGBA16_SNORM,
+    MGL_PIXEL_STORAGE_RGBA16_UINT,
+    MGL_PIXEL_STORAGE_RGBA16_SINT,
+    MGL_PIXEL_STORAGE_RGBA16_FLOAT,
+    MGL_PIXEL_STORAGE_RGBA32_UINT,
+    MGL_PIXEL_STORAGE_RGBA32_SINT,
+    MGL_PIXEL_STORAGE_RGBA32_FLOAT
+} MGLPixelStorageClass;
+
+/* Single-channel (R) formats whose swizzle is baked into an RGBA target.
+ * Inline: the Metal-cpp smoke test links a subset of the objects and still
+ * pulls in the backend pixel TU that asks this. */
+static inline MGLPixelStorageClass
+mglSingleChannelSwizzleStorageClass(uint32_t internal_format)
+{
+    switch (internal_format) {
+        case GL_R8I: return MGL_PIXEL_STORAGE_RGBA8_SINT;
+        case GL_R16I: return MGL_PIXEL_STORAGE_RGBA16_SINT;
+        case GL_R32I: return MGL_PIXEL_STORAGE_RGBA32_SINT;
+        case GL_R8UI: return MGL_PIXEL_STORAGE_RGBA8_UINT;
+        case GL_R16UI: return MGL_PIXEL_STORAGE_RGBA16_UINT;
+        case GL_R32UI: return MGL_PIXEL_STORAGE_RGBA32_UINT;
+        case GL_R8: return MGL_PIXEL_STORAGE_RGBA8_UNORM;
+        case GL_R8_SNORM: return MGL_PIXEL_STORAGE_RGBA8_SNORM;
+        case GL_R16: return MGL_PIXEL_STORAGE_RGBA16_UNORM;
+        case GL_R16_SNORM: return MGL_PIXEL_STORAGE_RGBA16_SNORM;
+        case GL_R16F: return MGL_PIXEL_STORAGE_RGBA16_FLOAT;
+        case GL_R32F: return MGL_PIXEL_STORAGE_RGBA32_FLOAT;
+        case GL_DEPTH_COMPONENT16: return MGL_PIXEL_STORAGE_RGBA16_UNORM;
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8: return MGL_PIXEL_STORAGE_RGBA32_FLOAT;
+        default: return MGL_PIXEL_STORAGE_INVALID;
+    }
+}
+
+/* Integer multi-channel formats (RG/RGB/RGBA of the same size and signedness). */
+static inline MGLPixelStorageClass
+mglIntegerMultiChannelSwizzleStorageClass(uint32_t internal_format)
+{
+    switch (internal_format) {
+        case GL_RG8I:
+        case GL_RGB8I:
+        case GL_RGBA8I: return MGL_PIXEL_STORAGE_RGBA8_SINT;
+        case GL_RG16I:
+        case GL_RGB16I:
+        case GL_RGBA16I: return MGL_PIXEL_STORAGE_RGBA16_SINT;
+        case GL_RG32I:
+        case GL_RGB32I:
+        case GL_RGBA32I: return MGL_PIXEL_STORAGE_RGBA32_SINT;
+        case GL_RG8UI:
+        case GL_RGB8UI:
+        case GL_RGBA8UI: return MGL_PIXEL_STORAGE_RGBA8_UINT;
+        case GL_RG16UI:
+        case GL_RGB16UI:
+        case GL_RGBA16UI: return MGL_PIXEL_STORAGE_RGBA16_UINT;
+        case GL_RG32UI:
+        case GL_RGB32UI:
+        case GL_RGBA32UI: return MGL_PIXEL_STORAGE_RGBA32_UINT;
+        default: return MGL_PIXEL_STORAGE_INVALID;
+    }
+}
 bool mglInternalFormatIsDepthStencil(GLint internalformat);
 
 /* Has depth samples in storage (depth-only or packed depth-stencil). */
