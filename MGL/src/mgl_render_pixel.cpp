@@ -892,105 +892,58 @@ int mglRenderCopyUnorm8SwizzleTextureBytesToGL(
         return 0;
     }
 
+    /* Which source channels feed each output slot, and how many there are. */
     int slots = 0;
     int src_idx[4] = {0, 0, 0, 0};
     if (!mglReadbackFormatChannelMap(format, &slots, src_idx)) {
         return 0;
     }
-    (void)src_idx;
 
-    uint32_t comp_bytes = mglSizeForType(type);
-    uint64_t dst_pixel_bytes = mglPixelTypeIsPacked(type)
+    const uint32_t comp_bytes = mglSizeForType(type);
+    const uint64_t dst_pixel_bytes = mglPixelTypeIsPacked(type)
         ? (uint64_t)comp_bytes
         : (uint64_t)comp_bytes * (uint64_t)slots;
     if (dst_pixel_bytes == 0u || dst_bytes_per_row < width * dst_pixel_bytes) {
         return 0;
     }
 
-    if (format == GL_BGRA) {
-        if (dst_pixel_bytes != 4u) return 0;
-    } else if (format == GL_RGBA) {
-        if (dst_pixel_bytes != 4u &&
-            !(type == GL_FLOAT && dst_pixel_bytes == 16u)) {
+    /* A full RGBA read may come back as bytes or as normalized floats; every
+     * narrower read output is single bytes. */
+    const bool as_float = comp_bytes == 4u &&
+        mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_F32;
+    if (slots < 4) {
+        if (comp_bytes != 1u) {
             return 0;
         }
-    } else if (format == GL_BGR || format == GL_RGB) {
-        if (type != GL_UNSIGNED_BYTE || dst_pixel_bytes != 3u) return 0;
-    } else if (format == GL_RG) {
-        if (type != GL_UNSIGNED_BYTE || dst_pixel_bytes != 2u) return 0;
-    } else {
-        if (type != GL_UNSIGNED_BYTE || dst_pixel_bytes != 1u) return 0;
+    } else if (comp_bytes != 1u && !as_float) {
+        return 0;
     }
 
     const uint8_t* src_bytes = static_cast<const uint8_t*>(src);
     uint8_t* dst_bytes = static_cast<uint8_t*>(dst);
     for (uint64_t y = 0; y < height; y++) {
         const uint8_t* src_row = src_bytes + (y * src_bytes_per_row);
-        uint64_t dst_y = flip_y ? (height - 1u - y) : y;
+        const uint64_t dst_y = flip_y ? (height - 1u - y) : y;
         uint8_t* dst_row = dst_bytes + (dst_y * dst_bytes_per_row);
         for (uint64_t x = 0; x < width; x++) {
             const uint8_t* s = src_row + (x * 4u);
-            uint8_t r = source_is_rgba ? s[0] : s[2];
-            uint8_t g = s[1];
-            uint8_t b = source_is_rgba ? s[2] : s[0];
-            uint8_t a = s[3];
+            const uint8_t rgba[4] = {source_is_rgba ? s[0] : s[2], s[1],
+                                     source_is_rgba ? s[2] : s[0], s[3]};
             uint8_t* d = dst_row + (x * dst_pixel_bytes);
-
-            switch (format) {
-                case GL_BGRA:
-                    d[0] = b;
-                    d[1] = g;
-                    d[2] = r;
-                    d[3] = a;
-                    break;
-                case GL_RGBA:
-                    if (type == GL_FLOAT) {
-                        float* fd = reinterpret_cast<float*>(d);
-                        fd[0] = (float)r / 255.0f;
-                        fd[1] = (float)g / 255.0f;
-                        fd[2] = (float)b / 255.0f;
-                        fd[3] = (float)a / 255.0f;
-                    } else {
-                        d[0] = r;
-                        d[1] = g;
-                        d[2] = b;
-                        d[3] = a;
-                    }
-                    break;
-                case GL_BGR:
-                    d[0] = b;
-                    d[1] = g;
-                    d[2] = r;
-                    break;
-                case GL_RGB:
-                    d[0] = r;
-                    d[1] = g;
-                    d[2] = b;
-                    break;
-                case GL_RG:
-                    d[0] = r;
-                    d[1] = g;
-                    break;
-                case GL_RED:
-                    d[0] = r;
-                    break;
-                case GL_GREEN:
-                    d[0] = g;
-                    break;
-                case GL_BLUE:
-                    d[0] = b;
-                    break;
-                case GL_ALPHA:
-                    d[0] = a;
-                    break;
-                default:
-                    return 0;
+            if (as_float) {
+                float* fd = reinterpret_cast<float*>(d);
+                for (int i = 0; i < 4; i++) {
+                    fd[i] = (float)rgba[src_idx[i]] / 255.0f;
+                }
+            } else {
+                for (int i = 0; i < slots; i++) {
+                    d[i] = rgba[src_idx[i]];
+                }
             }
         }
     }
     return 1;
 }
-
 int32_t mglRenderResolveR8IntegerSwizzledComponent(
     uint32_t swizzle, int32_t red, int is_signed) {
     (void)is_signed;
@@ -1059,15 +1012,11 @@ int mglRenderTextureSwizzleUsesUploadBake(
         return mglRenderPixelFormatMatchesSwizzleBakeStorage(
             internal_format, storage_pixel_format);
     }
-    switch (internal_format) {
-        case GL_DEPTH24_STENCIL8:
-        case GL_DEPTH32F_STENCIL8:
-            return storage_pixel_format ==
-                       static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint) ||
-                   storage_pixel_format ==
-                       static_cast<uint32_t>(MTL::PixelFormatRGBA32Float);
-        default:
-            break;
+    if (mglInternalFormatIsSizedPackedDepthStencil(internal_format)) {
+        return storage_pixel_format ==
+                   mglRenderStorageClassToMetal(MGL_PIXEL_STORAGE_RGBA8_UINT) ||
+               storage_pixel_format ==
+                   mglRenderStorageClassToMetal(MGL_PIXEL_STORAGE_RGBA32_FLOAT);
     }
     return 0;
 }
