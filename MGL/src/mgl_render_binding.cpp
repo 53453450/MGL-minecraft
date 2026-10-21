@@ -277,73 +277,33 @@ uint32_t mglRenderBuildCurrentVertexAttribBytes(
     if (size == 0u || size > 4u) {
         size = 4u;
     }
-    switch (type) {
-        case GL_BYTE:
-        case GL_SHORT:
-        case GL_INT: {
-            const size_t component_bytes =
-                type == GL_BYTE ? sizeof(int8_t)
-                                : type == GL_SHORT ? sizeof(int16_t)
-                                                   : sizeof(int32_t);
-            if (component_bytes == 0u || component_bytes * size > 16u) {
-                return 0u;
-            }
-            for (uint32_t i = 0u; i < size; i++) {
-                const int32_t value = current_i[i];
-                if (type == GL_BYTE) {
-                    const int8_t packed = (int8_t)value;
-                    memcpy(bytes + i * component_bytes, &packed,
-                           component_bytes);
-                } else if (type == GL_SHORT) {
-                    const int16_t packed = (int16_t)value;
-                    memcpy(bytes + i * component_bytes, &packed,
-                           component_bytes);
-                } else {
-                    const int32_t packed = value;
-                    memcpy(bytes + i * component_bytes, &packed,
-                           component_bytes);
-                }
-            }
-            return 16u;
-        }
-        case GL_UNSIGNED_BYTE:
-        case GL_UNSIGNED_SHORT:
-        case GL_UNSIGNED_INT: {
-            const size_t component_bytes =
-                type == GL_UNSIGNED_BYTE
-                    ? sizeof(uint8_t)
-                    : type == GL_UNSIGNED_SHORT ? sizeof(uint16_t)
-                                                : sizeof(uint32_t);
-            if (component_bytes == 0u || component_bytes * size > 16u) {
-                return 0u;
-            }
-            for (uint32_t i = 0u; i < size; i++) {
-                const uint32_t value = current_u[i];
-                if (type == GL_UNSIGNED_BYTE) {
-                    const uint8_t packed = (uint8_t)value;
-                    memcpy(bytes + i * component_bytes, &packed,
-                           component_bytes);
-                } else if (type == GL_UNSIGNED_SHORT) {
-                    const uint16_t packed = (uint16_t)value;
-                    memcpy(bytes + i * component_bytes, &packed,
-                           component_bytes);
-                } else {
-                    const uint32_t packed = value;
-                    memcpy(bytes + i * component_bytes, &packed,
-                           component_bytes);
-                }
-            }
-            return 16u;
-        }
-        case GL_DOUBLE:
-        case GL_FLOAT:
+    size_t component_bytes = 0;
+    int is_signed = 0;
+    switch (mglVertexFetchKindForGLType(type)) {
+        case MGL_VFETCH_KIND_S8: component_bytes = sizeof(int8_t); is_signed = 1; break;
+        case MGL_VFETCH_KIND_U8: component_bytes = sizeof(uint8_t); break;
+        case MGL_VFETCH_KIND_S16: component_bytes = sizeof(int16_t); is_signed = 1; break;
+        case MGL_VFETCH_KIND_U16: component_bytes = sizeof(uint16_t); break;
+        case MGL_VFETCH_KIND_S32: component_bytes = sizeof(int32_t); is_signed = 1; break;
+        case MGL_VFETCH_KIND_U32: component_bytes = sizeof(uint32_t); break;
         default: {
+            /* Everything else (float, and the formats that fall back) expands
+             * the current value as four floats. */
             const float packed[4] = {current_f[0], current_f[1], current_f[2],
                                      current_f[3]};
             memcpy(bytes, packed, sizeof(packed));
             return (uint32_t)sizeof(packed);
         }
     }
+    if (component_bytes == 0u || component_bytes * size > 16u) {
+        return 0u;
+    }
+    for (uint32_t i = 0u; i < size; i++) {
+        const uint32_t raw =
+            is_signed ? (uint32_t)current_i[i] : current_u[i];
+        memcpy(bytes + i * component_bytes, &raw, component_bytes);
+    }
+    return 16u;
 }
 
 
