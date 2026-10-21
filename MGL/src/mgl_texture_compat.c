@@ -18,6 +18,59 @@
 #include "mgl_sampler_compat.h"   /* mglFindSamplerResourceForMetalBinding */
 #include "mgl_metal_ref.h"         /* mglSafeReleaseMetalObj */
 
+uint32_t mglTextureDirtyBits(const Texture *tex)
+{
+    return tex ? tex->dirty_bits : 0u;
+}
+
+void mglTextureSetDirtyBits(Texture *tex, uint32_t bits)
+{
+    if (tex) {
+        tex->dirty_bits |= bits;
+    }
+}
+
+void mglTextureClearDirtyBits(Texture *tex, uint32_t bits)
+{
+    if (tex) {
+        tex->dirty_bits &= ~bits;
+    }
+}
+
+void mglTextureMaskDirtyBits(Texture *tex, uint32_t bits)
+{
+    if (tex) {
+        tex->dirty_bits &= bits;
+    }
+}
+
+void mglTextureResetDirtyBits(Texture *tex)
+{
+    if (tex) {
+        tex->dirty_bits = 0u;
+    }
+}
+
+uint32_t mglTextureBufferDirtyBits(const Texture *tex)
+{
+    if (!tex || !tex->texture_buffer) {
+        return 0u;
+    }
+    return tex->texture_buffer->data.dirty_bits;
+}
+
+bool mglTextureIsRenderTarget(const Texture *tex)
+{
+    return tex && tex->is_render_target;
+}
+
+void mglTextureSetRenderTarget(Texture *tex, bool on)
+{
+    if (tex) {
+        tex->is_render_target = on ? 1 : 0;
+    }
+}
+
 MGLTextureDataKind mglTextureDataKindForPixelFormat(uint32_t pixelFormat)
 {
     return (MGLTextureDataKind)mglRenderTextureDataKindForPixelFormat(

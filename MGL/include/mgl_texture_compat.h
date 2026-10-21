@@ -160,6 +160,25 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex, GLuint level,
 /* TextureView (§8.18): after `writer` changed the shared store, carry its
  * Y-flipped storage state to the other textures that reference the store. */
 void mglTextureViewFamilyWritten(Texture *writer);
+/* Renderer bookkeeping the bind path needs without touching the Texture
+ * record directly: the per-level dirty mask and the render-target flag. */
+uint32_t mglTextureDirtyBits(const Texture *tex);
+void mglTextureSetDirtyBits(Texture *tex, uint32_t bits);
+void mglTextureClearDirtyBits(Texture *tex, uint32_t bits);
+/* Keep only the given bits. */
+void mglTextureMaskDirtyBits(Texture *tex, uint32_t bits);
+void mglTextureResetDirtyBits(Texture *tex);
+/* Dirty bits of the buffer backing a texture buffer (0 when none). */
+uint32_t mglTextureBufferDirtyBits(const Texture *tex);
+bool mglTextureIsRenderTarget(const Texture *tex);
+void mglTextureSetRenderTarget(Texture *tex, bool on);
+/* TEXTURE_2D_MULTISAMPLE(_ARRAY) — the targets Metal stores as sample planes. */
+static inline bool mglTextureTargetIsMultisample(uint32_t target)
+{
+    return target == GL_TEXTURE_2D_MULTISAMPLE ||
+           target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+}
+
 /* Table 8.22 view class of `internalformat`, or GL_NONE when not listed. */
 GLenum mglTextureViewClass(GLenum internalformat);
 /* IMMUTABLE_LEVELS and TEXTURE_VIEW_* queries; false for other pnames. */
