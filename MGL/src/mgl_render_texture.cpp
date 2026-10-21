@@ -1705,6 +1705,7 @@ int mglRenderCopySnorm8TextureBytesToGL(
     }
 
     int src_channels = (int)src_bpp;
+    const MGLVertexFetchKind kind = mglVertexFetchKindForGLType(type);
     const uint8_t* src_bytes = static_cast<const uint8_t*>(src);
     uint8_t* dst_bytes = static_cast<uint8_t*>(dst);
     for (uint64_t y = 0; y < height; y++) {
@@ -1724,32 +1725,32 @@ int mglRenderCopySnorm8TextureBytesToGL(
                     fv = mglRenderSnorm8ToFloat(s[idx]);
                 }
                 uint8_t* out = dp + (uint64_t)c * (uint64_t)comp_bytes;
-                if (type == GL_BYTE) {
+                if (kind == MGL_VFETCH_KIND_S8) {
                     int32_t iv = (int32_t)lroundf(fv * 127.0f);
                     if (iv > 127) iv = 127;
                     if (iv < -128) iv = -128;
                     int8_t biv = (int8_t)iv;
                     memcpy(out, &biv, sizeof(biv));
-                } else if (type == GL_UNSIGNED_BYTE) {
+                } else if (kind == MGL_VFETCH_KIND_U8) {
                     float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
                     uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
                     memcpy(out, &iv, sizeof(iv));
-                } else if (type == GL_FLOAT) {
+                } else if (kind == MGL_VFETCH_KIND_F32) {
                     memcpy(out, &fv, sizeof(fv));
-                } else if (type == GL_HALF_FLOAT) {
+                } else if (kind == MGL_VFETCH_KIND_F16) {
                     uint16_t iv = mglFloatToHalf(fv);
                     memcpy(out, &iv, sizeof(iv));
-                } else if (type == GL_SHORT) {
+                } else if (kind == MGL_VFETCH_KIND_S16) {
                     int32_t iv = (int32_t)lroundf(fv * 32767.0f);
                     if (iv > 32767) iv = 32767;
                     if (iv < -32768) iv = -32768;
                     int16_t siv = (int16_t)iv;
                     memcpy(out, &siv, sizeof(siv));
-                } else if (type == GL_UNSIGNED_SHORT) {
+                } else if (kind == MGL_VFETCH_KIND_U16) {
                     float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
                     uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
                     memcpy(out, &iv, sizeof(iv));
-                } else if (type == GL_INT) {
+                } else if (kind == MGL_VFETCH_KIND_S32) {
                     /* Scale in double: 2147483647.0f rounds up to 2^31, so the
                      * float product loses the low bits of a 31-bit result. */
                     int64_t iv = (int64_t)llround((double)fv * 2147483647.0);
@@ -1757,7 +1758,7 @@ int mglRenderCopySnorm8TextureBytesToGL(
                     if (iv < -2147483648LL) iv = -2147483648LL;
                     int32_t iiv = (int32_t)iv;
                     memcpy(out, &iiv, sizeof(iiv));
-                } else if (type == GL_UNSIGNED_INT) {
+                } else if (kind == MGL_VFETCH_KIND_U32) {
                     float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
                     uint32_t iv = (uint32_t)llround(cv * 4294967295.0);
                     memcpy(out, &iv, sizeof(iv));
@@ -2204,6 +2205,7 @@ int mglRenderCopyUnorm8ScalarTextureBytesToGL(
     }
 
     uint32_t comp_bytes = mglSizeForType(type);
+    const MGLVertexFetchKind kind = mglVertexFetchKindForGLType(type);
     uint64_t dst_pixel_bytes = (uint64_t)comp_bytes * (uint64_t)slots;
     if (dst_pixel_bytes == 0u || dst_bytes_per_row < width * dst_pixel_bytes) {
         return 0;
@@ -2227,30 +2229,30 @@ int mglRenderCopyUnorm8ScalarTextureBytesToGL(
             for (int c = 0; c < slots; ++c) {
                 unsigned v = cv[src_idx[c]];
                 uint8_t* out = dp + (uint64_t)c * (uint64_t)comp_bytes;
-                if (type == GL_BYTE) {
+                if (kind == MGL_VFETCH_KIND_S8) {
                     float fv = (float)v / 255.0f;
                     int32_t iv = (int32_t)lroundf(fv * 127.0f);
                     if (iv > 127) iv = 127;
                     if (iv < -128) iv = -128;
                     int8_t biv = (int8_t)iv;
                     memcpy(out, &biv, sizeof(biv));
-                } else if (type == GL_UNSIGNED_SHORT) {
+                } else if (kind == MGL_VFETCH_KIND_U16) {
                     uint16_t iv = (uint16_t)((uint32_t)v * 257u);
                     memcpy(out, &iv, sizeof(iv));
-                } else if (type == GL_SHORT) {
+                } else if (kind == MGL_VFETCH_KIND_S16) {
                     int32_t scaled = (int32_t)((uint32_t)v * 32767u / 255u);
                     if (scaled > 32767) scaled = 32767;
                     int16_t iv = (int16_t)scaled;
                     memcpy(out, &iv, sizeof(iv));
-                } else if (type == GL_UNSIGNED_INT) {
+                } else if (kind == MGL_VFETCH_KIND_U32) {
                     uint32_t iv = (uint32_t)v * 16843009u;
                     memcpy(out, &iv, sizeof(iv));
-                } else if (type == GL_INT) {
+                } else if (kind == MGL_VFETCH_KIND_S32) {
                     int32_t scaled =
                         (int32_t)((uint64_t)v * 2147483647ULL / 255u);
                     if (scaled > 2147483647) scaled = 2147483647;
                     memcpy(out, &scaled, sizeof(scaled));
-                } else if (type == GL_FLOAT) {
+                } else if (kind == MGL_VFETCH_KIND_F32) {
                     float fv = (float)v / 255.0f;
                     memcpy(out, &fv, sizeof(fv));
                 } else {
