@@ -224,6 +224,25 @@ static inline bool mglInternalFormatNeedsWideChannelExpansion(uint32_t fmt)
     }
 }
 
+/* Packed read types that carry an alpha channel (so a three-slot read still
+ * has a meaningful fourth component). */
+static inline bool mglReadbackTypeCarriesAlpha(uint32_t type)
+{
+    switch (type) {
+        case GL_UNSIGNED_SHORT_4_4_4_4:
+        case GL_UNSIGNED_SHORT_4_4_4_4_REV:
+        case GL_UNSIGNED_SHORT_5_5_5_1:
+        case GL_UNSIGNED_SHORT_1_5_5_5_REV:
+        case GL_UNSIGNED_INT_8_8_8_8:
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+        case GL_UNSIGNED_INT_10_10_10_2:
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool mglInternalFormatIsDepthStencil(GLint internalformat);
 
 /* Has depth samples in storage (depth-only or packed depth-stencil). */

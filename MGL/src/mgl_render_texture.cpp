@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-3.0-only */
 #include "mgl_metal.h"
+#include "mgl_vertex_format.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_texture.h"
 #include "mgl_render_api_buffer.h"
@@ -1979,17 +1980,8 @@ int mglRenderCopy16or32TextureBytesToGL(
                             s, idx, is16u, is16s, is16f);
                     }
                 }
-                if (slots < 4) {
-                    const int needs_alpha =
-                        (type == GL_UNSIGNED_SHORT_4_4_4_4 ||
-                         type == GL_UNSIGNED_SHORT_4_4_4_4_REV ||
-                         type == GL_UNSIGNED_SHORT_5_5_5_1 ||
-                         type == GL_UNSIGNED_SHORT_1_5_5_5_REV ||
-                         type == GL_UNSIGNED_INT_8_8_8_8 ||
-                         type == GL_UNSIGNED_INT_8_8_8_8_REV ||
-                         type == GL_UNSIGNED_INT_10_10_10_2 ||
-                         type == GL_UNSIGNED_INT_2_10_10_10_REV);
-                    if (needs_alpha) fvals[3] = 1.0f;
+                if (slots < 4 && mglReadbackTypeCarriesAlpha(type)) {
+                    fvals[3] = 1.0f;
                 }
 
                 if (type == GL_UNSIGNED_BYTE_3_3_2) {
@@ -2130,35 +2122,53 @@ int mglRenderCopy16or32TextureBytesToGL(
                         s, idx, is16u, is16s, is16f);
                 }
                 uint8_t* out = dp + (uint64_t)c * (uint64_t)comp_bytes;
-                if (type == GL_UNSIGNED_BYTE) {
-                    float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                    uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
-                    memcpy(out, &iv, sizeof(iv));
-                } else if (type == GL_BYTE) {
-                    float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                    int8_t iv = (int8_t)lroundf(cv * 127.0f);
-                    memcpy(out, &iv, sizeof(iv));
-                } else if (type == GL_UNSIGNED_SHORT) {
-                    float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                    uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
-                    memcpy(out, &iv, sizeof(iv));
-                } else if (type == GL_SHORT) {
-                    float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                    int16_t iv = (int16_t)lroundf(cv * 32767.0f);
-                    memcpy(out, &iv, sizeof(iv));
-                } else if (type == GL_UNSIGNED_INT) {
-                    float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                    uint32_t iv = (uint32_t)llround(cv * 4294967295.0);
-                    memcpy(out, &iv, sizeof(iv));
-                } else if (type == GL_INT) {
-                    float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                    int32_t iv = (int32_t)llround(cv * 2147483647.0);
-                    memcpy(out, &iv, sizeof(iv));
-                } else if (type == GL_FLOAT) {
-                    memcpy(out, &fv, sizeof(fv));
-                } else {
-                    uint16_t iv = mglFloatToHalf(fv);
-                    memcpy(out, &iv, sizeof(iv));
+                const MGLVertexFetchKind kind =
+                    mglVertexFetchKindForGLType(type);
+                switch (kind) {
+                    case MGL_VFETCH_KIND_U8: {
+                        const float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                        const uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                        break;
+                    }
+                    case MGL_VFETCH_KIND_S8: {
+                        const float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
+                        const int8_t iv = (int8_t)lroundf(cv * 127.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                        break;
+                    }
+                    case MGL_VFETCH_KIND_U16: {
+                        const float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                        const uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                        break;
+                    }
+                    case MGL_VFETCH_KIND_S16: {
+                        const float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
+                        const int16_t iv = (int16_t)lroundf(cv * 32767.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                        break;
+                    }
+                    case MGL_VFETCH_KIND_U32: {
+                        const float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                        const uint32_t iv = (uint32_t)llround(cv * 4294967295.0);
+                        memcpy(out, &iv, sizeof(iv));
+                        break;
+                    }
+                    case MGL_VFETCH_KIND_S32: {
+                        const float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
+                        const int32_t iv = (int32_t)llround(cv * 2147483647.0);
+                        memcpy(out, &iv, sizeof(iv));
+                        break;
+                    }
+                    case MGL_VFETCH_KIND_F32:
+                        memcpy(out, &fv, sizeof(fv));
+                        break;
+                    default: {
+                        const uint16_t iv = mglFloatToHalf(fv);
+                        memcpy(out, &iv, sizeof(iv));
+                        break;
+                    }
                 }
             }
         }
