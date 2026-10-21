@@ -817,27 +817,23 @@ uint32_t mglRenderStencilSwizzleStoragePixelFormat(void) {
 extern "C"
 uint32_t mglRenderMTLSwizzleForGLSwizzle(uint32_t gl_swizzle,
                                             uint32_t components) {
-    switch (gl_swizzle) {
-        case GL_ZERO:
+    switch (mglTextureSwizzleChannel(gl_swizzle)) {
+        case MGL_SWIZZLE_CHANNEL_ZERO:
             return (uint32_t)MTL::TextureSwizzleZero;
-        case GL_ONE:
+        case MGL_SWIZZLE_CHANNEL_ONE:
             return (uint32_t)MTL::TextureSwizzleOne;
-        case GL_RED:
-            return components >= 1u
-                ? (uint32_t)MTL::TextureSwizzleRed
-                : (uint32_t)MTL::TextureSwizzleZero;
-        case GL_GREEN:
-            return components >= 2u
-                ? (uint32_t)MTL::TextureSwizzleGreen
-                : (uint32_t)MTL::TextureSwizzleZero;
-        case GL_BLUE:
-            return components >= 3u
-                ? (uint32_t)MTL::TextureSwizzleBlue
-                : (uint32_t)MTL::TextureSwizzleZero;
-        case GL_ALPHA:
-            return components >= 4u
-                ? (uint32_t)MTL::TextureSwizzleAlpha
-                : (uint32_t)MTL::TextureSwizzleOne;
+        case MGL_SWIZZLE_CHANNEL_RED:
+            return components >= 1u ? (uint32_t)MTL::TextureSwizzleRed
+                                    : (uint32_t)MTL::TextureSwizzleZero;
+        case MGL_SWIZZLE_CHANNEL_GREEN:
+            return components >= 2u ? (uint32_t)MTL::TextureSwizzleGreen
+                                    : (uint32_t)MTL::TextureSwizzleZero;
+        case MGL_SWIZZLE_CHANNEL_BLUE:
+            return components >= 3u ? (uint32_t)MTL::TextureSwizzleBlue
+                                    : (uint32_t)MTL::TextureSwizzleZero;
+        case MGL_SWIZZLE_CHANNEL_ALPHA:
+            return components >= 4u ? (uint32_t)MTL::TextureSwizzleAlpha
+                                    : (uint32_t)MTL::TextureSwizzleOne;
         default:
             fprintf(stderr,
                     "MGL ERROR: Unknown swizzle value 0x%x in swizzleTexDesc\n",
@@ -890,7 +886,6 @@ uint32_t mglRenderDoubleVertexAttribFloatFormat(uint32_t size) {
     }
 }
 
-extern "C"
 uint32_t mglRenderIntegerAttribConversionFormat(
     uint64_t src_type,
     uint64_t shader_gl_type,
@@ -899,30 +894,30 @@ uint32_t mglRenderIntegerAttribConversionFormat(
         return static_cast<uint32_t>(MTL::VertexFormatInvalid);
     }
 
-    const bool shader_is_int =
-        shader_gl_type == GL_INT || shader_gl_type == GL_INT_VEC2 ||
-        shader_gl_type == GL_INT_VEC3 || shader_gl_type == GL_INT_VEC4;
-    const bool shader_is_uint =
-        shader_gl_type == GL_UNSIGNED_INT ||
-        shader_gl_type == GL_UNSIGNED_INT_VEC2 ||
-        shader_gl_type == GL_UNSIGNED_INT_VEC3 ||
-        shader_gl_type == GL_UNSIGNED_INT_VEC4;
+    const uint32_t shader_kind =
+        mglVertexFormatClassKind(mglRenderVertexFormatClass(shader_gl_type));
+    const bool shader_is_int = shader_kind == 2u;
+    const bool shader_is_uint = shader_kind == 3u;
     if (!shader_is_int && !shader_is_uint) {
         return static_cast<uint32_t>(MTL::VertexFormatInvalid);
     }
 
-    const bool src_is_unsigned =
-        src_type == GL_UNSIGNED_BYTE || src_type == GL_UNSIGNED_SHORT ||
-        src_type == GL_UNSIGNED_INT;
-    const bool src_is_signed =
-        src_type == GL_BYTE || src_type == GL_SHORT || src_type == GL_INT;
+    const MGLVertexFetchKind src_kind =
+        mglVertexFetchKindForGLType((uint32_t)src_type);
+    const bool src_is_unsigned = src_kind == MGL_VFETCH_KIND_U8 ||
+                                 src_kind == MGL_VFETCH_KIND_U16 ||
+                                 src_kind == MGL_VFETCH_KIND_U32;
+    const bool src_is_signed = src_kind == MGL_VFETCH_KIND_S8 ||
+                               src_kind == MGL_VFETCH_KIND_S16 ||
+                               src_kind == MGL_VFETCH_KIND_S32;
     if (!src_is_unsigned && !src_is_signed) {
         return static_cast<uint32_t>(MTL::VertexFormatInvalid);
     }
 
-    const bool src_narrow =
-        src_type == GL_BYTE || src_type == GL_UNSIGNED_BYTE ||
-        src_type == GL_SHORT || src_type == GL_UNSIGNED_SHORT;
+    const bool src_narrow = src_kind == MGL_VFETCH_KIND_S8 ||
+                            src_kind == MGL_VFETCH_KIND_U8 ||
+                            src_kind == MGL_VFETCH_KIND_S16 ||
+                            src_kind == MGL_VFETCH_KIND_U16;
     if (!src_narrow &&
         !((shader_is_int && src_is_unsigned) ||
           (shader_is_uint && src_is_signed))) {

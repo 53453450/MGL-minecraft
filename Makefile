@@ -1276,6 +1276,7 @@ METALCPP_RENDER_SRC := MGL/src/mgl_render.cpp $(wildcard MGL/src/mgl_render_*.cp
 
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	$(METALCPP_RENDER_SRC) MGL/include/mgl_render.h \
+	$(wildcard MGL/include/*.h) \
 	MGL/src/mgl_readback_policy.c MGL/include/mgl_readback_policy.h MGL/src/mgl_raster_orientation_plan.c \
 	MGL/src/mgl_binding_policy.c MGL/include/mgl_binding_policy.h \
 	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h \

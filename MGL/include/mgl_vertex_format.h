@@ -89,6 +89,20 @@ static inline uint32_t mglRenderVertexFormatClass(uint64_t gl_type)
     }
 }
 
+/* Decode a vertex format class: kind (1 = float, 2 = int, 3 = uint) and the
+ * component count (1..4).  A count of 4 makes the encoded value the next
+ * kind's base, so it cannot be recovered with a shift. */
+static inline uint32_t mglVertexFormatClassCount(uint32_t cls)
+{
+    /* class = kind * 4 + count, count 1..4 */
+    return cls == 0u ? 0u : (cls - 1u) % 4u + 1u;
+}
+
+static inline uint32_t mglVertexFormatClassKind(uint32_t cls)
+{
+    return cls == 0u ? 0u : (cls - mglVertexFormatClassCount(cls)) / 4u;
+}
+
 /* Same question for one 16-byte location of a control-point input: a matrix
  * type occupies one location per column, so its class is that of the column
  * vector. */
