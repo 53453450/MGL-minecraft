@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: LGPL-3.0-only */
 #include "mgl_metal.h"
+#include "mgl_texture_swizzle.h"
+#include "mgl_vertex_format.h"
 #include "mgl_render_api_texture.h"
 #include "mgl_render_api_pixel.h"
 #include "mgl_render_pixel.h"
@@ -109,89 +111,68 @@ uint32_t mglRenderDepth24Stencil8ToFloatBits(const uint8_t* src) {
 
 uint8_t mglRenderResolveR8SnormSwizzledComponent(uint32_t swizzle,
                                                         uint8_t red) {
-    switch (swizzle) {
-        case GL_RED: return red;
-        case GL_ALPHA:
-        case GL_ONE: return 0x7fu;
-        case GL_GREEN:
-        case GL_BLUE:
-        case GL_ZERO:
-        default:
-            return 0x00u;
+    switch (mglTextureSwizzleChannel(swizzle)) {
+        case MGL_SWIZZLE_CHANNEL_RED: return red;
+        case MGL_SWIZZLE_CHANNEL_ALPHA:
+        case MGL_SWIZZLE_CHANNEL_ONE: return 0x7fu;
+        default: return 0x00u;
     }
 }
 
 uint16_t mglRenderResolveR16UnormSwizzledComponent(uint32_t swizzle,
                                                           uint16_t red) {
-    switch (swizzle) {
-        case GL_RED: return red;
-        case GL_ALPHA:
-        case GL_ONE: return 65535u;
-        case GL_GREEN:
-        case GL_BLUE:
-        case GL_ZERO:
-        default:
-            return 0u;
+    switch (mglTextureSwizzleChannel(swizzle)) {
+        case MGL_SWIZZLE_CHANNEL_RED: return red;
+        case MGL_SWIZZLE_CHANNEL_ALPHA:
+        case MGL_SWIZZLE_CHANNEL_ONE: return 65535u;
+        default: return 0u;
     }
 }
 
 uint16_t mglRenderResolveR16SnormSwizzledComponent(uint32_t swizzle,
                                                           int16_t red) {
-    switch (swizzle) {
-        case GL_RED: return static_cast<uint16_t>(red);
-        case GL_ALPHA:
-        case GL_ONE: return 32767;
-        case GL_GREEN:
-        case GL_BLUE:
-        case GL_ZERO:
-        default:
-            return 0;
+    switch (mglTextureSwizzleChannel(swizzle)) {
+        case MGL_SWIZZLE_CHANNEL_RED: return static_cast<uint16_t>(red);
+        case MGL_SWIZZLE_CHANNEL_ALPHA:
+        case MGL_SWIZZLE_CHANNEL_ONE: return 32767;
+        default: return 0;
     }
 }
 
 uint16_t mglRenderResolveR16FloatSwizzledComponent(uint32_t swizzle,
                                                           uint16_t red) {
-    switch (swizzle) {
-        case GL_RED: return red;
-        case GL_ALPHA:
-        case GL_ONE: return 0x3c00u; /* 1.0 in half float */
-        case GL_GREEN:
-        case GL_BLUE:
-        case GL_ZERO:
-        default:
-            return 0u;
+    switch (mglTextureSwizzleChannel(swizzle)) {
+        case MGL_SWIZZLE_CHANNEL_RED: return red;
+        case MGL_SWIZZLE_CHANNEL_ALPHA:
+        case MGL_SWIZZLE_CHANNEL_ONE: return 0x3c00u; /* 1.0 in half */
+        default: return 0u;
     }
 }
 
 uint32_t mglRenderResolveR32FloatSwizzledComponent(uint32_t swizzle,
                                                           uint32_t red) {
-    switch (swizzle) {
-        case GL_RED: return red;
-        case GL_ALPHA:
-        case GL_ONE: return 0x3f800000u;
-        case GL_GREEN:
-        case GL_BLUE:
-        case GL_ZERO:
-        default:
-            return 0u;
+    switch (mglTextureSwizzleChannel(swizzle)) {
+        case MGL_SWIZZLE_CHANNEL_RED: return red;
+        case MGL_SWIZZLE_CHANNEL_ALPHA:
+        case MGL_SWIZZLE_CHANNEL_ONE: return 0x3f800000u;
+        default: return 0u;
     }
 }
 
 int64_t mglRenderResolveIntegerSwizzledComponent(
     uint32_t swizzle, int64_t red, int64_t green, int64_t blue,
     int64_t alpha, uint32_t components) {
-    switch (swizzle) {
-        case GL_RED:
+    switch (mglTextureSwizzleChannel(swizzle)) {
+        case MGL_SWIZZLE_CHANNEL_RED:
             return components >= 1u ? red : 0;
-        case GL_GREEN:
+        case MGL_SWIZZLE_CHANNEL_GREEN:
             return components >= 2u ? green : 0;
-        case GL_BLUE:
+        case MGL_SWIZZLE_CHANNEL_BLUE:
             return components >= 3u ? blue : 0;
-        case GL_ALPHA:
+        case MGL_SWIZZLE_CHANNEL_ALPHA:
             return components >= 4u ? alpha : 1;
-        case GL_ONE:
+        case MGL_SWIZZLE_CHANNEL_ONE:
             return 1;
-        case GL_ZERO:
         default:
             return 0;
     }
@@ -497,45 +478,11 @@ const char *mglRenderGLSLColumnSwizzle(uint32_t rows) {
 }
 
 const char *mglRenderGLSLTypeSwizzle(uint32_t type) {
-    switch (type) {
-    case GL_FLOAT:
-    case GL_INT:
-    case GL_UNSIGNED_INT:
-        return ".x";
-    case GL_FLOAT_VEC2:
-    case GL_INT_VEC2:
-    case GL_UNSIGNED_INT_VEC2:
-        return ".xy";
-    case GL_FLOAT_VEC3:
-    case GL_INT_VEC3:
-    case GL_UNSIGNED_INT_VEC3:
-        return ".xyz";
-    case GL_FLOAT_VEC4:
-    case GL_INT_VEC4:
-    case GL_UNSIGNED_INT_VEC4:
-        return "";
-    default:
-        return NULL;
-    }
+    return mglGlslTypeSwizzleSuffix(type);
 }
 
 const char *mglRenderGLSLIntegerAsFloatType(uint32_t type) {
-    switch (type) {
-    case GL_INT:
-    case GL_UNSIGNED_INT:
-        return "float";
-    case GL_INT_VEC2:
-    case GL_UNSIGNED_INT_VEC2:
-        return "vec2";
-    case GL_INT_VEC3:
-    case GL_UNSIGNED_INT_VEC3:
-        return "vec3";
-    case GL_INT_VEC4:
-    case GL_UNSIGNED_INT_VEC4:
-        return "vec4";
-    default:
-        return NULL;
-    }
+    return mglGlslIntegerAsFloatTypeName(type);
 }
 
 uint32_t mglRenderStructPackSrcStride(uint32_t src_stride, uint32_t elem_stride) {

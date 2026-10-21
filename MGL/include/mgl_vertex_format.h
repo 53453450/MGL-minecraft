@@ -178,6 +178,56 @@ static inline bool mglVertexAttribSizeIsBGRA(uint32_t size)
     return size == GL_BGRA;
 }
 
+/* Swizzle suffix that selects the components a GLSL type actually uses:
+ * ".x", ".xy", ".xyz", or "" when the type already fills the vector.  NULL for
+ * types that are not scalar/vector numbers. */
+static inline const char *mglGlslTypeSwizzleSuffix(uint32_t type)
+{
+    switch (type) {
+        case GL_FLOAT:
+        case GL_INT:
+        case GL_UNSIGNED_INT:
+            return ".x";
+        case GL_FLOAT_VEC2:
+        case GL_INT_VEC2:
+        case GL_UNSIGNED_INT_VEC2:
+            return ".xy";
+        case GL_FLOAT_VEC3:
+        case GL_INT_VEC3:
+        case GL_UNSIGNED_INT_VEC3:
+            return ".xyz";
+        case GL_FLOAT_VEC4:
+        case GL_INT_VEC4:
+        case GL_UNSIGNED_INT_VEC4:
+            return "";
+        default:
+            return NULL;
+    }
+}
+
+/* The float-shaped name of an integer GLSL type ("float"/"vec2"/"vec3"/"vec4"),
+ * for code that reads an integer attribute as floats.  NULL for non-integer
+ * types. */
+static inline const char *mglGlslIntegerAsFloatTypeName(uint32_t type)
+{
+    switch (type) {
+        case GL_INT:
+        case GL_UNSIGNED_INT:
+            return "float";
+        case GL_INT_VEC2:
+        case GL_UNSIGNED_INT_VEC2:
+            return "vec2";
+        case GL_INT_VEC3:
+        case GL_UNSIGNED_INT_VEC3:
+            return "vec3";
+        case GL_INT_VEC4:
+        case GL_UNSIGNED_INT_VEC4:
+            return "vec4";
+        default:
+            return NULL;
+    }
+}
+
 /* GL index type -> element width (2 or 4), 0 when unsupported. */
 static inline uint32_t mglRenderIndexElementClass(uint32_t gl_type)
 {
