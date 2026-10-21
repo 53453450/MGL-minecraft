@@ -443,21 +443,18 @@ uint32_t mglRenderIntegerFormatComponentMap(uint32_t format, int map[4]) {
 }
 
 uint32_t mglRenderIntegerTypeComponentBytes(uint32_t type) {
-    if (type == GL_BYTE || type == GL_UNSIGNED_BYTE) {
-        return 1u;
-    }
-    if (type == GL_SHORT || type == GL_UNSIGNED_SHORT) {
-        return 2u;
-    }
-    return 4u;
+    return mglVertexFetchKindComponentBytes(mglVertexFetchKindForGLType(type));
 }
 
 int mglRenderDirectR32FloatRead(uint32_t pixel_format, uint32_t format,
                                 uint32_t type) {
-    return pixel_format == 55u /* R32Float */ && format == GL_RED &&
-                   type == GL_FLOAT
-               ? 1
-               : 0;
+    /* GL_RED doubles as the swizzle channel and as the read format. */
+    const bool reads_red = mglTextureSwizzleChannel(format) ==
+                           MGL_SWIZZLE_CHANNEL_RED;
+    const bool reads_float =
+        mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_F32;
+    return pixel_format == 55u /* R32Float */ && reads_red && reads_float ? 1
+                                                                         : 0;
 }
 
 int mglRenderPixelFormatIsDepth32FloatStencil8(uint32_t pixel_format) {
@@ -781,31 +778,19 @@ uint32_t mglRenderIntegerMultiChannelSwizzleStoragePixelFormat(
 extern "C"
 int mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake(
     uint32_t internal_format, int swizzled, uint32_t depth_stencil_mode) {
-    if (!swizzled || depth_stencil_mode != GL_DEPTH_COMPONENT) {
+    if (!swizzled || !mglDepthStencilModeIsDepth(depth_stencil_mode)) {
         return 0;
     }
-    switch (internal_format) {
-        case GL_DEPTH24_STENCIL8:
-        case GL_DEPTH32F_STENCIL8:
-            return 1;
-        default:
-            return 0;
-    }
+    return mglInternalFormatIsSizedPackedDepthStencil(internal_format) ? 1 : 0;
 }
 
 extern "C"
 int mglRenderTextureUploadNeedsStencilSwizzleBake(
     uint32_t internal_format, int swizzled, uint32_t depth_stencil_mode) {
-    if (!swizzled || depth_stencil_mode != GL_STENCIL_INDEX) {
+    if (!swizzled || !mglDepthStencilModeIsStencil(depth_stencil_mode)) {
         return 0;
     }
-    switch (internal_format) {
-        case GL_DEPTH24_STENCIL8:
-        case GL_DEPTH32F_STENCIL8:
-            return 1;
-        default:
-            return 0;
-    }
+    return mglInternalFormatIsSizedPackedDepthStencil(internal_format) ? 1 : 0;
 }
 
 extern "C"
@@ -1155,15 +1140,11 @@ int mglRenderPixelFormatMatchesSwizzleBakeStorage(
                 break;
         }
     }
-    switch (internal_format) {
-        case GL_DEPTH24_STENCIL8:
-        case GL_DEPTH32F_STENCIL8:
-            return storage_pixel_format ==
-                       static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint) ||
-                   storage_pixel_format ==
-                       static_cast<uint32_t>(MTL::PixelFormatRGBA32Float);
-        default:
-            break;
+    if (mglInternalFormatIsSizedPackedDepthStencil(internal_format)) {
+        return storage_pixel_format ==
+                   static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint) ||
+               storage_pixel_format ==
+                   static_cast<uint32_t>(MTL::PixelFormatRGBA32Float);
     }
     return 0;
 }

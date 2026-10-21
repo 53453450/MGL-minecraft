@@ -162,6 +162,24 @@ mglIntegerMultiChannelSwizzleStorageClass(uint32_t internal_format)
         default: return MGL_PIXEL_STORAGE_INVALID;
     }
 }
+/* The two sized packed depth-stencil formats: the only ones whose storage has
+ * both a depth plane and a stencil plane. */
+static inline bool mglInternalFormatIsSizedPackedDepthStencil(uint32_t fmt)
+{
+    return fmt == GL_DEPTH24_STENCIL8 || fmt == GL_DEPTH32F_STENCIL8;
+}
+
+/* Which half of a packed depth-stencil texture an upload is addressing. */
+static inline bool mglDepthStencilModeIsDepth(uint32_t mode)
+{
+    return mode == GL_DEPTH_COMPONENT;
+}
+
+static inline bool mglDepthStencilModeIsStencil(uint32_t mode)
+{
+    return mode == GL_STENCIL_INDEX;
+}
+
 bool mglInternalFormatIsDepthStencil(GLint internalformat);
 
 /* Has depth samples in storage (depth-only or packed depth-stencil). */

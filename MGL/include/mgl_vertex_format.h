@@ -242,6 +242,20 @@ static inline const char *mglGlslIntegerAsFloatTypeName(uint32_t type)
     }
 }
 
+/* Bytes per component for a client storage kind (the "integer type" helper's
+ * question).  Unknown kinds fall back to 4, like the GL default did. */
+static inline uint32_t mglVertexFetchKindComponentBytes(MGLVertexFetchKind kind)
+{
+    switch (kind) {
+        case MGL_VFETCH_KIND_S8:
+        case MGL_VFETCH_KIND_U8: return 1u;
+        case MGL_VFETCH_KIND_S16:
+        case MGL_VFETCH_KIND_U16: return 2u;
+        case MGL_VFETCH_KIND_F64: return 8u;
+        default: return 4u;
+    }
+}
+
 /* GL index type -> element width (2 or 4), 0 when unsupported. */
 static inline uint32_t mglRenderIndexElementClass(uint32_t gl_type)
 {
