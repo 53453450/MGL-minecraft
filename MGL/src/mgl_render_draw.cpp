@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-3.0-only */
 #include "mgl_metal.h"
+#include "mgl_vertex_format.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_pixel.h"
 #include "mgl_render_api_draw.h"
@@ -173,27 +174,18 @@ int mglRenderShaderResourceIndexValid(int spvc_type, uint32_t index,
 
 extern "C"
 uint32_t mglRenderMTLPrimitiveTypeForGLMode(uint32_t mode) {
-    switch (mode) {
-        case GL_POINTS: return 0u;          /* MTLPrimitiveTypePoint */
-        case GL_LINES: return 1u;           /* MTLPrimitiveTypeLine */
-        case GL_LINE_STRIP: return 2u;      /* MTLPrimitiveTypeLineStrip */
-        case GL_TRIANGLES: return 3u;       /* MTLPrimitiveTypeTriangle */
-        case GL_TRIANGLE_STRIP: return 4u;  /* MTLPrimitiveTypeTriangleStrip */
-        /* LINE_LOOP / adjacency / fan / quads / patches route elsewhere */
-        default: return 0xFFFFFFFFu;        /* err */
-    }
+    /* MTLPrimitiveTypePoint..TriangleStrip are 0..4; the modes that need an
+     * index rewrite (loop/adjacency/fan/quads/patches) route elsewhere. */
+    const uint32_t cls = mglRenderPrimitiveClassForGLMode(mode);
+    return cls <= 4u ? cls : 0xFFFFFFFFu;
 }
 
 extern "C"
 uint32_t mglRenderMTLIndexTypeForGLType(uint32_t gl_type) {
-    switch (gl_type) {
-        case GL_UNSIGNED_BYTE:
-        case GL_UNSIGNED_SHORT:
-            return 0u;                      /* MTLIndexTypeUInt16 */
-        case GL_UNSIGNED_INT:
-            return 1u;                      /* MTLIndexTypeUInt32 */
-        default:
-            return 0xFFFFFFFFu;             /* err */
+    switch (mglRenderIndexElementClass(gl_type)) {
+        case 2u: return 0u;                 /* MTLIndexTypeUInt16 */
+        case 4u: return 1u;                 /* MTLIndexTypeUInt32 */
+        default: return 0xFFFFFFFFu;        /* err */
     }
 }
 
@@ -203,50 +195,39 @@ uint32_t mglRenderTessRoundLevelForSpacing(uint32_t spacing,
     return mglTessRoundLevelForSpacing(spacing, ceil_level);
 }
 
-extern "C"
-uint32_t mglRenderTessControlPointFormat(uint64_t gl_type) {
-    switch (gl_type) {
-        case GL_FLOAT: return (uint32_t)MTL::VertexFormatFloat;
-        case GL_FLOAT_VEC2: return (uint32_t)MTL::VertexFormatFloat2;
-        case GL_FLOAT_VEC3: return (uint32_t)MTL::VertexFormatFloat3;
-        case GL_FLOAT_VEC4: return (uint32_t)MTL::VertexFormatFloat4;
-        case GL_INT: return (uint32_t)MTL::VertexFormatInt;
-        case GL_INT_VEC2: return (uint32_t)MTL::VertexFormatInt2;
-        case GL_INT_VEC3: return (uint32_t)MTL::VertexFormatInt3;
-        case GL_INT_VEC4: return (uint32_t)MTL::VertexFormatInt4;
-        case GL_UNSIGNED_INT:
-        case GL_BOOL: return (uint32_t)MTL::VertexFormatUInt;
-        case GL_UNSIGNED_INT_VEC2:
-        case GL_BOOL_VEC2: return (uint32_t)MTL::VertexFormatUInt2;
-        case GL_UNSIGNED_INT_VEC3:
-        case GL_BOOL_VEC3: return (uint32_t)MTL::VertexFormatUInt3;
-        case GL_UNSIGNED_INT_VEC4:
-        case GL_BOOL_VEC4: return (uint32_t)MTL::VertexFormatUInt4;
+/* Vertex format class -> MTLVertexFormat.  The class is kind * 4 + count
+ * (kind 1 = float, 2 = int, 3 = uint), so the table is indexed by class. */
+static uint32_t mglRenderVertexFormatClassToMetal(uint32_t cls)
+{
+    switch (cls) {
+        case 5u: return (uint32_t)MTL::VertexFormatFloat;
+        case 6u: return (uint32_t)MTL::VertexFormatFloat2;
+        case 7u: return (uint32_t)MTL::VertexFormatFloat3;
+        case 8u: return (uint32_t)MTL::VertexFormatFloat4;
+        case 9u: return (uint32_t)MTL::VertexFormatInt;
+        case 10u: return (uint32_t)MTL::VertexFormatInt2;
+        case 11u: return (uint32_t)MTL::VertexFormatInt3;
+        case 12u: return (uint32_t)MTL::VertexFormatInt4;
+        case 13u: return (uint32_t)MTL::VertexFormatUInt;
+        case 14u: return (uint32_t)MTL::VertexFormatUInt2;
+        case 15u: return (uint32_t)MTL::VertexFormatUInt3;
+        case 16u: return (uint32_t)MTL::VertexFormatUInt4;
         default: return (uint32_t)MTL::VertexFormatInvalid;
     }
 }
 
 extern "C"
+uint32_t mglRenderTessControlPointFormat(uint64_t gl_type) {
+    return mglRenderVertexFormatClassToMetal(
+        mglRenderVertexFormatClass(gl_type));
+}
+
+extern "C"
 uint32_t mglRenderTessControlPointLocationFormat(uint64_t gl_type) {
-    /* One 16-byte location of a control-point input.  Matrix types occupy one
-     * location per column, so a single location holds `rows` floats; every
-     * other type is described by the component-count mapping above. */
-    switch (gl_type) {
-        case GL_FLOAT_MAT2:
-        case GL_FLOAT_MAT3x2:
-        case GL_FLOAT_MAT4x2:
-            return (uint32_t)MTL::VertexFormatFloat2;
-        case GL_FLOAT_MAT3:
-        case GL_FLOAT_MAT2x3:
-        case GL_FLOAT_MAT4x3:
-            return (uint32_t)MTL::VertexFormatFloat3;
-        case GL_FLOAT_MAT4:
-        case GL_FLOAT_MAT2x4:
-        case GL_FLOAT_MAT3x4:
-            return (uint32_t)MTL::VertexFormatFloat4;
-        default:
-            return mglRenderTessControlPointFormat(gl_type);
-    }
+    /* One 16-byte location of a control-point input: a matrix type is one
+     * location per column, so the class is that of the column vector. */
+    return mglRenderVertexFormatClassToMetal(
+        mglRenderVertexLocationFormatClass(gl_type));
 }
 
 

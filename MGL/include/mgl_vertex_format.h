@@ -61,6 +61,81 @@ extern "C" {
 uint32_t mglRenderGLIndexElementSize(uint64_t gl_index_type);
 uint32_t mglRenderReadGLIndexValue(const uint8_t *bytes, uint32_t elem_width,
                                       uint64_t element_index);
+/* Vertex format class: kind * 4 + component count, where kind is 1 = float,
+ * 2 = int, 3 = uint; 0 means "not a vertex scalar/vector type".  The class is
+ * GL-free so the backend can map it to MTL::VertexFormat without reading GL
+ * enums (C2).  Inline: every user needs only a handful of cases, and the
+ * Metal-cpp smoke test links a subset of the objects. */
+static inline uint32_t mglRenderVertexFormatClass(uint64_t gl_type)
+{
+    switch (gl_type) {
+        case GL_FLOAT: return 1u * 4u + 1u;
+        case GL_FLOAT_VEC2: return 1u * 4u + 2u;
+        case GL_FLOAT_VEC3: return 1u * 4u + 3u;
+        case GL_FLOAT_VEC4: return 1u * 4u + 4u;
+        case GL_INT: return 2u * 4u + 1u;
+        case GL_INT_VEC2: return 2u * 4u + 2u;
+        case GL_INT_VEC3: return 2u * 4u + 3u;
+        case GL_INT_VEC4: return 2u * 4u + 4u;
+        case GL_UNSIGNED_INT:
+        case GL_BOOL: return 3u * 4u + 1u;
+        case GL_UNSIGNED_INT_VEC2:
+        case GL_BOOL_VEC2: return 3u * 4u + 2u;
+        case GL_UNSIGNED_INT_VEC3:
+        case GL_BOOL_VEC3: return 3u * 4u + 3u;
+        case GL_UNSIGNED_INT_VEC4:
+        case GL_BOOL_VEC4: return 3u * 4u + 4u;
+        default: return 0u;
+    }
+}
+
+/* Same question for one 16-byte location of a control-point input: a matrix
+ * type occupies one location per column, so its class is that of the column
+ * vector. */
+static inline uint32_t mglRenderVertexLocationFormatClass(uint64_t gl_type)
+{
+    switch (gl_type) {
+        case GL_FLOAT_MAT2:
+        case GL_FLOAT_MAT3x2:
+        case GL_FLOAT_MAT4x2:
+            return 1u * 4u + 2u;
+        case GL_FLOAT_MAT3:
+        case GL_FLOAT_MAT2x3:
+        case GL_FLOAT_MAT4x3:
+            return 1u * 4u + 3u;
+        case GL_FLOAT_MAT4:
+        case GL_FLOAT_MAT2x4:
+        case GL_FLOAT_MAT3x4:
+            return 1u * 4u + 4u;
+        default:
+            return mglRenderVertexFormatClass(gl_type);
+    }
+}
+
+/* GL draw mode -> primitive class (0 point, 1 line, 2 line strip, 3 triangle,
+ * 4 triangle strip), 0xFFFFFFFFu when the mode routes elsewhere. */
+static inline uint32_t mglRenderPrimitiveClassForGLMode(uint32_t mode)
+{
+    switch (mode) {
+        case GL_POINTS: return 0u;
+        case GL_LINES: return 1u;
+        case GL_LINE_STRIP: return 2u;
+        case GL_TRIANGLES: return 3u;
+        case GL_TRIANGLE_STRIP: return 4u;
+        default: return 0xFFFFFFFFu;
+    }
+}
+
+/* GL index type -> element width (2 or 4), 0 when unsupported. */
+static inline uint32_t mglRenderIndexElementClass(uint32_t gl_type)
+{
+    switch (gl_type) {
+        case GL_UNSIGNED_BYTE:
+        case GL_UNSIGNED_SHORT: return 2u;
+        case GL_UNSIGNED_INT: return 4u;
+        default: return 0u;
+    }
+}
 uint32_t mglRenderVertexAttribComponentSize(uint64_t gl_type);
 uint64_t mglRenderVertexAttribElementBytes(uint64_t gl_type, uint32_t size);
 uint64_t mglRenderAlignVertexStrideForMetal(uint64_t stride);
