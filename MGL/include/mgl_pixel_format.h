@@ -180,6 +180,50 @@ static inline bool mglDepthStencilModeIsStencil(uint32_t mode)
     return mode == GL_STENCIL_INDEX;
 }
 
+/* Formats that must be expanded into an RGBA8 storage texture before Metal
+ * can sample them (the packed/odd-width RGB families). */
+static inline bool mglInternalFormatNeedsRGBA8Expansion(uint32_t fmt)
+{
+    switch (fmt) {
+        case GL_RGB4:
+        case GL_RGB5:
+        case GL_RGB10:
+        case GL_RGB12:
+        case GL_RGBA2:
+        case GL_RGBA4:
+        case GL_RGB5_A1:
+        case GL_R3_G3_B2:
+        case GL_RGB8:
+        case GL_SRGB8:
+        case GL_RGB8_SNORM:
+        case GL_RGB8I:
+        case GL_RGB8UI:
+        case GL_RGB565:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/* Formats that must be expanded into an RGBA16/32 storage texture. */
+static inline bool mglInternalFormatNeedsWideChannelExpansion(uint32_t fmt)
+{
+    switch (fmt) {
+        case GL_RGB16:
+        case GL_RGB16_SNORM:
+        case GL_RGB16F:
+        case GL_RGB16I:
+        case GL_RGB16UI:
+        case GL_RGB32F:
+        case GL_RGB32I:
+        case GL_RGB32UI:
+        case GL_RGB12:
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool mglInternalFormatIsDepthStencil(GLint internalformat);
 
 /* Has depth samples in storage (depth-only or packed depth-stencil). */

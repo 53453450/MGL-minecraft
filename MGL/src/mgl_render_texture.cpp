@@ -707,25 +707,7 @@ int mglRenderTextureInternalFormatNeedsRGBA8Expansion(
     if (!is_rgba8_variant) {
         return 0;
     }
-    switch (internal_format) {
-        case GL_RGB4:
-        case GL_RGB5:
-        case GL_RGB10:
-        case GL_RGB12:
-        case GL_RGBA2:
-        case GL_RGBA4:
-        case GL_RGB5_A1:
-        case GL_R3_G3_B2:
-        case GL_RGB8:
-        case GL_SRGB8:
-        case GL_RGB8_SNORM:
-        case GL_RGB8I:
-        case GL_RGB8UI:
-        case GL_RGB565:
-            return 1;
-        default:
-            return 0;
-    }
+    return mglInternalFormatNeedsRGBA8Expansion(internal_format) ? 1 : 0;
 }
 
 extern "C"
@@ -745,20 +727,7 @@ int mglRenderTextureNeedsChannelExpansion(uint32_t internal_format,
     if (!is_rgba16_variant && !is_rgba32_variant) {
         return 0;
     }
-    switch (internal_format) {
-        case GL_RGB16:
-        case GL_RGB16_SNORM:
-        case GL_RGB16F:
-        case GL_RGB16I:
-        case GL_RGB16UI:
-        case GL_RGB32F:
-        case GL_RGB32I:
-        case GL_RGB32UI:
-        case GL_RGB12:
-            return 1;
-        default:
-            return 0;
-    }
+    return mglInternalFormatNeedsWideChannelExpansion(internal_format) ? 1 : 0;
 }
 
 int mglRenderTextureBufferNeedsDirty(int is_tbo, int has_buf, uint32_t buf_dirty) {
