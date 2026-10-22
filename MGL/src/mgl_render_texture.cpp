@@ -1786,7 +1786,8 @@ int mglRenderCopyRG11B10TextureBytesToGL(
 
     const uint64_t src_bpp = 4u;
     uint32_t comp_bytes = mglSizeForType(type);
-    if (type == GL_UNSIGNED_INT_10F_11F_11F_REV && format == GL_RGB) {
+    const MGLPackedOutputKind pack_kind = mglPackedOutputKind(type);
+    if (pack_kind == MGL_PACKED_R11FG11FB10F_REV && format == GL_RGB) {
         if (dst_bytes_per_row < width * src_bpp) {
             return 0;
         }
@@ -1830,7 +1831,7 @@ int mglRenderCopyRG11B10TextureBytesToGL(
                 1.0f
             };
 
-            if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+            if (pack_kind == MGL_PACKED_R11FG11FB10F_REV) {
                 float r = float_vals[src_idx[0]];
                 float g = (slots > 1) ? float_vals[src_idx[1]] : 0.0f;
                 float b = (slots > 2) ? float_vals[src_idx[2]] : 0.0f;
@@ -1838,13 +1839,13 @@ int mglRenderCopyRG11B10TextureBytesToGL(
                                ((mglFloatToFloat11(g) & 0x7ffu) << 11u) |
                                ((mglFloatToFloat10(b) & 0x3ffu) << 22u);
                 memcpy(dst_row + (x * dst_pixel_bytes), &out, sizeof(out));
-            } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
+            } else if (pack_kind == MGL_PACKED_RGB9E5_REV) {
                 float r = float_vals[src_idx[0]];
                 float g = (slots > 1) ? float_vals[src_idx[1]] : 0.0f;
                 float b = (slots > 2) ? float_vals[src_idx[2]] : 0.0f;
                 uint32_t out = mglPackRGBToSharedExp(r, g, b);
                 memcpy(dst_row + (x * dst_pixel_bytes), &out, sizeof(out));
-            } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
+            } else if (pack_kind == MGL_PACKED_RGBA8888) {
                 uint8_t r8 = mglRenderFloatToUnorm8(float_vals[src_idx[0]]);
                 uint8_t g8 = (slots > 1)
                     ? mglRenderFloatToUnorm8(float_vals[src_idx[1]]) : 0u;
@@ -1855,7 +1856,7 @@ int mglRenderCopyRG11B10TextureBytesToGL(
                 uint32_t out = ((uint32_t)r8 << 24u) | ((uint32_t)g8 << 16u) |
                                ((uint32_t)b8 << 8u) | a8;
                 memcpy(dst_row + (x * dst_pixel_bytes), &out, sizeof(out));
-            } else if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
+            } else if (pack_kind == MGL_PACKED_ABGR8888_REV) {
                 uint8_t r8 = mglRenderFloatToUnorm8(float_vals[src_idx[0]]);
                 uint8_t g8 = (slots > 1)
                     ? mglRenderFloatToUnorm8(float_vals[src_idx[1]]) : 0u;
@@ -1960,6 +1961,7 @@ int mglRenderCopy16or32TextureBytesToGL(
     }
 
     const int output_is_packed = mglPixelTypeIsPacked(type);
+    const MGLPackedOutputKind pack_kind = mglPackedOutputKind(type);
     const uint8_t* src_bytes = static_cast<const uint8_t*>(src);
     uint8_t* dst_bytes = static_cast<uint8_t*>(dst);
     for (uint64_t y = 0; y < height; y++) {
@@ -1985,21 +1987,21 @@ int mglRenderCopy16or32TextureBytesToGL(
                     fvals[3] = 1.0f;
                 }
 
-                if (type == GL_UNSIGNED_BYTE_3_3_2) {
+                if (pack_kind == MGL_PACKED_RGB332) {
                     float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
                     float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
                     dp[0] = (uint8_t)(((uint32_t)lroundf(r * 7.0f) << 5) |
                                       ((uint32_t)lroundf(g * 7.0f) << 2) |
                                       (uint32_t)lroundf(b * 3.0f));
-                } else if (type == GL_UNSIGNED_BYTE_2_3_3_REV) {
+                } else if (pack_kind == MGL_PACKED_BGR233_REV) {
                     float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
                     float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
                     dp[0] = (uint8_t)((uint32_t)lroundf(r * 7.0f) |
                                       ((uint32_t)lroundf(g * 7.0f) << 3) |
                                       ((uint32_t)lroundf(b * 3.0f) << 6));
-                } else if (type == GL_UNSIGNED_SHORT_5_6_5) {
+                } else if (pack_kind == MGL_PACKED_RGB565) {
                     float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
                     float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
@@ -2007,7 +2009,7 @@ int mglRenderCopy16or32TextureBytesToGL(
                                                  ((uint32_t)lroundf(g * 63.0f) << 5) |
                                                  (uint32_t)lroundf(b * 31.0f));
                     memcpy(dp, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_SHORT_5_6_5_REV) {
+                } else if (pack_kind == MGL_PACKED_BGR565_REV) {
                     float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
                     float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
@@ -2015,7 +2017,7 @@ int mglRenderCopy16or32TextureBytesToGL(
                                                  ((uint32_t)lroundf(g * 63.0f) << 5) |
                                                  ((uint32_t)lroundf(b * 31.0f) << 11));
                     memcpy(dp, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_SHORT_4_4_4_4) {
+                } else if (pack_kind == MGL_PACKED_RGBA4444) {
                     float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
                     float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
@@ -2025,7 +2027,7 @@ int mglRenderCopy16or32TextureBytesToGL(
                                                  ((uint32_t)lroundf(b * 15.0f) << 4) |
                                                  (uint32_t)lroundf(a * 15.0f));
                     memcpy(dp, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_SHORT_4_4_4_4_REV) {
+                } else if (pack_kind == MGL_PACKED_ABGR4444_REV) {
                     float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
                     float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
@@ -2035,7 +2037,7 @@ int mglRenderCopy16or32TextureBytesToGL(
                                                  ((uint32_t)lroundf(b * 15.0f) << 8) |
                                                  ((uint32_t)lroundf(a * 15.0f) << 12));
                     memcpy(dp, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_SHORT_5_5_5_1) {
+                } else if (pack_kind == MGL_PACKED_RGBA5551) {
                     float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
                     float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
@@ -2045,7 +2047,7 @@ int mglRenderCopy16or32TextureBytesToGL(
                                                  ((uint32_t)lroundf(b * 31.0f) << 1) |
                                                  (a >= 0.5f ? 1u : 0u));
                     memcpy(dp, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_SHORT_1_5_5_5_REV) {
+                } else if (pack_kind == MGL_PACKED_ABGR1555_REV) {
                     float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
                     float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
@@ -2055,7 +2057,7 @@ int mglRenderCopy16or32TextureBytesToGL(
                                                  ((uint32_t)lroundf(b * 31.0f) << 10) |
                                                  ((a >= 0.5f ? 1u : 0u) << 15));
                     memcpy(dp, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
+                } else if (pack_kind == MGL_PACKED_RGBA8888) {
                     float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
                     float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
@@ -2065,7 +2067,7 @@ int mglRenderCopy16or32TextureBytesToGL(
                                       ((uint32_t)lroundf(b * 255.0f) << 8) |
                                       (uint32_t)lroundf(a * 255.0f);
                     memcpy(dp, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
+                } else if (pack_kind == MGL_PACKED_ABGR8888_REV) {
                     float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
                     float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
@@ -2075,7 +2077,7 @@ int mglRenderCopy16or32TextureBytesToGL(
                                       ((uint32_t)lroundf(b * 255.0f) << 16) |
                                       ((uint32_t)lroundf(a * 255.0f) << 24);
                     memcpy(dp, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_10_10_10_2) {
+                } else if (pack_kind == MGL_PACKED_RGB10A2) {
                     float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
                     float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
@@ -2085,7 +2087,7 @@ int mglRenderCopy16or32TextureBytesToGL(
                                       ((uint32_t)lroundf(b * 1023.0f) << 2) |
                                       (uint32_t)lroundf(a * 3.0f);
                     memcpy(dp, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_2_10_10_10_REV) {
+                } else if (pack_kind == MGL_PACKED_A2BGR10_REV) {
                     float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
                     float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
@@ -2095,7 +2097,7 @@ int mglRenderCopy16or32TextureBytesToGL(
                                       ((uint32_t)lroundf(b * 1023.0f) << 20) |
                                       ((uint32_t)lroundf(a * 3.0f) << 30);
                     memcpy(dp, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+                } else if (pack_kind == MGL_PACKED_R11FG11FB10F_REV) {
                     float r = fvals[0] < 0.0f ? 0.0f : fvals[0];
                     float g = (slots > 1) ? (fvals[1] < 0.0f ? 0.0f : fvals[1]) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] < 0.0f ? 0.0f : fvals[2]) : 0.0f;
@@ -2103,7 +2105,7 @@ int mglRenderCopy16or32TextureBytesToGL(
                                       (mglFloatToFloat11(g) << 11) |
                                       (mglFloatToFloat10(b) << 22);
                     memcpy(dp, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
+                } else if (pack_kind == MGL_PACKED_RGB9E5_REV) {
                     float r = fvals[0] < 0.0f ? 0.0f : fvals[0];
                     float g = (slots > 1) ? (fvals[1] < 0.0f ? 0.0f : fvals[1]) : 0.0f;
                     float b = (slots > 2) ? (fvals[2] < 0.0f ? 0.0f : fvals[2]) : 0.0f;
@@ -2291,6 +2293,7 @@ int mglRenderCopyUnorm8PackedTextureBytesToGL(
         return 0;
     }
 
+    const MGLPackedOutputKind pack_kind = mglPackedOutputKind(type);
     const uint8_t* src_bytes = static_cast<const uint8_t*>(src);
     uint8_t* dst_bytes = static_cast<uint8_t*>(dst);
     for (uint64_t y = 0; y < height; y++) {
@@ -2310,61 +2313,61 @@ int mglRenderCopyUnorm8PackedTextureBytesToGL(
                 bb = tmp;
             }
             uint8_t* d = dst_row + (x * dst_pixel_bytes);
-            if (type == GL_UNSIGNED_BYTE_3_3_2) {
+            if (pack_kind == MGL_PACKED_RGB332) {
                 d[0] = (uint8_t)(((rr >> 5u) << 5u) | ((gg >> 5u) << 2u) | (bb >> 6u));
-            } else if (type == GL_UNSIGNED_BYTE_2_3_3_REV) {
+            } else if (pack_kind == MGL_PACKED_BGR233_REV) {
                 d[0] = (uint8_t)((rr >> 5u) | ((gg >> 5u) << 3u) | ((bb >> 6u) << 6u));
-            } else if (type == GL_UNSIGNED_SHORT_5_6_5) {
+            } else if (pack_kind == MGL_PACKED_RGB565) {
                 uint16_t packed = (uint16_t)(((rr >> 3u) << 11u) | ((gg >> 2u) << 5u) | (bb >> 3u));
                 memcpy(d, &packed, sizeof(packed));
-            } else if (type == GL_UNSIGNED_SHORT_5_6_5_REV) {
+            } else if (pack_kind == MGL_PACKED_BGR565_REV) {
                 uint16_t packed = (uint16_t)((rr >> 3u) | ((gg >> 2u) << 5u) | ((bb >> 3u) << 11u));
                 memcpy(d, &packed, sizeof(packed));
-            } else if (type == GL_UNSIGNED_SHORT_4_4_4_4) {
+            } else if (pack_kind == MGL_PACKED_RGBA4444) {
                 uint16_t packed = (uint16_t)(((rr >> 4u) << 12u) | ((gg >> 4u) << 8u) |
                                              ((bb >> 4u) << 4u) | (aa >> 4u));
                 memcpy(d, &packed, sizeof(packed));
-            } else if (type == GL_UNSIGNED_SHORT_4_4_4_4_REV) {
+            } else if (pack_kind == MGL_PACKED_ABGR4444_REV) {
                 uint16_t packed = (uint16_t)((rr >> 4u) | ((gg >> 4u) << 4u) |
                                              ((bb >> 4u) << 8u) | ((aa >> 4u) << 12u));
                 memcpy(d, &packed, sizeof(packed));
-            } else if (type == GL_UNSIGNED_SHORT_5_5_5_1) {
+            } else if (pack_kind == MGL_PACKED_RGBA5551) {
                 uint16_t packed = (uint16_t)(((rr >> 3u) << 11u) | ((gg >> 3u) << 6u) |
                                              ((bb >> 3u) << 1u) | (aa >= 128u ? 1u : 0u));
                 memcpy(d, &packed, sizeof(packed));
-            } else if (type == GL_UNSIGNED_SHORT_1_5_5_5_REV) {
+            } else if (pack_kind == MGL_PACKED_ABGR1555_REV) {
                 uint16_t packed = (uint16_t)((rr >> 3u) | ((gg >> 3u) << 5u) |
                                              ((bb >> 3u) << 10u) |
                                              ((aa >= 128u ? 1u : 0u) << 15u));
                 memcpy(d, &packed, sizeof(packed));
-            } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
+            } else if (pack_kind == MGL_PACKED_RGBA8888) {
                 uint32_t packed = ((uint32_t)rr << 24u) | ((uint32_t)gg << 16u) |
                                   ((uint32_t)bb << 8u) | aa;
                 memcpy(d, &packed, sizeof(packed));
-            } else if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
+            } else if (pack_kind == MGL_PACKED_ABGR8888_REV) {
                 uint32_t packed = rr | ((uint32_t)gg << 8u) |
                                   ((uint32_t)bb << 16u) | ((uint32_t)aa << 24u);
                 memcpy(d, &packed, sizeof(packed));
-            } else if (type == GL_UNSIGNED_INT_10_10_10_2) {
+            } else if (pack_kind == MGL_PACKED_RGB10A2) {
                 uint32_t r10 = rr * 1023u / 255u;
                 uint32_t g10 = gg * 1023u / 255u;
                 uint32_t b10 = bb * 1023u / 255u;
                 uint32_t a2 = aa * 3u / 255u;
                 uint32_t packed = (r10 << 22u) | (g10 << 12u) | (b10 << 2u) | a2;
                 memcpy(d, &packed, sizeof(packed));
-            } else if (type == GL_UNSIGNED_INT_2_10_10_10_REV) {
+            } else if (pack_kind == MGL_PACKED_A2BGR10_REV) {
                 uint32_t r10 = rr * 1023u / 255u;
                 uint32_t g10 = gg * 1023u / 255u;
                 uint32_t b10 = bb * 1023u / 255u;
                 uint32_t a2 = aa * 3u / 255u;
                 uint32_t packed = r10 | (g10 << 10u) | (b10 << 20u) | (a2 << 30u);
                 memcpy(d, &packed, sizeof(packed));
-            } else if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+            } else if (pack_kind == MGL_PACKED_R11FG11FB10F_REV) {
                 uint32_t packed = mglPackUnsignedFloatFromUNorm8(rr, 6u) |
                                   (mglPackUnsignedFloatFromUNorm8(gg, 6u) << 11u) |
                                   (mglPackUnsignedFloatFromUNorm8(bb, 5u) << 22u);
                 memcpy(d, &packed, sizeof(packed));
-            } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
+            } else if (pack_kind == MGL_PACKED_RGB9E5_REV) {
                 uint32_t packed = mglPackRGBToSharedExp(
                     (double)rr / 255.0, (double)gg / 255.0, (double)bb / 255.0);
                 memcpy(d, &packed, sizeof(packed));

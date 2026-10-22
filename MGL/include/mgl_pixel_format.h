@@ -353,6 +353,46 @@ mglSingleChannelSwizzleUploadLayout(uint32_t internal_format)
     return out;
 }
 
+/* Packed read-back output layouts, one kind per bit layout. */
+typedef enum MGLPackedOutputKind {
+    MGL_PACKED_INVALID = 0,
+    MGL_PACKED_RGB332,
+    MGL_PACKED_BGR233_REV,
+    MGL_PACKED_RGB565,
+    MGL_PACKED_BGR565_REV,
+    MGL_PACKED_RGBA4444,
+    MGL_PACKED_ABGR4444_REV,
+    MGL_PACKED_RGBA5551,
+    MGL_PACKED_ABGR1555_REV,
+    MGL_PACKED_RGBA8888,
+    MGL_PACKED_ABGR8888_REV,
+    MGL_PACKED_RGB10A2,
+    MGL_PACKED_A2BGR10_REV,
+    MGL_PACKED_R11FG11FB10F_REV,
+    MGL_PACKED_RGB9E5_REV
+} MGLPackedOutputKind;
+
+static inline MGLPackedOutputKind mglPackedOutputKind(uint32_t type)
+{
+    switch (type) {
+        case GL_UNSIGNED_BYTE_3_3_2: return MGL_PACKED_RGB332;
+        case GL_UNSIGNED_BYTE_2_3_3_REV: return MGL_PACKED_BGR233_REV;
+        case GL_UNSIGNED_SHORT_5_6_5: return MGL_PACKED_RGB565;
+        case GL_UNSIGNED_SHORT_5_6_5_REV: return MGL_PACKED_BGR565_REV;
+        case GL_UNSIGNED_SHORT_4_4_4_4: return MGL_PACKED_RGBA4444;
+        case GL_UNSIGNED_SHORT_4_4_4_4_REV: return MGL_PACKED_ABGR4444_REV;
+        case GL_UNSIGNED_SHORT_5_5_5_1: return MGL_PACKED_RGBA5551;
+        case GL_UNSIGNED_SHORT_1_5_5_5_REV: return MGL_PACKED_ABGR1555_REV;
+        case GL_UNSIGNED_INT_8_8_8_8: return MGL_PACKED_RGBA8888;
+        case GL_UNSIGNED_INT_8_8_8_8_REV: return MGL_PACKED_ABGR8888_REV;
+        case GL_UNSIGNED_INT_10_10_10_2: return MGL_PACKED_RGB10A2;
+        case GL_UNSIGNED_INT_2_10_10_10_REV: return MGL_PACKED_A2BGR10_REV;
+        case GL_UNSIGNED_INT_10F_11F_11F_REV: return MGL_PACKED_R11FG11FB10F_REV;
+        case GL_UNSIGNED_INT_5_9_9_9_REV: return MGL_PACKED_RGB9E5_REV;
+        default: return MGL_PACKED_INVALID;
+    }
+}
+
 bool mglInternalFormatIsDepthStencil(GLint internalformat);
 
 /* Has depth samples in storage (depth-only or packed depth-stencil). */
