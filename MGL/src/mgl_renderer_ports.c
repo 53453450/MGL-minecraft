@@ -73,8 +73,8 @@ Texture *mglRendererAttachmentTextureFor(GLMContext ctx, FBOAttachment *att)
  * pointer, so the shim does not need an entry point of its own). */
 const MGLCommandState *mglRendererCommandStateFor(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     return areas.command;
 }
 
@@ -88,8 +88,8 @@ void *mglRendererMdiScratchBuffer(void *renderer, uint64_t length,
     if (offset_out) {
         *offset_out = 0;
     }
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs || length == 0 ||
         !mglRendererBackendGetDevice(areas.backend)) {
@@ -250,8 +250,8 @@ void *mglRendererSamplerStateForSnapshotKey(void *renderer, const void *key)
     if (!renderer || !key) {
         return NULL;
     }
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     void *cachedState = NULL;
     int cacheResult = mglRendererBackendGetSamplerSnapshotState(
@@ -301,7 +301,7 @@ void mglRendererBindMTLBuffer(void *renderer, Buffer *buffer)
 
 void mglRendererSetCommandBufferHasWork(void *renderer, int has_work)
 {
-    MGLRendererStateAreas areas;
+    MGLRendererStateAreas areas; /* C5-EXEMPT: writes through the areas */
     mglRendererFillStateAreas(renderer, &areas);
     if (areas.batching) {
         areas.batching->currentCommandBufferHasWork = has_work ? 1u : 0u;
@@ -329,7 +329,7 @@ int mglRendererConsumeDeviceReset(void *renderer)
 
 void mglRendererSetDefaultDrawableWritten(void *renderer, int written)
 {
-    MGLRendererStateAreas areas;
+    MGLRendererStateAreas areas; /* C5-EXEMPT: writes through the areas */
     mglRendererFillStateAreas(renderer, &areas);
     if (areas.core) {
         areas.core->defaultDrawableWrittenSinceLastSwap = written ? 1u : 0u;
@@ -338,7 +338,7 @@ void mglRendererSetDefaultDrawableWritten(void *renderer, int written)
 
 void mglRendererSetLastDrawPrimitiveMode(void *renderer, uint32_t mode)
 {
-    MGLRendererStateAreas areas;
+    MGLRendererStateAreas areas; /* C5-EXEMPT: writes through the areas */
     mglRendererFillStateAreas(renderer, &areas);
     if (areas.core) {
         areas.core->lastDrawPrimitiveMode = mode;
@@ -347,7 +347,7 @@ void mglRendererSetLastDrawPrimitiveMode(void *renderer, uint32_t mode)
 
 void mglRendererSetActiveState(void *renderer, GLMState *state)
 {
-    MGLRendererStateAreas areas;
+    MGLRendererStateAreas areas; /* C5-EXEMPT: writes through the areas */
     mglRendererFillStateAreas(renderer, &areas);
     if (areas.core) {
         areas.core->activeState = state;
@@ -357,7 +357,7 @@ void mglRendererSetActiveState(void *renderer, GLMState *state)
 void mglRendererSetTraceReplayIdentity(void *renderer, uint64_t flush_id,
                                        uint32_t batch_index)
 {
-    MGLRendererStateAreas areas;
+    MGLRendererStateAreas areas; /* C5-EXEMPT: writes through the areas */
     mglRendererFillStateAreas(renderer, &areas);
     if (areas.command) {
         areas.command->traceReplayFlushId = flush_id;
@@ -368,7 +368,7 @@ void mglRendererSetTraceReplayIdentity(void *renderer, uint64_t flush_id,
 void mglRendererSetDefaultDrawBufferSize(void *renderer, uint32_t draw_buffer,
                                          uint32_t width, uint32_t height)
 {
-    MGLRendererStateAreas areas;
+    MGLRendererStateAreas areas; /* C5-EXEMPT: writes through the areas */
     mglRendererFillStateAreas(renderer, &areas);
     if (areas.core && draw_buffer < _MAX_DRAW_BUFFERS) {
         areas.core->drawBuffers[draw_buffer].width = width;

@@ -37,8 +37,8 @@ extern bool mglRenderGenerateVertexDescriptorState(
 int mglRendererGenerateVertexDescriptorState(
     void *renderer, MGLRenderPipelineDescriptorState *state)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     return mglRenderGenerateVertexDescriptorState(
                areas.ctx,
                state,

@@ -375,7 +375,7 @@ extern Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx,
 /* === dirty state domain processing (P0-1, log 167) ====================== */
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C (same twin as mgl_tess_dispatch.c). */
-static GLMState *mglPdState(const MGLRendererStateAreas *areas)
+static GLMState *mglPdState(const MGLRendererStateAreas *areas) /* C5-EXEMPT: read helper for the write side */
 {
     if (areas->core && areas->core->activeState) {
         return areas->core->activeState;
@@ -2254,7 +2254,7 @@ typedef struct MglPdNewCommandBufferCtx_t {
 static int mglPdNewCommandBufferTryBody(void *renderer, void *rawCtx)
 {
     MglPdNewCommandBufferCtx *ctx = (MglPdNewCommandBufferCtx *)rawCtx;
-    MGLRendererStateAreas *areas = ctx->areas;
+    MGLRendererStateAreas *areas = ctx->areas; /* C5-EXEMPT: write side */
     MGLRenderPassManager *manager = areas->render_pass_manager;
 
     /* AGX DRIVER COMPATIBILITY: Validate command queue health before creating

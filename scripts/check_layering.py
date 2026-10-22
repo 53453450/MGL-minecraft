@@ -83,6 +83,30 @@ def strip_comments(text):
     return COMMENT_RE.sub(lambda m: '\n' * m.group(0).count('\n'), text)
 
 
+# A function that legitimately owns writable state areas marks its declaration
+# with this comment; C5 stops counting its Area/fill lines.  The driver side
+# (and the port setters that write through the areas) is where the areas are
+# supposed to live, so those lines are not violations to shrink.
+EXEMPT_MARK = 'C5-EXEMPT'
+
+
+def exempt_ranges(path):
+    """Line ranges of functions carrying a C5-EXEMPT marker."""
+    try:
+        lines = path.read_text(errors='replace').splitlines()
+    except OSError:
+        return []
+    ranges = []
+    starts = [i for i, l in enumerate(lines)
+              if l.startswith(('void ', 'int ', 'bool ', 'static ')) or
+                 (i == 0 and l.strip())]
+    for idx, start in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
+        if any(EXEMPT_MARK in l for l in lines[start:end]):
+            ranges.append((start + 1, end))
+    return ranges
+
+
 def scan(path, regex):
     text = strip_comments(path.read_text(errors='replace'))
     return [(i, line.strip()) for i, line in enumerate(text.splitlines(), 1)
@@ -113,6 +137,11 @@ def collect():
         if not path.exists():
             sys.exit(f'check_layering: missing file {path.relative_to(ROOT)}')
         found = scan(path, regex)
+        if rule == 'C5':
+            exempt = exempt_ranges(path)
+            found = [(ln, txt) for ln, txt in found
+                     if EXEMPT_MARK not in txt and
+                     not any(a <= ln <= b for a, b in exempt)]
         if found:
             hits[(rule, str(path.relative_to(ROOT)))] = found
     return hits

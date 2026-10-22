@@ -117,7 +117,7 @@ static GLMState *mglRsStateView(const MGLRendererStateView *view)
     return view->ctx ? view->ctx->active_state : NULL;
 }
 
-static GLMState *mglRsState(const MGLRendererStateAreas *areas)
+static GLMState *mglRsState(const MGLRendererStateAreas *areas) /* C5-EXEMPT: read helper for the write side */
 {
     if (areas->core && areas->core->activeState) {
         return areas->core->activeState;

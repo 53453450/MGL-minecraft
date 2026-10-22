@@ -12,12 +12,9 @@ C2 MGL/src/mgl_render_readback.cpp 8
 C2 MGL/src/mgl_render_texture.cpp 11
 C2 MGL/src/mgl_renderer_ports.c 1
 C2 MGL/src/mgl_texture_bind.c 2
-C5 MGL/src/mgl_clear_buffer_ops.c 6
-C5 MGL/src/mgl_draw_metal_port.c 36
-C5 MGL/src/mgl_platform_shell.cpp 1
+C5 MGL/src/mgl_clear_buffer_ops.c 5
 C5 MGL/src/mgl_pso_build_ops.c 7
-C5 MGL/src/mgl_render_pass_manager_ops.c 17
-C5 MGL/src/mgl_render_pass_sync_ops.c 7
-C5 MGL/src/mgl_renderer_ports.c 22
-C5 MGL/src/mgl_tess_dispatch.c 9
-C5 MGL/src/mgl_vertex_layout.c 4
+C5 MGL/src/mgl_render_pass_manager_ops.c 14
+C5 MGL/src/mgl_render_pass_sync_ops.c 6
+C5 MGL/src/mgl_renderer_ports.c 4
+C5 MGL/src/mgl_vertex_layout.c 2

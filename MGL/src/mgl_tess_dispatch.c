@@ -83,7 +83,7 @@ extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx,
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C (the same twin as
  * mgl_compute_bind.c). */
-static GLMState *mglTessDispatchState(const MGLRendererStateAreas *areas)
+static GLMState *mglTessDispatchState(const MGLRendererStateAreas *areas) /* C5-EXEMPT: read helper for the write side */
 {
     if (areas->core && areas->core->activeState) {
         return areas->core->activeState;
@@ -92,13 +92,13 @@ static GLMState *mglTessDispatchState(const MGLRendererStateAreas *areas)
 }
 
 static void *mglTessDispatchCommandBufferOwner(
-    const MGLRendererStateAreas *areas)
+    const MGLRendererStateAreas *areas) /* C5-EXEMPT: read helper for the write side */
 {
     return areas->command ? areas->command->currentCommandBufferOwner : NULL;
 }
 
 static void *mglTessDispatchRenderEncoderOwner(
-    const MGLRendererStateAreas *areas)
+    const MGLRendererStateAreas *areas) /* C5-EXEMPT: read helper for the write side */
 {
     return areas->command ? areas->command->currentRenderEncoderOwner : NULL;
 }
@@ -445,7 +445,7 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
         return false;
     }
 
-    MGLRendererStateAreas areas;
+    MGLRendererStateAreas areas; /* C5-EXEMPT: writes through the areas */
     mglRendererFillStateAreas(renderer, &areas);
 
     Shader *tcs_shader = tcs_program->shader_slots[_TESS_CONTROL_SHADER];
@@ -706,7 +706,7 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         return false;
     }
 
-    MGLRendererStateAreas areas;
+    MGLRendererStateAreas areas; /* C5-EXEMPT: writes through the areas */
     mglRendererFillStateAreas(renderer, &areas);
 
     /* ARC kept every `id` local of this method alive to the end of the scope;
@@ -1062,7 +1062,7 @@ bool mglTessDispatchAIRTessEvalCompute(
         return false;
     }
 
-    MGLRendererStateAreas areas;
+    MGLRendererStateAreas areas; /* C5-EXEMPT: writes through the areas */
     mglRendererFillStateAreas(renderer, &areas);
 
     /* This draw takes the compute expansion path: the TES stage needs

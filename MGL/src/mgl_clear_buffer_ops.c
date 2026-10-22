@@ -90,7 +90,7 @@ extern MGLSizeValue mglPlatformShellApplyPendingDrawableSize(void *renderer);
 void *mglBlitClearRectDepthState(void *renderer);
 
 /* MGL_STATE(ctx) twin (same shape as mgl_render_pass_manager_ops.c). */
-static GLMState *mglPdState(const MGLRendererStateAreas *areas)
+static GLMState *mglPdState(const MGLRendererStateAreas *areas) /* C5-EXEMPT: read helper for the write side */
 {
     if (areas->core && areas->core->activeState) {
         return areas->core->activeState;

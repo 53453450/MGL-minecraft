@@ -1557,7 +1557,7 @@ int mglPlatformShellPipelineCacheSetBlend(void *pipeline_cache_object,
 
 /* === renderer state areas =============================================== */
 
-void mglRendererFillStateAreas(void *renderer, MGLRendererStateAreas *areas_out)
+void mglRendererFillStateAreas(void *renderer, MGLRendererStateAreas *areas_out) /* C5-EXEMPT: owner of the areas (definition) */
 {
     MGLObjectId r = (MGLObjectId)renderer;
     MGLRendererIvars *r_ivars;
