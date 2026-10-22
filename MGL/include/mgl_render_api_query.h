@@ -6,7 +6,55 @@
  * Value layouts are defined here; types of other subsystems that are only
  * passed by pointer are incomplete (mgl_render_fwd.h). */
 
+#include "glcorearb.h"
 #include "mgl_render_fwd.h"
+
+/* Query vocabulary: the two result values, the compare functions, and the
+ * "is this the samples-passed target" question. */
+static inline uint32_t mglQuerySignaledValue(void) { return GL_SIGNALED; }
+static inline uint32_t mglQueryUnsignaledValue(void) { return GL_UNSIGNALED; }
+
+typedef enum MGLCompareFunction {
+    MGL_COMPARE_INVALID = 0,
+    MGL_COMPARE_NEVER,
+    MGL_COMPARE_LESS,
+    MGL_COMPARE_EQUAL,
+    MGL_COMPARE_LEQUAL,
+    MGL_COMPARE_GREATER,
+    MGL_COMPARE_NOTEQUAL,
+    MGL_COMPARE_GEQUAL,
+    MGL_COMPARE_ALWAYS
+} MGLCompareFunction;
+
+static inline MGLCompareFunction mglCompareFunctionOf(uint32_t func)
+{
+    switch (func) {
+        case GL_NEVER: return MGL_COMPARE_NEVER;
+        case GL_LESS: return MGL_COMPARE_LESS;
+        case GL_EQUAL: return MGL_COMPARE_EQUAL;
+        case GL_LEQUAL: return MGL_COMPARE_LEQUAL;
+        case GL_GREATER: return MGL_COMPARE_GREATER;
+        case GL_NOTEQUAL: return MGL_COMPARE_NOTEQUAL;
+        case GL_GEQUAL: return MGL_COMPARE_GEQUAL;
+        case GL_ALWAYS: return MGL_COMPARE_ALWAYS;
+        default: return MGL_COMPARE_INVALID;
+    }
+}
+
+static inline bool mglQueryTargetIsSamplesPassed(uint32_t target)
+{
+    return target == GL_SAMPLES_PASSED;
+}
+
+static inline bool mglQueryTargetIsRenderbuffer(uint32_t target)
+{
+    return target == GL_RENDERBUFFER;
+}
+
+static inline bool mglInternalFormatIsRGBA8(uint32_t fmt)
+{
+    return fmt == GL_RGBA8;
+}
 
 #ifdef __cplusplus
 extern "C" {

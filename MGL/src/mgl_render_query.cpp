@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-3.0-only */
 #include "mgl_metal.h"
+#include "mgl_texture_compat.h"
 #include "mgl_render_api_command.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_buffer.h"
@@ -114,13 +115,13 @@ int mglRenderQueryCapability(void* device_ref,
 unsigned int mglRenderGetSyncStatus(GLMContext glm_ctx, Sync* sync) {
     (void)glm_ctx;
     if (!sync || !sync->backend || !sync->backend->command_buffer) {
-        return GL_SIGNALED;
+        return mglQuerySignaledValue();
     }
     MTL::CommandBuffer* commandBuffer =
         static_cast<MTL::CommandBuffer*>(sync->backend->command_buffer);
     return commandBuffer->status() == MTL::CommandBufferStatusCompleted
-        ? GL_SIGNALED
-        : GL_UNSIGNALED;
+        ? mglQuerySignaledValue()
+        : mglQueryUnsignaledValue();
 }
 
 uint64_t mglRenderGetGPUTimestamp(GLMContext glm_ctx) {
@@ -141,23 +142,11 @@ uint64_t mglRenderGetGPUTimestamp(GLMContext glm_ctx) {
 
 
 int mglRenderIsSmallRGBA8(uint32_t width, uint32_t height, uint32_t internalformat) {
-    return width <= 512u && height <= 512u && internalformat == GL_RGBA8 ? 1 : 0;
+    return width <= 512u && height <= 512u && mglInternalFormatIsRGBA8(internalformat) ? 1 : 0;
 }
 
 int mglRenderIsValidGLCompareFunction(uint32_t func) {
-    switch (func) {
-    case GL_NEVER:
-    case GL_LESS:
-    case GL_EQUAL:
-    case GL_LEQUAL:
-    case GL_GREATER:
-    case GL_NOTEQUAL:
-    case GL_GEQUAL:
-    case GL_ALWAYS:
-        return 1;
-    default:
-        return 0;
-    }
+    return mglCompareFunctionOf(func) != MGL_COMPARE_INVALID ? 1 : 0;
 }
 
 int mglRenderIsValidGLBlendEquation(uint32_t op) {
@@ -191,8 +180,7 @@ int mglRenderGetDeviceIdentity(const void *device,
 }
 
 int mglRenderIsEmulatedMSColorTexture(uint32_t target, int32_t samples) {
-    if (target != GL_TEXTURE_2D_MULTISAMPLE &&
-        target != GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+    if (!mglTextureTargetIsMultisample(target)) {
         return 0;
     }
     return samples > 1 ? 1 : 0;
@@ -207,7 +195,7 @@ int mglRenderIsEmulatedMSPlaneTarget(uint32_t target, int32_t samples) {
      * target — mglRenderbufferStorage keeps it at GL_RENDERBUFFER.  Treat it
      * like an MS texture so the sample-plane broadcast and the per-sample
      * plane offset cover renderbuffer attachments too (air_msaa_resolve). */
-    return target == GL_RENDERBUFFER && samples > 1 ? 1 : 0;
+    return mglQueryTargetIsRenderbuffer(target) && samples > 1 ? 1 : 0;
 }
 
 int mglRenderPlanDirtyDomains(uint32_t dirty_bits, int draw_command,
@@ -597,7 +585,7 @@ void mglRenderBeginSampleQueryCallback(GLMContext glm_ctx,
     void* visibility_buffer = nullptr;
     if (mglRenderBeginSampleQuery(
             query_owner,
-            target == GL_SAMPLES_PASSED ? 1u : 0u,
+            mglQueryTargetIsSamplesPassed(target) ? 1u : 0u,
             "MGL Visibility Result", &visibility_buffer) != 0 ||
         !visibility_buffer) {
         return;
