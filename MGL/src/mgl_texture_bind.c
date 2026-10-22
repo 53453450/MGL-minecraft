@@ -135,7 +135,7 @@ static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
     MGLRenderTextureInfo info = {0};
     MGLRenderTextureTargetPlan plan = {0};
     if (!source || mglRenderGetTextureInfo(source, &info) != 0 ||
-        mglRenderTextureTargetPlan((uint32_t)tex->target, (uint32_t)tex->samples,
+        mglRenderTextureTargetPlan((uint32_t)mglTextureTargetOf(tex), (uint32_t)mglTextureSamplesOf(tex),
                                    &plan) != 0) {
         return false;
     }
@@ -159,11 +159,11 @@ static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
      * AIR texelFetch.  Expand the Metal slice range accordingly. */
     uint64_t slice_loc = tex->view_min_layer;
     uint64_t slice_len = tex->view_num_layers;
-    const GLenum root_target = root->target;
+    const GLenum root_target = mglTextureTargetOf(root);
     const int root_ms =
         mglTextureTargetIsMultisample(root_target);
     const int view_ms =
-        mglTextureTargetIsMultisample((uint32_t)tex->target);
+        mglTextureTargetIsMultisample((uint32_t)mglTextureTargetOf(tex));
     if ((root_ms || view_ms) &&
         info.texture_type == MGLTextureType2DArray && slice_len > 0u) {
         const uint64_t stride = MGL_TEXTURE_MS_PLANE_STRIDE;
@@ -219,7 +219,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
         }
         if (!mglTextureSamplerState(tex)) {
             mglTextureBackendEnsure(tex)->sampler_state =
-                mglTextureCreateSamplerForTexParam(&tex->params, tex->target);
+                mglTextureCreateSamplerForTexParam(&tex->params, mglTextureTargetOf(tex));
         }
         if (mglTextureSamplerState(tex)) {
             mglTextureClearDirtyBits(tex, DIRTY_TEXTURE_PARAM);
@@ -231,7 +231,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
     mglRendererFillStateView(renderer, &areas);
 
     if (mglRenderTextureBufferNeedsDirty(
-            mglRenderIsTextureBufferTarget(tex->target),
+            mglRenderIsTextureBufferTarget(mglTextureTargetOf(tex)),
             tex->texture_buffer ? 1 : 0,
             mglTextureBufferDirtyBits(tex))) {
         /* The in-place upload paths read texture levels, not the buffer
@@ -240,14 +240,14 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
     }
 
     if (mglTextureMtl(tex) &&
-        mglRenderTextureNeedsArrayLengthCheck((uint32_t)tex->target)) {
+        mglRenderTextureNeedsArrayLengthCheck((uint32_t)mglTextureTargetOf(tex))) {
         MGLRenderTextureInfo existingInfo = {0};
         if (mglRenderGetTextureInfo(mglTextureMtl(tex), &existingInfo) == 0) {
             /* Metal cube-array arrayLength is cube count; GL depth is usually
              * face count (cubes * 6). Comparing raw depth forced a rebuild that
              * wiped imageStore results on the next bind. */
             uint64_t expectedLayers = mglRenderExpectedArrayLayers(
-                tex->target, tex->depth);
+                mglTextureTargetOf(tex), mglTextureDepthOf(tex));
             if (existingInfo.array_length < expectedLayers ||
                 existingInfo.width != (uint64_t)tex->width ||
                 existingInfo.height != (uint64_t)tex->height) {
@@ -277,7 +277,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
          * Capacity-only sizing recreated MC atlases as 11-level Metal textures
          * when only 2 GL levels were uploaded. */
         uint64_t requiredMipLevels =
-            (mglRenderTargetIsRenderbuffer((uint32_t)tex->target) || tex->samples > 1u)
+            (mglRenderTargetIsRenderbuffer((uint32_t)mglTextureTargetOf(tex)) || mglTextureSamplesOf(tex) > 1u)
                 ? 1u
                 : (tex->num_levels > 1u
                        ? (uint64_t)tex->num_levels
@@ -343,7 +343,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                 if (packedDepthStencil) {
                     const bool isArray =
                         mglRenderTextureTargetIsLayeredUpload(
-                            (uint32_t)tex->target) != 0;
+                            (uint32_t)mglTextureTargetOf(tex)) != 0;
                     int allLevelsUploaded = 1;
                     const uint32_t levelCount = mglTextureBindUploadLevelCount(
                         newInfo.mipmap_level_count,
@@ -352,8 +352,8 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                             renderer, tex, (void *)metalTexture,
                             (uint32_t)newInfo.pixel_format, 1, levelCount,
                             isArray ? 1 : 0,
-                            mglRenderTextureTargetIs1D((uint32_t)tex->target) ? 1 : 0,
-                            mglRenderTextureTargetIs1DArray((uint32_t)tex->target) ? 1 : 0,
+                            mglRenderTextureTargetIs1D((uint32_t)mglTextureTargetOf(tex)) ? 1 : 0,
+                            mglRenderTextureTargetIs1DArray((uint32_t)mglTextureTargetOf(tex)) ? 1 : 0,
                             (uint32_t)newInfo.texture_type,
                             &allLevelsUploaded) && allLevelsUploaded) {
                         mglTextureClearDirtyBits(tex, DIRTY_TEXTURE_DATA);
@@ -414,7 +414,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
             void *existingTexture = mglTextureMtl(tex);
             bool uploadedDirty = false;
             if (existingTexture && !tex->metal_data_authoritative) {
-                if (mglRenderTextureTargetIs2D((uint32_t)tex->target)) {
+                if (mglRenderTextureTargetIs2D((uint32_t)mglTextureTargetOf(tex))) {
                     MGLRenderTextureInfo metalInfo = {0};
                     if (mglRenderGetTextureInfo(existingTexture, &metalInfo) == 0 &&
                         metalInfo.texture_type == MGLTextureType2D &&
@@ -430,11 +430,11 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                     if (mglRenderGetTextureInfo(existingTexture, &metalInfo) == 0) {
                         const bool isArray =
                             mglRenderTextureTargetIsLayeredUpload(
-                                (uint32_t)tex->target) != 0;
+                                (uint32_t)mglTextureTargetOf(tex)) != 0;
                         const bool texture1DBackedBy2D =
-                            mglRenderTextureTargetIs1D((uint32_t)tex->target) != 0;
+                            mglRenderTextureTargetIs1D((uint32_t)mglTextureTargetOf(tex)) != 0;
                         const bool texture1DArrayBackedBy2DArray =
-                            mglRenderTextureTargetIs1DArray((uint32_t)tex->target) != 0;
+                            mglRenderTextureTargetIs1DArray((uint32_t)mglTextureTargetOf(tex)) != 0;
                         int allLevelsUploaded = 1;
                         const uint32_t levelCount = mglTextureBindUploadLevelCount(
                             metalInfo.mipmap_level_count,
@@ -545,7 +545,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
     if (mglTextureSamplerState(tex) == NULL)
     {
         mglTextureBackendEnsure(tex)->sampler_state =
-            mglTextureCreateSamplerForTexParam(&tex->params, tex->target);
+            mglTextureCreateSamplerForTexParam(&tex->params, mglTextureTargetOf(tex));
         /* Sampler creation should not fail even in recovery mode */
         if (!mglTextureSamplerState(tex)) {
             fprintf(stderr, "MGL WARNING: Sampler creation failed, using default\n");
@@ -595,7 +595,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                     "glLevels=%u mipmapLevels=%u mtlLevels=%lu base=%u max=%u "
                     "mipmapped=%d genmipmaps=%d renderTarget=%d mtlTex=%p\n",
                     (unsigned)tex->name,
-                    (unsigned)tex->target,
+                    (unsigned)mglTextureTargetOf(tex),
                     (unsigned)tex->width,
                     (unsigned)tex->height,
                     (unsigned)tex->num_levels,

@@ -212,6 +212,34 @@ typedef struct Buffer_t {
     char *debug_label;  /* ObjectLabel, GL 4.6 §20.7; NULL = empty */
 } Buffer;
 
+/* Dirty-bit bookkeeping for the buffer record, so the backend asks instead of
+ * reading the field. */
+static inline uint32_t mglBufferDirtyBitsOf(const Buffer *buf)
+{
+    return buf ? buf->data.dirty_bits : 0u;
+}
+
+static inline void mglBufferSetDirtyBitsOf(Buffer *buf, uint32_t bits)
+{
+    if (buf) buf->data.dirty_bits |= bits;
+}
+
+static inline void mglBufferClearDirtyBitsOf(Buffer *buf, uint32_t bits)
+{
+    if (buf) buf->data.dirty_bits &= ~bits;
+}
+
+static inline void mglBufferAssignDirtyBitsOf(Buffer *buf, uint32_t bits)
+{
+    if (buf) buf->data.dirty_bits = bits;
+}
+
+static inline void mglBufferResetDirtyBitsOf(Buffer *buf)
+{
+    if (buf) buf->data.dirty_bits = 0u;
+}
+
+
 /* Buffer reference counting (mirrors Program refcount pattern).
  * Declared here alongside the Buffer type, matching how Program refcount
  * helpers are declared in mgl_types_program.h. */

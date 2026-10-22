@@ -3,7 +3,7 @@
 
 C2 MGL/src/mgl_batch_dyn_bind_encode.c 1
 C2 MGL/src/mgl_render_binding.cpp 10
-C2 MGL/src/mgl_render_buffer.cpp 20
+C2 MGL/src/mgl_render_buffer.cpp 10
 C2 MGL/src/mgl_render_command.cpp 4
 C2 MGL/src/mgl_render_draw.cpp 15
 C2 MGL/src/mgl_render_lifecycle.cpp 34
@@ -11,7 +11,7 @@ C2 MGL/src/mgl_render_query.cpp 19
 C2 MGL/src/mgl_render_readback.cpp 8
 C2 MGL/src/mgl_render_texture.cpp 11
 C2 MGL/src/mgl_renderer_ports.c 1
-C2 MGL/src/mgl_texture_bind.c 19
+C2 MGL/src/mgl_texture_bind.c 2
 C5 MGL/src/mgl_clear_buffer_ops.c 6
 C5 MGL/src/mgl_draw_metal_port.c 36
 C5 MGL/src/mgl_platform_shell.cpp 1

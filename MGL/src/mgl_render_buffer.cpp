@@ -589,7 +589,7 @@ void mglRenderMarkBufferCPUWrite(Buffer *buf, int64_t offset, int64_t size) {
     buf->has_initialized_data = 1;
     buf->cpu_shadow_pending = 1;
     buf->gpu_write_target = 0;
-    buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
+    mglBufferSetDirtyBitsOf(buf, DIRTY_BUFFER_DATA);
     buf->last_init_source = kInitMapWrite;
     buf->last_write_offset = (GLintptr)offset;
     buf->last_write_size = (GLsizeiptr)size;
@@ -944,13 +944,13 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
     if (buffer->plain_uniform_slot && !mglBufferMtl(buffer) &&
         buffer->data.buffer_data && buffer->size > 0 &&
         buffer->size <= 4096) {
-        buffer->data.dirty_bits &=
-            ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
+        mglBufferClearDirtyBitsOf(buffer,
+                                  DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
         return MGL_RENDER_BUFFER_OPERATION_HANDLED;
     }
 
     if (buffer->size < 4096) {
-        if ((buffer->data.dirty_bits & DIRTY_BUFFER_ADDR) &&
+        if ((mglBufferDirtyBitsOf(buffer) & DIRTY_BUFFER_ADDR) &&
             !mglBufferMtl(buffer)) {
             const int result = ensureMetalBuffer();
             if (result != MGL_RENDER_BUFFER_OPERATION_HANDLED) {
@@ -958,8 +958,8 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
             }
         }
 
-        if ((buffer->data.dirty_bits & DIRTY_BUFFER_DATA) == 0) {
-            buffer->data.dirty_bits &= ~DIRTY_BUFFER_ADDR;
+        if ((mglBufferDirtyBitsOf(buffer) & DIRTY_BUFFER_DATA) == 0) {
+            mglBufferClearDirtyBitsOf(buffer, DIRTY_BUFFER_ADDR);
             return MGL_RENDER_BUFFER_OPERATION_HANDLED;
         }
 
@@ -1034,18 +1034,18 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
         return MGL_RENDER_BUFFER_OPERATION_HANDLED;
     }
 
-    if ((buffer->data.dirty_bits & DIRTY_BUFFER_ADDR) != 0) {
+    if ((mglBufferDirtyBitsOf(buffer) & DIRTY_BUFFER_ADDR) != 0) {
         const int bindResult = ensureMetalBuffer();
         if (bindResult != MGL_RENDER_BUFFER_OPERATION_HANDLED) {
             return bindResult;
         }
-        if ((buffer->data.dirty_bits & DIRTY_BUFFER_DATA) == 0) {
-            buffer->data.dirty_bits &= ~DIRTY_BUFFER_ADDR;
+        if ((mglBufferDirtyBitsOf(buffer) & DIRTY_BUFFER_DATA) == 0) {
+            mglBufferClearDirtyBitsOf(buffer, DIRTY_BUFFER_ADDR);
             return MGL_RENDER_BUFFER_OPERATION_HANDLED;
         }
     }
 
-    if ((buffer->data.dirty_bits & DIRTY_BUFFER_DATA) == 0) {
+    if ((mglBufferDirtyBitsOf(buffer) & DIRTY_BUFFER_DATA) == 0) {
         if (err && errcap) {
             snprintf(err, errcap,
                      "buffer %u has no dirty CPU or Metal backing",
@@ -1087,7 +1087,7 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
             metalBuffer->didModifyRange(
                 NS::Range::Make(modifyOffset, modifyLength));
         }
-        buffer->data.dirty_bits = DIRTY_BUFFER_DATA;
+        mglBufferAssignDirtyBitsOf(buffer, DIRTY_BUFFER_DATA);
     } else {
         size_t modifyLength = metalLength;
         if (buffer->data.buffer_size > 0) {

@@ -18,6 +18,22 @@
 #include "mgl_sampler_compat.h"   /* mglFindSamplerResourceForMetalBinding */
 #include "mgl_metal_ref.h"         /* mglSafeReleaseMetalObj */
 
+uint32_t mglTextureTargetOf(const Texture *tex)
+{
+    return tex ? (uint32_t)tex->target : 0u;
+}
+
+uint32_t mglTextureSamplesOf(const Texture *tex)
+{
+    return tex ? tex->samples : 0u;
+}
+
+uint32_t mglTextureDepthOf(const Texture *tex)
+{
+    return tex ? tex->depth : 0u;
+}
+
+
 uint32_t mglTextureDirtyBits(const Texture *tex)
 {
     return tex ? tex->dirty_bits : 0u;

@@ -160,6 +160,11 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex, GLuint level,
 /* TextureView (§8.18): after `writer` changed the shared store, carry its
  * Y-flipped storage state to the other textures that reference the store. */
 void mglTextureViewFamilyWritten(Texture *writer);
+/* Texture record fields the bind path asks about without reading them. */
+uint32_t mglTextureTargetOf(const Texture *tex);
+uint32_t mglTextureSamplesOf(const Texture *tex);
+uint32_t mglTextureDepthOf(const Texture *tex);
+
 /* Renderer bookkeeping the bind path needs without touching the Texture
  * record directly: the per-level dirty mask and the render-target flag. */
 uint32_t mglTextureDirtyBits(const Texture *tex);
