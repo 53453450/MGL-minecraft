@@ -109,6 +109,14 @@ extern void mglLogRenderPassLifecycle(const char *tag, uint64_t call,
                                       uint32_t renderPassDrawBufferCount);
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
+static GLMState *mglRsStateView(const MGLRendererStateView *view)
+{
+    if (view->core && view->core->activeState) {
+        return view->core->activeState;
+    }
+    return view->ctx ? view->ctx->active_state : NULL;
+}
+
 static GLMState *mglRsState(const MGLRendererStateAreas *areas)
 {
     if (areas->core && areas->core->activeState) {
@@ -169,8 +177,8 @@ int mglRenderPassCurrentRenderPassUsesTexture(void *renderer, void *texture)
     if (!renderer) {
         return 0;
     }
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *commandState = areas.command;
     if (!texture || !commandState ||
         mglRenderEncoderOwnerHasCurrent(
@@ -206,15 +214,15 @@ int mglRenderPassMatchesCurrentFramebuffer(void *renderer)
     if (!renderer) {
         return 1;
     }
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *commandState = areas.command;
     if (!ctx || !commandState || !commandState->renderPassStateOwner) {
         return 1;
     }
 
-    Framebuffer *fbo = mglRsState(&areas)->framebuffer;
+    Framebuffer *fbo = mglRsStateView(&areas)->framebuffer;
     GLuint fboName = fbo ? fbo->name : 0u;
 
     if (fbo != NULL && fboName != 0u) {
@@ -248,8 +256,8 @@ void mglRenderPassEndIfFramebufferChangedForNonDraw(void *renderer,
     if (!renderer) {
         return;
     }
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *commandState = areas.command;
     if (!ctx || !commandState ||
@@ -265,13 +273,13 @@ void mglRenderPassEndIfFramebufferChangedForNonDraw(void *renderer,
     static uint64_t s_nonDrawFboMismatchCount = 0;
     uint64_t hit = ++s_nonDrawFboMismatchCount;
     if (mglTraceLogIsEnabled() && (hit <= 32ull || (hit % 256ull) == 0ull)) {
-        Framebuffer *fbo = mglRsState(&areas)->framebuffer;
+        Framebuffer *fbo = mglRsStateView(&areas)->framebuffer;
         GLuint fboName = fbo ? fbo->name : 0u;
         mglTraceLog("RENDERPASS_NON_DRAW_MISMATCH processCall=%llu hit=%llu "
                     "ctxFbo=%u(%p) ctxDrawBuf=0x%x rpFbo=%u(%p) rpDrawBuf=0x%x",
                     (unsigned long long)processCall, (unsigned long long)hit,
                     (unsigned)fboName, (void *)fbo,
-                    (unsigned)mglRsState(&areas)->draw_buffer,
+                    (unsigned)mglRsStateView(&areas)->draw_buffer,
                     (unsigned)commandState->renderPassFramebufferName,
                     commandState->renderPassFramebuffer,
                     (unsigned)commandState->renderPassDrawBuffer);
@@ -315,8 +323,8 @@ int mglRenderPassSynchronizeForTextureReadback(void *renderer, void *texture,
     if (!renderer) {
         return 0;
     }
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *commandState = areas.command;
 
     if (!mglRenderPassCurrentRenderPassUsesTexture(renderer, texture)) {
@@ -376,10 +384,10 @@ int mglRenderPassSyncRenderPassStateForContext(void *renderer,
     if (!renderer) {
         return 0;
     }
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMState *state =
-        glm_ctx ? glm_ctx->active_state : mglRsState(&areas);
+        glm_ctx ? glm_ctx->active_state : mglRsStateView(&areas);
     Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(
         glm_ctx, "processGLState.dirtyFBO");
     int framebufferBindingDirty =
@@ -424,8 +432,8 @@ int mglRenderPassRotateRenderEncoderForCurrentFramebufferLocked(void *renderer)
         return 0;
     }
     MGL_PERF_INC(g_mglEncoderFBORotationsSinceSwap);
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext glm_ctx = areas.ctx;
     GLuint fbo_name = 0u;
     if (glm_ctx && glm_ctx->active_state && glm_ctx->active_state->framebuffer) {
@@ -944,10 +952,10 @@ void mglRenderPassUpdateViewportAndScissorLocked(void *renderer)
 
 static void mglRsUpdateViewportAndScissor(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
-    GLMState *state = mglRsState(&areas);
+    GLMState *state = mglRsStateView(&areas);
     const MGLRasterOrientationPlan orientation = mglRasterOrientationForState(state);
     MGLCommandState *commandState = areas.command;
     void *bindingOwner =
@@ -1702,8 +1710,8 @@ void mglRenderPassFlushCommandBuffer(void *renderer, int finish)
     if (!renderer) {
         return;
     }
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     mglRenderPassFlushCommandBufferLocked(renderer,
                                         finish ? 1 : 0);
 
@@ -1751,8 +1759,8 @@ int mglRenderPassPrepareEmulatedIndirectCPURead(void *renderer,
     if (!renderer) {
         return 0;
     }
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *commandState = areas.command;
     if (!drawCtx) {
         fprintf(stderr, "MGL WARNING: %s skipped because context is NULL\n",
