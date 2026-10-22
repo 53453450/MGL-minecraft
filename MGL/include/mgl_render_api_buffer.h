@@ -27,6 +27,16 @@ static inline bool mglBufferMapIsCoherent(uint32_t access_flags)
     return (access_flags & GL_MAP_COHERENT_BIT) != 0;
 }
 
+static inline bool mglBufferStorageIsMapped(uint32_t storage_flags)
+{
+    return (storage_flags & GL_MAP_READ_BIT) != 0;
+}
+
+static inline bool mglBufferStorageIsPersistent(uint32_t storage_flags)
+{
+    return (storage_flags & GL_MAP_PERSISTENT_BIT) != 0;
+}
+
 static inline bool mglBufferStorageIsClient(uint32_t storage_flags)
 {
     return (storage_flags & GL_CLIENT_STORAGE_BIT) != 0;

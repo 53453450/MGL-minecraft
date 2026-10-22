@@ -256,6 +256,17 @@ static inline uint32_t mglVertexFetchKindComponentBytes(MGLVertexFetchKind kind)
     }
 }
 
+static inline bool mglVertexTypeIsFixed(uint32_t type)
+{
+    return type == GL_FIXED;
+}
+
+/* GL_BGRA doubles as the "size" marker for BGRA component order. */
+static inline bool mglVertexSizeIsBGRA(uint32_t size)
+{
+    return size == GL_BGRA;
+}
+
 /* 10_10_10_2 packed vertex types (the unsigned and the signed variant). */
 static inline bool mglVertexTypeIs1010102(uint32_t type)
 {

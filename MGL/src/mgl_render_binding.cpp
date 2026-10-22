@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-3.0-only */
 #include "mgl_metal.h"
+#include "mgl_pixel_format.h"
 #include "mgl_render.h"
 #include "mgl_render_pixel.h"
 #include "mgl_byte_hash.h"
@@ -170,18 +171,18 @@ double mglRenderDecodeVertexAttribComponent(const uint8_t *src, uint32_t type,
     if (!src) {
         return 0.0;
     }
-    switch (type) {
-    case GL_FLOAT: {
+    switch (mglVertexFetchKindForGLType(type)) {
+    case MGL_VFETCH_KIND_F32: {
         float v = 0.0f;
         memcpy(&v, src + component * sizeof(float), sizeof(v));
         return (double)v;
     }
-    case GL_UNSIGNED_BYTE: {
+    case MGL_VFETCH_KIND_U8: {
         uint8_t v = 0;
         memcpy(&v, src + component, sizeof(v));
         return normalized ? ((double)v / 255.0) : (double)v;
     }
-    case GL_BYTE: {
+    case MGL_VFETCH_KIND_S8: {
         int8_t v = 0;
         memcpy(&v, src + component, sizeof(v));
         if (normalized) {
@@ -190,12 +191,12 @@ double mglRenderDecodeVertexAttribComponent(const uint8_t *src, uint32_t type,
         }
         return (double)v;
     }
-    case GL_UNSIGNED_SHORT: {
+    case MGL_VFETCH_KIND_U16: {
         uint16_t v = 0;
         memcpy(&v, src + component * sizeof(uint16_t), sizeof(v));
         return normalized ? ((double)v / 65535.0) : (double)v;
     }
-    case GL_SHORT: {
+    case MGL_VFETCH_KIND_S16: {
         int16_t v = 0;
         memcpy(&v, src + component * sizeof(int16_t), sizeof(v));
         if (normalized) {
@@ -204,12 +205,12 @@ double mglRenderDecodeVertexAttribComponent(const uint8_t *src, uint32_t type,
         }
         return (double)v;
     }
-    case GL_UNSIGNED_INT: {
+    case MGL_VFETCH_KIND_U32: {
         uint32_t v = 0;
         memcpy(&v, src + component * sizeof(uint32_t), sizeof(v));
         return normalized ? ((double)v / 4294967295.0) : (double)v;
     }
-    case GL_INT: {
+    case MGL_VFETCH_KIND_S32: {
         int32_t v = 0;
         memcpy(&v, src + component * sizeof(int32_t), sizeof(v));
         if (normalized) {
@@ -243,16 +244,14 @@ int mglRenderAttribOffsetsValid(int64_t binding_offset,
 void mglRenderPlanCurrentAttribFromShader(uint32_t shader_gl_type,
                                           uint32_t *type_out,
                                           uint32_t *size_out, int *integer_out) {
+    const uint32_t shader_kind =
+        mglVertexFormatClassKind(mglRenderVertexFormatClass(shader_gl_type));
     uint32_t type = GL_FLOAT;
     int integer = 0;
-    if (shader_gl_type == GL_INT || shader_gl_type == GL_INT_VEC2 ||
-        shader_gl_type == GL_INT_VEC3 || shader_gl_type == GL_INT_VEC4) {
+    if (shader_kind == 2u) {
         type = GL_INT;
         integer = 1;
-    } else if (shader_gl_type == GL_UNSIGNED_INT ||
-               shader_gl_type == GL_UNSIGNED_INT_VEC2 ||
-               shader_gl_type == GL_UNSIGNED_INT_VEC3 ||
-               shader_gl_type == GL_UNSIGNED_INT_VEC4) {
+    } else if (shader_kind == 3u) {
         type = GL_UNSIGNED_INT;
         integer = 1;
     }
@@ -653,7 +652,7 @@ int mglRenderBindBufferStorage(Buffer* buffer,
     }
 
     uint64_t options = static_cast<uint64_t>(MTL::ResourceStorageModeShared);
-    if ((buffer->storage_flags & GL_MAP_READ_BIT) == 0) {
+    if (!mglBufferStorageIsMapped(buffer->storage_flags)) {
         options |= static_cast<uint64_t>(
             MTL::ResourceCPUCacheModeWriteCombined);
     }
@@ -680,11 +679,11 @@ int mglRenderBindBufferStorage(Buffer* buffer,
     }
 
     const bool clientStorage =
-        (buffer->storage_flags & GL_CLIENT_STORAGE_BIT) != 0;
+        mglBufferStorageIsClient(buffer->storage_flags);
     const bool persistentNoCopy =
         bytes &&
         (buffer->immutable_storage & BUFFER_IMMUTABLE_STORAGE_FLAG) != 0 &&
-        (buffer->storage_flags & GL_MAP_PERSISTENT_BIT) != 0;
+        mglBufferStorageIsPersistent(buffer->storage_flags);
     const bool noCopy = clientStorage || persistentNoCopy;
     if (noCopy && !bytes) {
         if (err && errcap) {
@@ -719,7 +718,7 @@ int mglRenderBindBufferStorage(Buffer* buffer,
     }
 
     mglBufferBackendEnsure(buffer)->mtl_data = metalBuffer;
-    mglBufferBackendSetOwnsCPUStorage(buffer, noCopy ? GL_TRUE : GL_FALSE);
+    mglBufferBackendSetOwnsCPUStorage(buffer, noCopy ? 1 : 0);
     if (!bytes) buffer->data.buffer_data = 0;
     return MGL_RENDER_BUFFER_BOUND;
 }
@@ -1972,7 +1971,7 @@ extern "C" void mglRenderPlanVertexAttribFormat(
     uint32_t format = 0u;
     int needs_conversion = 0;
     int kind = MGL_ATTRIB_CONV_NONE;
-    if (type == GL_DOUBLE) {
+    if (mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_F64) {
         needs_conversion = 1;
         kind = MGL_ATTRIB_CONV_DOUBLE;
         format = mglRenderDoubleVertexAttribFloatFormat(size);
@@ -1981,24 +1980,24 @@ extern "C" void mglRenderPlanVertexAttribFormat(
         needs_conversion = 1;
         kind = MGL_ATTRIB_CONV_INT_TO_FLOAT;
         format = mglRenderDoubleVertexAttribFloatFormat(size);
-    } else if (type == GL_FIXED) {
+    } else if (mglVertexTypeIsFixed(type)) {
         needs_conversion = 1;
         kind = MGL_ATTRIB_CONV_FIXED;
         format = mglRenderDoubleVertexAttribFloatFormat(size);
-    } else if (type == GL_UNSIGNED_INT_10_10_10_2) {
+    } else if (mglVertexTypeIs1010102(type)) {
         needs_conversion = 1;
         kind = MGL_ATTRIB_CONV_UINT_1010102;
         format = mglRenderDoubleVertexAttribFloatFormat(4u);
-    } else if (type == GL_UNSIGNED_INT_2_10_10_10_REV ||
-               type == GL_INT_2_10_10_10_REV) {
-        if (!norm || size == GL_BGRA) {
+    } else if (mglPackedOutputKind(type) == MGL_PACKED_A2BGR10_REV ||
+               mglVertexTypeIs1010102Signed(type)) {
+        if (!norm || mglVertexSizeIsBGRA(size)) {
             needs_conversion = 1;
             kind = MGL_ATTRIB_CONV_REV2101010;
             format = mglRenderDoubleVertexAttribFloatFormat(4u);
         } else {
             format = mglRenderGLTypeSizeToVertexFormat(type, size, norm);
         }
-    } else if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+    } else if (mglPackedOutputKind(type) == MGL_PACKED_R11FG11FB10F_REV) {
         needs_conversion = 1;
         kind = MGL_ATTRIB_CONV_UINT_10F11F11F;
         format = mglRenderDoubleVertexAttribFloatFormat(3u);
@@ -2033,7 +2032,7 @@ extern "C" uint32_t mglRenderPlanVertexAttribStride(
     if (uses_current) {
         return 16u;
     }
-    if (type == GL_DOUBLE) {
+    if (mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_F64) {
         const uint64_t raw =
             resolved_stride > 0u ? resolved_stride
                                  : (uint64_t)size * sizeof(double);
@@ -2045,7 +2044,7 @@ extern "C" uint32_t mglRenderPlanVertexAttribStride(
                                  : (uint64_t)size * sizeof(int32_t);
         return (uint32_t)mglRenderAlignVertexStrideForMetal(raw);
     }
-    if (type == GL_FIXED) {
+    if (mglVertexTypeIsFixed(type)) {
         const uint64_t raw =
             resolved_stride > 0u ? resolved_stride
                                  : (uint64_t)size * sizeof(int32_t);
@@ -2053,14 +2052,14 @@ extern "C" uint32_t mglRenderPlanVertexAttribStride(
         return (uint32_t)mglRenderAlignVertexStrideForMetal(
             raw > min_bytes ? raw : min_bytes);
     }
-    if (type == GL_UNSIGNED_INT_10_10_10_2) {
+    if (mglVertexTypeIs1010102(type)) {
         const uint64_t raw =
             resolved_stride > 0u ? resolved_stride : sizeof(uint32_t);
         const uint64_t min_bytes = 4u * sizeof(float);
         return (uint32_t)mglRenderAlignVertexStrideForMetal(
             raw > min_bytes ? raw : min_bytes);
     }
-    if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+    if (mglPackedOutputKind(type) == MGL_PACKED_R11FG11FB10F_REV) {
         const uint64_t raw =
             resolved_stride > 0u ? resolved_stride : sizeof(uint32_t);
         const uint64_t min_bytes = 3u * sizeof(float);
