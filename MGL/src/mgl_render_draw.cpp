@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-3.0-only */
 #include "mgl_metal.h"
+#include "mgl_draw_mode.h"
 #include "mgl_vertex_format.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_pixel.h"
@@ -153,7 +154,7 @@ int mglRenderDrawModeIsTriangles(uint32_t mode) {
 }
 
 int mglRenderDrawModeIsTriangleStrip(uint32_t mode) {
-    return mode == GL_TRIANGLE_STRIP ? 1 : 0;
+    return mglPrimitiveModeOf(mode) == MGL_PRIMITIVE_TRIANGLE_STRIP ? 1 : 0;
 }
 
 int mglRenderIndexTypeIsU16(uint32_t type) {
@@ -759,21 +760,21 @@ static int mglCullDistanceArraySplitCount(uint32_t draw_mode, uint64_t count,
     if (count > UINT32_MAX) {
         return -1;
     }
-    switch (draw_mode) {
-    case GL_TRIANGLE_STRIP:
-    case GL_TRIANGLE_FAN:
+    switch (mglPrimitiveModeOf(draw_mode)) {
+    case MGL_PRIMITIVE_TRIANGLE_STRIP:
+    case MGL_PRIMITIVE_TRIANGLE_FAN:
         if (count < 3u) {
             return 1;
         }
         *out_n = (uint32_t)(count - 2u);
         return 0;
-    case GL_LINE_STRIP:
+    case MGL_PRIMITIVE_LINE_STRIP:
         if (count < 2u) {
             return 1;
         }
         *out_n = (uint32_t)(count - 1u);
         return 0;
-    case GL_LINE_LOOP:
+    case MGL_PRIMITIVE_LINE_LOOP:
         if (count < 2u) {
             return 1;
         }
@@ -806,7 +807,7 @@ int mglRenderFillCullDistanceArrayPrimitives(
     const uint32_t base = (uint32_t)first;
     for (uint32_t p = 0u; p < n; p++) {
         MGLRenderCullDistancePrimitive prim = {};
-        if (draw_mode == GL_TRIANGLE_STRIP) {
+        if (mglPrimitiveModeOf(draw_mode) == MGL_PRIMITIVE_TRIANGLE_STRIP) {
             prim.vertices[0] = base + p;
             prim.vertices[1] = base + p + 1u;
             prim.vertices[2] = base + p + 2u;
@@ -814,7 +815,7 @@ int mglRenderFillCullDistanceArrayPrimitives(
             prim.primitive_type = 3u; /* MGL_DRAW_PRIMITIVE_TRIANGLE */
             prim.index_count = 3u;
             prim.index_buffer_offset = (uint64_t)p * 3u * sizeof(uint32_t);
-        } else if (draw_mode == GL_TRIANGLE_FAN) {
+        } else if (mglPrimitiveModeOf(draw_mode) == MGL_PRIMITIVE_TRIANGLE_FAN) {
             prim.vertices[0] = base;
             prim.vertices[1] = base + p + 1u;
             prim.vertices[2] = base + p + 2u;
@@ -822,7 +823,7 @@ int mglRenderFillCullDistanceArrayPrimitives(
             prim.primitive_type = 3u;
             prim.index_count = 3u;
             prim.index_buffer_offset = (uint64_t)p * 3u * sizeof(uint32_t);
-        } else if (draw_mode == GL_LINE_STRIP) {
+        } else if (mglPrimitiveModeOf(draw_mode) == MGL_PRIMITIVE_LINE_STRIP) {
             prim.vertices[0] = base + p;
             prim.vertex_count = 0u;
             prim.primitive_type = 1u; /* MGL_DRAW_PRIMITIVE_LINE */
@@ -905,11 +906,11 @@ int mglRenderCreateCullDistanceArrayPlan(void* device, uint32_t draw_mode, int32
         return -1;
     }
     std::vector<uint32_t> expanded;
-    if (draw_mode == GL_TRIANGLE_STRIP || draw_mode == GL_TRIANGLE_FAN) {
+    if (mglPrimitiveModeOf(draw_mode) == MGL_PRIMITIVE_TRIANGLE_STRIP || mglPrimitiveModeOf(draw_mode) == MGL_PRIMITIVE_TRIANGLE_FAN) {
         uint32_t* raw = nullptr;
         uint64_t raw_count = 0u;
         const int expand =
-            draw_mode == GL_TRIANGLE_STRIP
+            mglPrimitiveModeOf(draw_mode) == MGL_PRIMITIVE_TRIANGLE_STRIP
                 ? mglRenderExpandTriangleStripArrayIndices((uint32_t)count,
                                                            &raw, &raw_count)
                 : mglRenderExpandTriangleFanArrayIndices((uint32_t)count, &raw,
@@ -929,7 +930,7 @@ int mglRenderCreateCullDistanceArrayPlan(void* device, uint32_t draw_mode, int32
             return -1;
         }
         std::free(raw);
-    } else if (draw_mode == GL_LINE_LOOP) {
+    } else if (mglPrimitiveModeOf(draw_mode) == MGL_PRIMITIVE_LINE_LOOP) {
         uint32_t* raw = nullptr;
         uint64_t raw_count = 0u;
         if (mglRenderExpandLineLoopArrayIndices((uint32_t)first, (uint32_t)count,
@@ -1154,14 +1155,14 @@ int mglRenderExpandLineLoopIndices(
 /* GL 4.6 §10.1.11–14 adjacency assembly with adjacent verts dropped. */
 static uint64_t mglAdjacencyCoreIndexCount(uint32_t mode, uint32_t count)
 {
-    switch (mode) {
-        case GL_LINES_ADJACENCY:
+    switch (mglPrimitiveModeOf(mode)) {
+        case MGL_PRIMITIVE_LINES_ADJACENCY:
             return (uint64_t)(count / 4u) * 2u;
-        case GL_LINE_STRIP_ADJACENCY:
+        case MGL_PRIMITIVE_LINE_STRIP_ADJACENCY:
             return count >= 4u ? (uint64_t)(count - 3u) * 2u : 0u;
-        case GL_TRIANGLES_ADJACENCY:
+        case MGL_PRIMITIVE_TRIANGLES_ADJACENCY:
             return (uint64_t)(count / 6u) * 3u;
-        case GL_TRIANGLE_STRIP_ADJACENCY: {
+        case MGL_PRIMITIVE_TRIANGLE_STRIP_ADJACENCY: {
             if (count < 6u) {
                 return 0u;
             }
@@ -1183,8 +1184,8 @@ static int mglAdjacencyFillCoreIndices(
     uint32_t *dst)
 {
     uint32_t o = 0u;
-    switch (mode) {
-        case GL_LINES_ADJACENCY: {
+    switch (mglPrimitiveModeOf(mode)) {
+        case MGL_PRIMITIVE_LINES_ADJACENCY: {
             const uint32_t n = count / 4u;
             for (uint32_t i = 0u; i < n; i++) {
                 const uint32_t b = i * 4u;
@@ -1193,7 +1194,7 @@ static int mglAdjacencyFillCoreIndices(
             }
             return 0;
         }
-        case GL_LINE_STRIP_ADJACENCY: {
+        case MGL_PRIMITIVE_LINE_STRIP_ADJACENCY: {
             const uint32_t n = count - 3u;
             for (uint32_t i = 0u; i < n; i++) {
                 dst[o++] = read_index(ctx, i + 1u);
@@ -1201,7 +1202,7 @@ static int mglAdjacencyFillCoreIndices(
             }
             return 0;
         }
-        case GL_TRIANGLES_ADJACENCY: {
+        case MGL_PRIMITIVE_TRIANGLES_ADJACENCY: {
             const uint32_t n = count / 6u;
             for (uint32_t i = 0u; i < n; i++) {
                 const uint32_t b = i * 6u;
@@ -1211,7 +1212,7 @@ static int mglAdjacencyFillCoreIndices(
             }
             return 0;
         }
-        case GL_TRIANGLE_STRIP_ADJACENCY: {
+        case MGL_PRIMITIVE_TRIANGLE_STRIP_ADJACENCY: {
             const uint32_t usable = count & ~1u;
             const uint32_t n = usable / 2u - 2u;
             for (uint32_t i = 0u; i < n; i++) {
@@ -1317,12 +1318,12 @@ int mglRenderExpandAdjacencyElementIndices(
 extern "C"
 uint32_t mglRenderAdjacencyMetalPrimitiveType(uint32_t mode)
 {
-    switch (mode) {
-        case GL_LINES_ADJACENCY:
-        case GL_LINE_STRIP_ADJACENCY:
+    switch (mglPrimitiveModeOf(mode)) {
+        case MGL_PRIMITIVE_LINES_ADJACENCY:
+        case MGL_PRIMITIVE_LINE_STRIP_ADJACENCY:
             return 1u; /* MTLPrimitiveTypeLine */
-        case GL_TRIANGLES_ADJACENCY:
-        case GL_TRIANGLE_STRIP_ADJACENCY:
+        case MGL_PRIMITIVE_TRIANGLES_ADJACENCY:
+        case MGL_PRIMITIVE_TRIANGLE_STRIP_ADJACENCY:
             return 3u; /* MTLPrimitiveTypeTriangle */
         default:
             return 0xFFFFFFFFu;
