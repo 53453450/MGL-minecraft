@@ -16,7 +16,7 @@ C5 MGL/src/mgl_clear_buffer_ops.c 6
 C5 MGL/src/mgl_draw_metal_port.c 36
 C5 MGL/src/mgl_platform_shell.cpp 1
 C5 MGL/src/mgl_pso_build_ops.c 7
-C5 MGL/src/mgl_render_pass_manager_ops.c 61
+C5 MGL/src/mgl_render_pass_manager_ops.c 17
 C5 MGL/src/mgl_render_pass_sync_ops.c 25
 C5 MGL/src/mgl_renderer_ports.c 22
 C5 MGL/src/mgl_tess_dispatch.c 9

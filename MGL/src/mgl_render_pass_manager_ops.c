@@ -195,8 +195,8 @@ static void mglRenderPassManagerSyncRuntimeOwners(MGLCommandState *state)
 
 void mglRenderPassManagerEndCurrentRenderEncoder(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs || !cs->currentRenderEncoderOwner ||
         mglRenderEncoderOwnerHasCurrent(cs->currentRenderEncoderOwner) != 1) {
@@ -207,8 +207,8 @@ void mglRenderPassManagerEndCurrentRenderEncoder(void *renderer)
 
 void mglRenderPassManagerClearCurrentRenderEncoder(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs) {
         return;
@@ -221,8 +221,8 @@ void mglRenderPassManagerClearCurrentRenderEncoder(void *renderer)
 
 void mglRenderPassManagerDiscardCurrentCommandBuffer(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs) {
         return;
@@ -236,8 +236,8 @@ int mglRenderPassManagerCommitCommandBufferTransaction(
     void *renderer, void *commandBuffer, void *recoveryOwner,
     int waitForCompletion, MGLRenderCommandBufferTransaction *result)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs) {
         return -1;
@@ -252,8 +252,8 @@ int mglRenderPassManagerCommitCommandBufferTransaction(
 void mglRenderPassManagerReleaseDetachedCommandBufferIfOwned(
     void *renderer, void *commandBuffer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs || !cs->detachedCommandBufferSubmission) {
         return;
@@ -298,8 +298,8 @@ static void mglRenderPassManagerStoreIdentity(
 
 void mglRenderPassManagerClearRenderPassIdentity(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs) {
         return;
@@ -329,8 +329,8 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
 {
     mglRendererBindingInvalidateLastBoundState(renderer);
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs ||
         mglRenderEncoderOwnerHasCurrent(cs->currentRenderEncoderOwner) != 1) {
@@ -383,15 +383,24 @@ static GLMState *mglPdState(const MGLRendererStateAreas *areas)
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 
+/* Same question from the read-only view (same two fields). */
+static GLMState *mglPdStateView(const MGLRendererStateView *view)
+{
+    if (view->core && view->core->activeState) {
+        return view->core->activeState;
+    }
+    return view->ctx ? view->ctx->active_state : NULL;
+}
+
 /* -processDirtyStateDomainsLocked:work: */
 bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
                                            MGLResourceSyncWork *work)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     int fboBindingDirty = 0;
-    if ((mglPdState(&areas)->dirty_bits & (DIRTY_STATE | DIRTY_FBO)) ==
+    if ((mglPdStateView(&areas)->dirty_bits & (DIRTY_STATE | DIRTY_FBO)) ==
         (DIRTY_STATE | DIRTY_FBO)) {
         Framebuffer *framebuffer =
             mglRendererGetValidatedFramebuffer(ctx, "processGLState.dirtyStateFBO");
@@ -401,7 +410,7 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
     }
     MGLDirtyDomainPlan plan = {0};
     if (mglRenderPlanDirtyDomains(
-            mglPdState(&areas)->dirty_bits, draw_command ? 1 : 0,
+            mglPdStateView(&areas)->dirty_bits, draw_command ? 1 : 0,
             areas.pipeline_cache->pipelineState != NULL ? 1 : 0, fboBindingDirty,
             &plan) != 0) {
         return false;
@@ -425,9 +434,9 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
             }
         }
 
-        if (mglPdState(&areas)->dirty_bits & DIRTY_STATE)
+        if (mglPdStateView(&areas)->dirty_bits & DIRTY_STATE)
         {
-            mglPdState(&areas)->dirty_bits &= ~DIRTY_STATE;
+            mglPdStateView(&areas)->dirty_bits &= ~DIRTY_STATE;
         }
 
         if (plan.remap_buffers)
@@ -444,7 +453,7 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
                 if (work) work->mappedBuffers = true;
             }
 
-            mglPdState(&areas)->dirty_bits &= ~DIRTY_BUFFER_BASE_STATE;
+            mglPdStateView(&areas)->dirty_bits &= ~DIRTY_BUFFER_BASE_STATE;
         }
 
         if (plan.bind_textures)
@@ -452,13 +461,13 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
             RETURN_FALSE_ON_FAILURE(mglBatchBindActiveTexturesToMTL(renderer, ctx));
             if (work) work->boundActiveTextures = true;
 
-            mglPdState(&areas)->dirty_bits &= ~(DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER);
+            mglPdStateView(&areas)->dirty_bits &= ~(DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER);
         }
 
         if (plan.vao_path)
         {
-            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdState(&areas)->vertex_buffer_map_list));
-            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdState(&areas)->fragment_buffer_map_list));
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdStateView(&areas)->vertex_buffer_map_list));
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdStateView(&areas)->fragment_buffer_map_list));
             if (work) work->updatedBaseLists = true;
 
             if (mglRenderEncoderOwnerHasCurrent(
@@ -469,15 +478,15 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
 
             mglRenderPassUpdateCurrentRenderEncoder(renderer);
 
-            mglPdState(&areas)->dirty_bits &= ~DIRTY_RENDER_STATE;
+            mglPdStateView(&areas)->dirty_bits &= ~DIRTY_RENDER_STATE;
         }
         else if (plan.buffer_path)
         {
-            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdState(&areas)->vertex_buffer_map_list));
-            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdState(&areas)->fragment_buffer_map_list));
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdStateView(&areas)->vertex_buffer_map_list));
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdStateView(&areas)->fragment_buffer_map_list));
             if (work) work->updatedBaseLists = true;
 
-            mglPdState(&areas)->dirty_bits &= ~DIRTY_BUFFER;
+            mglPdStateView(&areas)->dirty_bits &= ~DIRTY_BUFFER;
         }
         else if (plan.render_state_path)
         {
@@ -490,7 +499,7 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
 
             mglRenderPassUpdateCurrentRenderEncoder(renderer);
 
-            mglPdState(&areas)->dirty_bits &= ~DIRTY_RENDER_STATE;
+            mglPdStateView(&areas)->dirty_bits &= ~DIRTY_RENDER_STATE;
         }
 
         if (plan.sync_pipeline)
@@ -499,7 +508,7 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
                 renderer, deferredBufferMapForPipelineBuild));
         }
 
-        mglPdState(&areas)->dirty_bits = 0;
+        mglPdStateView(&areas)->dirty_bits = 0;
     }
     else
     {
@@ -507,16 +516,16 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
             .render_encoder_owner = areas.command->currentRenderEncoderOwner,
         };
 
-        if( mglRendererCheckForDirtyBufferData(renderer, &mglPdState(&areas)->vertex_buffer_map_list))
+        if( mglRendererCheckForDirtyBufferData(renderer, &mglPdStateView(&areas)->vertex_buffer_map_list))
         {
-            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdState(&areas)->vertex_buffer_map_list));
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdStateView(&areas)->vertex_buffer_map_list));
 
             RETURN_FALSE_ON_FAILURE(mglStageEncodeBindVertexBuffers(renderer, &encCtx));
         }
 
-        if( mglRendererCheckForDirtyBufferData(renderer, &mglPdState(&areas)->fragment_buffer_map_list))
+        if( mglRendererCheckForDirtyBufferData(renderer, &mglPdStateView(&areas)->fragment_buffer_map_list))
         {
-            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdState(&areas)->fragment_buffer_map_list));
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdStateView(&areas)->fragment_buffer_map_list));
 
             RETURN_FALSE_ON_FAILURE(mglStageEncodeBindFragmentBuffers(renderer, &encCtx));
         }
@@ -528,8 +537,8 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
  * mglRendererEnsureRasterEncoderForDrawPort. */
 int mglRenderPassEnsureRasterEncoderForDraw(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     if (mglRenderEncoderOwnerHasCurrent(
             areas.command->currentRenderEncoderOwner) == 1) {
         return 1;
@@ -696,8 +705,8 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
 {
     Framebuffer *fbo = (Framebuffer *)framebuffer;
     const GLuint fboName = framebuffer_name;
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLRenderPassState passState = {0};
     bool hasPassState =
@@ -709,7 +718,7 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
         mglRenderPassIdentitySnapshot(areas.command);
     if (identity.framebuffer != fbo ||
         identity.framebuffer_name != fboName ||
-        identity.draw_buffer != mglPdState(&areas)->draw_buffer ||
+        identity.draw_buffer != mglPdStateView(&areas)->draw_buffer ||
         identity.draw_buffer_count != (uint32_t)mglMetalDrawBufferCount(ctx)) {
         return 0;
     }
@@ -720,7 +729,7 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
     }
 
     if (!fbo) {
-        GLuint mgl_drawbuffer = mglDefaultDrawBufferIndexForGL(mglPdState(&areas)->draw_buffer);
+        GLuint mgl_drawbuffer = mglDefaultDrawBufferIndexForGL(mglPdStateView(&areas)->draw_buffer);
         void * expectedColor0 = NULL;
         void * actualColor0 = mglRenderPassTextureFromSnapshot(
             &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
@@ -750,9 +759,9 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
                 mglRenderPassDefaultDrawBufferAttachment(
                     areas.backend, mgl_drawbuffer,
                     MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL);
-            defaultPassNeedsDepth = mglPdState(&areas)->caps.depth_test ||
+            defaultPassNeedsDepth = mglPdStateView(&areas)->caps.depth_test ||
                                     cachedDepth != NULL;
-            defaultPassNeedsStencil = mglPdState(&areas)->caps.stencil_test ||
+            defaultPassNeedsStencil = mglPdStateView(&areas)->caps.stencil_test ||
                                       ctx->stencil_format.format ||
                                       cachedStencil != NULL;
             expectedDepth = defaultPassNeedsDepth ? cachedDepth : NULL;
@@ -772,13 +781,13 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
             mglRenderPassTextureFromSnapshot(
                 &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0),
             expectedDepth,
-            mglPdState(&areas)->caps.depth_test ? 1 : 0, 0, no_sub, no_sub);
+            mglPdStateView(&areas)->caps.depth_test ? 1 : 0, 0, no_sub, no_sub);
         mglRenderPassFillMatchEntry(
             &entries[2],
             mglRenderPassTextureFromSnapshot(
                 &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0),
             expectedStencil,
-            (mglPdState(&areas)->caps.stencil_test || ctx->stencil_format.format) ? 1
+            (mglPdStateView(&areas)->caps.stencil_test || ctx->stencil_format.format) ? 1
                                                                              : 0,
             0, no_sub, no_sub);
         MGLRenderPassAttachmentMatchInput match = {0};
@@ -1013,11 +1022,11 @@ static uint64_t mglPdMin(uint64_t a, uint64_t b) { return a < b ? a : b; }
 /* -configureUserFBOAttachmentsLocked. */
 bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *commandState = areas.command;
-    Framebuffer *fbo = mglPdState(&areas)->framebuffer;
+    Framebuffer *fbo = mglPdStateView(&areas)->framebuffer;
 
     const GLsizei drawBufferCount = mglMetalDrawBufferCount(ctx);
     for (int i = 0; i < drawBufferCount; i++) {
@@ -1379,8 +1388,8 @@ bool mglRenderPassFinalizeRenderPassDescriptor(void *renderer,
                                                uint64_t renderEncoderCall,
                                                int traceRenderEncoder)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *commandState = areas.command;
 
@@ -1398,7 +1407,7 @@ bool mglRenderPassFinalizeRenderPassDescriptor(void *renderer,
             "c0=%p fmt=%lu usage=0x%lx size=%lux%lu la/sa=%s/%s depth=%p fmt=%lu size=%lux%lu la/sa=%s/%s stencil=%p fmt=%lu size=%lux%lu la/sa=%s/%s",
             (unsigned long long)renderEncoderCall,
             (unsigned)mglRendererSafeFramebufferName(ctx),
-            (unsigned)mglPdState(&areas)->draw_buffer,
+            (unsigned)mglPdStateView(&areas)->draw_buffer,
             (unsigned long)mglPdRenderTargetWidthFor(commandState),
             (unsigned long)mglPdRenderTargetHeightFor(commandState), c0Tex,
             (unsigned long)(c0Tex ? mglPdTextureInfo(c0Tex).pixel_format
@@ -1465,7 +1474,7 @@ bool mglRenderPassFinalizeRenderPassDescriptor(void *renderer,
     }
 
     if (!hasOutputAttachment) {
-        Framebuffer *fbo = mglPdState(&areas)->framebuffer;
+        Framebuffer *fbo = mglPdStateView(&areas)->framebuffer;
         const uint64_t fallbackWidth =
             fbo && fbo->default_width > 0 ? (uint64_t)fbo->default_width : 1u;
         const uint64_t fallbackHeight =
@@ -1522,7 +1531,7 @@ bool mglRenderPassFinalizeRenderPassDescriptor(void *renderer,
 
     /* Default-framebuffer paths expect color attachment 0 specifically.
      * FBO draw-buffer mappings may intentionally leave slot 0 as GL_NONE. */
-    if (!mglPdState(&areas)->framebuffer &&
+    if (!mglPdStateView(&areas)->framebuffer &&
         !mglPdAttachmentTextureFor(commandState,
                                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
                                    0)) {
@@ -1562,7 +1571,7 @@ bool mglRenderPassFinalizeRenderPassDescriptor(void *renderer,
         !mglPdAttachmentTextureFor(commandState,
                                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
                                    0)) {
-        Framebuffer *fbo = mglPdState(&areas)->framebuffer;
+        Framebuffer *fbo = mglPdStateView(&areas)->framebuffer;
         const uint64_t fallbackWidth =
             fbo && fbo->default_width > 0 ? (uint64_t)fbo->default_width : 1u;
         const uint64_t fallbackHeight =
@@ -2853,8 +2862,8 @@ int mglRenderPassCreateRenderEncoderLocked(void *renderer,
 int mglRenderPassEnsureWritableCommandBufferLocked(void *renderer,
                                                    const char *reason)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *commandState = areas.command;
 
     MGLRenderCommandBufferState bufferState = {0};
@@ -2927,8 +2936,8 @@ static int mglPdCommitCommandBufferTryBody(void *renderer, void *rawCtx)
  * *Locked contract is preserved. */
 void mglRenderPassFlushCommandBufferLocked(void *renderer, int finish)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLRenderPassManager *manager = areas.render_pass_manager;
     MGLCommandState *commandState = areas.command;
@@ -3250,8 +3259,8 @@ int mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(
     void *renderer, Program *program, uint32_t outputPrimitive)
 {
     (void)outputPrimitive;
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
 
     if (!program) return 0;
@@ -3580,8 +3589,8 @@ done:
 int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(void *renderer,
                                                                 Program *program)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     if (!program) return 0;
     void *cachedFunction = NULL;
@@ -3838,8 +3847,8 @@ void mglRenderPassInvalidateCurrentPipelineState(void *renderer,
 /* -ensureCurrentRenderPassMatchesFramebufferForDraw. */
 int mglRenderPassEnsureCurrentRenderPassMatchesFramebufferForDraw(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *commandState = areas.command;
 
@@ -3859,11 +3868,11 @@ int mglRenderPassEnsureCurrentRenderPassMatchesFramebufferForDraw(void *renderer
     static uint64_t s_fboPassMismatchCount = 0;
     const uint64_t hit = ++s_fboPassMismatchCount;
     if (hit <= 32ull || (hit % 256ull) == 0ull) {
-        Framebuffer *fbo = mglPdState(&areas)->framebuffer;
+        Framebuffer *fbo = mglPdStateView(&areas)->framebuffer;
         void *color0 = mglPdColorTextureFor(commandState, 0);
         const GLuint mglDefaultDrawbuffer =
             fbo ? 0u
-                : mglDefaultDrawBufferIndexForGL(mglPdState(&areas)->draw_buffer);
+                : mglDefaultDrawBufferIndexForGL(mglPdStateView(&areas)->draw_buffer);
         void *expectedDefaultColor0 = NULL;
         if (!fbo) {
             expectedDefaultColor0 =
@@ -3884,7 +3893,7 @@ int mglRenderPassEnsureCurrentRenderPassMatchesFramebufferForDraw(void *renderer
         fprintf(stderr,
                 "MGL WARNING: render pass/FBO mismatch before draw hit=%llu fbo=%u drawBuffer=0x%x attachment0=%u passColor0=%p expectedDefaultColor0=%p defaultDrawBuffer=%u; rebuilding encoder\n",
                 (unsigned long long)hit, (unsigned)fboName,
-                (unsigned)(ctx ? mglPdState(&areas)->draw_buffer : 0u),
+                (unsigned)(ctx ? mglPdStateView(&areas)->draw_buffer : 0u),
                 (unsigned)attachment0Name, color0, expectedDefaultColor0,
                 (unsigned)mglDefaultDrawbuffer);
         mglLogRenderPassLifecycle(
@@ -3915,8 +3924,8 @@ typedef struct MglPdEmergencyResetCtx_t {
 static int mglPdEmergencyResetTryBody(void *renderer, void *rawCtx)
 {
     MglPdEmergencyResetCtx *ctx = (MglPdEmergencyResetCtx *)rawCtx;
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLRenderPassManager *manager = areas.render_pass_manager;
 
     /* Force cleanup of all Metal objects */
@@ -3958,8 +3967,8 @@ void mglRenderPassEmergencyResetMetalState(void *renderer)
 int mglRenderPassValidateAttachmentsAndPipelineFormats(void *renderer,
                                                        int traceProcess)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *commandState = areas.command;
 
@@ -4143,8 +4152,8 @@ static int mglPdRecoveryTryBody(void *renderer)
 {
     mglRenderPassEmergencyResetMetalState(renderer);
     s_pdCorruptionRecoveryCount++;
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     const int deviceOk =
         mglRendererBackendGetDevice(areas.backend) &&
         ((uintptr_t)mglRendererBackendGetDevice(areas.backend) >= 0x1000);
@@ -4776,8 +4785,8 @@ typedef struct MglPdPresentCtx_t {
 static int mglPdPresentTryBody(void *renderer, void *rawCtx)
 {
     MglPdPresentCtx *ctx = (MglPdPresentCtx *)rawCtx;
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *commandState = areas.command;
     GLMContext glmCtx = areas.ctx;
 
@@ -4862,8 +4871,8 @@ static int mglPdCommitSwapTryBody(void *renderer, void *rawCtx)
 /* -mtlSwapBuffersLocked:. */
 void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLRenderPassManager *manager = areas.render_pass_manager;
     MGLCommandState *commandState = areas.command;
 
@@ -5183,9 +5192,9 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
          * were encoded this frame keep their pool slots pinned for the committed
          * command buffer (copy-on-write snapshot reuse). */
         BufferMapList *boundLists[3] = {
-            &mglPdState(&areas)->vertex_buffer_map_list,
-            &mglPdState(&areas)->fragment_buffer_map_list,
-            &mglPdState(&areas)->compute_buffer_map_list,
+            &mglPdStateView(&areas)->vertex_buffer_map_list,
+            &mglPdStateView(&areas)->fragment_buffer_map_list,
+            &mglPdStateView(&areas)->compute_buffer_map_list,
         };
         for (int li = 0; li < 3; ++li) {
             for (GLuint mi = 0; mi < boundLists[li]->count; ++mi) {
