@@ -478,9 +478,11 @@ static void mglPdClearRectDraw(void *renderer, GLMContext glm_ctx,
         dsDesc.front = stencilDesc;
         dsDesc.back = stencilDesc;
         depthStencilState = NULL;
-        if (areas->pipeline_cache_depth_stencil_state_for_value_state) {
-            areas->pipeline_cache_depth_stencil_state_for_value_state(
-                areas->pipeline_cache_object, &dsDesc, &depthStencilState);
+        const MGLPipelineCachePort cache =
+            mglRendererPipelineCachePort(renderer);
+        if (cache.depth_stencil_state_for_value_state) {
+            cache.depth_stencil_state_for_value_state(
+                cache.object, &dsDesc, &depthStencilState);
         }
     }
     const uint32_t stencilClearValue = values->stencil & 0xffu;

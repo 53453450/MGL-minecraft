@@ -620,6 +620,7 @@ void mglRenderPassUpdateCurrentRenderEncoder(void *renderer)
     }
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
+    const MGLPipelineCachePort cache = mglRendererPipelineCachePort(renderer);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglRsState(&areas);
     MGLCommandState *commandState = areas.command;
@@ -793,9 +794,9 @@ void mglRenderPassUpdateCurrentRenderEncoder(void *renderer)
         }
 
         void *dsState = NULL;
-        if (areas.pipeline_cache_depth_stencil_state_for_value_state) {
-            areas.pipeline_cache_depth_stencil_state_for_value_state(
-                areas.pipeline_cache_object, &dsDesc, &dsState);
+        if (cache.depth_stencil_state_for_value_state) {
+            cache.depth_stencil_state_for_value_state(cache.object, &dsDesc,
+                                                      &dsState);
         }
 
         if (mglRenderBindingSetDepthStencilIfNeededForOwner(
@@ -819,9 +820,9 @@ void mglRenderPassUpdateCurrentRenderEncoder(void *renderer)
         disabledDSDesc.depth_write_enabled = 0u;
 
         void *disabledDSState = NULL;
-        if (areas.pipeline_cache_depth_stencil_state_for_value_state) {
-            areas.pipeline_cache_depth_stencil_state_for_value_state(
-                areas.pipeline_cache_object, &disabledDSDesc,
+        if (cache.depth_stencil_state_for_value_state) {
+            cache.depth_stencil_state_for_value_state(cache.object,
+                                                      &disabledDSDesc,
                 &disabledDSState);
         }
         if (disabledDSState) {

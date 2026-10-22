@@ -196,70 +196,13 @@ typedef struct MGLRendererStateAreas {
     const MGLPipelineCacheState *pipeline_cache;
     void **binding_state_owner;
     MGLFragmentTextureTraceBinding *fragment_trace_bindings;
-    /* Pipeline-cache object (the Objective-C cache instance) and the pieces of
-     * the tessellation state the vertex-descriptor plan needs.  Both are plain
-     * values C can hold, so they travel in the areas instead of costing a port
-     * per field; the shell fills them. */
-    void *pipeline_cache_object;
     /* ADDRESS of the renderer's command-recovery owner slot (it can be swapped
      * while a recovery runs, so dereference it at the point of use, like
      * binding_state_owner). */
     void **gpu_recovery_command_owner;
-    /* Sets one attachment's blend factors through the cache's own setter.
-     * Returns 1 on success. */
-    int (*pipeline_cache_set_blend)(
-        void *pipeline_cache_object, uint32_t index,
-        const struct MGLRenderPipelineBlendState_t *blend);
-    /* Reads one attachment's blend state back out of the cache's C++ owner
-     * (the setter's counterpart).  Returns 1 on success. */
-    int (*pipeline_cache_blend_state)(
-        void *pipeline_cache_object, uint32_t index,
-        struct MGLRenderPipelineBlendState_t *blend);
-    /* Drops the cache's active pipeline state (the Objective-C method also
-     * logs; the shell keeps that in the forwarder). */
-    void (*pipeline_cache_invalidate)(void *pipeline_cache_object);
     /* The renderer's live GPU-recovery record (the PSO build path writes the
      * interface-mismatch and quarantine fields). */
     MGLGPURecoveryState *gpu_recovery;
-    /* Pipeline-cache value-state bridges used by the PSO build path. */
-    int (*pipeline_cache_descriptor_state_for_words)(
-        void *pipeline_cache_object, const uint64_t *words,
-        MGLRenderPipelineDescriptorState *state_out);
-    int (*pipeline_cache_create_pso)(
-        void *pipeline_cache_object,
-        const MGLRenderPipelineDescriptorState *state, void *vertex_function,
-        void *fragment_function, void **pipeline_out, char *error_message,
-        size_t error_capacity);
-    void (*pipeline_cache_store_pipeline)(void *pipeline_cache_object,
-                                          void *pipeline, void *vertex_function,
-                                          void *fragment_function,
-                                          const uint64_t *words);
-    void (*pipeline_cache_store_descriptor_state)(
-        void *pipeline_cache_object,
-        const MGLRenderPipelineDescriptorState *state, const uint64_t *words);
-    /* Two-level cache lookup (the .m's
-     * -lookupPipelineForWords:pipeline:vertexFunction:fragmentFunction:): fills
-     * the three borrowed handles and returns 1 when the PSO cache had an entry.
-     * The handles stay owned by the cache, exactly like the store/activate
-     * bridges above. */
-    int (*pipeline_cache_lookup_pipeline)(
-        void *pipeline_cache_object, const uint64_t *words,
-        void **pipeline_out, void **vertex_function_out,
-        void **fragment_function_out);
-    /* Reads (or builds) one depth-stencil state from value state, the setter's
-     * counterpart for the encoder-state block.  `out` receives a borrowed
-     * handle; NULL when the cache has no state for it. */
-    void (*pipeline_cache_depth_stencil_state_for_value_state)(
-        void *pipeline_cache_object,
-        const struct MGLRenderDepthStencilDescriptorState_t *state,
-        void **out);
-    void (*pipeline_cache_activate)(void *pipeline_cache_object, void *pipeline,
-                                    uint32_t color0_format,
-                                    uint32_t depth_format,
-                                    uint32_t stencil_format,
-                                    uint32_t program_name,
-                                    void *vertex_function,
-                                    void *fragment_function);
     int32_t tess_native_tes_active;
     void *tess_native_tes_program;
     /* The tessellation and geometry records themselves (the C draw host port

@@ -1718,6 +1718,7 @@ int mglRenderPassGeneratePipelineDescriptorState(
 {
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
+    const MGLPipelineCachePort cache = mglRendererPipelineCachePort(renderer);
     GLMContext ctx = areas.ctx;
     MGLTessellationState *tess = areas.tessellation;
     MGLGeometryState *geom = areas.geometry;
@@ -2178,9 +2179,8 @@ int mglRenderPassGeneratePipelineDescriptorState(
             continue;
         }
         MGLRenderPipelineBlendState blend = {0};
-        if (!areas.pipeline_cache_blend_state ||
-            !areas.pipeline_cache_blend_state(areas.pipeline_cache_object,
-                                              (uint32_t)i, &blend)) {
+        if (!cache.blend_state || !cache.blend_state(cache.object, (uint32_t)i,
+                                                     &blend)) {
             fprintf(stderr,
                     "MGL PIPELINE DESC fail: blend state unavailable for attachment %d\n",
                     i);
@@ -3829,7 +3829,8 @@ void mglRenderPassInvalidateCurrentPipelineState(void *renderer,
 {
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
-    if (areas.pipeline_cache && areas.pipeline_cache->pipelineState) {
+    const MGLPipelineCachePort cache = mglRendererPipelineCachePort(renderer);
+    if (cache.state && cache.state->pipelineState) {
         static uint64_t s_pipelineInvalidateCount = 0;
         const uint64_t hit = ++s_pipelineInvalidateCount;
         if (hit <= 16ull || (hit % 512ull) == 0ull) {
@@ -3839,8 +3840,8 @@ void mglRenderPassInvalidateCurrentPipelineState(void *renderer,
                     (unsigned long long)hit);
         }
     }
-    if (areas.pipeline_cache_invalidate) {
-        areas.pipeline_cache_invalidate(areas.pipeline_cache_object);
+    if (cache.invalidate) {
+        cache.invalidate(cache.object);
     }
 }
 

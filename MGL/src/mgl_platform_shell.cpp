@@ -1561,23 +1561,28 @@ int mglPlatformShellPipelineCacheSetBlend(void *pipeline_cache_object,
  * When the areas stop carrying the cache fields, only this function changes. */
 MGLPipelineCachePort mglRendererPipelineCachePort(void *renderer)
 {
-    MGLRendererStateAreas areas; /* C5-EXEMPT: owner of the areas (port fill) */
     MGLPipelineCachePort port;
-    mglRendererFillStateAreas(renderer, &areas);
-    port.object = areas.pipeline_cache_object;
-    port.state = areas.pipeline_cache;
-    port.set_blend = areas.pipeline_cache_set_blend;
-    port.blend_state = areas.pipeline_cache_blend_state;
-    port.invalidate = areas.pipeline_cache_invalidate;
+    MGLRendererIvars *r_ivars = mglRendererIvars((MGLObjectId)renderer);
+    memset(&port, 0, sizeof(port));
+    if (!r_ivars) {
+        return port;
+    }
+    port.object = r_ivars->_pipelineCache;
+    port.state = (const MGLPipelineCacheState *)mglSend<MGLObjectId>(
+        (MGLObjectId)r_ivars->_pipelineCache, MGL_SEL(s_selState, "state"));
+    port.set_blend = mglPlatformShellPipelineCacheSetBlend;
+    port.blend_state = mglPlatformShellPipelineCacheBlendState;
+    port.invalidate = mglPlatformShellPipelineCacheInvalidate;
     port.descriptor_state_for_words =
-        areas.pipeline_cache_descriptor_state_for_words;
-    port.create_pso = areas.pipeline_cache_create_pso;
-    port.store_pipeline = areas.pipeline_cache_store_pipeline;
-    port.store_descriptor_state = areas.pipeline_cache_store_descriptor_state;
+        mglPlatformShellPipelineCacheDescriptorStateForWords;
+    port.create_pso = mglPlatformShellPipelineCacheCreatePSO;
+    port.store_pipeline = mglPlatformShellPipelineCacheStorePipeline;
+    port.store_descriptor_state =
+        mglPlatformShellPipelineCacheStoreDescriptorState;
+    port.lookup_pipeline = mglPlatformShellPipelineCacheLookupPipeline;
     port.depth_stencil_state_for_value_state =
-        areas.pipeline_cache_depth_stencil_state_for_value_state;
-    port.lookup_pipeline = areas.pipeline_cache_lookup_pipeline;
-    port.activate = areas.pipeline_cache_activate;
+        mglPlatformShellPipelineCacheDepthStencilStateForValueState;
+    port.activate = mglPlatformShellPipelineCacheActivate;
     return port;
 }
 
@@ -1606,27 +1611,9 @@ void mglRendererFillStateAreas(void *renderer, MGLRendererStateAreas *areas_out)
         (const MGLPipelineCacheState *)mglSend<MGLObjectId>(
             (MGLObjectId)r_ivars->_pipelineCache, MGL_SEL(s_selState, "state"));
     areas_out->binding_state_owner = &r_ivars->_bindingStateOwner;
-    areas_out->pipeline_cache_object = r_ivars->_pipelineCache;
     areas_out->gpu_recovery_command_owner =
         &r_ivars->_gpuRecovery.commandRecoveryOwner;
-    areas_out->pipeline_cache_set_blend = mglPlatformShellPipelineCacheSetBlend;
-    areas_out->pipeline_cache_blend_state =
-        mglPlatformShellPipelineCacheBlendState;
-    areas_out->pipeline_cache_invalidate =
-        mglPlatformShellPipelineCacheInvalidate;
     areas_out->gpu_recovery = &r_ivars->_gpuRecovery;
-    areas_out->pipeline_cache_descriptor_state_for_words =
-        mglPlatformShellPipelineCacheDescriptorStateForWords;
-    areas_out->pipeline_cache_create_pso = mglPlatformShellPipelineCacheCreatePSO;
-    areas_out->pipeline_cache_store_pipeline =
-        mglPlatformShellPipelineCacheStorePipeline;
-    areas_out->pipeline_cache_store_descriptor_state =
-        mglPlatformShellPipelineCacheStoreDescriptorState;
-    areas_out->pipeline_cache_lookup_pipeline =
-        mglPlatformShellPipelineCacheLookupPipeline;
-    areas_out->pipeline_cache_depth_stencil_state_for_value_state =
-        mglPlatformShellPipelineCacheDepthStencilStateForValueState;
-    areas_out->pipeline_cache_activate = mglPlatformShellPipelineCacheActivate;
     areas_out->tess_native_tes_active =
         (int32_t)r_ivars->_tessellation.nativeTESActive;
     areas_out->tessellation = &r_ivars->_tessellation;
