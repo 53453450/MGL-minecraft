@@ -317,6 +317,39 @@ void mglRendererResetPipelineCaches(void *renderer);
  * setters, mglMarkRendererDirtyBits, ...).  `binding_state_owner` and
  * `gpu_recovery_command_owner` are slot ADDRESSES like in the areas; read the
  * slot at the point of use. */
+/* Pipeline cache as its own port: the cache object, the state it publishes,
+ * and the bridges into the cache implementation.  Kept out of the state areas
+ * so a reader that only needs the cache does not have to hold the areas (and
+ * cannot reach anything else through them). */
+typedef struct MGLPipelineCachePort {
+    void *object;
+    const MGLPipelineCacheState *state;
+    int (*set_blend)(void *object, uint32_t index,
+                     const struct MGLRenderPipelineBlendState_t *blend);
+    int (*blend_state)(void *object, uint32_t index,
+                       struct MGLRenderPipelineBlendState_t *blend);
+    void (*invalidate)(void *object);
+    int (*descriptor_state_for_words)(void *object, const uint64_t *words,
+                                      MGLRenderPipelineDescriptorState *state_out);
+    int (*create_pso)(void *object,
+                      const MGLRenderPipelineDescriptorState *state,
+                      void *vertex_function, void *fragment_function,
+                      void **pipeline_out, char *error_message,
+                      size_t error_capacity);
+    void (*store_pipeline)(void *object, void *pipeline, void *vertex_function,
+                           void *fragment_function, const uint64_t *words);
+    void (*store_descriptor_state)(
+        void *object, const MGLRenderPipelineDescriptorState *state,
+        const uint64_t *words);
+    void (*depth_stencil_state_for_value_state)(
+        void *object,
+        const struct MGLRenderDepthStencilDescriptorState_t *value_state,
+        void **state_out);
+} MGLPipelineCachePort;
+
+/* Fills the port for `renderer`; safe to call per use. */
+MGLPipelineCachePort mglRendererPipelineCachePort(void *renderer);
+
 typedef struct MGLRendererStateView {
     const MGLRendererCoreState *core;
     void *backend;

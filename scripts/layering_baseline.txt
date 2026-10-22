@@ -16,5 +16,4 @@ C5 MGL/src/mgl_clear_buffer_ops.c 5
 C5 MGL/src/mgl_pso_build_ops.c 7
 C5 MGL/src/mgl_render_pass_manager_ops.c 14
 C5 MGL/src/mgl_render_pass_sync_ops.c 6
-C5 MGL/src/mgl_renderer_ports.c 4
 C5 MGL/src/mgl_vertex_layout.c 2

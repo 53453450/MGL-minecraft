@@ -53,6 +53,7 @@ void mglRendererUpdateBlendStateCache(void *renderer)
 {
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
+    const MGLPipelineCachePort cache = mglRendererPipelineCachePort(renderer);
     GLMState *st = areas.ctx ? areas.ctx->active_state : NULL;
     if (!st) {
         return;
@@ -121,9 +122,8 @@ void mglRendererUpdateBlendStateCache(void *renderer)
             .alpha_operation = alphaOp,
             .color_write_mask = colorMask_i,
         };
-        if (areas.pipeline_cache_set_blend) {
-            (void)areas.pipeline_cache_set_blend(areas.pipeline_cache_object,
-                                                 (uint32_t)i, &blend);
+        if (cache.set_blend) {
+            (void)cache.set_blend(cache.object, (uint32_t)i, &blend);
         }
     }
     if (repairedState) {

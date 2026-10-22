@@ -310,7 +310,7 @@ void mglRendererSetCommandBufferHasWork(void *renderer, int has_work)
 
 void mglRendererRequestDeviceReset(void *renderer)
 {
-    MGLRendererStateAreas areas;
+    MGLRendererStateAreas areas; /* C5-EXEMPT: writes through the areas */
     mglRendererFillStateAreas(renderer, &areas);
     if (areas.core) {
         atomic_store_explicit(&areas.core->deviceResetRequested, true,
@@ -320,7 +320,7 @@ void mglRendererRequestDeviceReset(void *renderer)
 
 int mglRendererConsumeDeviceReset(void *renderer)
 {
-    MGLRendererStateAreas areas;
+    MGLRendererStateAreas areas; /* C5-EXEMPT: writes through the areas */
     mglRendererFillStateAreas(renderer, &areas);
     return areas.core &&
            atomic_exchange_explicit(&areas.core->deviceResetRequested, false,

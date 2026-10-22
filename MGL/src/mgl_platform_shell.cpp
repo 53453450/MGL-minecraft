@@ -1557,6 +1557,28 @@ int mglPlatformShellPipelineCacheSetBlend(void *pipeline_cache_object,
 
 /* === renderer state areas =============================================== */
 
+/* The cache port is filled from the same shell state the areas come from.
+ * When the areas stop carrying the cache fields, only this function changes. */
+MGLPipelineCachePort mglRendererPipelineCachePort(void *renderer)
+{
+    MGLRendererStateAreas areas; /* C5-EXEMPT: owner of the areas (port fill) */
+    MGLPipelineCachePort port;
+    mglRendererFillStateAreas(renderer, &areas);
+    port.object = areas.pipeline_cache_object;
+    port.state = areas.pipeline_cache;
+    port.set_blend = areas.pipeline_cache_set_blend;
+    port.blend_state = areas.pipeline_cache_blend_state;
+    port.invalidate = areas.pipeline_cache_invalidate;
+    port.descriptor_state_for_words =
+        areas.pipeline_cache_descriptor_state_for_words;
+    port.create_pso = areas.pipeline_cache_create_pso;
+    port.store_pipeline = areas.pipeline_cache_store_pipeline;
+    port.store_descriptor_state = areas.pipeline_cache_store_descriptor_state;
+    port.depth_stencil_state_for_value_state =
+        areas.pipeline_cache_depth_stencil_state_for_value_state;
+    return port;
+}
+
 void mglRendererFillStateAreas(void *renderer, MGLRendererStateAreas *areas_out) /* C5-EXEMPT: owner of the areas (definition) */
 {
     MGLObjectId r = (MGLObjectId)renderer;
