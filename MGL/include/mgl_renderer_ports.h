@@ -345,6 +345,13 @@ typedef struct MGLPipelineCachePort {
         void *object,
         const struct MGLRenderDepthStencilDescriptorState_t *value_state,
         void **state_out);
+    int (*lookup_pipeline)(void *object, const uint64_t *words,
+                           void **pipeline_out, void **vertex_function_out,
+                           void **fragment_function_out);
+    void (*activate)(void *object, void *pipeline, uint32_t color0_format,
+                     uint32_t depth_format, uint32_t stencil_format,
+                     uint32_t program_name, void *vertex_function,
+                     void *fragment_function);
 } MGLPipelineCachePort;
 
 /* Fills the port for `renderer`; safe to call per use. */

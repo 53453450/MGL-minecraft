@@ -1576,6 +1576,8 @@ MGLPipelineCachePort mglRendererPipelineCachePort(void *renderer)
     port.store_descriptor_state = areas.pipeline_cache_store_descriptor_state;
     port.depth_stencil_state_for_value_state =
         areas.pipeline_cache_depth_stencil_state_for_value_state;
+    port.lookup_pipeline = areas.pipeline_cache_lookup_pipeline;
+    port.activate = areas.pipeline_cache_activate;
     return port;
 }
 

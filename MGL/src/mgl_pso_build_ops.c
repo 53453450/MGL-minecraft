@@ -106,7 +106,7 @@ static uint32_t mglPdStubFSValueClass(uint32_t fmt)
 /* The .m wrapped every cache create in @try/@catch: a throwing create must
  * enter the fallback path instead of escaping into C. */
 typedef struct MglPdPsoCreateCtx_t {
-    MGLRendererStateAreas *areas;
+    MGLPipelineCachePort cache;
     const MGLRenderPipelineDescriptorState *state;
     void *vertex_function;
     void *fragment_function;
@@ -120,8 +120,8 @@ static int mglPdPsoCreateBody(void *renderer, void *rawCtx)
 {
     MglPdPsoCreateCtx *ctx = (MglPdPsoCreateCtx *)rawCtx;
     (void)renderer;
-    ctx->result = ctx->areas->pipeline_cache_create_pso(
-        ctx->areas->pipeline_cache_object, ctx->state, ctx->vertex_function,
+    ctx->result = ctx->cache.create_pso(
+        ctx->cache.object, ctx->state, ctx->vertex_function,
         ctx->fragment_function, ctx->pso_out, ctx->error_text,
         ctx->error_capacity);
     return 1;
@@ -131,7 +131,7 @@ static int mglPdPsoCreateBody(void *renderer, void *rawCtx)
  * when the call threw. */
 static int mglPdPsoCreateGuarded(void *renderer, MglPdPsoCreateCtx *ctx)
 {
-    if (!ctx->areas->pipeline_cache_create_pso) {
+    if (!ctx->cache.create_pso) {
         return -1;
     }
     if (!mglPlatformShellGuardedCallCtx(renderer, "pipeline creation",
@@ -147,25 +147,26 @@ void mglRenderPassInsertPipelineStateIntoCache(
     uint64_t vertexSig, const struct MGLRenderPipelineDescriptorState *state,
     void *vertexFunction, void *fragmentFunction, int stateFromCache)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
+    const MGLPipelineCachePort cache = mglRendererPipelineCachePort(renderer);
     (void)pipelineSig;
     (void)vertexSig;
 
-    if (pipelineCacheKeyWords && areas.pipeline_cache &&
-        areas.pipeline_cache->pipelineState) {
-        if (areas.pipeline_cache_store_pipeline) {
-            areas.pipeline_cache_store_pipeline(
-                areas.pipeline_cache_object,
-                areas.pipeline_cache->pipelineState, vertexFunction,
+    if (pipelineCacheKeyWords && cache.state &&
+        cache.state->pipelineState) {
+        if (cache.store_pipeline) {
+            cache.store_pipeline(
+                cache.object,
+                cache.state->pipelineState, vertexFunction,
                 fragmentFunction, pipelineCacheKeyWords);
         }
 
         /* Cache the descriptor state for future PSO cache misses.  Only cache if
          * state was generated (not from cache). */
-        if (!stateFromCache && state && areas.pipeline_cache_store_descriptor_state) {
-            areas.pipeline_cache_store_descriptor_state(
-                areas.pipeline_cache_object, state, pipelineCacheKeyWords);
+        if (!stateFromCache && state && cache.store_descriptor_state) {
+            cache.store_descriptor_state(
+                cache.object, state, pipelineCacheKeyWords);
         }
     }
 }
@@ -179,8 +180,9 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
     uint32_t builtStencilFormat, unsigned int currentProgramName,
     CFTimeInterval now)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
+    const MGLPipelineCachePort cache = mglRendererPipelineCachePort(renderer);
     GLMContext ctx = areas.ctx;
     GLMState *state = areas.core && areas.core->activeState
                           ? areas.core->activeState
@@ -197,10 +199,10 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
     int stateFromCache = 0;
 
     /* Check descriptor state cache on PSO miss; cache new states for reuse. */
-    if (pipelineCacheKeyWords && areas.pipeline_cache_descriptor_state_for_words) {
+    if (pipelineCacheKeyWords && cache.descriptor_state_for_words) {
         MGLRenderPipelineDescriptorState cachedState = {0};
-        if (areas.pipeline_cache_descriptor_state_for_words(
-                areas.pipeline_cache_object, pipelineCacheKeyWords,
+        if (cache.descriptor_state_for_words(
+                cache.object, pipelineCacheKeyWords,
                 &cachedState)) {
             /* Descriptor cache hit - reuse cached state instead of regenerating */
             finalState = cachedState;
@@ -223,7 +225,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
     MGLRenderPipelineDescriptorState successfulState = {0};
     int haveSuccessfulState = 0;
     void *previousPipelineState =
-        areas.pipeline_cache ? areas.pipeline_cache->pipelineState : NULL;
+        cache.state ? cache.state->pipelineState : NULL;
     void *compiledPSO = NULL;
     int pipelineReusedPrevious = 0;
     /* Set when the PSO below came from the virtualized-AGX emergency stub
@@ -265,9 +267,12 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
         } else {
             psoPtr = NULL;
             cppError[0] = '\0';
-            MglPdPsoCreateCtx createCtx = {&areas,  &finalState, vertexFunction,
-                                           fragmentFunction, &psoPtr, cppError,
-                                           sizeof(cppError), 0};
+            MglPdPsoCreateCtx createCtx = {
+                .cache = mglRendererPipelineCachePort(renderer),
+                .state = &finalState, .vertex_function = vertexFunction,
+                .fragment_function = fragmentFunction, .pso_out = &psoPtr,
+                .error_text = cppError, .error_capacity = sizeof(cppError),
+                .result = 0};
             const int createResult = mglPdPsoCreateGuarded(renderer, &createCtx);
             if (createResult < 0) {
                 failed = 1; /* a throwing create takes the fallback path */
@@ -301,21 +306,21 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
                     mglWriteProgramMSLDump(currentProgram, errText);
                 }
                 const int sameProgram =
-                    (areas.pipeline_cache->pipelineProgramName != 0 &&
-                     areas.pipeline_cache->pipelineProgramName ==
+                    (cache.state->pipelineProgramName != 0 &&
+                     cache.state->pipelineProgramName ==
                          currentProgramName &&
-                     areas.pipeline_cache->pipelineVertexFunction ==
+                     cache.state->pipelineVertexFunction ==
                          vertexFunction &&
-                     areas.pipeline_cache->pipelineFragmentFunction ==
+                     cache.state->pipelineFragmentFunction ==
                          fragmentFunction);
                 const int colorCompatible = mglRenderPipelineFormatCompatible(
-                    (uint32_t)areas.pipeline_cache->pipelineColor0Format,
+                    (uint32_t)cache.state->pipelineColor0Format,
                     builtColor0Format) != 0;
                 const int depthCompatible = mglRenderPipelineFormatCompatible(
-                    (uint32_t)areas.pipeline_cache->pipelineDepthFormat,
+                    (uint32_t)cache.state->pipelineDepthFormat,
                     builtDepthFormat) != 0;
                 const int stencilCompatible = mglRenderPipelineFormatCompatible(
-                    (uint32_t)areas.pipeline_cache->pipelineStencilFormat,
+                    (uint32_t)cache.state->pipelineStencilFormat,
                     builtStencilFormat) != 0;
 
                 if (previousPipelineState && sameProgram && colorCompatible &&
@@ -482,9 +487,11 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
                 psoPtr = NULL;
                 cppError[0] = '\0';
                 MglPdPsoCreateCtx simpleCtx = {
-                    &areas,          &simpleState, vertexFunction,
-                    fragmentFunction, &psoPtr,    cppError,
-                    sizeof(cppError), 0};
+                    .cache = mglRendererPipelineCachePort(renderer),
+                    .state = &simpleState, .vertex_function = vertexFunction,
+                    .fragment_function = fragmentFunction, .pso_out = &psoPtr,
+                    .error_text = cppError, .error_capacity = sizeof(cppError),
+                    .result = 0};
                 if (mglPdPsoCreateGuarded(renderer, &simpleCtx) == 0 && psoPtr) {
                     compiledPSO = psoPtr;
                 }
@@ -619,9 +626,12 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
             if (unusedFS) mglReleaseMetalObjNoNull(unusedFS);
             psoPtr = NULL;
             cppError[0] = '\0';
-            MglPdPsoCreateCtx safeCtx = {&areas,   &safeState, safeVS,
-                                         safeFSFunction, &psoPtr, cppError,
-                                         sizeof(cppError), 0};
+            MglPdPsoCreateCtx safeCtx = {
+                .cache = mglRendererPipelineCachePort(renderer),
+                .state = &safeState, .vertex_function = safeVS,
+                .fragment_function = safeFSFunction, .pso_out = &psoPtr,
+                .error_text = cppError, .error_capacity = sizeof(cppError),
+                .result = 0};
             if (mglPdPsoCreateGuarded(renderer, &safeCtx) == 0 && psoPtr) {
                 compiledPSO = psoPtr;
             }
@@ -678,9 +688,9 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
         recovery->interfaceMismatchDepthFormat = mglRenderInvalidPixelFormat();
         recovery->interfaceMismatchStencilFormat = mglRenderInvalidPixelFormat();
         recovery->interfaceMismatchRetryAfter = 0.0;
-        if (areas.pipeline_cache_activate) {
-            areas.pipeline_cache_activate(
-                areas.pipeline_cache_object, compiledPSO, builtColor0Format,
+        if (cache.activate) {
+            cache.activate(
+                cache.object, compiledPSO, builtColor0Format,
                 builtDepthFormat, builtStencilFormat, currentProgramName,
                 vertexFunction, fragmentFunction);
         }
@@ -792,19 +802,20 @@ static int mglPdBindingStatePipelineMatches(void *owner, void *pipeline)
 int mglRenderPassSyncPipelineState(void *renderer,
                                    int deferredBufferMapForPipelineBuild)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
+    const MGLPipelineCachePort cache = mglRendererPipelineCachePort(renderer);
     GLMContext ctx = areas.ctx;
     GLMState *state = areas.core && areas.core->activeState
                           ? areas.core->activeState
                           : (ctx ? ctx->active_state : NULL);
     MGLGPURecoveryState *recovery = areas.gpu_recovery;
-    const MGLPipelineCacheState *cacheState = areas.pipeline_cache;
+    const MGLPipelineCacheState *cacheState = cache.state;
     /* areas.binding_state_owner is the ADDRESS of the owner slot (rule 59). */
     void *bindingOwner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
-    MGLTessellationState *tessellation = areas.tessellation;
-    MGLGeometryState *geometry = areas.geometry;
+    const MGLTessellationState *tessellation = areas.tessellation;
+    const MGLGeometryState *geometry = areas.geometry;
     void *currentPipelineState = cacheState ? cacheState->pipelineState : NULL;
 
     /* Force a rebind of the pipeline state on the next setRenderPipelineState
@@ -1019,10 +1030,10 @@ int mglRenderPassSyncPipelineState(void *renderer,
             void *cachedVertexFunction = NULL;
             void *cachedFragmentFunction = NULL;
             int cachedFunctionMetadataPresent = 0;
-            if (areas.pipeline_cache_lookup_pipeline) {
+            if (cache.lookup_pipeline) {
                 cachedFunctionMetadataPresent =
-                    areas.pipeline_cache_lookup_pipeline(
-                        areas.pipeline_cache_object, keyWords, &cachedPipeline,
+                    cache.lookup_pipeline(
+                        cache.object, keyWords, &cachedPipeline,
                         &cachedVertexFunction, &cachedFragmentFunction);
             }
             if (cachedPipeline) {
@@ -1042,9 +1053,9 @@ int mglRenderPassSyncPipelineState(void *renderer,
                             (unsigned long long)keyWords[6]);
                 }
 
-                if (areas.pipeline_cache_activate) {
-                    areas.pipeline_cache_activate(
-                        areas.pipeline_cache_object, cachedPipeline,
+                if (cache.activate) {
+                    cache.activate(
+                        cache.object, cachedPipeline,
                         builtColor0Format, builtDepthFormat, builtStencilFormat,
                         currentProgramName,
                         cachedFunctionMetadataPresent ? cachedVertexFunction
