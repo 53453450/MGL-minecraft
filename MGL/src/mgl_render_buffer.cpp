@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-3.0-only */
 #include "mgl_metal.h"
+#include "mgl_vertex_format.h"
 #include "mgl_draw_buffer.h"
 #include "mgl_metal_ref.h"
 #include "mgl_render_api_binding.h"
@@ -191,8 +192,7 @@ int mglRenderMapBufferStorage(Buffer* buffer,
     }
 
     if (map) {
-        const bool reads = access == GL_READ_ONLY || access == GL_READ_WRITE ||
-                           (access & GL_MAP_READ_BIT) != 0;
+        const bool reads = mglBufferAccessIsReadable(access);
         if (cpuBase) {
             uint8_t* cpuPointer = cpuBase + offset;
             if (reads && metalBase && metalBase != cpuBase && safeLength > 0 &&
@@ -494,7 +494,7 @@ int mglRenderDefaultDrawBufferIsOffscreen(uint32_t mgl_drawbuffer,
 }
 
 int mglRenderBufferHasMapWriteBit(uint32_t access_flags) {
-    return (access_flags & GL_MAP_WRITE_BIT) != 0 ? 1 : 0;
+    return mglBufferMapIsWritable(access_flags) ? 1 : 0;
 }
 
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits) {
@@ -585,10 +585,10 @@ void mglRenderMarkBufferCPUWrite(Buffer *buf, int64_t offset, int64_t size) {
     if (!buf) {
         return;
     }
-    buf->ever_written = GL_TRUE;
-    buf->has_initialized_data = GL_TRUE;
-    buf->cpu_shadow_pending = GL_TRUE;
-    buf->gpu_write_target = GL_FALSE;
+    buf->ever_written = 1;
+    buf->has_initialized_data = 1;
+    buf->cpu_shadow_pending = 1;
+    buf->gpu_write_target = 0;
     buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
     buf->last_init_source = kInitMapWrite;
     buf->last_write_offset = (GLintptr)offset;
@@ -780,7 +780,7 @@ int mglRenderSnapshotSharedDirtyBuffer(Buffer* buffer,
         : nullptr;
     if (!current || buffer->transient_batch_buffer ||
         current->storageMode() != MTL::StorageModeShared || !cpuData ||
-        (buffer->storage_flags & GL_CLIENT_STORAGE_BIT) != 0 ||
+        mglBufferStorageIsClient(buffer->storage_flags) ||
         cpuData == current->contents()) {
         return 0;
     }
@@ -886,7 +886,7 @@ int mglRenderSnapshotSharedBufferRange(Buffer* buffer,
     }
     if (buffer->transient_batch_buffer ||
         current->storageMode() != MTL::StorageModeShared || !cpuData ||
-        (buffer->storage_flags & GL_CLIENT_STORAGE_BIT) != 0 ||
+        mglBufferStorageIsClient(buffer->storage_flags) ||
         cpuData == current->contents()) {
         return 0;
     }
@@ -1030,7 +1030,7 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
         }
 
         mglBufferMarkAbsorbedByMetal(
-            buffer, (buffer->access_flags & GL_MAP_COHERENT_BIT) != 0);
+            buffer, mglBufferMapIsCoherent(buffer->access_flags));
         return MGL_RENDER_BUFFER_OPERATION_HANDLED;
     }
 
@@ -1071,7 +1071,7 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
 
     const size_t metalLength = static_cast<size_t>(metalBuffer->length());
     const bool coherentMapped =
-        (buffer->access_flags & GL_MAP_COHERENT_BIT) != 0;
+        mglBufferMapIsCoherent(buffer->access_flags);
     if (coherentMapped) {
         size_t modifyOffset = 0;
         size_t modifyLength = metalLength;
@@ -1134,7 +1134,7 @@ static void mglUnpackPacked1010102ToFloat(uint32_t packed, uint32_t sourceType,
     uint32_t ug;
     uint32_t ub;
     uint32_t ua;
-    if (sourceType == GL_UNSIGNED_INT_10_10_10_2) {
+    if (mglVertexTypeIs1010102(sourceType)) {
         ur = (packed >> 22) & 0x3ffu;
         ug = (packed >> 12) & 0x3ffu;
         ub = (packed >> 2) & 0x3ffu;
@@ -1145,7 +1145,7 @@ static void mglUnpackPacked1010102ToFloat(uint32_t packed, uint32_t sourceType,
         ub = (packed >> 20) & 0x3ffu;
         ua = (packed >> 30) & 0x3u;
     }
-    if (sourceType == GL_INT_2_10_10_10_REV) {
+    if (mglVertexTypeIs1010102Signed(sourceType)) {
         const int32_t r = static_cast<int32_t>(ur << 22) >> 22;
         const int32_t g = static_cast<int32_t>(ug << 22) >> 22;
         const int32_t b = static_cast<int32_t>(ub << 22) >> 22;
@@ -1468,6 +1468,8 @@ int mglRenderConvertVertexBuffer(
                 continue;
             }
 
+            const MGLVertexFetchKind source_kind =
+                mglVertexFetchKindForGLType(conversion->source_type);
             uint8_t* destination = converted.data() + destinationOffset;
             for (uint32_t component = 0;
                  component < componentCount; ++component) {
@@ -1480,38 +1482,38 @@ int mglRenderConvertVertexBuffer(
                 }
                 const uint8_t* source = sourceBase + componentOffset;
                 uint32_t value = 0;
-                switch (conversion->source_type) {
-                    case GL_BYTE: {
+                switch (source_kind) {
+                    case MGL_VFETCH_KIND_S8: {
                         int8_t v = 0;
                         memcpy(&v, source, sizeof(v));
                         value = static_cast<uint32_t>(static_cast<int32_t>(v));
                         break;
                     }
-                    case GL_UNSIGNED_BYTE: {
+                    case MGL_VFETCH_KIND_U8: {
                         uint8_t v = 0;
                         memcpy(&v, source, sizeof(v));
                         value = v;
                         break;
                     }
-                    case GL_SHORT: {
+                    case MGL_VFETCH_KIND_S16: {
                         int16_t v = 0;
                         memcpy(&v, source, sizeof(v));
                         value = static_cast<uint32_t>(static_cast<int32_t>(v));
                         break;
                     }
-                    case GL_UNSIGNED_SHORT: {
+                    case MGL_VFETCH_KIND_U16: {
                         uint16_t v = 0;
                         memcpy(&v, source, sizeof(v));
                         value = v;
                         break;
                     }
-                    case GL_INT: {
+                    case MGL_VFETCH_KIND_S32: {
                         int32_t v = 0;
                         memcpy(&v, source, sizeof(v));
                         value = static_cast<uint32_t>(v);
                         break;
                     }
-                    case GL_UNSIGNED_INT:
+                    case MGL_VFETCH_KIND_U32:
                         memcpy(&value, source, sizeof(value));
                         break;
                     default:

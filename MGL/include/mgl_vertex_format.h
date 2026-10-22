@@ -256,6 +256,17 @@ static inline uint32_t mglVertexFetchKindComponentBytes(MGLVertexFetchKind kind)
     }
 }
 
+/* 10_10_10_2 packed vertex types (the unsigned and the signed variant). */
+static inline bool mglVertexTypeIs1010102(uint32_t type)
+{
+    return type == GL_UNSIGNED_INT_10_10_10_2;
+}
+
+static inline bool mglVertexTypeIs1010102Signed(uint32_t type)
+{
+    return type == GL_INT_2_10_10_10_REV;
+}
+
 /* GL index type -> element width (2 or 4), 0 when unsupported. */
 static inline uint32_t mglRenderIndexElementClass(uint32_t gl_type)
 {

@@ -3,7 +3,7 @@
 
 C2 MGL/src/mgl_batch_dyn_bind_encode.c 1
 C2 MGL/src/mgl_render_binding.cpp 38
-C2 MGL/src/mgl_render_buffer.cpp 39
+C2 MGL/src/mgl_render_buffer.cpp 20
 C2 MGL/src/mgl_render_command.cpp 4
 C2 MGL/src/mgl_render_draw.cpp 38
 C2 MGL/src/mgl_render_lifecycle.cpp 34

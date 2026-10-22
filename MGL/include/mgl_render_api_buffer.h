@@ -6,7 +6,31 @@
  * Value layouts are defined here; types of other subsystems that are only
  * passed by pointer are incomplete (mgl_render_fwd.h). */
 
+#include "glcorearb.h"
 #include "mgl_render_fwd.h"
+
+/* Client-facing buffer vocabulary: what a map access allows and where the
+ * storage lives.  Kept here so the backend asks a question, not an enum. */
+static inline bool mglBufferAccessIsReadable(uint32_t access)
+{
+    return access == GL_READ_ONLY || access == GL_READ_WRITE ||
+           (access & GL_MAP_READ_BIT) != 0;
+}
+
+static inline bool mglBufferMapIsWritable(uint32_t access_flags)
+{
+    return (access_flags & GL_MAP_WRITE_BIT) != 0;
+}
+
+static inline bool mglBufferMapIsCoherent(uint32_t access_flags)
+{
+    return (access_flags & GL_MAP_COHERENT_BIT) != 0;
+}
+
+static inline bool mglBufferStorageIsClient(uint32_t storage_flags)
+{
+    return (storage_flags & GL_CLIENT_STORAGE_BIT) != 0;
+}
 
 #ifdef __cplusplus
 extern "C" {
