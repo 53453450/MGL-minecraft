@@ -91,7 +91,7 @@ uint8_t* mglRenderCreateChannelExpandedUpload(
         sizeForInternalFormat((GLenum)internal_format, 0, 0);
     if (expected_src_bytes > 0 && expected_src_bytes != src_pixel_bytes) {
         /* GL_RGB12: sizeForInternalFormat may differ; stored as 3x16-bit. */
-        if (internal_format != GL_RGB12 || expected_src_bytes != 6) {
+        if (!mglInternalFormatIsRGB12(internal_format) || expected_src_bytes != 6) {
             return nullptr;
         }
     }
@@ -144,16 +144,10 @@ uint8_t* mglRenderCreateStencilSwizzledUpload(
         !out_bytes_per_row || !out_bytes_per_image) {
         return NULL;
     }
-    size_t src_pixel_bytes = 0u;
-    switch (internal_format) {
-        case GL_DEPTH24_STENCIL8:
-            src_pixel_bytes = 4u;
-            break;
-        case GL_DEPTH32F_STENCIL8:
-            src_pixel_bytes = 5u;
-            break;
-        default:
-            return NULL;
+    const size_t src_pixel_bytes =
+        mglSizedPackedDepthStencilBytes(internal_format);
+    if (src_pixel_bytes == 0u) {
+        return NULL;
     }
     const size_t dst_pixel_bytes = 4u;
     const size_t dst_bytes_per_row = width * dst_pixel_bytes;
@@ -222,12 +216,12 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
     }
     if (mglRenderTextureUploadNeedsSingleChannelSwizzle(internal_format, 1) == 0 &&
         mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake(
-            internal_format, 1, GL_DEPTH_COMPONENT) == 0) {
+            internal_format, 1, mglDepthStencilModeDepthValue()) == 0) {
         return NULL;
     }
     if (mglRenderTextureUploadNeedsSingleChannelSwizzleBake(internal_format, 1) == 0 &&
         mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake(
-            internal_format, 1, GL_DEPTH_COMPONENT) == 0) {
+            internal_format, 1, mglDepthStencilModeDepthValue()) == 0) {
         return NULL;
     }
 
@@ -626,32 +620,10 @@ uint8_t* mglRenderCreateRGBA8ExpandedUpload(
         return NULL;
     }
 
-    size_t src_pixel_bytes = 0u;
-    switch (internal_format) {
-        case GL_R3_G3_B2:
-            src_pixel_bytes = 1u;
-            break;
-        case GL_RGBA2:
-        case GL_RGB4:
-        case GL_RGB5:
-        case GL_RGB565:
-        case GL_RGBA4:
-        case GL_RGB5_A1:
-            src_pixel_bytes = 2u;
-            break;
-        case GL_RGB10:
-        case GL_RGB12:
-            src_pixel_bytes = 4u;
-            break;
-        case GL_RGB8:
-        case GL_SRGB8:
-        case GL_RGB8_SNORM:
-        case GL_RGB8I:
-        case GL_RGB8UI:
-            src_pixel_bytes = 3u;
-            break;
-        default:
-            return NULL;
+    const size_t src_pixel_bytes =
+        mglExpandedSourcePixelBytes(internal_format);
+    if (src_pixel_bytes == 0u) {
+        return NULL;
     }
     if (src_bytes_per_row < width * src_pixel_bytes) {
         return NULL;

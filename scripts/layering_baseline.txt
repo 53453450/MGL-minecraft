@@ -6,7 +6,7 @@ C2 MGL/src/mgl_render_binding.cpp 10
 C2 MGL/src/mgl_render_buffer.cpp 10
 C2 MGL/src/mgl_render_command.cpp 4
 C2 MGL/src/mgl_render_draw.cpp 15
-C2 MGL/src/mgl_render_lifecycle.cpp 34
+C2 MGL/src/mgl_render_lifecycle.cpp 15
 C2 MGL/src/mgl_render_query.cpp 19
 C2 MGL/src/mgl_render_readback.cpp 8
 C2 MGL/src/mgl_render_texture.cpp 11

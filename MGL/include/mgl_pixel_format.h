@@ -393,6 +393,47 @@ static inline MGLPackedOutputKind mglPackedOutputKind(uint32_t type)
     }
 }
 
+/* Source bytes per pixel of an RGB-family format that gets expanded into an
+ * RGBA8 target (0 when the format does not go through that bake). */
+static inline uint32_t mglExpandedSourcePixelBytes(uint32_t fmt)
+{
+    switch (fmt) {
+        case GL_R3_G3_B2: return 1u;
+        case GL_RGBA2:
+        case GL_RGB4:
+        case GL_RGB5:
+        case GL_RGB565:
+        case GL_RGBA4:
+        case GL_RGB5_A1: return 2u;
+        case GL_RGB10:
+        case GL_RGB12: return 4u;
+        case GL_RGB8:
+        case GL_SRGB8:
+        case GL_RGB8_SNORM:
+        case GL_RGB8I:
+        case GL_RGB8UI: return 3u;
+        default: return 0u;
+    }
+}
+
+/* Source bytes per pixel of the two sized packed depth-stencil formats. */
+static inline uint32_t mglSizedPackedDepthStencilBytes(uint32_t fmt)
+{
+    if (fmt == GL_DEPTH24_STENCIL8) return 4u;
+    if (fmt == GL_DEPTH32F_STENCIL8) return 5u;
+    return 0u;
+}
+
+static inline bool mglInternalFormatIsRGB12(uint32_t fmt)
+{
+    return fmt == GL_RGB12;
+}
+
+static inline uint32_t mglDepthStencilModeDepthValue(void)
+{
+    return GL_DEPTH_COMPONENT;
+}
+
 bool mglInternalFormatIsDepthStencil(GLint internalformat);
 
 /* Has depth samples in storage (depth-only or packed depth-stencil). */
