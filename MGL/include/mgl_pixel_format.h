@@ -436,6 +436,18 @@ static inline uint32_t mglDepthStencilModeDepthValue(void)
 
 bool mglInternalFormatIsDepthStencil(GLint internalformat);
 
+/* GL_BGRA / GL_BGR read-back formats (swizzled channel order). */
+static inline bool mglReadFormatIsBGRFamily(uint32_t format)
+{
+    return format == GL_BGRA || format == GL_BGR;
+}
+
+/* GL_RGB as a read-back format (three slots, no alpha). */
+static inline bool mglReadFormatIsRGB(uint32_t format)
+{
+    return format == GL_RGB;
+}
+
 /* Has depth samples in storage (depth-only or packed depth-stencil). */
 bool mglInternalFormatCarriesDepth(GLint internalformat);
 bool mglInternalFormatIsCombinedDepthStencil(GLint internalformat);

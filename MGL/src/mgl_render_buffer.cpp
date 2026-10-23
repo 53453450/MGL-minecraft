@@ -394,8 +394,8 @@ int mglRenderFillDefaultTessFactorBuffer(
     return 0;
 }
 
-int mglRenderHasDirtyBufferBit(uint32_t dirty_bits) {
-    return (dirty_bits & DIRTY_BUFFER) ? 1 : 0;
+int mglRenderHasDirtyBufferBit(uint32_t dirty_mask) {
+    return (dirty_mask & DIRTY_BUFFER) ? 1 : 0;
 }
 
 int mglRenderDefaultReadBufferIndex(uint32_t read_buffer, uint32_t *out) {
@@ -478,7 +478,7 @@ int mglRenderDrawBufferIsDefaultFBOCompat(uint32_t draw_buffer) {
     if (mglRenderDefaultReadBufferIndex(draw_buffer, &idx)) {
         return 1;
     }
-    return draw_buffer == GL_FRONT_AND_BACK ? 1 : 0;
+    return mglDrawBufferIsFrontAndBack(draw_buffer) ? 1 : 0;
 }
 
 int mglRenderDefaultDrawBufferIsFront(uint32_t mgl_drawbuffer) {
@@ -497,12 +497,12 @@ int mglRenderBufferHasMapWriteBit(uint32_t access_flags) {
     return mglBufferMapIsWritable(access_flags) ? 1 : 0;
 }
 
-int mglRenderBufferHasCPUDirty(uint32_t dirty_bits) {
-    return (dirty_bits & (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR)) ? 1 : 0;
+int mglRenderBufferHasCPUDirty(uint32_t dirty_mask) {
+    return (dirty_mask & (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR)) ? 1 : 0;
 }
 
-int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits) {
-    return size > 0 && mglRenderBufferHasCPUDirty(dirty_bits) ? 1 : 0;
+int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_mask) {
+    return size > 0 && mglRenderBufferHasCPUDirty(dirty_mask) ? 1 : 0;
 }
 
 int mglRenderBufferSlotInRange(int32_t slot, uint32_t max_slots) {
@@ -1410,7 +1410,7 @@ int mglRenderConvertVertexBuffer(
                         memcpy(&value, componentBytes, sizeof(value));
                         values[component] = static_cast<float>(
                             static_cast<double>(value) / 65536.0);
-                    } else if (conversion->source_type == GL_INT) {
+                    } else if (mglVertexFetchKindForGLType(conversion->source_type) == MGL_VFETCH_KIND_S32) {
                         int32_t value = 0;
                         memcpy(&value, componentBytes, sizeof(value));
                         if (conversion->normalized) {

@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: LGPL-3.0-only */
 #include "mgl_metal.h"
+#include "mgl_pso_format_class.h"
+#include "mgl_draw_tess.h"
 #include "mgl_draw_mode.h"
 #include "mgl_vertex_format.h"
 #include "mgl_render_api_binding.h"
@@ -68,7 +70,7 @@ bool mglRenderTessFactorsDiscardPatch(uint32_t gen_mode,
     }
     memset(&in, 0, sizeof(in));
     in.gen_mode = gen_mode;
-    in.spacing = GL_EQUAL;
+    in.spacing = mglCompareFunctionEqualValue();
     memcpy(in.outer, edge, sizeof(in.outer));
     memcpy(in.inner, inside, sizeof(in.inner));
     mglTessNormalizeFactors(&in, &n);
@@ -119,9 +121,9 @@ uint64_t mglRenderTessPrimitiveCount(
     for (uint32_t patch = 0u; patch < patch_count; patch++) {
         items += mglRenderTessEvalItemsPerPatch(
             base + (uint64_t)patch * MGL_AIR_TESS_FACTOR_RECORD_BYTES,
-            tess_gen_mode, GL_EQUAL, point_mode);
+            tess_gen_mode, mglCompareFunctionEqualValue(), point_mode);
     }
-    const uint32_t vpp = tess_gen_mode == GL_ISOLINES ? 2u : 3u;
+    const uint32_t vpp = mglTessGenModeIsIsolines(tess_gen_mode) ? 2u : 3u;
     const uint64_t prims = vpp ? items / vpp : 0u;
     if (instance_count && prims > UINT64_MAX / instance_count) {
         return UINT64_MAX;
@@ -146,11 +148,11 @@ int mglRenderIndexStreamFits(uint64_t offset, uint64_t count, uint32_t elem_byte
 
 
 int mglRenderIndexTypeIsU8(uint32_t type) {
-    return type == GL_UNSIGNED_BYTE ? 1 : 0;
+    return mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_U8 ? 1 : 0;
 }
 
 int mglRenderDrawModeIsTriangles(uint32_t mode) {
-    return mode == GL_TRIANGLES ? 1 : 0;
+    return mglPrimitiveModeOf(mode) == MGL_PRIMITIVE_TRIANGLES ? 1 : 0;
 }
 
 int mglRenderDrawModeIsTriangleStrip(uint32_t mode) {
@@ -158,11 +160,11 @@ int mglRenderDrawModeIsTriangleStrip(uint32_t mode) {
 }
 
 int mglRenderIndexTypeIsU16(uint32_t type) {
-    return type == GL_UNSIGNED_SHORT ? 1 : 0;
+    return mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_U16 ? 1 : 0;
 }
 
 int mglRenderIndexTypeIsU32(uint32_t type) {
-    return type == GL_UNSIGNED_INT ? 1 : 0;
+    return mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_U32 ? 1 : 0;
 }
 
 int mglRenderShaderResourceIndexValid(int spvc_type, uint32_t index,
@@ -515,10 +517,7 @@ void mglRenderDestroyCullDistanceIndexPlan(MGLCullDistanceIndexPlan ** owner) {
 
 extern "C"
 uint32_t mglRenderGLIndexElementSize(uint64_t gl_index_type) {
-    if (gl_index_type == GL_UNSIGNED_BYTE) return 1u;
-    if (gl_index_type == GL_UNSIGNED_SHORT) return 2u;
-    if (gl_index_type == GL_UNSIGNED_INT) return 4u;
-    return 0u;
+    return mglIndexTypeElementBytes((uint32_t)gl_index_type);
 }
 
 extern "C"
@@ -559,10 +558,10 @@ int mglRenderPrimitiveRestartFixedIndex(uint64_t gl_index_type, uint32_t* out) {
     if (!out) {
         return -1;
     }
-    switch (gl_index_type) {
-        case GL_UNSIGNED_BYTE: *out = 0xffu; return 1;
-        case GL_UNSIGNED_SHORT: *out = 0xffffu; return 1;
-        case GL_UNSIGNED_INT: *out = 0xffffffffu; return 1;
+    switch (mglVertexFetchKindForGLType((uint32_t)gl_index_type)) {
+        case MGL_VFETCH_KIND_U8: *out = 0xffu; return 1;
+        case MGL_VFETCH_KIND_U16: *out = 0xffffu; return 1;
+        case MGL_VFETCH_KIND_U32: *out = 0xffffffffu; return 1;
         default: return 0;
     }
 }
@@ -605,7 +604,7 @@ int mglRenderComputePreparedIndexByteOffset(
     if (!out_prepared_offset) {
         return -1;
     }
-    if (gl_index_type == GL_UNSIGNED_BYTE) {
+    if (mglIndexTypeElementBytes(gl_index_type) == 1u) {
         // GL_UNSIGNED_BYTE indices expand to UInt16 (2 bytes each).
         if (gl_byte_offset > (uint64_t)(SIZE_MAX / sizeof(uint16_t))) {
             return -1;
@@ -1020,7 +1019,7 @@ uint32_t mglRenderTessEvalItemsPerPatch(
     uint32_t point_mode) {
     if (!factor_record) return 0;
     const MGLTessFactorInput in = tessDomainInput(
-        factor_record, gen_mode, spacing, point_mode, GL_CCW);
+        factor_record, gen_mode, spacing, point_mode, mglRenderFrontFaceOrCCW(GL_CCW));
     return mglTessDomainVertexCount(&in);
 }
 

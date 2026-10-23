@@ -267,6 +267,16 @@ static inline bool mglVertexSizeIsBGRA(uint32_t size)
     return size == GL_BGRA;
 }
 
+/* The GL enum a plan API expects for a kind (callers that must pass a type). */
+static inline uint32_t mglVertexFetchKindGLType(MGLVertexFetchKind kind)
+{
+    switch (kind) {
+        case MGL_VFETCH_KIND_S32: return GL_INT;
+        case MGL_VFETCH_KIND_U32: return GL_UNSIGNED_INT;
+        default: return GL_FLOAT;
+    }
+}
+
 /* 10_10_10_2 packed vertex types (the unsigned and the signed variant). */
 static inline bool mglVertexTypeIs1010102(uint32_t type)
 {

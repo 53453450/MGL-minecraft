@@ -246,13 +246,13 @@ void mglRenderPlanCurrentAttribFromShader(uint32_t shader_gl_type,
                                           uint32_t *size_out, int *integer_out) {
     const uint32_t shader_kind =
         mglVertexFormatClassKind(mglRenderVertexFormatClass(shader_gl_type));
-    uint32_t type = GL_FLOAT;
+    uint32_t type = mglVertexFetchKindGLType(MGL_VFETCH_KIND_F32);
     int integer = 0;
     if (shader_kind == 2u) {
-        type = GL_INT;
+        type = mglVertexFetchKindGLType(MGL_VFETCH_KIND_S32);
         integer = 1;
     } else if (shader_kind == 3u) {
-        type = GL_UNSIGNED_INT;
+        type = mglVertexFetchKindGLType(MGL_VFETCH_KIND_U32);
         integer = 1;
     }
     if (type_out) {
@@ -734,7 +734,7 @@ int mglRenderBindAIRProgram(Program* program,
         if (err && errcap) snprintf(err, errcap, "renderer is not initialized");
         return MGL_RENDER_AIR_PROGRAM_ERROR;
     }
-    program->dirty_bits &= ~DIRTY_PROGRAM;
+    mglProgramClearDirtyFlags(program, DIRTY_PROGRAM);
 
     bool hasAIRStage = false;
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; ++stage) {
@@ -1768,19 +1768,17 @@ int mglRenderBindingGetStats(MGLBindingState * binding_state, MGLRenderBindingSt
 
 extern "C"
 uint64_t mglRenderVertexAttribElementBytes(uint64_t gl_type, uint32_t size) {
-    switch (gl_type) {
-        case GL_INT_2_10_10_10_REV:
-        case GL_UNSIGNED_INT_2_10_10_10_REV:
-        case GL_UNSIGNED_INT_10_10_10_2:
-            return 4u;
-        default: {
-            const uint32_t comp = mglRenderVertexAttribComponentSize(gl_type);
-            if (comp == 0u || size == 0u) {
-                return 0u;
-            }
-            return (uint64_t)comp * (uint64_t)size;
-        }
+    /* The three 10_10_10_2 packings are always one 32-bit word. */
+    if (mglVertexTypeIs1010102(gl_type) ||
+        mglVertexTypeIs1010102Signed(gl_type) ||
+        mglPackedOutputKind(gl_type) == MGL_PACKED_A2BGR10_REV) {
+        return 4u;
     }
+    const uint32_t comp = mglRenderVertexAttribComponentSize(gl_type);
+    if (comp == 0u || size == 0u) {
+        return 0u;
+    }
+    return (uint64_t)comp * (uint64_t)size;
 }
 
 int mglGetOrCreateProgramComputePipeline(Program* program,

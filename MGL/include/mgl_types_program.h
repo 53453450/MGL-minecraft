@@ -461,6 +461,17 @@ typedef struct Program_t {
     GLboolean active_uniform_cache_valid;
     char *debug_label;
 } Program;
+/* Dirty-bit bookkeeping for the program record. */
+static inline void mglProgramClearDirtyFlags(Program *program, uint32_t bits)
+{
+    if (program) program->dirty_bits &= ~bits;
+}
+
+static inline uint32_t mglProgramDirtyFlags(const Program *program)
+{
+    return program ? program->dirty_bits : 0u;
+}
+
 
 GLint mglProgramActiveUniformCount(Program *program);
 GLint mglProgramActiveUniformMaxNameLength(Program *program);

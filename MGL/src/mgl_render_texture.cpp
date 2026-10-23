@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-3.0-only */
 #include "mgl_metal.h"
+#include "mgl_texture_compat.h"
 #include "mgl_vertex_format.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_texture.h"
@@ -101,7 +102,7 @@ int mglRenderCreateTextureView(void* texture,
 uint32_t mglRenderSampledViewPixelFormat(uint32_t depth_stencil_mode,
                                          uint32_t pixel_format) {
     /* GL 4.6 §8.23.1: STENCIL_INDEX mode samples the stencil aspect. */
-    if (depth_stencil_mode != GL_STENCIL_INDEX) return pixel_format;
+    if (!mglDepthStencilModeIsStencil(depth_stencil_mode)) return pixel_format;
     switch (static_cast<MTL::PixelFormat>(pixel_format)) {
     case MTL::PixelFormatDepth32Float_Stencil8:
         return static_cast<uint32_t>(MTL::PixelFormatX32_Stencil8);
@@ -1787,7 +1788,8 @@ int mglRenderCopyRG11B10TextureBytesToGL(
     const uint64_t src_bpp = 4u;
     uint32_t comp_bytes = mglSizeForType(type);
     const MGLPackedOutputKind pack_kind = mglPackedOutputKind(type);
-    if (pack_kind == MGL_PACKED_R11FG11FB10F_REV && format == GL_RGB) {
+    const MGLVertexFetchKind kind = mglVertexFetchKindForGLType(type);
+    if (pack_kind == MGL_PACKED_R11FG11FB10F_REV && mglReadFormatIsRGB(format)) {
         if (dst_bytes_per_row < width * src_bpp) {
             return 0;
         }
@@ -1872,31 +1874,31 @@ int mglRenderCopyRG11B10TextureBytesToGL(
                     float fv = float_vals[src_idx[c]];
                     uint8_t* out = dst_row + (x * dst_pixel_bytes) +
                                    (uint64_t)c * (uint64_t)comp_bytes;
-                    if (type == GL_UNSIGNED_BYTE) {
+                    if (kind == MGL_VFETCH_KIND_U8) {
                         float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
                         uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
                         memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_BYTE) {
+                    } else if (kind == MGL_VFETCH_KIND_S8) {
                         float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
                         int8_t iv = (int8_t)lroundf(cv * 127.0f);
                         memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_UNSIGNED_SHORT) {
+                    } else if (kind == MGL_VFETCH_KIND_U16) {
                         float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
                         uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
                         memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_SHORT) {
+                    } else if (kind == MGL_VFETCH_KIND_S16) {
                         float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
                         int16_t iv = (int16_t)lroundf(cv * 32767.0f);
                         memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_UNSIGNED_INT) {
+                    } else if (kind == MGL_VFETCH_KIND_U32) {
                         float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
                         uint32_t iv = (uint32_t)llround(cv * 4294967295.0);
                         memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_INT) {
+                    } else if (kind == MGL_VFETCH_KIND_S32) {
                         float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
                         int32_t iv = (int32_t)llround(cv * 2147483647.0);
                         memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_FLOAT) {
+                    } else if (kind == MGL_VFETCH_KIND_F32) {
                         memcpy(out, &fv, sizeof(fv));
                     } else {
                         uint16_t iv = mglFloatToHalf(fv);
@@ -2307,7 +2309,7 @@ int mglRenderCopyUnorm8PackedTextureBytesToGL(
             uint32_t b = source_is_rgba ? s[2] : s[0];
             uint32_t a = s[3];
             uint32_t rr = r, gg = g, bb = b, aa = a;
-            if (format == GL_BGRA || format == GL_BGR) {
+            if (mglReadFormatIsBGRFamily(format)) {
                 uint32_t tmp = rr;
                 rr = bb;
                 bb = tmp;

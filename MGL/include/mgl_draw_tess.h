@@ -583,7 +583,11 @@ void mglTessEncodeCaptureIndexed(void *encoder_owner, void *index_buffer,
                                  uint32_t count, int32_t base_vertex,
                                  uint32_t instance_count,
                                  uint32_t base_instance);
-int mglTessGenModeIsIsolines(uint32_t tess_gen_mode);
+/* GL_ISOLINES is the one-parameter tessellation mode. */
+static inline int mglTessGenModeIsIsolines(uint32_t tess_gen_mode)
+{
+    return tess_gen_mode == GL_ISOLINES ? 1 : 0;
+}
 int mglTessWritePointSize(uint32_t tess_gen_point_mode);
 
 /* O1.2: pure capture-host planning (ObjC keeps processGLState / MTLBuffer). */

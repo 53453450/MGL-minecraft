@@ -92,6 +92,18 @@ int mglRenderComputeIndexByteOffset(uint64_t base_byte_offset,
 /* Scans `count` indices of `indexBytes` (type `indexType`), skipping entries
  * equal to `restartIndex` when `primitiveRestartEnabled` is true, and returns
  * the min/max index values via out params.  Returns false on invalid args. */
+/* Element width of an index type (unsigned byte / short / int), 0 when the
+ * type is not an index type -- callers rely on 0 to reject bad input. */
+static inline uint32_t mglIndexTypeElementBytes(uint32_t index_type)
+{
+    switch (mglVertexFetchKindForGLType(index_type)) {
+        case MGL_VFETCH_KIND_U8: return 1u;
+        case MGL_VFETCH_KIND_U16: return 2u;
+        case MGL_VFETCH_KIND_U32: return 4u;
+        default: return 0u;
+    }
+}
+
 static inline bool mglScanIndexRangeIgnoringRestart(const uint8_t *indexBytes,
                                                     GLenum indexType,
                                                     GLsizei count,

@@ -12,6 +12,8 @@
 /* Query vocabulary: the two result values, the compare functions, and the
  * "is this the samples-passed target" question. */
 static inline uint32_t mglQuerySignaledValue(void) { return GL_SIGNALED; }
+/* The EQUAL compare function, for callers that need the enum value itself. */
+static inline uint32_t mglCompareFunctionEqualValue(void) { return GL_EQUAL; }
 static inline uint32_t mglQueryUnsignaledValue(void) { return GL_UNSIGNALED; }
 
 typedef enum MGLCompareFunction {

@@ -35,6 +35,7 @@
 #endif
 
 #include "mgl_render_pass_manager_ops.h"
+#include "mgl_render_api_readback.h"
 #include "mgl_blit_color_state.h"
 #include "mgl_renderer_ports.h"    /* state areas, writable command buffer */
 #include "mgl_renderer_backend.h"  /* device */

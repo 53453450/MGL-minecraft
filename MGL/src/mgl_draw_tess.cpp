@@ -1884,10 +1884,6 @@ extern "C" void mglTessEncodeCaptureIndexed(
                                                    0);
 }
 
-extern "C" int mglTessGenModeIsIsolines(uint32_t tess_gen_mode) {
-    return tess_gen_mode == GL_ISOLINES ? 1 : 0;
-}
-
 extern "C" int mglTessWritePointSize(uint32_t tess_gen_point_mode) {
     return tess_gen_point_mode != GL_FALSE ? 1 : 0;
 }

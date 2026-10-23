@@ -198,19 +198,19 @@ int mglRenderIsEmulatedMSPlaneTarget(uint32_t target, int32_t samples) {
     return mglQueryTargetIsRenderbuffer(target) && samples > 1 ? 1 : 0;
 }
 
-int mglRenderPlanDirtyDomains(uint32_t dirty_bits, int draw_command,
+int mglRenderPlanDirtyDomains(uint32_t dirty_mask, int draw_command,
                               int has_pipeline, int fbo_binding_dirty,
                               MGLDirtyDomainPlan *out) {
     if (!out) {
         return -1;
     }
     memset(out, 0, sizeof(*out));
-    if (dirty_bits == 0u) {
+    if (dirty_mask == 0u) {
         out->dirty_buffer_data = 1;
         return 0;
     }
     out->has_dirty = 1;
-    uint32_t bits = dirty_bits;
+    uint32_t bits = dirty_mask;
     if (bits & DIRTY_FBO) {
         out->sync_render_pass = 1;
     }
