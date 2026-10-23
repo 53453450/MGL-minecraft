@@ -14660,7 +14660,10 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATTR) continue;
             const AttrExpansion ex = attrExpansion(v.type);
-            if (ex.count <= 1u) {
+            /* A size-1 array spans one location, but it is still an array: the
+             * argument is one element that has to be inserted into the
+             * aggregate, not taken as the symbol's value. */
+            if (ex.count <= 1u && !v.type.isArray()) {
                 cg.lvalues[v.name] = fn->getArg(argSlot++);
                 continue;
             }
