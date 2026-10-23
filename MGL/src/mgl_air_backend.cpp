@@ -9938,11 +9938,21 @@ static bool emitCallUserFunction(
                          fs->return_type->scalar == MGLIR_SCALAR_VOID;
                 break;
             }
-            if (!isVoid) {
+            /* Return type of the signature: every implementation shares it. */
+            llvm::Type *retTy = nullptr;
+            for (uint32_t si = 0; si < mod->symbol_count; si++) {
+                const MGLIRSymbol *fs = mod->symbols[si];
+                if (!fs || !fs->is_function || !fs->name ||
+                    strcmp(fs->name, sub->impls[0]) != 0 || !fs->return_type) {
+                    continue;
+                }
+                retTy = llvmType(typeFromIR(fs->return_type), *cg.ctx);
+                break;
+            }
+            if (!retTy) {
                 cg.err = 1;
-                cg.errmsg = std::string("codegen: value-returning subroutine "
-                                        "call '") + name +
-                            "' not implemented yet";
+                cg.errmsg = std::string("codegen: unknown subroutine signature "
+                                        "for '") + name + "'";
                 return true;
             }
             if (!cg.bufferOffsets.count(name) || !cg.bufferPtr) {
@@ -9953,6 +9963,14 @@ static bool emitCallUserFunction(
             }
             llvm::Value *idx = bufferLoad(cg, cg.bufferOffsets[name],
                                           cg.b->getInt32Ty());
+            /* Result slot lives in the entry block so every branch can store
+             * into it (AIR wants allocas there, not in mid-function blocks). */
+            llvm::AllocaInst *slot = nullptr;
+            if (!retTy->isVoidTy()) {
+                llvm::IRBuilder<> entry(&cg.fn->getEntryBlock(),
+                                        cg.fn->getEntryBlock().begin());
+                slot = entry.CreateAlloca(retTy, nullptr, "sub_ret");
+            }
             llvm::BasicBlock *merge =
                 llvm::BasicBlock::Create(*cg.ctx, "sub_merge", cg.fn);
             llvm::BasicBlock *disp =
@@ -9987,13 +10005,18 @@ static bool emitCallUserFunction(
                     return true;
                 }
                 llvm::BasicBlock *after = cg.b->GetInsertBlock();
+                if (slot && val && after && !after->getTerminator()) {
+                    cg.b->CreateStore(val, slot);
+                }
                 if (after && !after->getTerminator()) {
                     cg.b->CreateBr(merge);
                 }
                 disp = next;
             }
             cg.b->SetInsertPoint(merge);
-            *out = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0);
+            *out = slot ? (llvm::Value *)cg.b->CreateLoad(retTy, slot)
+                        : (llvm::Value *)llvm::ConstantInt::get(
+                              llvm::Type::getInt32Ty(*cg.ctx), 0);
             return true;
         }
     }
