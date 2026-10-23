@@ -9915,8 +9915,89 @@ static bool emitCallDerivativeBuiltins(
 static bool emitCallUserFunction(
     Codegen &cg, const MGLExpr *e, const char *name,
     const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    llvm::Value **out);
+
+static bool emitCallUserFunction(
+    Codegen &cg, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
     llvm::Value **out)
 {
+    if (mod) {
+        const MGLSubroutineType *sub = mglIRSubroutineTypeForUniform(mod, name);
+        if (sub && sub->impl_count > 0) {
+            /* Dispatch over the type's implementations; the uniform holds the
+             * selected index.  void signatures only for now. */
+            bool isVoid = false;
+            for (uint32_t si = 0; si < mod->symbol_count; si++) {
+                const MGLIRSymbol *fs = mod->symbols[si];
+                if (!fs || !fs->is_function || !fs->name ||
+                    strcmp(fs->name, sub->impls[0]) != 0 || !fs->return_type) {
+                    continue;
+                }
+                isVoid = fs->return_type->kind == MGLIR_TYPE_SCALAR &&
+                         fs->return_type->scalar == MGLIR_SCALAR_VOID;
+                break;
+            }
+            if (!isVoid) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: value-returning subroutine "
+                                        "call '") + name +
+                            "' not implemented yet";
+                return true;
+            }
+            if (!cg.bufferOffsets.count(name) || !cg.bufferPtr) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: subroutine uniform '") + name +
+                            "' has no uniform storage";
+                return true;
+            }
+            llvm::Value *idx = bufferLoad(cg, cg.bufferOffsets[name],
+                                          cg.b->getInt32Ty());
+            llvm::BasicBlock *merge =
+                llvm::BasicBlock::Create(*cg.ctx, "sub_merge", cg.fn);
+            llvm::BasicBlock *disp =
+                llvm::BasicBlock::Create(*cg.ctx, "sub_disp0", cg.fn);
+            cg.b->CreateBr(disp);
+            for (uint32_t i = 0; i < sub->impl_count; i++) {
+                llvm::BasicBlock *callBB = llvm::BasicBlock::Create(
+                    *cg.ctx, std::string("sub_call") + std::to_string(i),
+                    cg.fn);
+                llvm::BasicBlock *next =
+                    (i + 1 < sub->impl_count)
+                        ? llvm::BasicBlock::Create(
+                              *cg.ctx,
+                              std::string("sub_disp") + std::to_string(i + 1),
+                              cg.fn)
+                        : merge;
+                cg.b->SetInsertPoint(disp);
+                llvm::Value *cond = cg.b->CreateICmpEQ(
+                    idx, llvm::ConstantInt::get(cg.b->getInt32Ty(), i));
+                cg.b->CreateCondBr(cond, callBB, next);
+                cg.b->SetInsertPoint(callBB);
+                MGLExpr *tmp = new MGLExpr(*e);
+                cg.exprPool.push_back(tmp);
+                tmp->u.call.name = sub->impls[i];
+                llvm::Value *val = nullptr;
+                /* Convention: the bool means "handled" and cg.err carries the
+                 * failure -- checking the bool as an error was the bug that
+                 * left merge unterminated and crashed the compile. */
+                (void)emitCallUserFunction(cg, tmp, sub->impls[i], mod,
+                                           locals, &val);
+                if (cg.err == 1) {
+                    return true;
+                }
+                llvm::BasicBlock *after = cg.b->GetInsertBlock();
+                if (after && !after->getTerminator()) {
+                    cg.b->CreateBr(merge);
+                }
+                disp = next;
+            }
+            cg.b->SetInsertPoint(merge);
+            *out = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0);
+            return true;
+        }
+    }
+
     /* User-defined function call. */
     if (cg.userFns || cg.userFnDecls) {
         const MGLIRSymbol *chosen = nullptr;

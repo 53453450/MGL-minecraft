@@ -231,6 +231,8 @@ struct Codegen {
     std::map<std::string, llvm::Type *> arrayMemTypes;
     std::map<std::string, uint32_t> bufferOffsets;  /* uniform name -> byte offset */
     std::map<std::string, llvm::Value *> lvalues;   /* register values */
+    /* AST copies handed to emitters that may retain the pointer. */
+    std::vector<MGLExpr *> exprPool;
     /* Block-qualified keys of per-vertex varying arrays whose elements a
      * shader stored straight into the stage-out record (TES compute path).
      * storeTessComputeVaryings must not overwrite those slots with undef. */

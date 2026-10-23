@@ -97,7 +97,14 @@ typedef struct MGLIRSymbol {
 typedef struct MGLIRModule {
     MGLIRSymbol **symbols;
     uint32_t symbol_count;
+    /* GLSL 4.0 subroutine metadata, borrowed from the translation unit. */
+    const struct MGLSubroutineType *subroutine_types;
+    uint32_t subroutine_type_count;
 } MGLIRModule;
+
+/* The subroutine type whose uniform list contains `name`, or NULL. */
+const struct MGLSubroutineType *mglIRSubroutineTypeForUniform(
+    const MGLIRModule *module, const char *name);
 
 /* Analyze a parsed translation unit.  Fills `module` with resolved/typed
  * global symbols (caller frees with mglIRModuleDestroy), and appends any

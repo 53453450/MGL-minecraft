@@ -6186,6 +6186,8 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
         return -1;
     }
     memset(module, 0, sizeof(*module));
+    module->subroutine_types = tu->subroutine_types;
+    module->subroutine_type_count = tu->subroutine_type_count;
 
     Sema s;
     memset(&s, 0, sizeof(s));
@@ -6480,6 +6482,23 @@ static int interface_vars_paired(const MGLIRSymbol *out, const MGLIRSymbol *in)
                out->component == in->component;
     }
     return strcmp(out->name, in->name) == 0;
+}
+
+const MGLSubroutineType *mglIRSubroutineTypeForUniform(
+    const MGLIRModule *module, const char *name)
+{
+    if (!module || !name) {
+        return NULL;
+    }
+    for (uint32_t i = 0; i < module->subroutine_type_count; i++) {
+        const MGLSubroutineType *st = &module->subroutine_types[i];
+        for (uint32_t k = 0; k < st->uniform_count; k++) {
+            if (st->uniforms[k] && strcmp(st->uniforms[k], name) == 0) {
+                return st;
+            }
+        }
+    }
+    return NULL;
 }
 
 int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
