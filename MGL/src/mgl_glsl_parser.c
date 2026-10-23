@@ -340,6 +340,52 @@ static void skip_balanced_parens(MGLParser *p)
     }
 }
 
+
+/* GLSL 4.0 subroutine table helpers (tu->subroutine_types). */
+static MGLSubroutineType *subroutine_type_get(MGLParser *p, const char *name,
+                                              int create)
+{
+    if (!p || !name) return NULL;
+    for (uint32_t i = 0; i < p->tu->subroutine_type_count; i++) {
+        if (strcmp(p->tu->subroutine_types[i].name, name) == 0) {
+            return &p->tu->subroutine_types[i];
+        }
+    }
+    if (!create) return NULL;
+    if (p->tu->subroutine_type_count >= p->tu->subroutine_type_cap) {
+        uint32_t nc = p->tu->subroutine_type_cap ? p->tu->subroutine_type_cap * 2 : 8;
+        MGLSubroutineType *nt = (MGLSubroutineType *)realloc(
+            p->tu->subroutine_types, nc * sizeof(*nt));
+        if (!nt) return NULL;
+        memset(nt + p->tu->subroutine_type_cap, 0,
+               (nc - p->tu->subroutine_type_cap) * sizeof(*nt));
+        p->tu->subroutine_types = nt;
+        p->tu->subroutine_type_cap = nc;
+    }
+    MGLSubroutineType *st = &p->tu->subroutine_types[p->tu->subroutine_type_count++];
+    memset(st, 0, sizeof(*st));
+    st->name = strdup(name);
+    return st;
+}
+
+static void subroutine_type_add_name(MGLSubroutineType *st,
+                                     char ***list, uint32_t *count,
+                                     uint32_t *cap, const char *name)
+{
+    if (!st || !name) return;
+    for (uint32_t i = 0; i < *count; i++) {
+        if (strcmp((*list)[i], name) == 0) return;
+    }
+    if (*count >= *cap) {
+        uint32_t nc = *cap ? *cap * 2 : 4;
+        char **nl = (char **)realloc(*list, nc * sizeof(char *));
+        if (!nl) return;
+        *list = nl;
+        *cap = nc;
+    }
+    (*list)[(*count)++] = strdup(name);
+}
+
 static int at_num(MGLParser *p)
 {
     MGLGLSLTokenKind k = (MGLGLSLTokenKind)tk(p, 0)->kind;
@@ -3690,6 +3736,8 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
     }
 
     /* top-level directives skipped; parse declarations */
+    char *pending_subroutine_type = NULL;
+    int pending_subroutine_uniform = 0;
     while (tk(&p, 0)->kind != MGLGLSL_TOK_END) {
         if (tk(&p, 0)->kind == MGLGLSL_TOK_DIRECTIVE) {
             advance(&p);
@@ -3702,28 +3750,32 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
          *   subroutine(Type) ret f(...) { }   the qualifier on an implementation
          *   subroutine uniform Type name;     the subroutine uniform
          *   subroutine ret Type(args);        the subroutine type declaration
-         * The first two only need the keyword removed; the third is dropped
-         * after its type name is recorded, so `subroutine uniform T g;` later
-         * in the unit resolves T like any other user type name. */
+         * The first two only need the keyword removed; the declaration that
+         * follows is tagged so sema knows the variable holds an index and the
+         * function is an implementation.  The third records the type name so
+         * `subroutine uniform T g;` resolves T like any other user type. */
         if (at_ident(&p, "subroutine")) {
             if (ops_at_off(&p, 1, "(")) {
+                pending_subroutine_type = dup_token_text(&p, tk(&p, 2));
                 advance(&p);          /* subroutine */
                 skip_balanced_parens(&p);
                 continue;             /* the implementation parses normally */
             }
             if (at_ident_off(&p, 1, "uniform")) {
+                pending_subroutine_type = dup_token_text(&p, tk(&p, 2));
+                pending_subroutine_uniform = 1;
                 advance(&p);          /* subroutine */
                 continue;             /* `uniform T g;` parses normally */
             }
             advance(&p);              /* subroutine */
-            /* ret? Type ( args ) ;  -- record the identifier before '('. */
+            /* ret? Type ( args ) ;  -- the identifier before '(' is the type. */
             while (tk(&p, 0)->kind != MGLGLSL_TOK_END && !ops_at(&p, "(")) {
                 const MGLGLSLToken *t = tk(&p, 0);
-                if (t->kind == MGLGLSL_TOK_IDENT &&
-                    ops_at_off(&p, 1, "(")) {
+                if (t->kind == MGLGLSL_TOK_IDENT && ops_at_off(&p, 1, "(")) {
                     char *name = dup_current(&p);
                     if (name) {
                         record_struct_name(&p, name);
+                        subroutine_type_get(&p, name, 1);
                         free(name);
                     }
                     break;
@@ -3745,6 +3797,26 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
             }
             advance(&p);
             continue;
+        }
+        if (pending_subroutine_type) {
+            MGLSubroutineType *st =
+                subroutine_type_get(&p, pending_subroutine_type, 1);
+            if (st && d && d->name) {
+                if (pending_subroutine_uniform) {
+                    subroutine_type_add_name(st, &st->uniforms,
+                                             &st->uniform_count,
+                                             &st->uniform_cap, d->name);
+                    d->qualifiers |= MGL_AST_Q_SUBROUTINE_UNIFORM;
+                } else {
+                    subroutine_type_add_name(st, &st->impls,
+                                             &st->impl_count, &st->impl_cap,
+                                             d->name);
+                    d->qualifiers |= MGL_AST_Q_SUBROUTINE_IMPL;
+                }
+            }
+            free(pending_subroutine_type);
+            pending_subroutine_type = NULL;
+            pending_subroutine_uniform = 0;
         }
         record_decl_constants(&p, d);
         MGLDecl **decls = (MGLDecl **)realloc(

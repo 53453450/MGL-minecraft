@@ -813,6 +813,11 @@ static MGLIRType *resolve_decl_type_major(Sema *s, SymTab *tab,
                                           uint32_t inherited_major)
 {
     MGLIRType *t = NULL;
+    /* A subroutine uniform holds an implementation index: uint storage, with
+     * the subroutine type name kept as metadata on the translation unit. */
+    if (d && (d->qualifiers & MGL_AST_Q_SUBROUTINE_UNIFORM)) {
+        return mglIRTypeScalar(MGLIR_SCALAR_UINT);
+    }
     /* Inline / interface-block struct body on the declarator:
      * `out struct { … } name;`, `in Block { … } inst;`, or a second
      * `out Block { … }` that reuses the block name with different
@@ -885,6 +890,13 @@ static MGLIRType *resolve_decl_type_major(Sema *s, SymTab *tab,
 
 static MGLIRType *resolve_decl_type(Sema *s, SymTab *tab, const MGLDecl *d)
 {
+    /* A subroutine uniform holds an implementation index, not a value of the
+     * subroutine type: it is a plain uint as far as storage and the uniform
+     * block are concerned.  The type name itself is metadata (which
+     * implementations it may select), recorded on the translation unit. */
+    if (d && (d->qualifiers & MGL_AST_Q_SUBROUTINE_UNIFORM)) {
+        return mglIRTypeScalar(MGLIR_SCALAR_UINT);
+    }
     return resolve_decl_type_major(s, tab, d, MGL_AST_MATRIX_DEFAULT);
 }
 

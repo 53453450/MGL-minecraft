@@ -56,6 +56,8 @@ enum {
     MGL_AST_Q_NOPERSPECTIVE = 0x4000,
     MGL_AST_Q_READONLY      = 0x8000,  /* image/buffer memory qualifier */
     MGL_AST_Q_WRITEONLY     = 0x10000, /* image/buffer memory qualifier */
+    MGL_AST_Q_SUBROUTINE_UNIFORM = 0x20000, /* `subroutine uniform T g;` */
+    MGL_AST_Q_SUBROUTINE_IMPL    = 0x40000, /* `subroutine(T) ret f()` */
 };
 
 /* Block layout qualifiers (GLSL 4.60 §4.3.9). */
@@ -358,6 +360,21 @@ struct MGLDecl {
 };
 
 /* Entire shader translation unit. */
+
+/* GLSL 4.0 subroutine types.  One record per `subroutine ret Type(args);`:
+ * the implementations that qualify with this type, and the uniforms declared
+ * with it.  The backend needs both halves to turn a call through the uniform
+ * into a dispatch over the implementations. */
+typedef struct MGLSubroutineType {
+    char *name;          /* type name (owned) */
+    char **impls;        /* implementation function names (owned) */
+    uint32_t impl_count;
+    uint32_t impl_cap;
+    char **uniforms;     /* subroutine uniform names (owned) */
+    uint32_t uniform_count;
+    uint32_t uniform_cap;
+} MGLSubroutineType;
+
 typedef struct MGLTranslationUnit {
     uint32_t version;          /* #version number, 0 if absent */
     char *version_profile;     /* "core"/"compatibility"/"es"/NULL (owned) */
@@ -367,6 +384,10 @@ typedef struct MGLTranslationUnit {
     uint32_t ext_shader_integer_mix;
     MGLDecl **decls;
     uint32_t decl_count;
+    /* GLSL 4.0 subroutine metadata, filled by the parser (see above). */
+    MGLSubroutineType *subroutine_types;
+    uint32_t subroutine_type_count;
+    uint32_t subroutine_type_cap;
     char *error;               /* first parse error message or NULL (owned) */
     uint32_t error_line;
     /* Stage-level tessellation/geometry layout (M3): set by layout-only
