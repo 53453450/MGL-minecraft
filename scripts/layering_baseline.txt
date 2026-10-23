@@ -1,15 +1,6 @@
 # Layering violations present when scripts/check_layering.py was added.
 # Format: rule path count.  Counts may only go down; see the script.
 
-C2 MGL/src/mgl_batch_dyn_bind_encode.c 1
-C2 MGL/src/mgl_render_binding.cpp 3
-C2 MGL/src/mgl_render_buffer.cpp 2
-C2 MGL/src/mgl_render_command.cpp 4
-C2 MGL/src/mgl_render_draw.cpp 1
-C2 MGL/src/mgl_render_readback.cpp 1
-C2 MGL/src/mgl_render_texture.cpp 1
-C2 MGL/src/mgl_renderer_ports.c 1
-C2 MGL/src/mgl_texture_bind.c 2
 C5 MGL/src/mgl_clear_buffer_ops.c 5
 C5 MGL/src/mgl_render_pass_manager_ops.c 14
 C5 MGL/src/mgl_render_pass_sync_ops.c 6

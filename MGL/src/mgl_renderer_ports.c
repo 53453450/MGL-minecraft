@@ -269,7 +269,7 @@ void *mglRendererSamplerStateForSnapshotKey(void *renderer, const void *key)
     /* +1 from the C sampler creation; the backend cache below takes ownership
      * through the Put call, so release our reference again. */
     void *state = mglTextureCreateSamplerForTexParam(
-        &params, ((const MGLSamplerSnapshotKey *)key)->target);
+        &params, mglSamplerSnapshotTarget((const MGLSamplerSnapshotKey *)key));
     if (!state) {
         return NULL;
     }

@@ -75,11 +75,6 @@ uint32_t mglTextureBufferDirtyBits(const Texture *tex)
     return tex->texture_buffer->data.dirty_bits;
 }
 
-bool mglTextureIsRenderTarget(const Texture *tex)
-{
-    return tex && tex->is_render_target;
-}
-
 void mglTextureSetRenderTarget(Texture *tex, bool on)
 {
     if (tex) {

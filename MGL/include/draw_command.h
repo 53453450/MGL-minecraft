@@ -147,6 +147,12 @@ typedef struct MGLSamplerSnapshotKey {
     float    border_color[4];
 } MGLSamplerSnapshotKey;
 
+/* The texture target the snapshot was keyed on. */
+static inline uint32_t mglSamplerSnapshotTarget(const MGLSamplerSnapshotKey *key)
+{
+    return key ? (uint32_t)key->target : 0u;
+}
+
 typedef struct {
     uint16_t key_index;
     uint8_t  stage;

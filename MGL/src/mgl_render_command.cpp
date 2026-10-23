@@ -68,18 +68,14 @@ int mglRenderFBOBlitAttachmentKnown(uint32_t attachment, int is_color) {
     if (is_color) {
         return 1;
     }
-    return attachment == GL_DEPTH_ATTACHMENT ||
-                   attachment == GL_STENCIL_ATTACHMENT ||
-                   attachment == GL_DEPTH_STENCIL_ATTACHMENT
-               ? 1
-               : 0;
+    return mglAttachmentIsDepthOrStencil(attachment) ? 1 : 0;
 }
 
 uint32_t mglRenderFBOBlitAttachmentOrColor0(uint32_t attachment, int is_color) {
     if (mglRenderFBOBlitAttachmentKnown(attachment, is_color)) {
         return attachment;
     }
-    return GL_COLOR_ATTACHMENT0;
+    return mglAttachmentColor0Name();
 }
 
 extern "C"

@@ -96,6 +96,18 @@ int mglRenderPolygonPointEmulateMode(uint32_t mode);
 
 int mglRenderCompareFuncFromGL(uint32_t func, uint32_t *out);
 
+/* Framebuffer attachment vocabulary for the blit planners. */
+static inline bool mglAttachmentIsDepthOrStencil(uint32_t attachment)
+{
+    return attachment == GL_DEPTH_ATTACHMENT ||
+           attachment == GL_STENCIL_ATTACHMENT ||
+           attachment == GL_DEPTH_STENCIL_ATTACHMENT;
+}
+
+static inline uint32_t mglAttachmentColor0Name(void)
+{
+    return GL_COLOR_ATTACHMENT0;
+}
 int mglRenderFrontFaceIsClockwise(uint32_t front_face);
 
 int mglRenderFrontFaceIsCounterClockwise(uint32_t front_face);

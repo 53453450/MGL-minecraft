@@ -1960,7 +1960,7 @@ extern "C" void mglRenderPlanVertexAttribFormat(
     int is_color_input, uint32_t shader_gl_type, uint32_t *format_out,
     int *needs_conversion_out, int *normalized_out, int *conversion_kind_out) {
     int norm = normalized;
-    if (!norm && type == GL_UNSIGNED_BYTE && size == 4u && is_color_input) {
+    if (!norm && mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_U8 && size == 4u && is_color_input) {
         norm = 1;
     }
     if (normalized_out) {
@@ -1974,7 +1974,8 @@ extern "C" void mglRenderPlanVertexAttribFormat(
         kind = MGL_ATTRIB_CONV_DOUBLE;
         format = mglRenderDoubleVertexAttribFloatFormat(size);
     } else if (integer == 0 &&
-               (type == GL_INT || type == GL_UNSIGNED_INT)) {
+               (mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_S32 ||
+         mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_U32)) {
         needs_conversion = 1;
         kind = MGL_ATTRIB_CONV_INT_TO_FLOAT;
         format = mglRenderDoubleVertexAttribFloatFormat(size);
@@ -2036,7 +2037,8 @@ extern "C" uint32_t mglRenderPlanVertexAttribStride(
                                  : (uint64_t)size * sizeof(double);
         return (uint32_t)mglRenderAlignVertexStrideForMetal(raw);
     }
-    if (integer == 0 && (type == GL_INT || type == GL_UNSIGNED_INT)) {
+    if (integer == 0 && (mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_S32 ||
+         mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_U32)) {
         const uint64_t raw =
             resolved_stride > 0u ? resolved_stride
                                  : (uint64_t)size * sizeof(int32_t);

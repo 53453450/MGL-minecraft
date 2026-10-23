@@ -159,7 +159,7 @@ int mglRenderSampledTextureViewForBaseLevel(
     /* Formats expanded/baked at upload must not get Metal view swizzle. */
     const bool upload_swizzle_baked =
         texture_object->params.swizzled &&
-        !texture_object->is_render_target &&
+        !mglTextureIsRenderTarget(texture_object) &&
         mglRenderTextureSwizzleUsesUploadBake(
             texture_object->internalformat, 1,
             static_cast<uint32_t>(source->pixelFormat())) != 0;

@@ -155,7 +155,7 @@ int mglRenderClearMaskHasAny(uint32_t mask) {
 
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
-        buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
+        mglBufferClearDirtyBitsOf(buf, DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }
 }
 

@@ -248,7 +248,7 @@ static void mglSampAfter(void *v, uint32_t i, const MGLBatchResolvedSamplerBind 
     fprintf(stderr,
             "MGL MIP_DIAG snapshot slot=%u unit=%u target=0x%x minFilter=0x%x "
             "magFilter=0x%x minLod=%.1f maxLod=%.1f aniso=%.1f\n",
-            (unsigned)entry->metal_slot, (unsigned)entry->texture_unit, (unsigned)key->target,
+            (unsigned)entry->metal_slot, (unsigned)entry->texture_unit, (unsigned)mglSamplerSnapshotTarget(key),
             (unsigned)key->min_filter, (unsigned)key->mag_filter, (double)key->min_lod,
             (double)key->max_lod, (double)key->max_anisotropy);
 }

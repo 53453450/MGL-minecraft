@@ -1019,7 +1019,7 @@ uint32_t mglRenderTessEvalItemsPerPatch(
     uint32_t point_mode) {
     if (!factor_record) return 0;
     const MGLTessFactorInput in = tessDomainInput(
-        factor_record, gen_mode, spacing, point_mode, mglRenderFrontFaceOrCCW(GL_CCW));
+        factor_record, gen_mode, spacing, point_mode, mglRenderFrontFaceOrCCW(mglFrontFaceCCWValue()));
     return mglTessDomainVertexCount(&in);
 }
 

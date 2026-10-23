@@ -22,6 +22,7 @@
 #ifndef mgl_types_texture_h
 #define mgl_types_texture_h
 
+#include <stdbool.h>
 #include "mgl_types_buffer.h"
 
 enum {
@@ -235,6 +236,12 @@ typedef struct Texture_t {
     GLboolean view_root_deleted;
     char debug_label[MGL_MAX_LABEL_LENGTH];
 } Texture;
+
+/* Whether the texture is currently a render target (bookkeeping flag). */
+static inline bool mglTextureIsRenderTarget(const Texture *tex)
+{
+    return tex ? tex->is_render_target != 0 : false;
+}
 
 typedef struct TextureUnit_t {
     Texture *textures[_MAX_TEXTURE_TYPES];

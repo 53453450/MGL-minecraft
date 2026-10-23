@@ -29,6 +29,7 @@
 #define MGL_PSO_FORMAT_CLASS_H
 
 #include <stdint.h>
+#include "glcorearb.h"
 
 /* `Program` is used only as an opaque pointer below (mglRenderVSWritesLayer),
  * so forward-declare it instead of pulling glm_context.h -- which reaches
@@ -93,6 +94,9 @@ int mglRenderBlendFactorFromGL(uint32_t gl_blend, uint32_t *out);
 int mglRenderBlendOperationFromGL(uint32_t gl_op, uint32_t *out);
 int mglRenderStencilOpFromGL(uint32_t gl_op, uint32_t *out);
 int mglRenderFrontFaceValid(uint32_t front_face);
+
+/* Counter-clockwise winding, for callers that must pass the enum value. */
+static inline uint32_t mglFrontFaceCCWValue(void) { return GL_CCW; }
 uint32_t mglRenderFrontFaceOrCCW(uint32_t front_face);
 int mglRenderSkipCullForSampledPass(int has_fbo, int depth_test, int fs_sampled,
                                     int rt_copy);

@@ -175,7 +175,6 @@ void mglTextureMaskDirtyBits(Texture *tex, uint32_t bits);
 void mglTextureResetDirtyBits(Texture *tex);
 /* Dirty bits of the buffer backing a texture buffer (0 when none). */
 uint32_t mglTextureBufferDirtyBits(const Texture *tex);
-bool mglTextureIsRenderTarget(const Texture *tex);
 void mglTextureSetRenderTarget(Texture *tex, bool on);
 /* TEXTURE_2D_MULTISAMPLE(_ARRAY) — the targets Metal stores as sample planes. */
 static inline bool mglTextureTargetIsMultisample(uint32_t target)

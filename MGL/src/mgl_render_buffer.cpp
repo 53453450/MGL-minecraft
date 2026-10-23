@@ -1242,8 +1242,10 @@ int mglRenderConvertVertexBuffer(
             break;
         case MGL_RENDER_VERTEX_INT_TO_FLOAT:
             if (componentCount == 0 || componentCount > 4) goto bad_components;
-            if (conversion->source_type != GL_INT &&
-                conversion->source_type != GL_UNSIGNED_INT) {
+            if (mglVertexFetchKindForGLType(conversion->source_type) !=
+                    MGL_VFETCH_KIND_S32 &&
+                mglVertexFetchKindForGLType(conversion->source_type) !=
+                    MGL_VFETCH_KIND_U32) {
                 if (err && errcap) snprintf(err, errcap, "invalid int source type");
                 return -1;
             }

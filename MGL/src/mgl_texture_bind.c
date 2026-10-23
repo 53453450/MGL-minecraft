@@ -527,7 +527,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                      * condition (re-specifies the missing level, repairs the FBO)
                      * would never get a rebuild.  Drop only what the substitute
                      * already satisfies and record that we are degraded. */
-                    mglTextureSetStorageIsFallback(tex, GL_TRUE);
+                    mglTextureSetStorageIsFallback(tex, 1);
                     mglTextureClearDirtyBits(tex, (DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_PARAM));
                 } else {
                     fprintf(stderr,
@@ -535,7 +535,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                 }
             }
         } else {
-            mglTextureSetStorageIsFallback(tex, GL_FALSE);
+            mglTextureSetStorageIsFallback(tex, 0);
             if (kMGLDiagnosticStateLogs) {
                 mglTraceLog("MGL SUCCESS: Primary texture created successfully");
             }
