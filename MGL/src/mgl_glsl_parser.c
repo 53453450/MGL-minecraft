@@ -483,6 +483,7 @@ static int at_decl_start(MGLParser *p);
 static void free_expr(MGLExpr *e);
 static void free_stmt(MGLStmt *s);
 static void free_decl(MGLDecl *d);
+static void free_type_spec(MGLTypeSpec *ts);
 
 /* ----------------------------------------------------------------- */
 /* Types                                                              */
@@ -3768,7 +3769,26 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
                 continue;             /* `uniform T g;` parses normally */
             }
             advance(&p);              /* subroutine */
-            /* ret? Type ( args ) ;  -- the identifier before '(' is the type. */
+            /* ret? Type ( args ) ;  -- parse the return type first, then the
+             * type name; the signature's return type is what a call through
+             * the uniform evaluates to. */
+            MGLTypeSpec *ret_type = parse_type_spec(&p);
+            char *declared_type = NULL;
+            if (ret_type && at_any_ident(&p)) {
+                declared_type = dup_current(&p);
+            }
+            if (declared_type) {
+                record_struct_name(&p, declared_type);
+                MGLSubroutineType *st =
+                    subroutine_type_get(&p, declared_type, 1);
+                if (st && ret_type) {
+                    st->ret_type = ret_type;   /* ownership moves to the TU */
+                    ret_type = NULL;
+                }
+                free(declared_type);
+            }
+            free_type_spec(ret_type);
+            /* the identifier before '(' is the type. */
             while (tk(&p, 0)->kind != MGLGLSL_TOK_END && !ops_at(&p, "(")) {
                 const MGLGLSLToken *t = tk(&p, 0);
                 if (t->kind == MGLGLSL_TOK_IDENT && ops_at_off(&p, 1, "(")) {
@@ -3855,6 +3875,16 @@ void mglGLSLTranslationUnitDestroy(MGLTranslationUnit *tu)
         free_decl(tu->decls[i]);
     }
     free(tu->decls);
+    for (i = 0; i < tu->subroutine_type_count; i++) {
+        MGLSubroutineType *st = &tu->subroutine_types[i];
+        free(st->name);
+        free_type_spec(st->ret_type);
+        for (unsigned k = 0; k < st->impl_count; k++) free(st->impls[k]);
+        free(st->impls);
+        for (unsigned k = 0; k < st->uniform_count; k++) free(st->uniforms[k]);
+        free(st->uniforms);
+    }
+    free(tu->subroutine_types);
     free(tu->version_profile);
     free(tu->error);
     free(tu);

@@ -710,9 +710,34 @@ static int aoa_shape_equal(const MGLIRType *a, const MGLIRType *b)
                   a->aoa_dim_count * sizeof(uint32_t)) == 0;
 }
 
+
 static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts);
 static MGLIRType *resolve_decl_type(Sema *s, SymTab *tab, const MGLDecl *d);
+static MGLIRType *subroutine_uniform_call_type(Sema *s, SymTab *tab, const char *name);
 static int builtin_type_spec(const char *name, MGLTypeSpec *ts);
+
+/* GLSL 4.0: `g(args)` with g a subroutine uniform dispatches over the
+ * implementations of its type; the expression's type is the signature's
+ * return type.  Returns NULL when the name is not a subroutine uniform. */
+static MGLIRType *subroutine_uniform_call_type(Sema *s, SymTab *tab,
+                                               const char *name)
+{
+    if (!s->tu || !name) {
+        return NULL;
+    }
+    for (uint32_t i = 0; i < s->tu->subroutine_type_count; i++) {
+        const MGLSubroutineType *st = &s->tu->subroutine_types[i];
+        for (uint32_t k = 0; k < st->uniform_count; k++) {
+            if (strcmp(st->uniforms[k], name) == 0) {
+                return st->ret_type
+                           ? resolve_type_spec(s, tab, st->ret_type)
+                           : mglIRTypeScalar(MGLIR_SCALAR_VOID);
+            }
+        }
+    }
+    return NULL;
+}
+
 
 /* Apply block/member matrix major to every matrix in a (possibly nested)
  * type tree.  Named struct types are cloned per use, so mutating the
@@ -4067,6 +4092,16 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                     free(ats);
                 }
                 return t;
+            }
+            {
+                MGLIRType *sub_ret =
+                    subroutine_uniform_call_type(s, tab, e->u.call.name);
+                if (sub_ret) {
+                    for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
+                        (void)check_expr(s, tab, e->u.call.args[i]);
+                    }
+                    return sub_ret;
+                }
             }
             /* builtin functions (first-wave table) */
             MGLIRType **atb = (MGLIRType **)calloc(

@@ -367,6 +367,7 @@ struct MGLDecl {
  * into a dispatch over the implementations. */
 typedef struct MGLSubroutineType {
     char *name;          /* type name (owned) */
+    struct MGLTypeSpec *ret_type; /* return type of the signature (owned) */
     char **impls;        /* implementation function names (owned) */
     uint32_t impl_count;
     uint32_t impl_cap;
