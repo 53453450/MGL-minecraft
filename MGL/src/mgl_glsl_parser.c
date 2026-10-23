@@ -295,6 +295,51 @@ static int at_ident(MGLParser *p, const char *s)
            memcmp(p->ts->src + t->start, s, n) == 0;
 }
 
+
+/* Identifier text at a lookahead offset (subroutine needs one token of
+ * lookahead to tell its three forms apart). */
+static int at_ident_off(MGLParser *p, uint32_t off, const char *s)
+{
+    size_t n = strlen(s);
+    const MGLGLSLToken *t = tk(p, off);
+    return t->kind == MGLGLSL_TOK_IDENT &&
+           n == (size_t)(t->end - t->start) &&
+           memcmp(p->ts->src + t->start, s, n) == 0;
+}
+
+
+/* A single punctuation token at a lookahead offset. */
+static int ops_at_off(MGLParser *p, uint32_t off, const char *s)
+{
+    size_t len = strlen(s);
+    const MGLGLSLToken *t = tk(p, (int)off);
+    return t->kind == MGLGLSL_TOK_PUNCT &&
+           len == (size_t)(t->end - t->start) &&
+           memcmp(p->ts->src + t->start, s, len) == 0;
+}
+
+/* Skips a balanced `( ... )` starting at the current token. */
+static void skip_balanced_parens(MGLParser *p)
+{
+    if (!ops_at(p, "(")) {
+        return;
+    }
+    int depth = 0;
+    while (tk(p, 0)->kind != MGLGLSL_TOK_END) {
+        if (ops_at(p, "(")) {
+            depth++;
+        } else if (ops_at(p, ")")) {
+            depth--;
+            advance(p);
+            if (depth == 0) {
+                return;
+            }
+            continue;
+        }
+        advance(p);
+    }
+}
+
 static int at_num(MGLParser *p)
 {
     MGLGLSLTokenKind k = (MGLGLSLTokenKind)tk(p, 0)->kind;
@@ -3651,6 +3696,46 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
             continue;
         }
         if (parse_precision_statement(&p)) {
+            continue;
+        }
+        /* GLSL 4.0 subroutines.  Three forms share the keyword:
+         *   subroutine(Type) ret f(...) { }   the qualifier on an implementation
+         *   subroutine uniform Type name;     the subroutine uniform
+         *   subroutine ret Type(args);        the subroutine type declaration
+         * The first two only need the keyword removed; the third is dropped
+         * after its type name is recorded, so `subroutine uniform T g;` later
+         * in the unit resolves T like any other user type name. */
+        if (at_ident(&p, "subroutine")) {
+            if (ops_at_off(&p, 1, "(")) {
+                advance(&p);          /* subroutine */
+                skip_balanced_parens(&p);
+                continue;             /* the implementation parses normally */
+            }
+            if (at_ident_off(&p, 1, "uniform")) {
+                advance(&p);          /* subroutine */
+                continue;             /* `uniform T g;` parses normally */
+            }
+            advance(&p);              /* subroutine */
+            /* ret? Type ( args ) ;  -- record the identifier before '('. */
+            while (tk(&p, 0)->kind != MGLGLSL_TOK_END && !ops_at(&p, "(")) {
+                const MGLGLSLToken *t = tk(&p, 0);
+                if (t->kind == MGLGLSL_TOK_IDENT &&
+                    ops_at_off(&p, 1, "(")) {
+                    char *name = dup_current(&p);
+                    if (name) {
+                        record_struct_name(&p, name);
+                        free(name);
+                    }
+                    break;
+                }
+                advance(&p);
+            }
+            while (tk(&p, 0)->kind != MGLGLSL_TOK_END && !ops_at(&p, ";")) {
+                advance(&p);
+            }
+            if (ops_at(&p, ";")) {
+                advance(&p);
+            }
             continue;
         }
         MGLDecl *d = parse_declaration(&p);
