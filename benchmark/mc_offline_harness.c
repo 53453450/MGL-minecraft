@@ -281,10 +281,15 @@ static void setup_format_vao(GLuint vao)
     p_glEnableVertexAttribArray(2);
     p_glVertexAttribFormat(0, 3, GL_FLOAT, GL_FALSE, 0);
     p_glVertexAttribFormat(1, 2, GL_FLOAT, GL_FALSE, 12);
-    p_glVertexAttribIFormat(2, 2, GL_UNSIGNED_BYTE, 20);
+    /* Vanilla light (UV2) is Type.SHORT via Usage.UV — a non-integer SHORT
+     * attrib, not IFormat.  The integer spelling makes MGL's dynamic vertex
+     * path run a whole-buffer format conversion per draw. */
+    p_glVertexAttribFormat(2, 2, GL_SHORT, GL_FALSE, 20);
+    p_glVertexAttribFormat(3, 4, GL_UNSIGNED_BYTE, GL_TRUE, 24);
     p_glVertexAttribBinding(0, 0);
     p_glVertexAttribBinding(1, 0);
     p_glVertexAttribBinding(2, 0);
+    p_glVertexAttribBinding(3, 0);
 }
 
 static int init_scene(HarnessScene *s)
@@ -301,7 +306,8 @@ static int init_scene(HarnessScene *s)
     if ((env = getenv("HARNESS_GUI_DRAWS")) != NULL) s->gui_draws = atoi(env);
     s->emit_startup_location_queries = getenv("HARNESS_STARTUP_QUERIES") != NULL;
 
-    s->vertex_slice_bytes = 24;
+    /* POSITION_TEX_LIGHTMAP_COLOR: pos(3f) uv0(2f) uv2(2s) color(4ub-norm) */
+    s->vertex_slice_bytes = 28;
     s->index_count = 6;
 
     glGenVertexArrays(VAO_CACHE_SIZE, s->vaos);
@@ -499,12 +505,15 @@ static void draw_frame(HarnessScene *s, int frame)
         p_glDrawArrays(GL_TRIANGLES, 0, 6);
     }
 
-    /* ---- pass 1: terrain (3 layer programs, indexed, atlas texture) ---- */
+    /* ---- pass 1: terrain (3 layer programs, indexed, atlas texture) ----
+     * Vanilla renders layer-by-layer (SectionRenderDispatcher runs one
+     * section sweep per layer), so the program changes per LAYER, not per
+     * draw. */
     begin_pass(s, 1, width, height);
     apply_pipeline_state(1, 1, 0);
     last_pipeline_key = 1;
-    for (int i = 0; i < s->terrain_draws; i++) {
-        int layer = i % TERRAIN_LAYERS;
+    for (int layer = 0; layer < TERRAIN_LAYERS; layer++) {
+      for (int i = layer; i < s->terrain_draws; i += TERRAIN_LAYERS) {
         if (last_program != layer) {
             p_glUseProgram(s->programs[layer]);
             p_glUniform1i(s->sampler_locs[layer], 0);
@@ -515,6 +524,7 @@ static void draw_frame(HarnessScene *s, int frame)
         try_setup_samplers(1, s->textures[0], s->samplers[0]);
         bind_draw_ubo_slice(s, 1);
         p_glDrawElements(GL_TRIANGLES, s->index_count, GL_UNSIGNED_INT, (void *)0);
+      }
     }
 
     /* ---- pass 2: entities (per-draw texture alternation, 2 samplers) ---- */

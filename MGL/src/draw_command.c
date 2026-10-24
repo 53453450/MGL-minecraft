@@ -49,6 +49,7 @@
 extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
 
+
 /* Transient scratch pool (defined next to mglNewTransientBatchBuffer). */
 static Buffer *mglAcquireTransientBatchBuffer(GLMContext ctx, GLenum target);
 static void mglRecycleTransientBatchBuffer(GLMContext ctx, Buffer *buffer);
@@ -2462,9 +2463,11 @@ static void mglHashElementArrayState(uint64_t *hash, const VertexArray *vao)
     *hash ^= mglRotateLeft64((uint64_t)(uintptr_t)vao->element_array.ptr, 17);
 }
 
-static uint64_t mglComputeVertexArrayStateHash(GLMContext ctx, bool uses_elements)
+static uint64_t mglComputeVertexArrayStateHashVAO(const VertexArray *vao,
+                                                  const CurrentVertexAttrib *current_attribs,
+                                                  bool uses_elements,
+                                                  bool include_element)
 {
-    VertexArray *vao = ctx ? ctx->active_state->vao : NULL;
     if (!vao) return 0u;
 
     uint64_t hash = 0x56414f5354415445ULL;
@@ -2475,7 +2478,8 @@ static uint64_t mglComputeVertexArrayStateHash(GLMContext ctx, bool uses_element
     for (GLuint i = 0; i < maxAttribs; i++) {
         const VertexAttrib *attrib = &vao->attrib[i];
         uint64_t salt = 0x100u + (uint64_t)i * 17u;
-        mglHashBufferPointerName(&hash, attrib->buffer, salt);
+        if (include_element)
+            mglHashBufferPointerName(&hash, attrib->buffer, salt);
         hash ^= mglRotateLeft64((uint64_t)attrib->size, (salt + 1u) & 63);
         hash ^= mglRotateLeft64((uint64_t)attrib->type, (salt + 2u) & 63);
         hash ^= mglRotateLeft64((uint64_t)attrib->normalized, (salt + 3u) & 63);
@@ -2484,11 +2488,12 @@ static uint64_t mglComputeVertexArrayStateHash(GLMContext ctx, bool uses_element
         hash ^= mglRotateLeft64((uint64_t)attrib->stride, (salt + 6u) & 63);
         hash ^= mglRotateLeft64((uint64_t)attrib->divisor, (salt + 7u) & 63);
         hash ^= mglRotateLeft64((uint64_t)attrib->relativeoffset, (salt + 8u) & 63);
-        hash ^= mglRotateLeft64((uint64_t)attrib->binding_offset, (salt + 9u) & 63);
+        if (include_element)
+            hash ^= mglRotateLeft64((uint64_t)attrib->binding_offset,
+                                    (salt + 9u) & 63);
         hash ^= mglRotateLeft64((uint64_t)attrib->buffer_bindingindex, (salt + 10u) & 63);
-        if ((vao->enabled_attribs & (1u << i)) == 0u) {
-            mglHashCurrentVertexAttrib(&hash,
-                                       &ctx->active_state->current_vertex_attrib[i],
+        if ((vao->enabled_attribs & (1u << i)) == 0u && current_attribs) {
+            mglHashCurrentVertexAttrib(&hash, &current_attribs[i],
                                        0x300u + (uint64_t)i * 23u);
         }
     }
@@ -2496,16 +2501,26 @@ static uint64_t mglComputeVertexArrayStateHash(GLMContext ctx, bool uses_element
     for (GLuint i = 0; i < MGL_MAX_VERTEX_ATTRIB_BINDINGS; i++) {
         const BufferBinding *binding = &vao->bindings[i];
         uint64_t salt = 0x500u + (uint64_t)i * 19u;
-        mglHashBufferPointerName(&hash, binding->buffer, salt);
-        hash ^= mglRotateLeft64((uint64_t)binding->offset, (salt + 1u) & 63);
+        if (include_element)
+            mglHashBufferPointerName(&hash, binding->buffer, salt);
+        if (include_element)
+            hash ^= mglRotateLeft64((uint64_t)binding->offset, (salt + 1u) & 63);
         hash ^= mglRotateLeft64((uint64_t)binding->stride, (salt + 2u) & 63);
         hash ^= mglRotateLeft64((uint64_t)binding->divisor, (salt + 3u) & 63);
     }
 
-    if (uses_elements)
+    if (uses_elements && include_element)
         mglHashElementArrayState(&hash, vao);
 
     return hash;
+}
+
+static uint64_t mglComputeVertexArrayStateHash(GLMContext ctx, bool uses_elements)
+{
+    return mglComputeVertexArrayStateHashVAO(
+        ctx ? ctx->active_state->vao : NULL,
+        ctx ? ctx->active_state->current_vertex_attrib : NULL,
+        uses_elements, true);
 }
 
 static uint64_t mglComputeRenderStateHash(GLMContext ctx)
@@ -2880,6 +2895,103 @@ static bool mglStateKeysEqualIgnoringUniformRanges(const MGLStateKey *a,
            a->caps_flags == b->caps_flags &&
            a->texture_hash == b->texture_hash &&
            a->vertex_layout_hash == b->vertex_layout_hash;
+}
+
+/* Merge tolerance for per-section data movement (MC 1.21.11 terrain: one
+ * GpuBuffer pair + one UBO slice + one EBO per section).  Compares every
+ * key field except the UBO-range and vertex-data-location hashes; the two
+ * VAOS' layout hashes are compared with data locations excluded.  The direct
+ * issue path resolves each command's own index buffer, and the merged
+ * command records its own dynamic uniform/vertex bindings, so the replay
+ * never applies a neighbour's data location. */
+static bool mglStateKeysEqualIgnoringUniformAndElementRanges(
+    const MGLStateKey *a, const MGLStateKey *b,
+    const VertexArray *vao_a, const VertexArray *vao_b,
+    const CurrentVertexAttrib *current_attribs_a,
+    const CurrentVertexAttrib *current_attribs_b, bool uses_elements)
+{
+    if ((a->render_state_hash ^ a->uniform_buffer_hash) !=
+        (b->render_state_hash ^ b->uniform_buffer_hash)) {
+        return false;
+    }
+    if (a->program_name != b->program_name ||
+        a->program_pipeline_name != b->program_pipeline_name ||
+        a->vertex_program_name != b->vertex_program_name ||
+        a->fragment_program_name != b->fragment_program_name ||
+        a->vao_name != b->vao_name ||
+        a->fbo_name != b->fbo_name ||
+        a->viewport[0] != b->viewport[0] ||
+        a->viewport[1] != b->viewport[1] ||
+        a->viewport[2] != b->viewport[2] ||
+        a->viewport[3] != b->viewport[3] ||
+        a->scissor[0] != b->scissor[0] ||
+        a->scissor[1] != b->scissor[1] ||
+        a->scissor[2] != b->scissor[2] ||
+        a->scissor[3] != b->scissor[3] ||
+        a->scissor_enabled != b->scissor_enabled ||
+        a->primitive_type != b->primitive_type ||
+        a->caps_flags != b->caps_flags ||
+        a->texture_hash != b->texture_hash) {
+        return false;
+    }
+    if (a->vertex_layout_hash == b->vertex_layout_hash) {
+        return true;
+    }
+    if (!vao_a || !vao_b) {
+        return false;
+    }
+    uint64_t hash_a = mglComputeVertexArrayStateHashVAO(vao_a, current_attribs_a,
+                                                        uses_elements, false);
+    uint64_t hash_b = mglComputeVertexArrayStateHashVAO(vao_b, current_attribs_b,
+                                                        uses_elements, false);
+    return hash_a == hash_b;
+}
+
+/* Texture-tolerant variant: like the element variant, but the texture-hash
+ * field may also differ — every merged command records its own dynamic
+ * texture binds (mglCaptureDynamicTextureBindings, which fails closed on
+ * sampler/active-mask changes), so the replay applies each draw's binds. */
+static bool mglStateKeysEqualIgnoringUniformElementAndTextures(
+    const MGLStateKey *a, const MGLStateKey *b,
+    const VertexArray *vao_a, const VertexArray *vao_b,
+    const CurrentVertexAttrib *current_attribs_a,
+    const CurrentVertexAttrib *current_attribs_b, bool uses_elements)
+{
+    if ((a->render_state_hash ^ a->uniform_buffer_hash) !=
+        (b->render_state_hash ^ b->uniform_buffer_hash)) {
+        return false;
+    }
+    if (a->program_name != b->program_name ||
+        a->program_pipeline_name != b->program_pipeline_name ||
+        a->vertex_program_name != b->vertex_program_name ||
+        a->fragment_program_name != b->fragment_program_name ||
+        a->vao_name != b->vao_name ||
+        a->fbo_name != b->fbo_name ||
+        a->viewport[0] != b->viewport[0] ||
+        a->viewport[1] != b->viewport[1] ||
+        a->viewport[2] != b->viewport[2] ||
+        a->viewport[3] != b->viewport[3] ||
+        a->scissor[0] != b->scissor[0] ||
+        a->scissor[1] != b->scissor[1] ||
+        a->scissor[2] != b->scissor[2] ||
+        a->scissor[3] != b->scissor[3] ||
+        a->scissor_enabled != b->scissor_enabled ||
+        a->primitive_type != b->primitive_type ||
+        a->caps_flags != b->caps_flags) {
+        return false;
+    }
+    if (a->vertex_layout_hash == b->vertex_layout_hash &&
+        a->texture_hash == b->texture_hash) {
+        return true;
+    }
+    if (!vao_a || !vao_b) {
+        return false;
+    }
+    uint64_t hash_a = mglComputeVertexArrayStateHashVAO(vao_a, current_attribs_a,
+                                                        uses_elements, false);
+    uint64_t hash_b = mglComputeVertexArrayStateHashVAO(vao_b, current_attribs_b,
+                                                        uses_elements, false);
+    return hash_a == hash_b;
 }
 
 static bool mglCaptureDynamicUniformRanges(GLMContext ctx,
@@ -4418,6 +4530,9 @@ static bool mglInitializeStreamMergedBatch(GLMContext ctx,
     batch->stream_layout_hash = candidate->layout_hash;
     batch->stream_vertex_stride = candidate->vertex_stride;
     batch->mdi_compatible = true;
+    /* Record-time merge comparisons need the draw's real bindings; the
+     * transient vao_snapshot carries the merged scratch buffers instead. */
+    batch->source_vao = candidate->vao;
 
     MGL_PERF_INC(g_mglSnapshotAllocationCountSinceSwap);
     /* Report the bytes actually written (hot state copy + VAO freeze), not
@@ -4640,17 +4755,37 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
             /* Once sampler state changes, keep subsequent draws in one mixed
              * direct batch instead of consuming a stream batch per snapshot. */
             can_stream_merge = false;
-        } else if (!last_keys_match &&
-                   mglStateKeysEqualIgnoringUniformRanges(&last->key, &key)) {
-            /* Keys differ only in uniform-range identity (per-draw UBO offset
-             * rebinds — MC 1.21.11 dynamic transforms).  A stream batch cannot
-             * express per-sub-draw uniform overrides, so as a stream candidate
-             * this draw would open a single-draw stream batch and also block
-             * the tolerant merge branches below (they require
-             * !can_stream_merge).  Demote to a direct draw so the
-             * uniform-range capture path can merge it instead. */
-            can_stream_merge = false;
-            MGL_PERF_INC(g_mglStreamDemotedToDirectSinceSwap);
+        } else if (!last_keys_match) {
+            const VertexArray *last_real_vao =
+                (const VertexArray *)(last->stream_merged
+                                          ? last->source_vao
+                                          : last->vao_snapshot);
+            const CurrentVertexAttrib *last_attribs =
+                last->state_snapshot
+                    ? (const CurrentVertexAttrib *)
+                          &((const GLMState *)last->state_snapshot)
+                               ->current_vertex_attrib[0]
+                    : NULL;
+            bool tolerant_equal =
+                mglStateKeysEqualIgnoringUniformRanges(&last->key, &key) ||
+                mglStateKeysEqualIgnoringUniformAndElementRanges(
+                    &last->key, &key, last_real_vao,
+                    ctx->active_state->vao, last_attribs,
+                    ctx->active_state->current_vertex_attrib,
+                    cmd_uses_elements);
+            if (tolerant_equal) {
+                /* Keys differ only in uniform-range identity or per-section
+                 * data movement (per-draw UBO offsets / EBOs / vertex slices
+                 * — MC 1.21.11 dynamic transforms and terrain sections).  A
+                 * stream batch cannot express per-sub-draw overrides, so as
+                 * a stream candidate this draw would open a single-draw
+                 * stream batch and also block the tolerant merge branches
+                 * below (they require !can_stream_merge).  Demote to a
+                 * direct draw so the dynamic-capture merge path can absorb
+                 * it instead. */
+                can_stream_merge = false;
+                MGL_PERF_INC(g_mglStreamDemotedToDirectSinceSwap);
+            }
         }
     }
     /*
