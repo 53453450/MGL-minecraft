@@ -2904,6 +2904,43 @@ static bool mglStateKeysEqualIgnoringUniformRanges(const MGLStateKey *a,
  * issue path resolves each command's own index buffer, and the merged
  * command records its own dynamic uniform/vertex bindings, so the replay
  * never applies a neighbour's data location. */
+
+/* Data-location movement between the snapshot and the live VAO is only
+ * natively rebindable per command when the moved attribs are NVVB-managed
+ * (their binding-table entry carries the buffer).  Classic attrib->buffer
+ * movement would push the dynamic apply path into a whole-buffer format
+ * conversion per command (mglDynApplyMapperFallback), which is far slower
+ * than not merging — so classic-style movement must not be merged. */
+static bool mglVertexDataMovementIsNativelyRebindable(
+    const VertexArray *vao_a, const VertexArray *vao_b)
+{
+    if (!vao_a || !vao_b) {
+        return false;
+    }
+    GLuint enabled = (GLuint)(vao_a->enabled_attribs | vao_b->enabled_attribs);
+    while (enabled) {
+        int i = __builtin_ctz(enabled);
+        enabled &= enabled - 1;
+        const VertexAttrib *aa = &vao_a->attrib[i];
+        const VertexAttrib *ab = &vao_b->attrib[i];
+        if (aa->buffer == ab->buffer) {
+            continue;
+        }
+        GLuint bi = aa->buffer_bindingindex;
+        if (bi != ab->buffer_bindingindex ||
+            bi >= MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
+            return false;
+        }
+        if (vao_a->bindings[bi].buffer == NULL ||
+            vao_b->bindings[bi].buffer == NULL) {
+            /* Classic pointer attrib: the location moved without the
+             * bindings table carrying it. */
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool mglStateKeysEqualIgnoringUniformAndElementRanges(
     const MGLStateKey *a, const MGLStateKey *b,
     const VertexArray *vao_a, const VertexArray *vao_b,
@@ -2938,6 +2975,9 @@ static bool mglStateKeysEqualIgnoringUniformAndElementRanges(
         return true;
     }
     if (!vao_a || !vao_b) {
+        return false;
+    }
+    if (!mglVertexDataMovementIsNativelyRebindable(vao_a, vao_b)) {
         return false;
     }
     uint64_t hash_a = mglComputeVertexArrayStateHashVAO(vao_a, current_attribs_a,
@@ -2985,6 +3025,9 @@ static bool mglStateKeysEqualIgnoringUniformElementAndTextures(
         return true;
     }
     if (!vao_a || !vao_b) {
+        return false;
+    }
+    if (!mglVertexDataMovementIsNativelyRebindable(vao_a, vao_b)) {
         return false;
     }
     uint64_t hash_a = mglComputeVertexArrayStateHashVAO(vao_a, current_attribs_a,
