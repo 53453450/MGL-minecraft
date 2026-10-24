@@ -15,6 +15,7 @@
  */
 
 #include "mgl_binding_texture.h"
+#include "mgl_byte_hash.h"
 #include "mgl_binding_policy.h"
 #include "mgl_render_values.h"
 
@@ -595,7 +596,8 @@ void mglBindingTextureFillSampledDiagEmitCore(
     uint32_t unit_2d, uint32_t unit_cube, uint64_t mtl_type, uint64_t mtl_w,
     uint64_t mtl_h, uint64_t pixel_format, uint32_t l0w, uint32_t l0h, uint32_t l0d,
     uint64_t l0_bytes, uint32_t l0_ever, uint32_t l0_full, uint32_t l0_zero,
-    uint32_t l0_source, uint64_t l0_upload, uint64_t l0_hash, uint64_t l0_data_hash,
+    uint32_t l0_source, uint64_t l0_upload, uint64_t l0_hash,
+    const void *l0_data, uint64_t l0_data_bytes,
     uint32_t ptr_tex, int stage_is_fragment, int is_gui_rt_copy_eligible,
     int focused_loading_window, int vertex_focus_program, int is_texel_buffer,
     int level0_suspicious_zero, int level0_never_written, int level0_uninit,
@@ -638,7 +640,9 @@ void mglBindingTextureFillSampledDiagEmitCore(
     in->l0_source = l0_source;
     in->l0_upload = l0_upload;
     in->l0_hash = l0_hash;
-    in->l0_data_hash = l0_data_hash;
+    in->l0_data = l0_data;
+    in->l0_data_bytes = l0_data_bytes;
+    in->l0_data_hash = 0;
     in->ptr_tex = ptr_tex;
     in->stage_is_fragment = stage_is_fragment ? 1 : 0;
     in->is_gui_rt_copy_eligible = is_gui_rt_copy_eligible ? 1 : 0;
@@ -746,6 +750,11 @@ void mglBindingTextureEmitSampledDiagPorts(
             &s_sampleDetailLogCount[in->stage_is_fragment ? 1 : 0];
         uint64_t early = in->stage_is_fragment ? 256ull : 128ull;
         if (mglBindingTextureRateLogHit(ctr, early, 512ull)) {
+            /* The base-level data hash costs a pass over the whole level;
+             * compute it only when this rate-limited line actually logs. */
+            uint64_t l0_data_hash = (in->l0_data && in->l0_data_bytes)
+                ? mglTraceHashBytes(in->l0_data, (size_t)in->l0_data_bytes)
+                : 0ull;
             mglBindingLogSampleDetail(
                 in->bind_call, *ctr, in->stage, in->program_name,
                 in->sampled_name, in->program_binding, in->texture_unit,
@@ -754,7 +763,7 @@ void mglBindingTextureEmitSampledDiagPorts(
                 in->mtl_h, in->unit_active, in->unit_expected, in->unit_2d,
                 in->unit_cube, in->l0w, in->l0h, in->l0d, in->l0_bytes,
                 in->l0_ever, in->l0_full, in->l0_zero, in->l0_source,
-                in->l0_upload, in->l0_src, in->l0_hash, in->l0_data_hash);
+                in->l0_upload, in->l0_src, in->l0_hash, l0_data_hash);
         }
     }
     if (dplan.log_gui_rt &&

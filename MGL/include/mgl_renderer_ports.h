@@ -327,6 +327,11 @@ typedef struct MGLRendererStateView {
     int32_t swap_interval;
 } MGLRendererStateView;
 
+/* Drops the cached renderer state view (mgl_platform_shell.cpp).  The shell
+ * setters call this; C hosts changing renderer inputs outside those setters
+ * can too. */
+void mglRendererStateViewInvalidateCache(void);
+
 static inline void mglRendererFillStateView(void *renderer,
                                             MGLRendererStateView *view_out)
 {

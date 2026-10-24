@@ -211,6 +211,7 @@ static void mglShellSetLayer(MGLObjectId self, SEL cmd, MGLObjectId value)
     MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
     if (ivars) {
         mglShellStoreObject(&ivars->_layer, value);
+        mglRendererStateViewInvalidateCache();
     }
 }
 
@@ -220,12 +221,15 @@ static MGLObjectId mglShellGetDrawable(MGLObjectId self, SEL cmd)
     return mglShellDrawableOf(self);
 }
 
+void mglRendererStateViewInvalidateCache(void);
+
 static void mglShellSetDrawable(MGLObjectId self, SEL cmd, MGLObjectId value)
 {
     (void)cmd;
     MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
     if (ivars) {
         mglShellStoreObject(&ivars->_drawable, value);
+        mglRendererStateViewInvalidateCache();
     }
 }
 
@@ -624,6 +628,7 @@ static void mglPlatformShellDealloc(MGLObjectId self, SEL cmd)
         mglShellStoreObject(&ivars->_drawable, NULL);
         mglShellStoreObject(&ivars->_layer, NULL);
         mglShellStoreObject(&ivars->_view, NULL);
+        mglRendererStateViewInvalidateCache();
     }
     /* Search starts at NSObject: s_mglShellClass is the class this method is
      * installed on, so its superclass is where the shell's dealloc continues. */
@@ -1586,6 +1591,24 @@ MGLPipelineCachePort mglRendererPipelineCachePort(void *renderer)
     return port;
 }
 
+/* Render-thread state-view cache.  The renderer's pointer areas are stable
+ * for the object's lifetime, and the three selector reads below (drawable/
+ * layer/swapInterval) are ivar getters whose inputs only move through the
+ * shell setters — each bump of g_mglShellStateGeneration invalidates.  The
+ * hot callers run this 50-100x per frame, so the cache skips the sends and
+ * the memset; fields that a frame can change without a setter (the
+ * tessellation/GPU-recovery values) are re-read from the ivars on every hit,
+ * so no consumer ever sees a frozen value. */
+static std::atomic<uint32_t> g_mglShellStateGeneration{0u};
+static MGLRendererStateAreas s_mglAreasCache;
+static MGLObjectId s_mglAreasCacheRenderer;
+static uint32_t s_mglAreasCacheGeneration; /* 0 = invalid */
+
+void mglRendererStateViewInvalidateCache(void)
+{
+    g_mglShellStateGeneration.fetch_add(1u, std::memory_order_relaxed);
+}
+
 void mglRendererFillStateAreas(void *renderer, MGLRendererStateAreas *areas_out) /* C5-EXEMPT: owner of the areas (definition) */
 {
     MGLObjectId r = (MGLObjectId)renderer;
@@ -1593,6 +1616,37 @@ void mglRendererFillStateAreas(void *renderer, MGLRendererStateAreas *areas_out)
     if (!areas_out) {
         return;
     }
+
+    const uint32_t generation =
+        g_mglShellStateGeneration.load(std::memory_order_relaxed);
+    if (generation != 0u && s_mglAreasCacheGeneration == generation &&
+        s_mglAreasCacheRenderer == r) {
+        *areas_out = s_mglAreasCache;
+        r_ivars = mglRendererIvars(r);
+        if (!r_ivars) {
+            memset(areas_out, 0, sizeof(*areas_out));
+            return;
+        }
+        /* Per-draw values: never served stale from the cache. */
+        areas_out->tess_native_tes_active =
+            (int32_t)r_ivars->_tessellation.nativeTESActive;
+        areas_out->tess_native_tes_program =
+            (void *)r_ivars->_tessellation.nativeTESProgram;
+        areas_out->tess_tcs_output_stride =
+            (uint32_t)r_ivars->_tessellation.tcsOutputStride;
+        areas_out->tess_cull_capture_first_instance =
+            (uint32_t)r_ivars->_tessellation.cullDistanceCaptureFirstInstance;
+        areas_out->tess_cull_capture_instance_stride =
+            (uint32_t)r_ivars->_tessellation.cullDistanceCaptureInstanceStride;
+        areas_out->gpu_interface_mismatch_blocked_program =
+            (uint32_t)r_ivars->_gpuRecovery.interfaceMismatchBlockedProgram;
+        areas_out->gpu_interface_mismatch_blocked_until =
+            (double)r_ivars->_gpuRecovery.interfaceMismatchBlockedUntil;
+        areas_out->mssample_forced_id =
+            (int32_t)r_ivars->_mglForcedMSSampleId;
+        return;
+    }
+
     memset(areas_out, 0, sizeof(*areas_out));
     r_ivars = mglRendererIvars(r);
     if (!r_ivars) {
@@ -1641,6 +1695,10 @@ void mglRendererFillStateAreas(void *renderer, MGLRendererStateAreas *areas_out)
         (uint32_t)r_ivars->_tessellation.cullDistanceCaptureInstanceStride;
     areas_out->fragment_trace_bindings =
         &r_ivars->_resourceFallback.fragmentTextureTraceBindings[0];
+
+    s_mglAreasCache = *areas_out;
+    s_mglAreasCacheRenderer = r;
+    s_mglAreasCacheGeneration = generation;
 }
 
 /* The @try/@finally frame the C flush driver cannot express: the teardown has
@@ -2813,6 +2871,7 @@ static void mglContextHostSetSwapInterval(void *owner, int interval)
         interval = 0;
     }
     ivars->_swapInterval = interval;
+    mglRendererStateViewInvalidateCache();
     MGLObjectId layer = (MGLObjectId)ivars->_layer;
     if (layer) {
         MGLScopedAutoreleasePool pool;

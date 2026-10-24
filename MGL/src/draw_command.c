@@ -4934,6 +4934,7 @@ void mglFlushCommandBuffer(GLMContext ctx)
 
     MGL_PERF_INC(g_mglFlushTotalSinceSwap);
     mglRendererFlushDrawBuffer(ctx);
+
 }
 
 /*

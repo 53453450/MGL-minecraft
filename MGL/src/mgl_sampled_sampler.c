@@ -538,9 +538,9 @@ void mglSampledEmitDiagPorts(
         level0 ? level0->last_upload_size : 0u,
         level0 ? level0->last_src_hash : 0ull,
         (level0 && level0->data && level0->data_size > 0)
-            ? mglTraceHashBytes((const void *)(uintptr_t)level0->data,
-                                level0->data_size)
-            : 0ull,
+            ? (const void *)(uintptr_t)level0->data
+            : NULL,
+        level0 ? (uint64_t)level0->data_size : 0ull,
         ptr ? ptr->name : 0u, stage_is_fragment ? 1 : 0,
         0,
         stage_is_fragment && mglIsFocusedLoadingProgram(program_name) &&

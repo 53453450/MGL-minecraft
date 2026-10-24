@@ -66,7 +66,6 @@
 #include "mgl_state_log.h"
 #include "mgl_trace_log.h"
 #include "mgl_byte_hash.h"
-#include <execinfo.h>
 #include "mgl_compute_pipeline_cache.h"
 
 #include "mgl_focus_program.h"
@@ -91,7 +90,6 @@
 #include "mgl_state_log.h"
 #include "mgl_trace_log.h"
 #include "mgl_byte_hash.h"
-#include <execinfo.h>
 #include "mgl_compute_pipeline_cache.h"
 #include "mgl_program_backend.h"
 #include "mgl_buffer_backend.h"
@@ -1570,24 +1568,6 @@ bool mglRenderUpdateDirtyBaseBufferList(GLMContext ctx, BufferMapList *buffer_ma
                                                           (unsigned long)i);
         if (gl_buffer) {
             if (gl_buffer->data.dirty_bits) {
-                if (getenv("MGL_DIRTY_DEBUG")) {
-                    static unsigned long s_dirty_dbg = 0;
-                    if (++s_dirty_dbg < 40) {
-                        fprintf(stderr, "MGL DIRTY DBG buf=%p name=%u size=%ld target=0x%x transient=%d dirty=0x%x mtl=%p where=%s\n",
-                                (void*)gl_buffer, gl_buffer->name, (long)gl_buffer->size,
-                                gl_buffer->target,
-                                (int)gl_buffer->transient_batch_buffer,
-                                gl_buffer->data.dirty_bits,
-                                mglBufferMtl(gl_buffer), where ? where : "?");
-                    }
-                    static int s_dirty_bt_done = 0;
-                    if (!s_dirty_bt_done && getenv("MGL_DIRTY_DEBUG")) {
-                        s_dirty_bt_done = 1;
-                        void *bt[12];
-                        int n = backtrace(bt, 12);
-                        backtrace_symbols_fd(bt, n, 2);
-                    }
-                }
                 char error[256] = {0};
                 int result = mglRenderUpdateDirtyBuffer(gl_buffer, error, sizeof(error));
                 if (result != MGL_RENDER_BUFFER_OPERATION_HANDLED) {

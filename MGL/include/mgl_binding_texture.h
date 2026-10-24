@@ -362,6 +362,8 @@ typedef struct MGLSampledDiagEmitInput {
     uint64_t l0_upload;
     const void *l0_src;
     uint64_t l0_hash;
+    const void *l0_data;        /* lazily hashed into l0_data_hash on log */
+    uint64_t l0_data_bytes;
     uint64_t l0_data_hash;
     const void *ptr;
     uint32_t ptr_tex;
@@ -405,7 +407,8 @@ void mglBindingTextureFillSampledDiagEmitCore(
     uint32_t unit_2d, uint32_t unit_cube, uint64_t mtl_type, uint64_t mtl_w,
     uint64_t mtl_h, uint64_t pixel_format, uint32_t l0w, uint32_t l0h, uint32_t l0d,
     uint64_t l0_bytes, uint32_t l0_ever, uint32_t l0_full, uint32_t l0_zero,
-    uint32_t l0_source, uint64_t l0_upload, uint64_t l0_hash, uint64_t l0_data_hash,
+    uint32_t l0_source, uint64_t l0_upload, uint64_t l0_hash,
+    const void *l0_data, uint64_t l0_data_bytes,
     uint32_t ptr_tex, int stage_is_fragment, int is_gui_rt_copy_eligible,
     int focused_loading_window, int vertex_focus_program, int is_texel_buffer,
     int level0_suspicious_zero, int level0_never_written, int level0_uninit,
