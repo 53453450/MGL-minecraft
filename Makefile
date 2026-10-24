@@ -551,6 +551,29 @@ bench: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 		-o $(build_dir)/mgl_benchmark
 	@echo "✅ Benchmark built: $(build_dir)/mgl_benchmark"
 
+# Offline Minecraft 1.21.11 frame-shape harness (benchmark/mc_offline_harness.c).
+# Replays the vanilla GlCommandEncoder per-draw GL stream (per-draw EBO bind,
+# per-draw UBO slice rebind, unconditional sampler rebinds, pass boundaries)
+# so MGL's per-draw costs can be A/B-ed without the game.  When linked
+# against a libmgl carrying mgl_vm_probe_count it also reports exact
+# vm_region probe counts per frame (dlsym, optional).
+# knobs: HARNESS_FRAMES/WARMUP/TERRAIN_DRAWS/ENTITY_DRAWS/GUI_DRAWS,
+#        HARNESS_STARTUP_QUERIES, HARNESS_SKIP_LOD_PARAMS,
+#        HARNESS_SKIP_SAMPLER_BLOCK
+mc-harness: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
+	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(HOST_ARCH) \
+		-I./external/glfw/include \
+		-IMGL/include -IMGL/include/GL \
+		-DMGL_GL_CORE \
+		-isysroot $(SDK_ROOT) \
+		benchmark/mc_offline_harness.c \
+		-L$(build_dir) -lmgl -lglfw \
+		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
+		-framework IOKit -framework Foundation -framework QuartzCore \
+		-framework Metal -framework OpenGL \
+		-o $(build_dir)/mc_offline_harness
+	@echo "✅ Minecraft offline harness built: $(build_dir)/mc_offline_harness"
+
 # System Apple OpenGL benchmark target — compiles the same benchmark source
 # with -D__MGL_BENCHMARK_SYSTEM_GL__ and links against the system OpenGL
 # framework via a separately installed system GLFW (no MGL dependency).  This
