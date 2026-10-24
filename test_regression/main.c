@@ -62,7 +62,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 231
+#define MAX_TESTS 232
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -30649,9 +30649,120 @@ static int test_unreliable_on_paravirt(const char *name)
     return 0;
 }
 
+/* ---- GLSL 4.0 subroutines ----
+ * Self-check: link one program with two subroutine types (and a void type
+ * whose implementations write the stage output), switch implementations with
+ * glUniformSubroutinesuiv, and read the pixel back.  A backend that ignores the
+ * selector (the bb9a7c21 regression) renders the same colour for both
+ * selections, which no compile-only check would catch. */
+static int test_subroutine_dispatch(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint tex = 0;
+    GLuint fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    const char *vs =
+        "#version 430 core\n"
+        "layout(location = 0) in vec2 a_pos;\n"
+        "void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
+    /* Two types: `T` returns the colour, `U` picks between two thresholds.
+     * Implementations of `T` are void-shaped in spirit but return a value, so
+     * the value path and the merge-phi path are both exercised. */
+    const char *fs =
+        "#version 430 core\n"
+        "out vec4 frag;\n"
+        "subroutine vec4 T();\n"
+        "subroutine bool U();\n"
+        "subroutine uniform T g;\n"
+        "subroutine uniform U h;\n"
+        "subroutine(U) bool u_low()  { return false; }\n"
+        "subroutine(U) bool u_high() { return true; }\n"
+        "subroutine(T) vec4 red()   { frag = vec4(1.0, 0.0, 0.0, 1.0);"
+        "                              return vec4(1.0, 0.0, 0.0, 1.0); }\n"
+        "subroutine(T) vec4 green() { frag = vec4(0.0, 1.0, 0.0, 1.0);"
+        "                              return vec4(0.0, 1.0, 0.0, 1.0); }\n"
+        "void main() { vec4 c = g(); frag = h() ? c : vec4(c.g, c.r, 0.0, 1.0); }\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) return 2;
+
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    glUseProgram(prog);
+
+    /* Program-wide index space sanity (GL 4.6 §7.10). */
+    GLuint i_red = glGetSubroutineIndex(prog, GL_FRAGMENT_SHADER, "red");
+    GLuint i_green = glGetSubroutineIndex(prog, GL_FRAGMENT_SHADER, "green");
+    GLuint i_low = glGetSubroutineIndex(prog, GL_FRAGMENT_SHADER, "u_low");
+    GLuint i_high = glGetSubroutineIndex(prog, GL_FRAGMENT_SHADER, "u_high");
+    if (i_red == GL_INVALID_INDEX || i_green == GL_INVALID_INDEX ||
+        i_low == GL_INVALID_INDEX || i_high == GL_INVALID_INDEX)
+        return 3;
+    if (i_red == i_green || i_red == i_low || i_low == i_high)
+        return 4;                         /* indices must be unique per stage */
+    if (glGetSubroutineIndex(prog, GL_FRAGMENT_SHADER, "nope") !=
+        GL_INVALID_INDEX)
+        return 5;
+
+    GLint loc_g = glGetSubroutineUniformLocation(prog, GL_FRAGMENT_SHADER, "g");
+    GLint loc_h = glGetSubroutineUniformLocation(prog, GL_FRAGMENT_SHADER, "h");
+    if (loc_g < 0 || loc_h < 0 || loc_g == loc_h) return 6;
+
+    GLint active = -1, locations = -1;
+    glGetProgramStageiv(prog, GL_FRAGMENT_SHADER, GL_ACTIVE_SUBROUTINES, &active);
+    glGetProgramStageiv(prog, GL_FRAGMENT_SHADER,
+                        GL_ACTIVE_SUBROUTINE_UNIFORM_LOCATIONS, &locations);
+    if (active != 4 || locations != 2) return 7;
+
+    /* query-back round trip */
+    GLuint sel[2];
+    sel[(size_t)loc_g] = i_red;
+    sel[(size_t)loc_h] = i_high;
+    glUniformSubroutinesuiv(GL_FRAGMENT_SHADER, 2, sel);
+    if (glGetError() != GL_NO_ERROR) return 8;
+    GLuint back = 0xFFFFFFFFu;
+    glGetUniformSubroutineuiv(GL_FRAGMENT_SHADER, loc_g, &back);
+    if (glGetError() != GL_NO_ERROR) return 9;
+    if (back != i_red) return 10;
+
+    /* Draw both selections and require the pixels to differ. */
+    unsigned char px[4];
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(REG_W / 2, REG_H / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    unsigned char first[4] = {px[0], px[1], px[2], px[3]};
+
+    sel[(size_t)loc_g] = i_green;
+    glUniformSubroutinesuiv(GL_FRAGMENT_SHADER, 2, sel);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(REG_W / 2, REG_H / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+
+    int changed = (first[0] != px[0] || first[1] != px[1] || first[2] != px[2]);
+
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &vbo);
+    glDeleteProgram(prog);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    return changed ? 0 : 11;
+}
+
 static const TestCase TESTS[] = {
     SELF_CHECK_TEST("gl_clip_planes",     test_gl_clip_planes),
     SELF_CHECK_TEST("legacy_clip_vertex", test_legacy_clip_vertex),
+    SELF_CHECK_TEST("subroutine_dispatch", test_subroutine_dispatch),
     GOLDEN_TEST("draw_arrays",            test_draw_arrays),
     GOLDEN_TEST("draw_elements",          test_draw_elements),
     GOLDEN_TEST("draw_arrays_instanced",  test_draw_arrays_instanced),
