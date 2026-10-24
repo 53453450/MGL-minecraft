@@ -1162,10 +1162,7 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
 
                 if (logClampDetail) {
                     Framebuffer *debugFbo = state->framebuffer;
-                    int debugFboValid = (debugFbo != NULL &&
-                                          mglRendererObjectPointerLikelyValid(debugFbo) &&
-                                          mglRendererPointerInHashTable(&state->framebuffer_table, debugFbo) &&
-                                          mglPointerRangeIsReadable(debugFbo, sizeof(*debugFbo)));
+                    int debugFboValid = (debugFbo != NULL);
                     void *rpColor0 = mglRsColorTextureFor(commandState, 0);
                     void *rpDepth = mglRsDepthTextureFor(commandState);
                     void *drawableTexture =

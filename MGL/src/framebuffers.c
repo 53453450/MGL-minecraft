@@ -110,10 +110,10 @@ static GLubyte mglClampClearComponentToByte(GLfloat value)
 
 static GLuint mglTraceSafeFramebufferName(GLMContext ctx, Framebuffer *fbo)
 {
-    if (!ctx || !fbo ||
-        !mglObjectPointerLooksPlausible(fbo) ||
-        !mglHashTableContainsData(&STATE(framebuffer_table), fbo) ||
-        !mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
+    /* Trace-only helper: NULL means "no FBO bound", which is a legitimate
+     * state, not corruption.  Live FBOs are hash-table members by
+     * construction, so no kernel-backed readability probe is needed. */
+    if (!ctx || !fbo) {
         return 0u;
     }
     return fbo->name;

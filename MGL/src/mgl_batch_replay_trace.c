@@ -7,7 +7,6 @@
 #include "mgl_trace_strategy.h"   /* trace gates, binding records */
 #include "mgl_texture_compat.h"   /* mglTraceTextureLevelSummary */
 #include "mgl_vertex_attrib_query.h" /* mglRendererGetValidatedVAO */
-#include "mgl_safety.h"           /* mglObjectPointerLooksPlausible */
 #include "mgl_render_api_command.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_texture.h"
@@ -47,9 +46,6 @@ static void mglBatchFillStatePod(GLMContext glm_ctx, MGLBatchTraceStatePod *s)
     s->cull_face = (uint32_t)st->var.cull_face_mode; s->front_face = (uint32_t)st->var.front_face;
     s->dirty = (uint32_t)st->dirty_bits;
 }
-static GLuint mglBatchSafeName(void *obj, size_t sz, GLuint name)
-{ return (obj && mglObjectPointerLooksPlausible(obj) && mglPointerRangeIsReadable(obj, sz))
-      ? name : 0u; }
 static MGLBatchTraceTexSlotView mglBatchTexSlotView(const MGLFragmentTextureTraceBinding *b)
 {
     return (MGLBatchTraceTexSlotView){
@@ -94,7 +90,7 @@ void mglBatchTraceReplayBatch(void *renderer, MGLDrawBatch *batch,
         return;
     VertexArray *vao = mglRendererGetValidatedVAO(glm_ctx, "replay.batch.trace");
     Framebuffer *fbo = glm_ctx->active_state->framebuffer;
-    GLuint fboName = mglBatchSafeName(fbo, sizeof(*fbo), fbo ? fbo->name : 0u);
+    GLuint fboName = fbo ? fbo->name : 0u;
     void *rpStateOwner = mglRendererCommandStateFor(renderer)->renderPassStateOwner;
     void *rpColor0 = mglRenderGetRenderPassAttachmentTextureOwner(
         rpStateOwner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
@@ -103,8 +99,7 @@ void mglBatchTraceReplayBatch(void *renderer, MGLDrawBatch *batch,
     GLMState *snapshot = batch->state_snapshot ? (GLMState *)batch->state_snapshot : NULL;
     GLuint snapshotFBOName = 0u;
     if (snapshot && snapshot->framebuffer)
-        snapshotFBOName = mglBatchSafeName(snapshot->framebuffer, sizeof(*snapshot->framebuffer),
-                                           snapshot->framebuffer->name);
+        snapshotFBOName = snapshot->framebuffer->name;
     Program *vertexProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
     Program *fragmentProgram = mglResolveProgramForStageFromState(glm_ctx, _FRAGMENT_SHADER);
     MGLBatchTraceBatchView v; memset(&v, 0, sizeof(v));
@@ -155,9 +150,9 @@ void mglBatchTraceReplayCommand(void *renderer, MGLDrawBatch *batch,
             earlyFsSlotHasRT))
         return;
     Buffer *ebo = mglDrawCommandUsesElements(cmd) ? mglDrawCommandElementBuffer(glm_ctx, cmd) : NULL;
-    GLuint eboName = mglBatchSafeName(ebo, sizeof(*ebo), ebo ? ebo->name : 0u);
+    GLuint eboName = ebo ? ebo->name : 0u;
     Framebuffer *fbo = glm_ctx->active_state->framebuffer;
-    GLuint fboName = mglBatchSafeName(fbo, sizeof(*fbo), fbo ? fbo->name : 0u);
+    GLuint fboName = fbo ? fbo->name : 0u;
     void *rpStateOwner = mglRendererCommandStateFor(renderer)->renderPassStateOwner;
     void *rpColor0 = mglRenderGetRenderPassAttachmentTextureOwner(
         rpStateOwner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);

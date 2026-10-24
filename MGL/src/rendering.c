@@ -333,13 +333,8 @@ static GLuint mglSafeDrawFramebufferName(GLMContext ctx)
     if (!fbo)
         return 0u;
 
-    if (!mglObjectPointerLooksPlausible(fbo) ||
-        !mglHashTableContainsData(&STATE(framebuffer_table), fbo) ||
-        !mglPointerRangeIsReadable(fbo, sizeof(*fbo)))
-    {
-        return 0u;
-    }
-
+    /* Trace-only helper: live FBOs are hash-table members by construction;
+     * NULL is the legitimate "default framebuffer" state, not corruption. */
     return fbo->name;
 }
 
