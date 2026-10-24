@@ -401,6 +401,10 @@ static void bind_draw_ubo_slice(HarnessScene *s, GLuint program_binding)
  * block (both are measurement knobs, vanilla keeps them). */
 static int g_skip_lod_params;
 static int g_skip_sampler_block;
+/* Present every frame like the real game (default on).  Disabling is only
+ * for pure submit stress; unbounded in-flight commits then accumulate. */
+static int g_present_per_frame = 1;
+static GLFWwindow *g_window;
 
 static void try_setup_samplers(int sampler_count, GLuint texture, GLuint sampler)
 {
@@ -609,6 +613,7 @@ int main(int argc, char **argv)
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     GLFWwindow *win = glfwCreateWindow(640, 480, "mc_offline_harness", NULL, NULL);
+    g_window = win;
     if (!win) return 1;
     glfwMakeContextCurrent(win);
     if (load_gl() != 0) return 1;
@@ -665,7 +670,12 @@ int main(int argc, char **argv)
     double *wall_ms = malloc((size_t)frames * sizeof(double));
     double *user_ms = malloc((size_t)frames * sizeof(double));
     double *sys_ms = malloc((size_t)frames * sizeof(double));
-    if (!wall_ms || !user_ms || !sys_ms) return 1;
+    double *swap_ms = malloc((size_t)frames * sizeof(double));
+    if (!wall_ms || !user_ms || !sys_ms || !swap_ms) return 1;
+    {
+        const char *pf = getenv("HARNESS_NO_PRESENT");
+        g_present_per_frame = (pf && pf[0] == '1') ? 0 : 1;
+    }
 
     unsigned long probes_before = probe_count();
     struct rusage r0, r1;
@@ -678,8 +688,18 @@ int main(int argc, char **argv)
         double f0 = now_ns(CLOCK_MONOTONIC);
         draw_frame(&scene, f);
         double f1 = now_ns(CLOCK_MONOTONIC);
+        /* Present like the real game (RenderSystem/Glfw swap every frame).
+         * Without a per-frame present MGL's in-flight commits and CoW
+         * snapshots are never drained and accumulate without bound — at
+         * HARNESS_FRAMES=3000 that was tens of GB.  Present keeps in-flight
+         * work bounded at one frame, exactly as the game does.  Swap time is
+         * reported separately and not folded into the submit stats. */
+        double s0 = now_ns(CLOCK_MONOTONIC);
+        if (g_present_per_frame) glfwSwapBuffers(g_window);
+        double s1 = now_ns(CLOCK_MONOTONIC);
         getrusage(RUSAGE_SELF, &rf1);
         wall_ms[f] = (f1 - f0) / 1e6;
+        swap_ms[f] = (s1 - s0) / 1e6;
         user_ms[f] = ((double)(rf1.ru_utime.tv_sec - rf0.ru_utime.tv_sec) * 1e6 +
                       (double)(rf1.ru_utime.tv_usec - rf0.ru_utime.tv_usec)) / 1e3;
         sys_ms[f] = ((double)(rf1.ru_stime.tv_sec - rf0.ru_stime.tv_sec) * 1e6 +
@@ -692,6 +712,11 @@ int main(int argc, char **argv)
 
     FrameStats st;
     summarize(&st, wall_ms, user_ms, sys_ms, frames);
+    double *swap_sorted = malloc((size_t)frames * sizeof(double));
+    memcpy(swap_sorted, swap_ms, (size_t)frames * sizeof(double));
+    qsort(swap_sorted, (size_t)frames, sizeof(double), cmp_double);
+    double swap_p50 = swap_sorted[(int)(frames * 0.50)];
+    free(swap_sorted);
 
     double total_user_ms = ((double)(r1.ru_utime.tv_sec - r0.ru_utime.tv_sec) * 1e6 +
                             (double)(r1.ru_utime.tv_usec - r0.ru_utime.tv_usec)) / 1e3;
@@ -702,9 +727,9 @@ int main(int argc, char **argv)
                           scene.terrain_draws / 8 + 32;
     printf("backend=mgl frames=%d warmup=%d draws_per_frame=%d\n",
            frames, warmup, draws_per_frame);
-    printf("frame_wall_ms=%.3f frame_cpu_ms=%.3f frame_user_ms=%.3f frame_sys_ms=%.3f p50_ms=%.3f p95_ms=%.3f\n",
+    printf("frame_wall_ms=%.3f frame_cpu_ms=%.3f frame_user_ms=%.3f frame_sys_ms=%.3f p50_ms=%.3f p95_ms=%.3f swap_p50_ms=%.3f present=%d\n",
            st.wall_per_frame_ms, st.cpu_per_frame_ms, st.user_per_frame_ms, st.sys_per_frame_ms,
-           st.p50_ms, st.p95_ms);
+           st.p50_ms, st.p95_ms, swap_p50, g_present_per_frame);
     printf("window_wall_ms=%.1f window_user_ms=%.1f window_sys_ms=%.1f\n",
            wall_total_ms, total_user_ms, total_sys_ms);
     printf("probes_available=%d probes_per_frame=%.1f startup_queries_ms=%.3f startup_probes=%lu\n",
@@ -739,5 +764,6 @@ int main(int argc, char **argv)
     free(wall_ms);
     free(user_ms);
     free(sys_ms);
+    free(swap_ms);
     return 0;
 }
