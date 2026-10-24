@@ -381,8 +381,8 @@ static void test_o33_fill_emit_ports(void)
     memset(&ein, 0, sizeof(ein));
     mglBindingTextureFillSampledDiagEmitCore(
         &ein, "fragment", 1, 2, 3, "InSampler", 0, 1, -1, 0, 13, 0xde1, 1, 2, 2,
-        0, 0, 0, 0, 0, 2, 16, 16, 0, 4, 4, 1, 16, 1, 1, 0, 0, 0, 0, 0, 13, 1, 0, 0,
-        0, 0, 0, 1, 0, 1, 10, 0, 0, 0);
+        0, 0, 0, 0, 0, 2, 16, 16, 0, 4, 4, 1, 16, 1, 1, 0, 0, 0, 0, NULL, 0, 13,
+        1, 0, 0, 0, 0, 0, 1, 0, 1, 10, 0, 0, 0);
     expect(ein.stage_is_fragment == 1 && ein.gl_tex == 13u, "diag core");
     MGLSampledDiagEmitResult eres;
     mglBindingTextureEmitSampledDiagPorts(&ein, &eres);
