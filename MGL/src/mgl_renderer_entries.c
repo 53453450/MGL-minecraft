@@ -37,8 +37,6 @@
 #include "mgl_render_api_buffer.h"
 #include "mgl_gpu_recovery.h"
 #include "mgl_attachment_binding.h"  /* FBO attachment bind */
-#include <mach/mach_init.h>
-#include <mach/vm_map.h>
 #include <string.h>
 #include <strings.h>
 #include <stdlib.h>

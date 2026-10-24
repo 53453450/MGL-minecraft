@@ -36,7 +36,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <mach/mach.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,68 +45,11 @@ static inline bool mglObjectPointerLooksPlausible(const void *ptr)
 {
     /* Reject NULL and low-page addresses (catches common corruption patterns
      * like small integers being treated as pointers).  The previous 4 GB
-     * lower bound rejected valid pointers on some macOS address layouts;
-     * use 0x1000 and rely on mglPointerRangeIsReadable for rigorous
-     * validation. */
+     * lower bound rejected valid pointers on some macOS address layouts, so
+     * the bound is 0x1000.  This is deliberately a pure user-space check:
+     * live objects are hash-table members (or caller-held references), and
+     * bad pointers are UB exactly as on any other GL driver. */
     return ptr != NULL && (uintptr_t)ptr >= 0x1000;
-}
-
-static inline bool mglPointerRangeIsReadable(const void *ptr, size_t size)
-{
-    if (size == 0) {
-        return true;
-    }
-    if (!ptr) {
-        return false;
-    }
-
-    uintptr_t start = (uintptr_t)ptr;
-    if (start < 0x10000u || start > UINTPTR_MAX - size + 1u) {
-        return false;
-    }
-
-    uintptr_t end = start + size;
-
-    /* A single allocation may span multiple VM regions (e.g. ASan's
-     * 256 KB region boundaries).  Iterate over every region that
-     * intersects [start, end) and require VM_PROT_READ on each. */
-    uintptr_t cursor = start;
-    while (cursor < end) {
-        vm_address_t address = (vm_address_t)cursor;
-        vm_size_t regionSize = 0;
-        vm_region_basic_info_data_64_t info;
-        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
-        mach_port_t objectName = MACH_PORT_NULL;
-        kern_return_t kr = vm_region_64(mach_task_self(),
-                                        &address,
-                                        &regionSize,
-                                        VM_REGION_BASIC_INFO_64,
-                                        (vm_region_info_t)&info,
-                                        &count,
-                                        &objectName);
-        if (objectName != MACH_PORT_NULL) {
-            mach_port_deallocate(mach_task_self(), objectName);
-        }
-        if (kr != KERN_SUCCESS || (uintptr_t)address > cursor) {
-            /* No region covers the remaining range — gap or unmapped. */
-            return false;
-        }
-
-        if ((info.protection & VM_PROT_READ) == 0) {
-            return false;
-        }
-
-        uintptr_t regionEnd = (uintptr_t)address + (uintptr_t)regionSize;
-        if (regionEnd <= (uintptr_t)address) {
-            /* Overflow guard — should not happen. */
-            return false;
-        }
-
-        /* Advance to the next region. */
-        cursor = regionEnd;
-    }
-
-    return true;
 }
 
 // CRITICAL SAFETY MACROS - Replace unsafe assert() calls

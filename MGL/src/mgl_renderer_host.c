@@ -26,7 +26,6 @@
 #include "mgl_rt_sync.h"
 #include "mgl_trace_log.h"
 #include "mgl_types_state.h"
-#include "mgl_safety.h"       /* mglPointerRangeIsReadable */
 #include "pixel_utils.h"     /* mtlFormatForGLInternalFormat */
 #include "mgl_frame_activity.h" /* MGL_FRAME_LOAD / draw-since-swap */
 #include "mgl_index_buffer.h"    /* mglGLIndexElementSize */

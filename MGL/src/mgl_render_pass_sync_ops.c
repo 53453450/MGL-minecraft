@@ -87,9 +87,6 @@ extern uint32_t mglMaybeInvertMTLWinding(uint32_t winding, bool inverted);
 extern Program *mglResolveProgramFromState(GLMContext ctx);
 extern void *mglRenderPassDiscardStubFragmentFunction(uint32_t value_class);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
-extern int mglRendererObjectPointerLikelyValid(const void *pointer);
-extern int mglRendererPointerInHashTable(const void *table, const void *pointer);
-extern int mglPointerRangeIsReadable(const void *pointer, size_t length);
 extern int mglPlatformShellMSSampleInLoop(void *renderer);
 extern int mglPlatformShellMSSamplePlaneOffset(void *renderer);
 
