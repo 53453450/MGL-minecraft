@@ -494,17 +494,11 @@ bool validate_program(GLMContext ctx, GLenum mode)
     Program *program = st ? st->program : NULL;
 
     if (program) {
-        GLuint expectedName = st->program_name;
-        if (expectedName == 0u &&
-            mglObjectPointerLooksPlausible(program) &&
-            mglPointerRangeIsReadable(program, sizeof(*program))) {
-            /* Name unknown: probe before dereferencing to read it.  With a
-             * known name, UsableForName's table fast path needs no probe. */
-            expectedName = program->name;
-        }
-
-        if (expectedName == 0u ||
-            !mglProgramPointerUsableForName(ctx, program, expectedName)) {
+        /* st->program_name is the known name for the state's program pointer
+         * (kept in sync by mglUseProgram); name==0 with a non-NULL pointer is
+         * an inconsistent state — fail closed, no probe (decision D6). */
+        if (st->program_name == 0u ||
+            !mglProgramPointerUsableForName(ctx, program, st->program_name)) {
             fprintf(stderr, "MGL WARNING: validate_program dropping invalid cached program pointer %p\n",
                     (void *)program);
             st->program = NULL;

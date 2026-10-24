@@ -412,15 +412,11 @@ static Program *mglRetainBatchProgram(GLMContext ctx, MGLDrawBatch *batch, Progr
         return NULL;
     }
 
-    if (expectedName == 0u) {
-        /* Name unknown: probe before dereferencing to read it. */
-        if (!mglObjectPointerLooksPlausible(program) ||
-            !mglPointerRangeIsReadable(program, sizeof(*program))) {
-            return NULL;
-        }
-        expectedName = program->name;
-    }
-    if (!mglProgramPointerUsableForName(ctx, program, expectedName)) {
+    /* Callers pass the known name for every program they hand over (state
+     * binding name or a retained pipeline stage's own name); name==0 with a
+     * non-NULL program is an inconsistent state — fail closed (D6). */
+    if (expectedName == 0u ||
+        !mglProgramPointerUsableForName(ctx, program, expectedName)) {
         return NULL;
     }
 
@@ -450,9 +446,10 @@ static void mglRetainBatchProgramReferences(GLMContext ctx, MGLDrawBatch *batch)
         return;
     }
 
+    /* The state holds a reference on the pipeline (UseProgramStages retained
+     * its stage programs), so the pointer is dereferenceable. */
     ProgramPipeline *pipeline = ctx->active_state->program_pipeline;
-    if (!mglObjectPointerLooksPlausible(pipeline) ||
-        !mglPointerRangeIsReadable(pipeline, sizeof(*pipeline))) {
+    if (!mglObjectPointerLooksPlausible(pipeline)) {
         return;
     }
 

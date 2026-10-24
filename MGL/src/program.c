@@ -1110,14 +1110,16 @@ GLboolean mglProgramPointerUsableForName(GLMContext ctx, Program *program, GLuin
     }
 
     /* Fast path: hashtable membership implies the object is live (programs
-     * are removed from the table before free), so the memory is readable and
-     * the name can be compared without the vm_region_64 syscall. */
+     * are removed from the table before free), so the name can be compared
+     * directly. */
     if (mglHashTableContainsData(&STATE(program_table), program)) {
         return program->name == expectedName;
     }
 
+    /* Slow path: not a table member.  Only a plausible pointer whose own
+     * name matches the caller-supplied known name may still be a deleted
+     * program whose references have not drained yet. */
     if (!mglObjectPointerLooksPlausible(program) ||
-        !mglPointerRangeIsReadable(program, sizeof(*program)) ||
         program->name != expectedName) {
         return GL_FALSE;
     }
@@ -1142,14 +1144,10 @@ void mglRetainProgramReference(GLMContext ctx, Program *program)
         return;
     }
 
-    GLuint programName = 0u;
-    if (mglObjectPointerLooksPlausible(program) &&
-        mglPointerRangeIsReadable(program, sizeof(*program))) {
-        programName = program->name;
-    }
-
-    if (programName == 0u ||
-        !mglProgramPointerUsableForName(ctx, program, programName)) {
+    /* Callers pass programs they already hold (state bindings, pipeline
+     * stage slots), so the pointer is dereferenceable and its own name is
+     * the known name (decision D6). */
+    if (!mglProgramPointerUsableForName(ctx, program, program->name)) {
         return;
     }
 
@@ -1158,9 +1156,7 @@ void mglRetainProgramReference(GLMContext ctx, Program *program)
 
 void mglReleaseProgramReference(GLMContext ctx, Program *program)
 {
-    if (!ctx || !program ||
-        !mglObjectPointerLooksPlausible(program) ||
-        !mglPointerRangeIsReadable(program, sizeof(*program))) {
+    if (!ctx || !program) {
         return;
     }
 
@@ -3654,30 +3650,11 @@ void mglUseProgram(GLMContext ctx, GLuint program)
         } else if (!mglHashTableContainsData(&STATE(program_table), pptr)) {
             fprintf(stderr, "MGL DIAG mglUseProgram program=%u FAIL containsData pptr=%p table_count=%zu\n",
                     program, (void*)pptr, STATE(program_table).count);
-        } else if (!mglPointerRangeIsReadable(pptr, sizeof(*pptr))) {
-            /* Get vm_region_64 details to distinguish ASan mprotect from
-             * true use-after-free (munmap).  Do NOT dereference pptr — it
-             * may point to freed/poisoned memory. */
-            vm_address_t raddr = (vm_address_t)pptr;
-            vm_size_t rsize = 0;
-            vm_region_basic_info_data_64_t rinfo;
-            mach_msg_type_number_t rcount = VM_REGION_BASIC_INFO_COUNT_64;
-            mach_port_t robj = MACH_PORT_NULL;
-            kern_return_t rkr = vm_region_64(mach_task_self(), &raddr, &rsize,
-                                             VM_REGION_BASIC_INFO_64,
-                                             (vm_region_info_t)&rinfo, &rcount, &robj);
-            if (robj != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), robj);
-            fprintf(stderr, "MGL DIAG mglUseProgram program=%u FAIL notReadable pptr=%p size=%zu "
-                    "kr=%d region_addr=0x%lx region_size=%lu prot=%u max_prot=%u\n",
-                    program, (void*)pptr, sizeof(*pptr),
-                    rkr, (unsigned long)raddr, (unsigned long)rsize,
-                    rinfo.protection, rinfo.max_protection);
         }
 
         if (!pptr ||
             !mglObjectPointerLooksPlausible(pptr) ||
-            !mglHashTableContainsData(&STATE(program_table), pptr) ||
-            !mglPointerRangeIsReadable(pptr, sizeof(*pptr)))
+            !mglHashTableContainsData(&STATE(program_table), pptr))
         {
             fprintf(stderr, "MGL Error: mglUseProgram program %u not found or invalid\n", program);
             // CRITICAL FIX: Handle error gracefully instead of crashing
@@ -3709,7 +3686,9 @@ void mglUseProgram(GLMContext ctx, GLuint program)
         if (oldProgram &&
             !mglProgramPointerUsableForName(ctx,
                                             oldProgram,
-                                            oldProgram->name ? oldProgram->name : STATE(program_name)))
+                                            /* The state's own name is the known name for the
+                                             * program we are unbinding (decision D6). */
+                                            STATE(program_name)))
         {
             fprintf(stderr, "MGL WARNING: mglUseProgram dropping invalid cached program pointer %p\n",
                     (void *)oldProgram);

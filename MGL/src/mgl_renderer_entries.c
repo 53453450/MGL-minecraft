@@ -455,7 +455,9 @@ Program *mglResolveProgramFromState(GLMContext ctx)
 
     Program *program = ctx->active_state->program;
     if (program) {
-        GLuint expectedName = ctx->active_state->program_name ? ctx->active_state->program_name : program->name;
+        /* program_name != 0 was enforced above, so it is the known name for
+         * this pointer (decision D6). */
+        GLuint expectedName = ctx->active_state->program_name;
         if (!mglProgramPointerUsableForName(ctx, program, expectedName)) {
             fprintf(stderr, "MGL PROGRAM RESOLVE invalid cached pointer=%p name=%u\n",
                   program,
