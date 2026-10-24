@@ -349,6 +349,9 @@ typedef struct {
 void mglInitCommandBuffer(MGLCommandBuffer *cb);
 void mglResetCommandBuffer(MGLCommandBuffer *cb);
 void mglResetCommandBufferForContext(GLMContext ctx, MGLCommandBuffer *cb);
+/* Context teardown: destroy pooled transient scratch (see GLMContext
+ * transient_pool).  Never called by the per-flush reset. */
+void mglDrainTransientPoolForContext(GLMContext ctx);
 void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStateKey *out);
 bool mglStateKeysEqual(const MGLStateKey *a, const MGLStateKey *b);
 void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd);

@@ -370,6 +370,13 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
         /* ---- Struct packing path (plain uniform structs) ---- */
         if (mglRenderBufferPlanIsStructPacked(entry->flags))
         {
+            static unsigned long s_pack_dbg = 0;
+            if (getenv("MGL_PACK_DEBUG") && ++s_pack_dbg < 30) {
+                fprintf(stderr, "MGL PACK DBG prog=%u stage=%d res=%s size=%u array=%u\n",
+                        (unsigned)program->name, stage,
+                        resource->name ? resource->name : "(null)",
+                        entry->struct_size, entry->element_count);
+            }
             GLuint loc_step = entry->loc_step;
             GLint base_loc = entry->base_loc;
             GLuint struct_size = entry->struct_size;

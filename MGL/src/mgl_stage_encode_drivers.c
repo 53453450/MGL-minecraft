@@ -103,10 +103,16 @@ static GLMState *mglSeState(const MGLRendererStateView *areas)
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 
-/* kMGLVerboseBindLogs: getenv("MGL_VERBOSE_BIND") != NULL. */
+/* kMGLVerboseBindLogs: getenv("MGL_VERBOSE_BIND") != NULL.  Cached once —
+ * this sits on the per-draw vertex-bind encode path and getenv takes the
+ * environment lock every call. */
 static int mglSeVerboseBindLogs(void)
 {
-    return getenv("MGL_VERBOSE_BIND") != NULL;
+    static int cached = -1;
+    if (cached < 0) {
+        cached = getenv("MGL_VERBOSE_BIND") != NULL ? 1 : 0;
+    }
+    return cached;
 }
 
 static int mglSeBindingStateTextureSlotCount(void *owner)

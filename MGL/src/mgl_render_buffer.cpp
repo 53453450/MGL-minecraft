@@ -736,6 +736,10 @@ uint64_t mglRenderCompletedBufferGeneration(void) {
     return mgl::gBufferCompletedGeneration.load(std::memory_order_acquire);
 }
 
+uint64_t mglRenderCurrentBufferGeneration(void) {
+    return mgl::gBufferFrameGeneration.load(std::memory_order_acquire);
+}
+
 void mglRenderNoteBufferEncoded(Buffer* buffer) {
     if (!buffer || !mglBufferMtl(buffer)) return;
     mgl::BufferCowPool* pool = mgl::bufferCowPool(buffer, false);

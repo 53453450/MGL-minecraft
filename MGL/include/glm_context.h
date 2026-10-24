@@ -166,6 +166,15 @@ typedef struct GLMContextRec_t {
     bool            draw_defer_enabled;
     bool            sync_strict;
 
+    /* Recycled transient batch scratch (stream-merge vertex/index), owned by
+     * the context so it survives the per-flush command-buffer reset (see
+     * draw_command.c mglRecycleTransientBatchBuffer).  A per-draw batch
+     * stream would otherwise calloc and Metal-allocate one pair per draw;
+     * a pooled buffer only leaves the pool once the commit that last read
+     * it has completed (generation fence).  [0]=ARRAY [1]=ELEMENT_ARRAY. */
+    void           *transient_pool[2];
+    uint32_t        transient_pool_count[2];
+
     /* Sync handles may be queried/deleted from different client threads.
      * Protect the context-local sync table and lookup-to-retain/delete
      * protocol; GPU waits happen after this lock is released. */

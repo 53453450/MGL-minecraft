@@ -912,14 +912,22 @@ int mglRenderPassSyncPipelineState(void *renderer,
 
         mglRendererUpdateBlendStateCache(renderer);
         mglClearRendererDirtyBits(state, DIRTY_ALPHA_STATE);
-        if (getenv("MGL_TOPO_TRACE") != NULL) {
-            fprintf(stderr,
-                    "MGLTOPO tessCompute=%d active=%d prog=%p topology=%u\n",
-                    (int)((tessellation && tessellation->tessComputeActive) ? 1 : 0),
-                    (int)((tessellation && tessellation->tessVertexRenderActive) ? 1 : 0),
-                    (void *)(tessellation ? tessellation->tessComputeProgram : NULL),
-                    (unsigned)psoState.input_primitive_topology);
-            fflush(stderr);
+        {
+            /* Cached once: this sync runs per batch and getenv would take
+             * the environment lock every call. */
+            static int s_topoTraceCached = -1;
+            if (s_topoTraceCached < 0) {
+                s_topoTraceCached = getenv("MGL_TOPO_TRACE") != NULL ? 1 : 0;
+            }
+            if (s_topoTraceCached) {
+                fprintf(stderr,
+                        "MGLTOPO tessCompute=%d active=%d prog=%p topology=%u\n",
+                        (int)((tessellation && tessellation->tessComputeActive) ? 1 : 0),
+                        (int)((tessellation && tessellation->tessVertexRenderActive) ? 1 : 0),
+                        (void *)(tessellation ? tessellation->tessComputeProgram : NULL),
+                        (unsigned)psoState.input_primitive_topology);
+                fflush(stderr);
+            }
         }
         MGLRenderPassPipelineFunctions psoFunctions = { NULL, NULL };
         if (!mglRenderPassGeneratePipelineDescriptorState(

@@ -43,9 +43,17 @@
 #include "mgl_sampler_compat.h"
 #include "mgl_batch_hazard.h"
 #include "mgl_env_flag.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_buffer_backend.h"
 
 extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
+
+/* Transient scratch pool (defined next to mglNewTransientBatchBuffer). */
+static Buffer *mglAcquireTransientBatchBuffer(GLMContext ctx, GLenum target);
+static void mglRecycleTransientBatchBuffer(GLMContext ctx, Buffer *buffer);
+static void mglDrainTransientPool(GLMContext ctx);
+void mglDrainTransientPoolForContext(GLMContext ctx);
 
 /* T12 peak occupancy watermarks (process lifetime). */
 static uint32_t s_peak_buffer_read_ranges;
@@ -344,11 +352,11 @@ static void mglReleaseBatchReferences(GLMContext ctx, MGLDrawBatch *batch)
         batch->retained_compute_program = NULL;
     }
     if (batch->stream_vertex_buffer) {
-        mglDestroyTransientBuffer(ctx, (Buffer *)batch->stream_vertex_buffer);
+        mglRecycleTransientBatchBuffer(ctx, (Buffer *)batch->stream_vertex_buffer);
         batch->stream_vertex_buffer = NULL;
     }
     if (batch->stream_index_buffer) {
-        mglDestroyTransientBuffer(ctx, (Buffer *)batch->stream_index_buffer);
+        mglRecycleTransientBatchBuffer(ctx, (Buffer *)batch->stream_index_buffer);
         batch->stream_index_buffer = NULL;
     }
 }
@@ -688,6 +696,9 @@ void mglResetCommandBufferForContext(GLMContext ctx, MGLCommandBuffer *cb)
     free(cb->texture_write_objects);
     free(cb->texture_read_objects);
 
+    /* The transient scratch pool intentionally survives this reset — it is
+     * context-owned (ctx->transient_pool) and drains only at context
+     * teardown (mglDrainTransientPool from destroyGLMContext). */
     memset(cb, 0, sizeof(*cb));
 }
 
@@ -3730,9 +3741,128 @@ static Buffer *mglNewTransientBatchBuffer(GLenum target)
     return buffer;
 }
 
+/* === transient scratch pool ============================================ */
+
+/* A per-draw batch stream churns one vertex + one index scratch per batch;
+ * without pooling every batch pays a calloc, a CPU backing realloc and — at
+ * flush — a fresh Metal buffer (a mach trap per draw).  Pool the Buffer
+ * objects and their Metal stores; contents are rewritten per batch.  A
+ * pooled buffer may only be reused once the commit that last read it has
+ * completed, which the generation tag fences. */
+typedef struct MGLTransientPoolNode {
+    struct MGLTransientPoolNode *next;
+    Buffer *buffer;
+    uint64_t generation;   /* reading commit's generation at release time */
+} MGLTransientPoolNode;
+
+#define MGL_TRANSIENT_POOL_MAX 64
+
+static int mglTransientPoolSlot(GLenum target)
+{
+    return (target == GL_ELEMENT_ARRAY_BUFFER) ? 1 : 0;
+}
+
+static Buffer *mglAcquireTransientBatchBuffer(GLMContext ctx, GLenum target)
+{
+    int slot = mglTransientPoolSlot(target);
+    MGLTransientPoolNode **head =
+        ctx ? (MGLTransientPoolNode **)&ctx->transient_pool[slot] : NULL;
+
+    if (head && *head) {
+        const uint64_t completed = mglRenderCompletedBufferGeneration();
+        MGLTransientPoolNode **link = head;
+        MGLTransientPoolNode *node = *head;
+        while (node) {
+            if (node->generation <= completed) {
+                Buffer *buffer = node->buffer;
+                *link = node->next;
+                ctx->transient_pool_count[slot]--;
+                free(node);
+
+                /* Restore pristine first-use fields; the CPU backing and the
+                 * Metal store (with their larger capacities) are retained. */
+                buffer->name = 0;
+                buffer->target = target;
+                buffer->size = 0;
+                buffer->written_min = -1;
+                buffer->written_max = -1;
+                buffer->transient_batch_buffer = GL_TRUE;
+                buffer->data.dirty_bits = 0;
+                buffer->has_initialized_data = GL_FALSE;
+                buffer->ever_written = GL_FALSE;
+                buffer->last_init_source = kInitBufferDataCopy;
+                buffer->last_write_offset = 0;
+                buffer->last_write_size = 0;
+                buffer->last_write_src_ptr = NULL;
+                buffer->last_write_src_hash = 0;
+                return buffer;
+            }
+            link = &node->next;
+            node = node->next;
+        }
+    }
+
+    return mglNewTransientBatchBuffer(target);
+}
+
+static void mglRecycleTransientBatchBuffer(GLMContext ctx, Buffer *buffer)
+{
+    int slot = buffer ? mglTransientPoolSlot(buffer->target) : 0;
+    if (!ctx || !buffer ||
+        ctx->transient_pool_count[slot] >= MGL_TRANSIENT_POOL_MAX) {
+        mglDestroyTransientBuffer(ctx, buffer);
+        return;
+    }
+
+    MGLTransientPoolNode *node = (MGLTransientPoolNode *)malloc(sizeof(*node));
+    if (!node) {
+        mglDestroyTransientBuffer(ctx, buffer);
+        return;
+    }
+    node->buffer = buffer;
+    node->generation = mglRenderCurrentBufferGeneration();
+    node->next = (MGLTransientPoolNode *)ctx->transient_pool[slot];
+    ctx->transient_pool[slot] = node;
+    ctx->transient_pool_count[slot]++;
+}
+
+static void mglDrainTransientPool(GLMContext ctx)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        MGLTransientPoolNode *node = (MGLTransientPoolNode *)ctx->transient_pool[slot];
+        while (node) {
+            MGLTransientPoolNode *next = node->next;
+            mglDestroyTransientBuffer(ctx, node->buffer);
+            free(node);
+            node = next;
+        }
+        ctx->transient_pool[slot] = NULL;
+        ctx->transient_pool_count[slot] = 0;
+    }
+}
+
+void mglDrainTransientPoolForContext(GLMContext ctx)
+{
+    if (!ctx) return;
+    mglDrainTransientPool(ctx);
+}
+
 static bool mglEnsureTransientBufferCapacity(Buffer *buffer, size_t needed)
 {
     if (!buffer) return false;
+
+    /* A pooled scratch keeps the previous batch's Metal store, whose length
+     * is the size it was last created at.  A larger batch must drop it so
+     * the flush recreates it at the new size — the upload path clamps to
+     * the Metal length and would otherwise silently truncate. */
+    if (needed > 0 && mglBufferMtl(buffer)) {
+        MGLRenderBufferInfo info = {0};
+        if (mglRenderGetBufferInfo(mglBufferMtl(buffer), &info) == 0 &&
+            (size_t)info.length < needed) {
+            mglRenderReleaseBufferMetalData(NULL, buffer);
+        }
+    }
+
     if (needed <= buffer->data.buffer_size) return true;
 
     size_t newCapacity = buffer->data.buffer_size ? buffer->data.buffer_size : 4096u;
@@ -4241,8 +4371,8 @@ static bool mglInitializeStreamMergedBatch(GLMContext ctx,
         batch->vao_snapshot = malloc(sizeof(VertexArray));
         batch->arena_managed = false;
     }
-    batch->stream_vertex_buffer = mglNewTransientBatchBuffer(GL_ARRAY_BUFFER);
-    batch->stream_index_buffer = mglNewTransientBatchBuffer(GL_ELEMENT_ARRAY_BUFFER);
+    batch->stream_vertex_buffer = mglAcquireTransientBatchBuffer(ctx, GL_ARRAY_BUFFER);
+    batch->stream_index_buffer = mglAcquireTransientBatchBuffer(ctx, GL_ELEMENT_ARRAY_BUFFER);
     if (!batch->state_snapshot || !batch->vao_snapshot ||
         !batch->stream_vertex_buffer || !batch->stream_index_buffer) {
         MGL_SIGNPOST_END(InitStreamMergedBatch);

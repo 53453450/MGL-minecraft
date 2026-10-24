@@ -991,6 +991,7 @@ void destroyGLMContext(GLMContext ctx)
 
     mglFlushPendingDraws(ctx);
     mglResetCommandBufferForContext(ctx, &ctx->draw_command_buffer);
+    mglDrainTransientPoolForContext(ctx);
 
     /* Block new sync operations and wait for all operations which already
      * acquired a Sync reference to leave.  Without this barrier a waiter can

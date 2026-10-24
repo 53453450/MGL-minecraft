@@ -198,6 +198,11 @@ void mglRenderRecordBufferGenerationCompleted(uint64_t generation);
 
 uint64_t mglRenderCompletedBufferGeneration(void);
 
+/* Current (minted, not yet completed) command-buffer generation.  Tagging a
+ * recycled scratch buffer with this value and reusing it only once
+ * mglRenderCompletedBufferGeneration() reaches it fences in-flight reads. */
+uint64_t mglRenderCurrentBufferGeneration(void);
+
 void mglRenderNoteBufferEncoded(Buffer *buffer);
 
 int mglRenderMapBufferStorage(Buffer *buffer,
