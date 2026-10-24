@@ -3538,6 +3538,147 @@ void mglUniform1ui(GLMContext ctx, GLint location, GLuint v0)
     mglUniformWithPayload(ctx, location, &v0, sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
 }
 
+
+/* GLSL 4.0: select the subroutine implementations for the current program.
+ * The uniform table carries the subroutine uniforms in declaration order, so
+ * index i here is the location glGetSubroutineUniformLocation reports; each
+ * one is an ordinary uint slot in the program's uniform storage. */
+static int mglSubroutineShaderStage(GLenum type)
+{
+    switch (type) {
+    case GL_VERTEX_SHADER:          return _VERTEX_SHADER;
+    case GL_TESS_CONTROL_SHADER:    return _TESS_CONTROL_SHADER;
+    case GL_TESS_EVALUATION_SHADER: return _TESS_EVALUATION_SHADER;
+    case GL_GEOMETRY_SHADER:        return _GEOMETRY_SHADER;
+    case GL_FRAGMENT_SHADER:        return _FRAGMENT_SHADER;
+    case GL_COMPUTE_SHADER:         return _COMPUTE_SHADER;
+    default:                        return -1;
+    }
+}
+
+void mglUniformSubroutinesuiv(GLMContext ctx, GLenum shadertype,
+                              GLsizei count, const GLuint *indices)
+{
+    ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+    if (!ctx) {
+        return;
+    }
+    int stage = mglSubroutineShaderStage(shadertype);
+    if (stage < 0) {
+        mglUniformSetError(ctx, GL_INVALID_ENUM);
+        return;
+    }
+    if (count < 0) {
+        mglUniformSetError(ctx, GL_INVALID_VALUE);
+        return;
+    }
+    Program *pptr = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
+    if (!pptr) {
+        mglUniformSetError(ctx, GL_INVALID_OPERATION);
+        return;
+    }
+    if (!pptr->link_success) {
+        mglUniformSetError(ctx, GL_INVALID_OPERATION);
+        return;
+    }
+    if (count > 0 && !indices) {
+        mglUniformSetError(ctx, GL_INVALID_VALUE);
+        return;
+    }
+    const MGLAIRSubroutineTable *table = &pptr->subroutine_tables[stage];
+    /* GL 4.6 §7.10: count must equal ACTIVE_SUBROUTINE_UNIFORM_LOCATIONS for
+     * the stage (GL_INVALID_VALUE otherwise), and every index must name an
+     * implementation of the uniform occupying that location.  Silently
+     * clamping/continuing left the selection partly applied with no error
+     * reported.
+     *
+     * `count` counts *locations*, not uniforms: an explicit
+     * layout(location = 2) makes a single uniform occupy locations 0..2. */
+    GLint span = mglSubroutineUniformLocationSpan(table);
+    if (span < 0 || (uint32_t)count != (uint32_t)span) {
+        mglUniformSetError(ctx, GL_INVALID_VALUE);
+        return;
+    }
+    for (GLsizei i = 0; i < count; i++) {
+        /* Which uniform owns location i? */
+        int owner = -1;
+        for (uint32_t u = 0; u < table->uniform_count; u++) {
+            GLint loc = table->uniform_location[u];
+            if (loc < 0)
+                loc = mglSubroutineUniformImplicitLocation(table, u);
+            if (loc == i) {
+                owner = (int)u;
+                break;
+            }
+        }
+        /* A reserved-but-unused location has no uniform to select; the spec
+         * still requires an index there, and any value is ignored. */
+        if (owner < 0) continue;
+        uint32_t typeIdx = table->uniform_type[owner];
+        if (typeIdx >= table->type_count) {
+            mglUniformSetError(ctx, GL_INVALID_VALUE);
+            return;
+        }
+        /* `indices[i]` is an absolute program-wide subroutine index, and it
+         * must name a named implementation of this uniform's type (a sparse
+         * layout(index = N) leaves gaps that are not selectable). */
+        const MGLAIRSubroutineTypeInfo *ty = &table->types[typeIdx];
+        GLboolean ok = GL_FALSE;
+        for (uint32_t nm = 0; nm < ty->impl_name_count; nm++) {
+            if (ty->impl_name_index[nm] == indices[i]) { ok = GL_TRUE; break; }
+        }
+        if (!ok) {
+            mglUniformSetError(ctx, GL_INVALID_VALUE);
+            return;
+        }
+    }
+    /* Group the selected indices per uniform: `indices[i]` addresses a
+     * *subroutine* location, but the selection itself lives in the ordinary
+     * uniform pack, where an arrayed uniform is one entry whose elements are
+     * laid out at the std140 stride.  So one write per uniform, not one per
+     * location. */
+    for (uint32_t u = 0; u < table->uniform_count; u++) {
+        /* Rows are one per array element; only the first row of a uniform
+         * carries the whole selection. */
+        if (table->uniform_element[u] != 0u) continue;
+        GLint loc = table->uniform_location[u];
+        if (loc < 0)
+            loc = mglSubroutineUniformImplicitLocation(table, u);
+        if (loc < 0 || loc >= count) continue;
+        uint32_t elements = table->uniform_declared_elements[u]
+                                ? table->uniform_declared_elements[u]
+                                : 1u;
+        if (elements > MGL_AIR_MAX_SUBROUTINE_UNIFORM_ARRAY)
+            elements = MGL_AIR_MAX_SUBROUTINE_UNIFORM_ARRAY;
+        GLuint values[MGL_AIR_MAX_SUBROUTINE_UNIFORM_ARRAY];
+        for (uint32_t e = 0; e < elements; e++) {
+            GLsizei at = loc + (GLsizei)e;
+            values[e] = (at < count) ? indices[at] : indices[loc];
+        }
+        GLint uniformLoc =
+            mglGetUniformLocation(ctx, pptr->name, table->uniform_names[u]);
+        if (uniformLoc < 0) {
+            char baseName[MGL_AIR_SUBROUTINE_NAME_MAX];
+            snprintf(baseName, sizeof(baseName), "%s", table->uniform_names[u]);
+            char *bracket = strchr(baseName, '[');
+            if (bracket) *bracket = '\0';
+            uniformLoc = mglGetUniformLocation(ctx, pptr->name, baseName);
+        }
+        if (uniformLoc < 0) {
+            mglUniformSetError(ctx, GL_INVALID_OPERATION);
+            return;
+        }
+        /* Store by the plain-uniform location, not the subroutine location:
+         * those differ when the uniform has an explicit layout(location = N)
+         * (subroutine locations index the selection array, plain locations
+         * index the shader's uniform pack).  Array elements are consecutive
+         * there, one uint each. */
+        for (uint32_t e = 0; e < elements; e++)
+            mglUniformStore(ctx, pptr, uniformLoc + (GLint)e, &values[e],
+                            sizeof(GLuint));
+    }
+}
+
 void mglUniform1uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint *value)
 {
     if (mglUniformLocationIsStorageImage(ctx, location)) {

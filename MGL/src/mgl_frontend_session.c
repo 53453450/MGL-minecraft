@@ -245,6 +245,11 @@ static void mglFrontendNoteBuiltinUse(const MGLExpr *e, const char *name,
         }
         for (uint32_t i = 0; i < e->u.call.arg_count; i++)
             mglFrontendNoteBuiltinUse(e->u.call.args[i], name, used, max_need);
+        /* An arrayed subroutine uniform indexed with a run-time expression
+         * (e.g. Compute[gl_WorkGroupID.x]()) hides the builtin in the
+         * subscript, which is not an argument. */
+        mglFrontendNoteBuiltinUse(e->u.call.subroutine_index_expr, name, used,
+                                  max_need);
         break;
     case MGL_EXPR_UNARY:
         mglFrontendNoteBuiltinUse(e->u.unary.operand, name, used, max_need);

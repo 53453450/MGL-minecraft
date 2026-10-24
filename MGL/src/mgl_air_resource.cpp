@@ -76,6 +76,10 @@ int collectUniforms(const MGLIRModule *mod, std::vector<Uniform> *out,
         u.type = typeFromIR(s->type);
         u.offset = off;
         u.size = size;
+        u.elementStride = (s->type->kind == MGLIR_TYPE_ARRAY &&
+                           s->type->array_size > 0u)
+                              ? size / s->type->array_size
+                              : 0u;
         out->push_back(u);
         off += size;
     }

@@ -9911,6 +9911,57 @@ static bool emitCallDerivativeBuiltins(
     return false;
 }
 
+/* GLSL 4.60 §6.1.2: an implementation declared with layout(index = N) keeps
+ * N inside its type's slot range, while the rest are numbered in declaration
+ * order around the reserved ones.  Fills `slotOfImpl[k]` with the slot each
+ * declared implementation occupies and returns the range size (the number of
+ * indices the type consumes in the program-wide index space), or 0 on
+ * overflow of the reflection capacity. */
+/* GLSL 4.60 §6.1.2 / GL 4.6 §7.10: subroutine indices are unique across the
+ * whole stage.  An implementation declared with layout(index = N) claims the
+ * absolute index N; the others get the lowest indices that no implementation
+ * of any type claimed.  `taken` carries the cross-type occupancy, so this must
+ * be called for the types in declaration order.
+ *
+ * On return `slotOfImpl[k]` is the absolute index of each implementation of
+ * `st`, and *typeBaseOut is the base the type's own numbering starts at (only
+ * used for diagnostics -- dispatch compares against absolute indices). */
+static int subroutineAssignSlots(const MGLSubroutineType *st,
+                                 std::vector<bool> *taken,
+                                 uint32_t *slotOfImpl)
+{
+    /* Reserve this type's explicit indices first. */
+    for (uint32_t k = 0; k < st->impl_count; k++) {
+        slotOfImpl[k] = 0;
+        if (!st->impls[k]) continue;
+        int32_t given = st->impl_indices ? st->impl_indices[k] : -1;
+        if (given < 0) continue;
+        uint32_t abs = (uint32_t)given;
+        if (abs >= MGL_AIR_MAX_SUBROUTINE_IMPLS) return -1;
+        if (abs >= taken->size()) taken->resize(abs + 1u, false);
+        if ((*taken)[abs]) {
+            /* Two implementations with the same explicit index in one stage
+             * is a link error (GL 4.6 §7.10: indices are unique). */
+            return -2;
+        }
+        (*taken)[abs] = true;
+        slotOfImpl[k] = abs;
+    }
+    /* Give the rest the lowest free absolute indices. */
+    uint32_t next = 0;
+    for (uint32_t k = 0; k < st->impl_count; k++) {
+        if (!st->impls[k]) continue;
+        int32_t given = st->impl_indices ? st->impl_indices[k] : -1;
+        if (given >= 0) continue;
+        while (next < taken->size() && (*taken)[next]) next++;
+        if (next >= MGL_AIR_MAX_SUBROUTINE_IMPLS) return -1;
+        if (next >= taken->size()) taken->resize(next + 1u, false);
+        (*taken)[next] = true;
+        slotOfImpl[k] = next;
+    }
+    return 0;
+}
+
 /* Lifted out of emitExpr's MGL_EXPR_CALL case. */
 static bool emitCallUserFunction(
     Codegen &cg, const MGLExpr *e, const char *name,
@@ -9922,32 +9973,95 @@ static bool emitCallUserFunction(
     const MGLIRModule *mod, const std::map<std::string, MType> &locals,
     llvm::Value **out)
 {
+    /* GLSL forbids recursion (GL 4.6 §12.1); a subroutine call can hide a
+     * cycle from the sema call graph, so refuse to inline past a sane depth
+     * instead of recursing until the stack dies. */
+    if (cg.inlineDepth > 64u) {
+        if (!cg.err) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: call to '") +
+                        (name ? name : "?") +
+                        "' recurses through a subroutine implementation";
+        }
+        return true;
+    }
+    cg.inlineDepth++;
+    struct InlineDepthGuard {
+        Codegen &cg;
+        ~InlineDepthGuard() { cg.inlineDepth--; }
+    } depthGuard{cg};
     if (mod) {
         const MGLSubroutineType *sub = mglIRSubroutineTypeForUniform(mod, name);
         if (sub && sub->impl_count > 0) {
-            /* Dispatch over the type's implementations; the uniform holds the
-             * selected index.  void signatures only for now. */
-            bool isVoid = false;
-            for (uint32_t si = 0; si < mod->symbol_count; si++) {
-                const MGLIRSymbol *fs = mod->symbols[si];
-                if (!fs || !fs->is_function || !fs->name ||
-                    strcmp(fs->name, sub->impls[0]) != 0 || !fs->return_type) {
-                    continue;
+            /* GL 4.6 §7.10: the subroutine index space is program-wide per
+             * stage, so the uniform holds an absolute index.  An implementation
+             * declared with layout(index = N) claims exactly N; the rest take
+             * the lowest indices nobody claimed.  Replay the assignment across
+             * the types in declaration order so this call site agrees with the
+             * reflection table (glGetSubroutineIndex reads the same numbers). */
+            std::vector<bool> taken;
+            uint32_t slotOfImpl[MGL_AIR_MAX_SUBROUTINE_IMPLS] = {};
+            for (uint32_t ti = 0; ti < mod->subroutine_type_count; ti++) {
+                uint32_t localSlots[MGL_AIR_MAX_SUBROUTINE_IMPLS] = {};
+                int rc = subroutineAssignSlots(&mod->subroutine_types[ti],
+                                               &taken, localSlots);
+                if (rc != 0) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: subroutine type '") +
+                                (mod->subroutine_types[ti].name
+                                     ? mod->subroutine_types[ti].name
+                                     : "?") +
+                                (rc == -2
+                                     ? "' reuses a subroutine index"
+                                     : "' exceeds the reflection capacity");
+                    return true;
                 }
-                isVoid = fs->return_type->kind == MGLIR_TYPE_SCALAR &&
-                         fs->return_type->scalar == MGLIR_SCALAR_VOID;
-                break;
+                if (&mod->subroutine_types[ti] == sub)
+                    memcpy(slotOfImpl, localSlots, sizeof(slotOfImpl));
             }
-            /* Return type of the signature: every implementation shares it. */
+            /* Dispatch over the type's implementations; the uniform holds the
+             * selected index.
+             *
+             * The signature's return type comes from the implementations, and
+             * it must be resolved through llvmTypeFromIR: typeFromIR+llvmType
+             * maps anything it does not model (void, struct) onto `float`,
+             * which silently produced a float result slot for a void signature
+             * (invalid IR) and aborted on a struct return. */
             llvm::Type *retTy = nullptr;
-            for (uint32_t si = 0; si < mod->symbol_count; si++) {
-                const MGLIRSymbol *fs = mod->symbols[si];
-                if (!fs || !fs->is_function || !fs->name ||
-                    strcmp(fs->name, sub->impls[0]) != 0 || !fs->return_type) {
-                    continue;
+            bool isVoid = false;
+            const MGLIRType *retIR = nullptr;
+            for (uint32_t ii = 0; ii < sub->impl_count; ii++) {
+                if (!sub->impls[ii]) continue;
+                for (uint32_t si = 0; si < mod->symbol_count; si++) {
+                    const MGLIRSymbol *fs = mod->symbols[si];
+                    if (!fs || !fs->is_function || !fs->name ||
+                        strcmp(fs->name, sub->impls[ii]) != 0) {
+                        continue;
+                    }
+                    if (!fs->return_type) break;
+                    if (!retIR) {
+                        retIR = fs->return_type;
+                        isVoid = irTypeIsVoid(retIR);
+                        /* llvmTypeFromIR models struct/array but still sends
+                         * void through llvmScalar's default -> float. */
+                        retTy = isVoid ? llvm::Type::getVoidTy(*cg.ctx)
+                                       : llvmTypeFromIR(retIR, *cg.ctx);
+                    } else if (irTypeIsVoid(retIR) !=
+                                   irTypeIsVoid(fs->return_type) ||
+                               (!isVoid &&
+                                llvmTypeFromIR(fs->return_type, *cg.ctx) !=
+                                    retTy)) {
+                        /* Every implementation of a type shares the signature's
+                         * return type; disagreeing here would emit a store of
+                         * one type into another type's slot. */
+                        cg.err = 1;
+                        cg.errmsg = std::string("codegen: subroutine '") + name +
+                                    "' implementations disagree on the return "
+                                    "type (" + sub->impls[ii] + ")";
+                        return true;
+                    }
+                    break;
                 }
-                retTy = llvmType(typeFromIR(fs->return_type), *cg.ctx);
-                break;
             }
             if (!retTy) {
                 cg.err = 1;
@@ -9955,18 +10069,108 @@ static bool emitCallUserFunction(
                                         "for '") + name + "'";
                 return true;
             }
-            if (!cg.bufferOffsets.count(name) || !cg.bufferPtr) {
+            /* An arrayed subroutine uniform has one storage entry per element
+             * ("name[i]"), so the plain name only exists for scalars. */
+            if (!cg.bufferPtr ||
+                (!cg.bufferOffsets.count(name) &&
+                 !cg.bufferOffsets.count(std::string(name) + "[0]"))) {
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: subroutine uniform '") + name +
                             "' has no uniform storage";
                 return true;
             }
-            llvm::Value *idx = bufferLoad(cg, cg.bufferOffsets[name],
-                                          cg.b->getInt32Ty());
+            /* An element of an arrayed subroutine uniform has its own
+             * location, and the reflection table stores one entry per element
+             * under the "name[i]" spelling. */
+            std::string uniformName = name;
+            /* Element index of an arrayed uniform: either a constant
+             * subscript list or a run-time expression (dynamic indexing). */
+            std::string dynamicUniformKey;
+            if (e->u.call.subroutine_index_expr) {
+                dynamicUniformKey = std::string(name) + "[0]";
+            }
+            if (!dynamicUniformKey.empty() &&
+                !cg.bufferOffsets.count(name) &&
+                !cg.bufferOffsets.count(dynamicUniformKey)) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: subroutine uniform '") +
+                            name + "' has no uniform storage";
+                return true;
+            }
+            if (e->u.call.subroutine_element >= 0) {
+                /* Row-major flatten of the declared dimensions, matching the
+                 * reflection table's element order. */
+                uniformName = name;
+                for (uint32_t d = 0;
+                     d < e->u.call.subroutine_subscript_count; d++) {
+                    uniformName += "[" +
+                        std::to_string(e->u.call.subroutine_subscripts[d]) +
+                        "]";
+                }
+                if (e->u.call.subroutine_subscript_count == 1u) {
+                    /* Single subscript: the table stores "name[i]". */
+                }
+            }
+            /* An arrayed subroutine uniform has one pack entry per element
+             * ("C[0]", "C[1]", ...); a scalar has just "C". */
+            uint32_t baseOffset = 0;
+            if (cg.bufferOffsets.count(name)) {
+                baseOffset = cg.bufferOffsets[name];
+            } else {
+                std::string elem0 = std::string(name) + "[0]";
+                if (cg.bufferOffsets.count(elem0))
+                    baseOffset = cg.bufferOffsets[elem0];
+                else {
+                    cg.err = 1;
+                    cg.errmsg =
+                        std::string("codegen: subroutine uniform '") + name +
+                        "' has no uniform storage";
+                    return true;
+                }
+            }
+            llvm::Value *idx = nullptr;
+            if (!dynamicUniformKey.empty()) {
+                llvm::Value *elem = emitExpr(
+                    cg, e->u.call.subroutine_index_expr, mod, locals);
+                if (!elem) return true;
+                elem = coerceScalar(cg, elem, MGLIR_SCALAR_INT);
+                /* constantBase is element 0's storage; stride one uint. */
+                llvm::Value *addr = cg.b->CreateGEP(
+                    cg.b->getInt8Ty(), cg.bufferPtr,
+                    cg.b->getInt64(baseOffset));
+                uint32_t dynStride =
+                    cg.bufferStrides.count(name) && cg.bufferStrides[name]
+                        ? cg.bufferStrides[name]
+                        : 16u;
+                addr = cg.b->CreateGEP(
+                    cg.b->getInt8Ty(), addr,
+                    cg.b->CreateSExt(
+                        cg.b->CreateMul(elem,
+                                        cg.b->getInt32((int)dynStride)),
+                        cg.b->getInt64Ty()));
+                addr = cg.b->CreateBitCast(addr,
+                                           cg.b->getInt32Ty()->getPointerTo(1));
+                idx = cg.b->CreateAlignedLoad(cg.b->getInt32Ty(), addr,
+                                              llvm::Align(4));
+            } else {
+                uint32_t stride =
+                    cg.bufferStrides.count(name) && cg.bufferStrides[name]
+                        ? cg.bufferStrides[name]
+                        : 4u;
+                llvm::Value *addr = cg.b->CreateGEP(
+                    cg.b->getInt8Ty(), cg.bufferPtr,
+                    cg.b->getInt64(
+                        baseOffset +
+                        (uint32_t)e->u.call.subroutine_element * stride));
+                addr = cg.b->CreateBitCast(addr,
+                                           cg.b->getInt32Ty()->getPointerTo(1));
+                idx = cg.b->CreateAlignedLoad(cg.b->getInt32Ty(), addr,
+                                              llvm::Align(4));
+            }
             /* Result slot lives in the entry block so every branch can store
              * into it (AIR wants allocas there, not in mid-function blocks). */
             llvm::AllocaInst *slot = nullptr;
-            if (!retTy->isVoidTy()) {
+            if (!isVoid) {
                 llvm::IRBuilder<> entry(&cg.fn->getEntryBlock(),
                                         cg.fn->getEntryBlock().begin());
                 slot = entry.CreateAlloca(retTy, nullptr, "sub_ret");
@@ -9976,6 +10180,16 @@ static bool emitCallUserFunction(
             llvm::BasicBlock *disp =
                 llvm::BasicBlock::Create(*cg.ctx, "sub_disp0", cg.fn);
             cg.b->CreateBr(disp);
+            /* Implementations are inlined in mutually exclusive branches and
+             * may write shader globals (stage outs, SSBO-backed temps).  Their
+             * values therefore have to be merged exactly like if/else does:
+             * without phis the merge block used values defined in one branch
+             * only ("Instruction does not dominate all uses!"). */
+            const std::map<std::string, llvm::Value *> snapBefore = cg.lvalues;
+            std::vector<std::pair<llvm::BasicBlock *,
+                                  std::map<std::string, llvm::Value *>>>
+                branches;
+            llvm::BasicBlock *fallthrough = nullptr;
             for (uint32_t i = 0; i < sub->impl_count; i++) {
                 llvm::BasicBlock *callBB = llvm::BasicBlock::Create(
                     *cg.ctx, std::string("sub_call") + std::to_string(i),
@@ -9987,33 +10201,110 @@ static bool emitCallUserFunction(
                               std::string("sub_disp") + std::to_string(i + 1),
                               cg.fn)
                         : merge;
+                if (i + 1 == sub->impl_count) fallthrough = disp;
                 cg.b->SetInsertPoint(disp);
                 llvm::Value *cond = cg.b->CreateICmpEQ(
-                    idx, llvm::ConstantInt::get(cg.b->getInt32Ty(), i));
+                    idx, llvm::ConstantInt::get(
+                             cg.b->getInt32Ty(), slotOfImpl[i]));
                 cg.b->CreateCondBr(cond, callBB, next);
                 cg.b->SetInsertPoint(callBB);
-                MGLExpr *tmp = new MGLExpr(*e);
-                cg.exprPool.push_back(tmp);
-                tmp->u.call.name = sub->impls[i];
+                /* Each branch starts from the pre-dispatch values: letting a
+                 * later branch see a phi/SSA value created in an earlier one
+                 * would put non-dominating operands into the merge phis. */
+                cg.lvalues = snapBefore;
+                /* Stack copy, not heap: the inlining below is synchronous and
+                 * only reads name/args, so a copy that dies with this
+                 * iteration is enough.  Heap-allocating into cg.exprPool
+                 * leaked one node per implementation per call site (the pool
+                 * has no owner and is never cleared). */
+                MGLExpr tmp = *e;
+                tmp.u.call.name = sub->impls[i];
                 llvm::Value *val = nullptr;
                 /* Convention: the bool means "handled" and cg.err carries the
                  * failure -- checking the bool as an error was the bug that
                  * left merge unterminated and crashed the compile. */
-                (void)emitCallUserFunction(cg, tmp, sub->impls[i], mod,
+                (void)emitCallUserFunction(cg, &tmp, sub->impls[i], mod,
                                            locals, &val);
                 if (cg.err == 1) {
                     return true;
                 }
                 llvm::BasicBlock *after = cg.b->GetInsertBlock();
+                std::map<std::string, llvm::Value *> branchL = cg.lvalues;
                 if (slot && val && after && !after->getTerminator()) {
                     cg.b->CreateStore(val, slot);
                 }
                 if (after && !after->getTerminator()) {
                     cg.b->CreateBr(merge);
+                    branches.push_back({after, branchL});
                 }
                 disp = next;
             }
             cg.b->SetInsertPoint(merge);
+            cg.lvalues = snapBefore;
+            {
+                std::set<std::string> touched;
+                for (const auto &br : branches)
+                    for (const auto &kv : br.second)
+                        touched.insert(kv.first);
+                for (const std::string &n : touched) {
+                    auto sit = snapBefore.find(n);
+                    /* A shader builtin the implementations assign for the
+                     * first time inside the dispatch (gl_ViewportIndex,
+                     * gl_Layer, a stage out) has no pre-dispatch value.  It
+                     * still needs a phi: the merge block reads cg.lvalues[n]
+                     * and would otherwise keep the value of whichever branch
+                     * happened to run last.  Branch-local *user* variables are
+                     * genuinely scoped to the branch and must stay skipped. */
+                    bool is_global_name = (n.size() > 3 &&
+                                           n.compare(0, 3, "gl_") == 0);
+                    /* A stage out is read from cg.lvalues when the record is
+                     * written, so it needs the same treatment as a builtin:
+                     * an implementation may be the first place it is set. */
+                    if (!is_global_name && sit == snapBefore.end() &&
+                        cg.auxSyms) {
+                        for (const VarSym &varying : *cg.auxSyms) {
+                            if (varying.kind == VarSym::OUTPUT &&
+                                varying.name == n) {
+                                is_global_name = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (sit == snapBefore.end() && !is_global_name)
+                        continue;
+                    llvm::Value *base =
+                        (sit != snapBefore.end()) ? sit->second : nullptr;
+                    bool changed = false;
+                    llvm::Type *ty = base ? base->getType() : nullptr;
+                    for (const auto &br : branches) {
+                        auto it = br.second.find(n);
+                        if (it == br.second.end() || it->second == base)
+                            continue;
+                        changed = true;
+                        if (!ty) ty = it->second->getType();
+                    }
+                    if (!changed || !ty) continue;
+                    unsigned incoming =
+                        (unsigned)branches.size() + (fallthrough ? 1u : 0u);
+                    llvm::PHINode *phi =
+                        cg.b->CreatePHI(ty, incoming ? incoming : 1u, n);
+                    for (const auto &br : branches) {
+                        auto it = br.second.find(n);
+                        llvm::Value *v =
+                            (it != br.second.end()) ? it->second : base;
+                        if (!v || v->getType() != ty)
+                            v = llvm::UndefValue::get(ty);
+                        phi->addIncoming(v, br.first);
+                    }
+                    if (fallthrough) {
+                        llvm::Value *v = base;
+                        if (!v || v->getType() != ty)
+                            v = llvm::UndefValue::get(ty);
+                        phi->addIncoming(v, fallthrough);
+                    }
+                    cg.lvalues[n] = phi;
+                }
+            }
             *out = slot ? (llvm::Value *)cg.b->CreateLoad(retTy, slot)
                         : (llvm::Value *)llvm::ConstantInt::get(
                               llvm::Type::getInt32Ty(*cg.ctx), 0);
@@ -15479,6 +15770,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     /* Patch BUFFER sym offsets into uniforms */
     for (Uniform &u : uniforms) {
         cg.bufferOffsets[u.name] = u.offset;
+        cg.bufferStrides[u.name] = u.elementStride;
         for (VarSym &v : syms)
             if (v.kind == VarSym::BUFFER && v.name == u.name)
                 v.bufferOffset = u.offset;
@@ -18385,11 +18677,154 @@ extern "C" int mglShaderCompileGLSLCullDistanceCapture(
     return compileGLSLImpl(src, opt, metallib_out, size_out, err_buf, err_cap);
 }
 
-static void fillStageInfo(const MGLTranslationUnit *tu,
-                          const MGLIRModule *mod, int stage,
-                          const char *src, MGLAIRStageInfo *stage_info) {
+
+/* Copy the translation unit's subroutine tables into the fixed-shape ABI
+ * mirror the GL side reads.  Silently truncates at the ABI caps: a shader with
+ * more types/impls/uniforms than that keeps working, the queries just see the
+ * first ones (the caps are far above any CTS case). */
+/* Returns 0 on success, -1 when the shader declares more subroutine
+ * types/implementations/uniforms than the reflection table can represent.
+ * Overflow is a hard error rather than a silent truncation: the GL side would
+ * otherwise advertise fewer indices/locations than the AIR dispatch uses. */
+static int fillSubroutineTable(const MGLTranslationUnit *tu,
+                               MGLAIRSubroutineTable *out)
+{
+    if (!tu || !out) return 0;
+    memset(out, 0, sizeof(*out));
+    for (uint32_t i = 0; i < MGL_AIR_MAX_SUBROUTINE_UNIFORMS; i++)
+        out->uniform_location[i] = MGL_SUBROUTINE_LOCATION_NONE;
+    uint32_t implBase = 0;   /* highest absolute index + 1 seen so far */
+    std::vector<bool> taken;
+    for (uint32_t i = 0; i < tu->subroutine_type_count; i++) {
+        const MGLSubroutineType *st = &tu->subroutine_types[i];
+        if (i >= MGL_AIR_MAX_SUBROUTINE_TYPES) {
+            return -1;
+        }
+        MGLAIRSubroutineTypeInfo *dst = &out->types[i];
+        if (st->name) {
+            snprintf(dst->name, sizeof(dst->name), "%s", st->name);
+        }
+        /* Absolute, program-wide indices (GL 4.6 §7.10).  A type's own slot
+         * range is [lowest, highest] of the indices it claimed, so the table
+         * can keep reporting a per-type base while dispatch compares against
+         * the absolute values. */
+        uint32_t slotOfImpl[MGL_AIR_MAX_SUBROUTINE_IMPLS] = {};
+        int rc = subroutineAssignSlots(st, &taken, slotOfImpl);
+        if (rc != 0) return -1;
+        uint32_t lowest = UINT32_MAX, highest = 0, written = 0;
+        for (uint32_t k = 0; k < st->impl_count; k++) {
+            if (!st->impls[k]) continue;
+            uint32_t abs = slotOfImpl[k];
+            if (abs >= MGL_AIR_MAX_SUBROUTINE_IMPLS) return -1;
+            dst->impls[abs][0] = '\0';
+            snprintf(dst->impls[abs], sizeof(dst->impls[0]), "%s",
+                     st->impls[k]);
+            dst->impl_indices[abs] = abs;
+            if (abs < lowest) lowest = abs;
+            if (abs > highest) highest = abs;
+            written++;
+            if (abs + 1u > implBase) implBase = abs + 1u;
+        }
+        if (written == 0) {
+            out->type_impl_base[i] = 0;
+        } else {
+            out->type_impl_base[i] = lowest;
+        }
+        dst->impl_count = (written == 0) ? 0u : (highest + 1u);
+        /* Ordinal list for the enumerating queries (ascending absolute). */
+        for (uint32_t abs = 0; abs < dst->impl_count; abs++) {
+            if (!dst->impls[abs][0]) continue;
+            if (dst->impl_name_count >= MGL_AIR_MAX_SUBROUTINE_IMPLS) return -1;
+            snprintf(dst->impl_names[dst->impl_name_count],
+                     sizeof(dst->impl_names[0]), "%s", dst->impls[abs]);
+            dst->impl_name_index[dst->impl_name_count] = abs;
+            dst->impl_name_count++;
+        }
+        for (uint32_t k = 0; k < st->uniform_count; k++) {
+            if (!st->uniforms[k]) continue;
+            /* One location per array element, in element order. */
+            uint32_t elements = (st->uniform_counts && st->uniform_counts[k] > 0)
+                                    ? st->uniform_counts[k]
+                                    : 1u;
+            const char *base = st->uniforms[k];
+            size_t baseLen = strlen(base);
+            /* Strip any "[...]" the source already spelled, so the element
+             * suffix this loop generates is the only subscript. */
+            char baseName[MGL_AIR_SUBROUTINE_NAME_MAX];
+            snprintf(baseName, sizeof(baseName), "%s", base);
+            {
+                char *bracket = strchr(baseName, '[');
+                if (bracket) *bracket = '\0';
+            }
+            const uint32_t *dims =
+                (st->uniform_dims && st->uniform_dims[k])
+                    ? st->uniform_dims[k]
+                    : NULL;
+            uint32_t dimCount =
+                (st->uniform_dim_counts && dims) ? st->uniform_dim_counts[k] : 0u;
+            if (dimCount == 0u && elements > 1u) dimCount = 1u;
+            for (uint32_t e = 0; e < elements; e++) {
+                if (out->uniform_count >= MGL_AIR_MAX_SUBROUTINE_UNIFORMS) {
+                    return -1;
+                }
+                char *slot = out->uniform_names[out->uniform_count];
+                if (elements == 1 && dimCount == 0u) {
+                    snprintf(slot, sizeof(out->uniform_names[0]), "%s",
+                             baseName);
+                } else if (dimCount > 1u) {
+                    /* Row-major element name: u1[i][j]. */
+                    char suffix[64];
+                    size_t used = 0;
+                    uint32_t remainder = e;
+                    uint32_t rowMajor[8];
+                    uint32_t rows = dimCount > 8u ? 8u : dimCount;
+                    for (uint32_t d = 0; d < rows; d++) {
+                        uint32_t stride = 1u;
+                        for (uint32_t k2 = d + 1u; k2 < rows; k2++)
+                            stride *= dims[k2] ? dims[k2] : 1u;
+                        rowMajor[d] = stride ? (remainder / stride) : 0u;
+                        if (stride) remainder %= stride;
+                    }
+                    for (uint32_t d = 0; d < rows; d++) {
+                        int n = snprintf(suffix + used, sizeof(suffix) - used,
+                                         "[%u]", rowMajor[d]);
+                        if (n <= 0) break;
+                        used += (size_t)n;
+                        if (used >= sizeof(suffix)) break;
+                    }
+                    snprintf(slot, sizeof(out->uniform_names[0]), "%s%s",
+                             baseName, suffix);
+                } else {
+                    snprintf(slot, sizeof(out->uniform_names[0]), "%s[%u]",
+                             baseName, e);
+                }
+                out->uniform_type[out->uniform_count] = i;
+                out->uniform_element[out->uniform_count] = e;
+                /* Each table row is one location (one array element), so the
+                 * per-row span is 1; `GL_ARRAY_SIZE` for the uniform itself is
+                 * reported from the first row's `declared_elements`. */
+                out->uniform_array_size[out->uniform_count] = 1u;
+                out->uniform_declared_elements[out->uniform_count] = elements;
+                out->uniform_location[out->uniform_count] =
+                    (st->uniform_locations && st->uniform_locations[k] >= 0)
+                        ? st->uniform_locations[k] + (int32_t)e
+                        : MGL_SUBROUTINE_LOCATION_NONE;
+                out->uniform_count++;
+            }
+        }
+        out->type_count = i + 1u;
+    }
+    out->total_impl_count = implBase;
+    return 0;
+}
+
+/* Returns 0 on success, -1 when the subroutine reflection overflowed. */
+static int fillStageInfo(const MGLTranslationUnit *tu,
+                         const MGLIRModule *mod, int stage,
+                         const char *src, MGLAIRStageInfo *stage_info) {
     (void)src;
     memset(stage_info, 0, sizeof(*stage_info));
+    if (fillSubroutineTable(tu, &stage_info->subroutines) != 0) return -1;
     stage_info->needs_runtime_array_size_buffer =
         translationUnitUsesRuntimeArrayLength(tu, mod) ? 1u : 0u;
     if (stage != MGL_STAGE_FRAGMENT && stage != MGL_STAGE_COMPUTE && mod) {
@@ -18554,6 +18989,7 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
                                         : 1u;
         stage_info->shared_memory_bytes = airSharedMemoryBytes(mod);
     }
+    return 0;
 }
 
 extern "C" int mglAirReflectGLSLStageInfo(
@@ -18591,7 +19027,17 @@ extern "C" int mglAirReflectGLSLStageInfo(
         return -1;
     }
     mglGLSLSemanticCheckDestroy(errors, error_count);
-    fillStageInfo(tu, &mod, stage, esrc, stage_info);
+    if (fillStageInfo(tu, &mod, stage, esrc, stage_info) != 0) {
+        mglIRModuleDestroy(&mod);
+        mglGLSLTranslationUnitDestroy(tu);
+        snprintf(err_buf, err_cap,
+                 "subroutine tables exceed the MGL reflection capacity "
+                 "(max %d types / %d implementations per type / %d uniform "
+                 "locations)",
+                 MGL_AIR_MAX_SUBROUTINE_TYPES, MGL_AIR_MAX_SUBROUTINE_IMPLS,
+                 MGL_AIR_MAX_SUBROUTINE_UNIFORMS);
+        return -1;
+    }
     mglIRModuleDestroy(&mod);
     mglGLSLTranslationUnitDestroy(tu);
     return 0;
@@ -18623,11 +19069,23 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     MGLAIRStageInfo filled = {};
     if (stage_info) {
         tessPatchVertices = stage_info->tess_patch_vertices;
-        fillStageInfo(sess.tu, &sess.mod, stage, sess.src, stage_info);
+        if (fillStageInfo(sess.tu, &sess.mod, stage, sess.src, stage_info) != 0) {
+            snprintf(err_buf, err_cap,
+                     "subroutine tables exceed the MGL reflection capacity "
+                     "(max %d types / %d implementations per type / %d uniform "
+                     "locations)",
+                     MGL_AIR_MAX_SUBROUTINE_TYPES, MGL_AIR_MAX_SUBROUTINE_IMPLS,
+                     MGL_AIR_MAX_SUBROUTINE_UNIFORMS);
+            return -1;
+        }
         stage_info->tess_patch_vertices = tessPatchVertices;
         filled = *stage_info;
     } else if (stage == MGL_STAGE_TESS_EVALUATION) {
-        fillStageInfo(sess.tu, &sess.mod, stage, sess.src, &filled);
+        if (fillStageInfo(sess.tu, &sess.mod, stage, sess.src, &filled) != 0) {
+            snprintf(err_buf, err_cap,
+                     "subroutine tables exceed the MGL reflection capacity");
+            return -1;
+        }
     }
     /* gl_TessLevel* in TES is the exact TCS / PatchParameterfv value
      * (GL 4.6 §11.2.3). Metal post-tessellation only sees half factors. */
