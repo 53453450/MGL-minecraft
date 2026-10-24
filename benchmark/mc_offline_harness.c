@@ -460,7 +460,10 @@ static void begin_pass(HarnessScene *s, int pass, int width, int height)
  * glBindVertexBuffer when the VBO changes (here: rarely — slot cycling). */
 static void bind_vertex_source(HarnessScene *s, int slot, int *last_slot)
 {
-    p_glBindVertexArray(s->vaos[slot % VAO_CACHE_SIZE]);
+    /* VertexArrayCache keys by format: every terrain section shares ONE VAO;
+     * per-section variation is the vertex-buffer binding (offset here, a
+     * separate section GpuBuffer in the real game). */
+    p_glBindVertexArray(s->vaos[0]);
     if (slot != *last_slot) {
         p_glBindVertexBuffer(0, s->vertex_arena,
                              (GLintptr)((size_t)(slot % 64) * s->vertex_slice_bytes),
