@@ -90,21 +90,8 @@ static void mglUniformSetError(GLMContext ctx, GLenum error)
 }
 
 /* Defined in MGLRenderer.m (ObjC BOOL == bool on arm64); declared extern here
- * so this C TU can query the kill switch. */
+ * so this C TU can query the flag. */
 extern bool mglEnvFlagEnabledDefaultOn(const char *name);
-
-/* Kill switch for the vm_region readability probes on client value pointers.
- * Skipped by default; set MGL_SKIP_VALUE_PROBE=0 to restore the probes (bad
- * pointers are then dropped with a warning instead of faulting, at the cost
- * of a syscall per upload). */
-static bool mglUniformValueProbeSkipped(void)
-{
-    static int cached = -1;
-    if (cached < 0) {
-        cached = mglEnvFlagEnabledDefaultOn("MGL_SKIP_VALUE_PROBE") ? 1 : 0;
-    }
-    return cached == 1;
-}
 
 /* Kill switch for skipping state-hash invalidation when a glUniform upload
  * leaves the plain-uniform slot identity unchanged.  Set
@@ -132,19 +119,6 @@ static bool mglUniformUploadDiagEnabled(void)
 
 #define MGL_SAFE_CSTRING_MAX 4096u
 
-static size_t mglSafeCStringReadableChunkSize(const char *str, size_t remaining)
-{
-    long pageSize = getpagesize();
-    if (pageSize <= 0) {
-        return remaining;
-    }
-
-    size_t page = (size_t)pageSize;
-    size_t pageOffset = (size_t)((uintptr_t)str % page);
-    size_t bytesToPageEnd = page - pageOffset;
-    return remaining < bytesToPageEnd ? remaining : bytesToPageEnd;
-}
-
 static GLboolean mglSafeCStringLength(const char *str, size_t *length_out)
 {
     if (length_out) {
@@ -154,25 +128,18 @@ static GLboolean mglSafeCStringLength(const char *str, size_t *length_out)
         return GL_FALSE;
     }
 
-    for (size_t offset = 0u; offset < MGL_SAFE_CSTRING_MAX;) {
-        size_t remaining = MGL_SAFE_CSTRING_MAX - offset;
-        size_t chunkSize = mglSafeCStringReadableChunkSize(str + offset, remaining);
-        if (!mglPointerRangeIsReadable(str + offset, chunkSize)) {
-            return GL_FALSE;
-        }
-
-        const char *terminator = memchr(str + offset, '\0', chunkSize);
-        if (terminator) {
-            if (length_out) {
-                *length_out = offset + (size_t)(terminator - (str + offset));
-            }
-            return GL_TRUE;
-        }
-
-        offset += chunkSize;
+    /* Bounded terminator scan: memchr stops at MGL_SAFE_CSTRING_MAX, so a
+     * non-terminated (or corrupt) string cannot make this loop run away.
+     * No kernel-backed readability probe — a bad pointer is UB like on any
+     * other GL driver. */
+    const char *terminator = (const char *)memchr(str, '\0', MGL_SAFE_CSTRING_MAX);
+    if (!terminator) {
+        return GL_FALSE;
     }
-
-    return GL_FALSE;
+    if (length_out) {
+        *length_out = (size_t)(terminator - str);
+    }
+    return GL_TRUE;
 }
 
 /* Parse a strict GLSL array subscript between '[' and ']'.
@@ -241,20 +208,7 @@ static GLboolean mglSafeCStringContains(const char *haystack, const char *needle
         return GL_FALSE;
     }
 
-    for (size_t i = 0; i <= hay_len - needle_len; i++) {
-        GLboolean match = GL_TRUE;
-        for (size_t j = 0; j < needle_len; j++) {
-            if (haystack[i + j] != needle[j]) {
-                match = GL_FALSE;
-                break;
-            }
-        }
-        if (match) {
-            return GL_TRUE;
-        }
-    }
-
-    return GL_FALSE;
+    return strstr(haystack, needle) != NULL ? GL_TRUE : GL_FALSE;
 }
 
 static const char *mglSafeCStringForLog(const char *str)
@@ -276,15 +230,8 @@ static MGLShaderResourceList *mglUniformSafeResourceList(Program *program, int s
         return resources;
     }
 
-    if (!mglPointerRangeIsReadable(resources, sizeof(*resources))) {
-        fprintf(stderr,
-                "MGL WARNING: %s dropping unreadable resource list program=%p stage=%d type=%d\n",
-                func ? func : "uniform",
-                (void *)program,
-                stage,
-                res_type);
-        return NULL;
-    }
+    /* `resources` is embedded in the validated live program object, so its
+     * memory is readable by construction — no readability probe needed. */
 
     if (resources->count == 0u) {
         program->validated_resource_lists[stage][res_type] = resources;
@@ -302,17 +249,14 @@ static MGLShaderResourceList *mglUniformSafeResourceList(Program *program, int s
                 resources->count);
         return NULL;
     }
-    size_t resource_bytes = (size_t)resources->count * sizeof(MGLShaderResource);
-    if (!resources->list ||
-        !mglPointerRangeIsReadable(resources->list, resource_bytes)) {
+    if (!resources->list) {
         fprintf(stderr,
-                "MGL WARNING: %s dropping unreadable resource storage program=%p stage=%d type=%d count=%u list=%p\n",
+                "MGL WARNING: %s dropping resource list with missing storage program=%p stage=%d type=%d count=%u\n",
                 func ? func : "uniform",
                 (void *)program,
                 stage,
                 res_type,
-                resources->count,
-                (void *)resources->list);
+                resources->count);
         return NULL;
     }
 
@@ -322,24 +266,16 @@ static MGLShaderResourceList *mglUniformSafeResourceList(Program *program, int s
     return resources;
 }
 
-static Program *mglUniformValidateProgramPointer(GLMContext ctx, Program *program, const char *func)
+static Program *mglUniformValidateProgramPointer(GLMContext ctx, Program *program, GLuint expectedName, const char *func)
 {
-    if (!ctx || !program) {
+    if (!ctx || !program || expectedName == 0u) {
         return NULL;
     }
 
-    if (mglObjectPointerLooksPlausible(program) &&
-        mglHashTableContainsData(&STATE(program_table), program)) {
-        return program;
-    }
-
-    GLboolean pointerReadable =
-        mglObjectPointerLooksPlausible(program) &&
-        mglPointerRangeIsReadable(program, sizeof(*program));
-    GLuint expectedName = pointerReadable ? program->name : 0u;
-
-    if (!pointerReadable ||
-        !mglProgramPointerUsableForName(ctx, program, expectedName)) {
+    /* expectedName comes from a known source (the state's binding name, a
+     * retained pipeline's active program name, or the user-passed name
+     * getProgram resolved) — no readability probe (decision D6). */
+    if (!mglProgramPointerUsableForName(ctx, program, expectedName)) {
         fprintf(stderr,
                 "MGL WARNING: %s dropping invalid program pointer %p\n",
                 func ? func : "uniform",
@@ -359,12 +295,15 @@ static Program *mglUniformGetCurrentProgram(GLMContext ctx, const char *func)
     if (!ctx) {
         return NULL;
     }
-    /* GL 4.6 §7.6.1: without UseProgram, the bound pipeline's active program. */
+    /* GL 4.6 §7.6.1: without UseProgram, the bound pipeline's active program.
+     * The state holds a reference on the pipeline, which retained its active
+     * program, so reading its own name is safe (decision D6). */
     if (!STATE(program) && STATE(program_pipeline)) {
+        Program *activeProgram = STATE(program_pipeline)->active_program;
         return mglUniformValidateProgramPointer(
-            ctx, STATE(program_pipeline)->active_program, func);
+            ctx, activeProgram, activeProgram ? activeProgram->name : 0u, func);
     }
-    return mglUniformValidateProgramPointer(ctx, STATE(program), func);
+    return mglUniformValidateProgramPointer(ctx, STATE(program), STATE(program_name), func);
 }
 
 static Program *mglUniformGetNamedProgram(GLMContext ctx, GLuint program, const char *func)
@@ -372,7 +311,7 @@ static Program *mglUniformGetNamedProgram(GLMContext ctx, GLuint program, const 
     if (!ctx || program == 0u) {
         return NULL;
     }
-    return mglUniformValidateProgramPointer(ctx, getProgram(ctx, program), func);
+    return mglUniformValidateProgramPointer(ctx, getProgram(ctx, program), program, func);
 }
 
 static GLint mglKnownPlainUniformLocation(const char *name)
@@ -3006,14 +2945,9 @@ static bool checkUniformUploadParams(GLMContext ctx, GLint location, const void 
         return false;
     }
 
-    if (total > 0 && !mglUniformValueProbeSkipped() &&
-        !mglPointerRangeIsReadable(ptr, total)) {
-        fprintf(stderr,
-                "MGL WARNING: dropping uniform update location=%d count=%d bytes=%zu unreadable value=%p\n",
-                location,
-                count,
-                total,
-                ptr);
+    /* Cheap NULL check only (decision D2): a bad but non-NULL value pointer
+     * is GL UB, like on any other driver — no readability probe. */
+    if (total > 0 && !ptr) {
         ctx = mglUniformResolveContext(ctx, __FUNCTION__);
         mglUniformSetError(ctx, GL_INVALID_VALUE);
         return false;
@@ -3286,13 +3220,8 @@ static void mglUniformWithPayload(GLMContext ctx, GLint location, void *ptr,
         mglUniformSetError(ctx, GL_INVALID_VALUE);
         return;
     }
-    if (size > 0 && !mglUniformValueProbeSkipped() &&
-        !mglPointerRangeIsReadable(ptr, (size_t)size)) {
-        fprintf(stderr,
-                "MGL WARNING: dropping uniform update location=%d bytes=%lld unreadable value=%p\n",
-                location,
-                (long long)size,
-                ptr);
+    /* Cheap NULL check only (decision D2): no readability probe. */
+    if (size > 0 && !ptr) {
         mglUniformSetError(ctx, GL_INVALID_VALUE);
         return;
     }
@@ -3514,7 +3443,6 @@ void mglUniform1i(GLMContext ctx, GLint location, GLint v0)
 void mglUniform1iv(GLMContext ctx, GLint location, GLsizei count, const GLint *value)
 {
     if (count > 0 && value &&
-        (mglUniformValueProbeSkipped() || mglPointerRangeIsReadable(value, sizeof(*value))) &&
         mglSetSamplerUniformUnit(ctx, location, value[0])) {
         for (GLsizei i = 1; i < count; i++)
             mglSetSamplerUniformUnit(ctx, location + i, value[i]);
@@ -3686,7 +3614,6 @@ void mglUniform1uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint 
         return;
     }
     if (count > 0 && value &&
-        (mglUniformValueProbeSkipped() || mglPointerRangeIsReadable(value, sizeof(*value))) &&
         value[0] <= (GLuint)INT_MAX &&
         mglSetSamplerUniformUnit(ctx, location, (GLint)value[0])) {
         for (GLsizei i = 1; i < count; i++) {
