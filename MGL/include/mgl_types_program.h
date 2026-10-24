@@ -36,6 +36,7 @@
 
 #include "mgl_types_buffer.h"
 #include "mgl_types_texture.h"
+#include "mgl_subroutine_table.h"
 
 typedef struct GLMContextRec_t *GLMContext;
 
@@ -318,6 +319,9 @@ typedef struct Program_t {
     GLuint air_builtin_mask[_MAX_SHADER_TYPES];
     MGLShaderModule modules[_MAX_SHADER_TYPES];
     MGLShaderResourceList shader_resources_list[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
+    /* GLSL 4.0 subroutine mirror per stage, filled at link from the frontend's
+     * translation unit (see mgl_shader_abi.h MGLAIRSubroutineTable). */
+    MGLAIRSubroutineTable subroutine_tables[_MAX_SHADER_TYPES];
     struct {
         unsigned x, y, z;
     } local_workgroup_size;

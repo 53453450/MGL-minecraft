@@ -38,6 +38,7 @@
 typedef struct GLMContextRec_t *GLMContext;
 
 #include "mgl_types_program.h"
+#include "mgl_subroutine_table.h"
 
 /* ---------------------------------------------------------------------------
  * AIR codegen epoch
@@ -154,6 +155,8 @@ typedef struct MGLAIRStageInfo {
     uint32_t compute_local_size_y;
     uint32_t compute_local_size_z;
     uint32_t shared_memory_bytes;
+    /* GLSL 4.0: types, implementations and subroutine uniforms of this stage. */
+    MGLAIRSubroutineTable subroutines;
 } MGLAIRStageInfo;
 
 /* Fixed inter-stage record shared by VS capture, TCS, TES and the GS compute

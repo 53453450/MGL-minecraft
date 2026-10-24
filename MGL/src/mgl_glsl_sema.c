@@ -719,8 +719,8 @@ static int builtin_type_spec(const char *name, MGLTypeSpec *ts);
 /* GLSL 4.0: `g(args)` with g a subroutine uniform dispatches over the
  * implementations of its type; the expression's type is the signature's
  * return type.  Returns NULL when the name is not a subroutine uniform. */
-static MGLIRType *subroutine_uniform_call_type(Sema *s, SymTab *tab,
-                                               const char *name)
+static const MGLSubroutineType *subroutine_type_for_uniform(Sema *s,
+                                                            const char *name)
 {
     if (!s->tu || !name) {
         return NULL;
@@ -728,14 +728,23 @@ static MGLIRType *subroutine_uniform_call_type(Sema *s, SymTab *tab,
     for (uint32_t i = 0; i < s->tu->subroutine_type_count; i++) {
         const MGLSubroutineType *st = &s->tu->subroutine_types[i];
         for (uint32_t k = 0; k < st->uniform_count; k++) {
-            if (strcmp(st->uniforms[k], name) == 0) {
-                return st->ret_type
-                           ? resolve_type_spec(s, tab, st->ret_type)
-                           : mglIRTypeScalar(MGLIR_SCALAR_VOID);
+            if (st->uniforms[k] && strcmp(st->uniforms[k], name) == 0) {
+                return st;
             }
         }
     }
     return NULL;
+}
+
+static MGLIRType *subroutine_uniform_call_type(Sema *s, SymTab *tab,
+                                               const char *name)
+{
+    const MGLSubroutineType *st = subroutine_type_for_uniform(s, name);
+    if (!st) {
+        return NULL;
+    }
+    return st->ret_type ? resolve_type_spec(s, tab, st->ret_type)
+                        : mglIRTypeScalar(MGLIR_SCALAR_VOID);
 }
 
 
@@ -839,9 +848,12 @@ static MGLIRType *resolve_decl_type_major(Sema *s, SymTab *tab,
 {
     MGLIRType *t = NULL;
     /* A subroutine uniform holds an implementation index: uint storage, with
-     * the subroutine type name kept as metadata on the translation unit. */
+     * the subroutine type name kept as metadata on the translation unit.
+     * `subroutine uniform T g[2];` is an array of indices, so the declarator's
+     * array dimensions still apply (GL 4.6 §7.10: one location per element). */
     if (d && (d->qualifiers & MGL_AST_Q_SUBROUTINE_UNIFORM)) {
-        return mglIRTypeScalar(MGLIR_SCALAR_UINT);
+        return apply_decl_array_dims(s, d,
+                                     mglIRTypeScalar(MGLIR_SCALAR_UINT));
     }
     /* Inline / interface-block struct body on the declarator:
      * `out struct { … } name;`, `in Block { … } inst;`, or a second
@@ -918,9 +930,11 @@ static MGLIRType *resolve_decl_type(Sema *s, SymTab *tab, const MGLDecl *d)
     /* A subroutine uniform holds an implementation index, not a value of the
      * subroutine type: it is a plain uint as far as storage and the uniform
      * block are concerned.  The type name itself is metadata (which
-     * implementations it may select), recorded on the translation unit. */
+     * implementations it may select), recorded on the translation unit.
+     * Arrayed uniforms keep their dimensions (`g[2]` is two locations). */
     if (d && (d->qualifiers & MGL_AST_Q_SUBROUTINE_UNIFORM)) {
-        return mglIRTypeScalar(MGLIR_SCALAR_UINT);
+        return apply_decl_array_dims(s, d,
+                                     mglIRTypeScalar(MGLIR_SCALAR_UINT));
     }
     return resolve_decl_type_major(s, tab, d, MGL_AST_MATRIX_DEFAULT);
 }
@@ -4094,11 +4108,42 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 return t;
             }
             {
+                const MGLSubroutineType *sub_type =
+                    subroutine_type_for_uniform(s, e->u.call.name);
                 MGLIRType *sub_ret =
                     subroutine_uniform_call_type(s, tab, e->u.call.name);
+                if (sub_ret && e->u.call.subroutine_element >= 0) {
+                    /* The element subscript just picks which location's
+                     * index is read; the signature comes from the uniform's
+                     * type, so arity/type checks are unchanged. */
+                }
                 if (sub_ret) {
+                    /* GLSL 4.60 §6.1: a subroutine is selected through a
+                     * uniform whose type has a matching signature, so the
+                     * call must have the signature's arity and argument
+                     * types.  Without this a call with the wrong arity/type
+                     * compiled and only failed (or silently misbehaved) in
+                     * the backend. */
+                    if (sub_type && e->u.call.arg_count != sub_type->param_count) {
+                        sema_error(s, e->line,
+                                   "subroutine '%s' expects %u argument(s), "
+                                   "got %u", e->u.call.name,
+                                   sub_type->param_count,
+                                   e->u.call.arg_count);
+                    }
                     for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
-                        (void)check_expr(s, tab, e->u.call.args[i]);
+                        MGLIRType *at = check_expr(s, tab, e->u.call.args[i]);
+                        if (!sub_type || i >= sub_type->param_count) {
+                            continue;
+                        }
+                        MGLIRType *want =
+                            resolve_type_spec(s, tab, sub_type->param_types[i]);
+                        if (want && at && !check_assign_op(want, at)) {
+                            sema_error(s, e->line,
+                                       "argument %u of subroutine '%s' has "
+                                       "incompatible type", i + 1,
+                                       e->u.call.name);
+                        }
                     }
                     return sub_ret;
                 }
@@ -6155,6 +6200,19 @@ static void sema_mark_unreferenced_samplers(const MGLTranslationUnit *tu,
         }
     }
     use_queue_function(&w, main_fn);
+    /* Subroutine implementations are reached through a subroutine uniform
+     * call (`C[0]()`), which the static call graph cannot see: the callee is
+     * chosen at run time.  Seed every implementation so samplers used only
+     * inside one stay live (otherwise the sampler loses its Metal slot and
+     * texelFetch is rejected with "must be a sampler variable"). */
+    for (uint32_t i = 0; i < tu->decl_count; i++) {
+        const MGLDecl *d = tu->decls[i];
+        if (!d || !d->body || !d->name) continue;
+        if (d->qualifiers & MGL_AST_Q_SUBROUTINE_IMPL) {
+            use_queue_function(&w, d);
+            use_set_add(&w.called, d->name);
+        }
+    }
     while (w.work_count > 0 && !w.oom) {
         const MGLDecl *fn = w.work[--w.work_count];
         use_walk_stmt(&w, fn->body);

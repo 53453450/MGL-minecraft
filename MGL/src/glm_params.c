@@ -658,8 +658,13 @@ apply_gl46_defaults:
     glm_ctx->active_state->var.max_compute_shared_memory_size = 32768;
     glm_ctx->active_state->var.max_debug_message_length = 1024;
     glm_ctx->active_state->var.max_debug_logged_messages = MGL_DEBUG_LOG_CAP;
-    glm_ctx->active_state->var.max_subroutines = 0;
-    glm_ctx->active_state->var.max_subroutine_uniform_locations = 0;
+    /* GL 4.6 §7.10 / ARB_shader_subroutine: MAX_SUBROUTINES >= 256 and
+     * MAX_SUBROUTINE_UNIFORM_LOCATIONS >= 1024.  The reflection table cannot
+     * represent that many yet, so a shader exceeding its capacity is rejected
+     * at link with a diagnostic instead of being silently truncated (see
+     * fillSubroutineTable in mgl_air_backend.cpp). */
+    glm_ctx->active_state->var.max_subroutines = 256;
+    glm_ctx->active_state->var.max_subroutine_uniform_locations = 1024;
     glm_ctx->active_state->var.max_vertex_streams = 4;
     glm_ctx->active_state->var.max_combined_shader_output_resources = 8;
     glm_ctx->active_state->var.max_vertex_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;

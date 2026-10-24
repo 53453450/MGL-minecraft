@@ -1923,6 +1923,29 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             attrib_snapshot[ai] = strdup(pptr->attrib_location_names[ai]);
         }
     }
+    /* GLSL 4.0 subroutines: capture the frontend's tables for this stage so
+     * glGetSubroutine* answers from the program instead of re-parsing.  The
+     * substring test keeps the extra parse off the common path. */
+    memset(&pptr->subroutine_tables[stage], 0,
+           sizeof(pptr->subroutine_tables[stage]));
+    if (compile_src && strstr(compile_src, "subroutine") != NULL) {
+        MGLAIRStageInfo sub_info = {0};
+        char sub_err[256] = {0};
+        if (mglAirReflectGLSLStageInfo(compile_src, air_stage, &sub_info,
+                                       sub_err, sizeof sub_err) == 0) {
+            pptr->subroutine_tables[stage] = sub_info.subroutines;
+            /* GL 4.6 §7.10: subroutine-uniform locations are unique within a
+             * stage and must be below GL_MAX_SUBROUTINE_UNIFORM_LOCATIONS.
+             * Both are link errors; without these checks the program linked
+             * and the second selection silently aliased the first. */
+            if (!mglSubroutineValidateTable(
+                    &pptr->subroutine_tables[stage],
+                    1024u)) {   /* GL_MAX_SUBROUTINE_UNIFORM_LOCATIONS */
+                free(merged_src);
+                return 0;
+            }
+        }
+    }
     MGLAIRStageInfo stage_info = {0};
     if (stage == _GEOMETRY_SHADER &&
         mglAirReflectGLSLStageInfo(shader->src, air_stage, &stage_info,

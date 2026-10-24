@@ -386,6 +386,79 @@ static void subroutine_type_add_name(MGLSubroutineType *st,
     (*list)[(*count)++] = strdup(name);
 }
 
+
+/* `layout(...) subroutine ...` puts the subroutine keyword after the layout
+ * clause, so the TU loop's own test never sees it.  Consume the clause when a
+ * `subroutine` follows it and hand back the `location = N` the clause named
+ * (via *out_location, -1 when absent) and the `index = N` an implementation
+ * was given (via *out_index, -1 when absent; GLSL 4.60 §6.1.2 lets a
+ * subroutine function reserve an explicit index). */
+static int skip_layout_before_subroutine(MGLParser *p, int *out_location,
+                                         int *out_index)
+{
+    *out_location = -1;
+    *out_index = -1;
+    if (!at_ident(p, "layout")) {
+        return -1;
+    }
+    uint32_t i = 1;
+    if (!ops_at_off(p, i, "(")) {
+        return -1;
+    }
+    int depth = 0;
+    for (;;) {
+        if (tk(p, (int)i)->kind == MGLGLSL_TOK_END) {
+            return -1;
+        }
+        if (ops_at_off(p, i, "(")) {
+            depth++;
+        } else if (ops_at_off(p, i, ")")) {
+            depth--;
+            if (depth == 0) {
+                i++;
+                break;
+            }
+        }
+        i++;
+    }
+    if (!at_ident_off(p, i, "subroutine")) {
+        return -1;
+    }
+    /* Only `location = N` and `index = N` matter here; anything else is
+     * ignored.  The '=' is checked so a nested `location`/`index` appearing as
+     * some other layout value (e.g. inside a braced list) is not mistaken for
+     * the one we want. */
+    for (uint32_t k = 0; k < i; k++) {
+        int is_location = at_ident_off(p, k, "location");
+        int is_index = at_ident_off(p, k, "index");
+        if (!is_location && !is_index) continue;
+        if (!ops_at_off(p, k + 1, "=")) continue;
+        const MGLGLSLToken *num = tk(p, (int)k + 2);
+        /* GLSL 4.60 §4.4: location/index must be an integral constant
+         * expression.  CTS exercises `layout(index = x)` (a variable) and
+         * `layout(location = i)` (a const int): both are compile errors, not
+         * "ignore the clause and continue". */
+        if (num->kind != MGLGLSL_TOK_INT) {
+            parse_error(p,
+                        "layout(%s = ...) requires an integral constant "
+                        "expression at line %u",
+                        is_location ? "location" : "index", tk_line(p));
+            for (uint32_t adv = 0; adv < i; adv++) advance(p);
+            return -2;
+        }
+        int value = (int)strtol(p->ts->src + num->start, NULL, 0);
+        if (is_location) {
+            *out_location = value;
+        } else {
+            *out_index = value;
+        }
+    }
+    for (uint32_t k = 0; k < i; k++) {
+        advance(p);
+    }
+    return 0;
+}
+
 static int at_num(MGLParser *p)
 {
     MGLGLSLTokenKind k = (MGLGLSLTokenKind)tk(p, 0)->kind;
@@ -1132,6 +1205,22 @@ static MGLExpr *expr_alloc(MGLParser *p, uint32_t kind, uint32_t line)
     return e;
 }
 
+/* True when `name` names a declared subroutine uniform.  Used by
+ * parse_primary to tell `b[0](...)` (an index into an arrayed subroutine
+ * uniform, GLSL 4.60 §6.1.2) apart from `T[N](...)` array construction. */
+static int is_subroutine_uniform_name(MGLParser *p, const char *name)
+{
+    if (!p->tu || !name) return 0;
+    for (uint32_t i = 0; i < p->tu->subroutine_type_count; i++) {
+        const MGLSubroutineType *st = &p->tu->subroutine_types[i];
+        for (uint32_t k = 0; k < st->uniform_count; k++) {
+            if (st->uniforms[k] && strcmp(st->uniforms[k], name) == 0)
+                return 1;
+        }
+    }
+    return 0;
+}
+
 static MGLExpr *parse_primary(MGLParser *p)
 {
     uint32_t line = tk_line(p);
@@ -1178,6 +1267,91 @@ static MGLExpr *parse_primary(MGLParser *p)
             if (ops_at(p, "[")) {
                 int saved = p->pos;
                 int valid = 1;
+                /* `subroutine_uniform[const](args)` is an element call, not
+                 * an array constructor T[N](...). */
+                if (is_subroutine_uniform_name(p, name)) {
+                    int probe = p->pos;
+                    uint32_t subs[8] = {};
+                    uint32_t subCount = 0;
+                    int ok = 1;
+                    MGLExpr *dynIndex = NULL;
+                    while (ok && ops_at(p, "[")) {
+                        if (subCount == 8u || dynIndex) { ok = 0; break; }
+                        advance(p);          /* [ */
+                        /* A plain integer literal is by far the common case
+                         * (`C[2]()`); read the token directly so the array
+                         * constructor path's expression bookkeeping cannot
+                         * interfere. */
+                        if (tk(p, 0)->kind == MGLGLSL_TOK_INT) {
+                            long v = strtol(p->ts->src + tk(p, 0)->start,
+                                            NULL, 0);
+                            if (v >= 0 && ops_at_off(p, 1, "]")) {
+                                subs[subCount++] = (uint32_t)v;
+                                advance(p);      /* the literal */
+                                advance(p);      /* ] */
+                                continue;
+                            }
+                        }
+                        MGLExpr *ext = parse_expression(p);
+                        int64_t value = 0;
+                        if (!ext || !ops_at(p, "]")) {
+                            ok = 0;
+                        } else if (eval_const_int(p, ext, &value) &&
+                                   value >= 0) {
+                            subs[subCount++] = (uint32_t)value;
+                            advance(p);      /* ] */
+                            free_expr(ext);
+                            continue;
+                        } else if (subCount == 0u) {
+                            /* gl_WorkGroupID.x and friends select the element
+                             * at run time (GLSL 4.60 §6.1.2 allows any integer
+                             * expression that is dynamically uniform). */
+                            dynIndex = ext;
+                            advance(p);      /* ] */
+                            continue;
+                        } else {
+                            ok = 0;
+                        }
+                        free_expr(ext);
+                    }
+                    if (!ok && dynIndex) { free_expr(dynIndex); dynIndex = NULL; }
+                    if (ok) ok = ops_at(p, "(");
+                    if (ok) {
+                        MGLExpr *e = expr_alloc(p, MGL_EXPR_CALL, line);
+                        if (!e) return NULL;
+                        e->u.call.name = name;
+                        e->u.call.subroutine_element = (int)subs[0];
+                        e->u.call.subroutine_subscript_count = subCount;
+                        memcpy(e->u.call.subroutine_subscripts, subs,
+                               sizeof(uint32_t) * subCount);
+                        e->u.call.subroutine_index_expr = dynIndex;
+                        eat_punct(p, "(");
+                        uint32_t argc = 0;
+                        if (!ops_at(p, ")")) {
+                            for (;;) {
+                                MGLExpr *arg = parse_assignment(p);
+                                if (!arg) break;
+                                MGLExpr **args = (MGLExpr **)realloc(
+                                    e->u.call.args,
+                                    (argc + 1) * sizeof(MGLExpr *));
+                                if (!args) {
+                                    free_expr(arg);
+                                    free_expr(e);
+                                    parse_error(p, "out of memory");
+                                    return NULL;
+                                }
+                                e->u.call.args = args;
+                                e->u.call.args[argc++] = arg;
+                                if (!eat_punct(p, ",")) break;
+                                if (ops_at(p, ")")) break;
+                            }
+                        }
+                        e->u.call.arg_count = argc;
+                        expect_punct(p, ")");
+                        return e;
+                    }
+                    p->pos = probe;          /* let the ctor path decide */
+                }
                 while (valid && ops_at(p, "[")) {
                     advance(p); /* [ */
                     uint32_t extent = 0;
@@ -3739,6 +3913,8 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
     /* top-level directives skipped; parse declarations */
     char *pending_subroutine_type = NULL;
     int pending_subroutine_uniform = 0;
+    int pending_subroutine_location = -1;
+    int pending_subroutine_index = -1;   /* layout(index=N) on an impl */
     while (tk(&p, 0)->kind != MGLGLSL_TOK_END) {
         if (tk(&p, 0)->kind == MGLGLSL_TOK_DIRECTIVE) {
             advance(&p);
@@ -3755,6 +3931,23 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
          * follows is tagged so sema knows the variable holds an index and the
          * function is an implementation.  The third records the type name so
          * `subroutine uniform T g;` resolves T like any other user type. */
+        {
+            int lay_loc = -1, lay_idx = -1;
+            if (tk(&p, 0)->kind == MGLGLSL_TOK_IDENT &&
+                at_ident(&p, "layout")) {
+                if (skip_layout_before_subroutine(&p, &lay_loc,
+                                                  &lay_idx) == -2) {
+                    /* parse_error already recorded the diagnostic. */
+                    break;
+                }
+            }
+            if (lay_loc >= 0) {
+                pending_subroutine_location = lay_loc;
+            }
+            if (lay_idx >= 0) {
+                pending_subroutine_index = lay_idx;
+            }
+        }
         if (at_ident(&p, "subroutine")) {
             if (ops_at_off(&p, 1, "(")) {
                 pending_subroutine_type = dup_token_text(&p, tk(&p, 2));
@@ -3771,36 +3964,96 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
             advance(&p);              /* subroutine */
             /* ret? Type ( args ) ;  -- parse the return type first, then the
              * type name; the signature's return type is what a call through
-             * the uniform evaluates to. */
+             * the uniform evaluates to, and the argument list is what call
+             * sites are checked against. */
             MGLTypeSpec *ret_type = parse_type_spec(&p);
             char *declared_type = NULL;
             if (ret_type && at_any_ident(&p)) {
                 declared_type = dup_current(&p);
             }
+            MGLSubroutineType *st = NULL;
             if (declared_type) {
                 record_struct_name(&p, declared_type);
-                MGLSubroutineType *st =
-                    subroutine_type_get(&p, declared_type, 1);
+                st = subroutine_type_get(&p, declared_type, 1);
                 if (st && ret_type) {
+                    /* Re-declaring the same type replaces its signature;
+                     * release the previous one instead of leaking it. */
+                    free_type_spec(st->ret_type);
                     st->ret_type = ret_type;   /* ownership moves to the TU */
                     ret_type = NULL;
                 }
                 free(declared_type);
+                advance(&p);        /* the type name, up to the '(' */
             }
             free_type_spec(ret_type);
-            /* the identifier before '(' is the type. */
-            while (tk(&p, 0)->kind != MGLGLSL_TOK_END && !ops_at(&p, "(")) {
-                const MGLGLSLToken *t = tk(&p, 0);
-                if (t->kind == MGLGLSL_TOK_IDENT && ops_at_off(&p, 1, "(")) {
-                    char *name = dup_current(&p);
-                    if (name) {
-                        record_struct_name(&p, name);
-                        subroutine_type_get(&p, name, 1);
-                        free(name);
-                    }
-                    break;
-                }
+            /* Formal parameters of the signature.  `f(void)` is an empty
+             * list, exactly as in a function declaration. */
+            if (ops_at(&p, "(")) {
                 advance(&p);
+                while (!ops_at(&p, ")") &&
+                       tk(&p, 0)->kind != MGLGLSL_TOK_END) {
+                    while (at_ident(&p, "const") || at_ident(&p, "in") ||
+                           at_ident(&p, "out") || at_ident(&p, "inout") ||
+                           at_ident(&p, "precise") || at_ident(&p, "lowp") ||
+                           at_ident(&p, "mediump") || at_ident(&p, "highp")) {
+                        advance(&p);
+                    }
+                    MGLTypeSpec *pt = parse_type_spec(&p);
+                    if (!pt) {
+                        break;
+                    }
+                    if (st) {
+                        MGLTypeSpec **grown = (MGLTypeSpec **)realloc(
+                            st->param_types,
+                            (st->param_count + 1) * sizeof(MGLTypeSpec *));
+                        if (!grown) {
+                            free_type_spec(pt);
+                            parse_error(&p, "out of memory");
+                            break;
+                        }
+                        st->param_types = grown;
+                        st->param_types[st->param_count++] = pt;
+                    } else {
+                        free_type_spec(pt);
+                    }
+                    if (!eat_punct(&p, ",")) {
+                        break;
+                    }
+                }
+                /* GLSL `T(void)` means no parameters. */
+                if (st && st->param_count == 1 && st->param_types[0] &&
+                    st->param_types[0]->base == MGL_AST_TYPE_VOID &&
+                    !st->param_types[0]->name) {
+                    free_type_spec(st->param_types[0]);
+                    st->param_count = 0;
+                }
+                /* Skip any trailing tokens up to ')'. */
+                while (!ops_at(&p, ")") &&
+                       tk(&p, 0)->kind != MGLGLSL_TOK_END) {
+                    advance(&p);
+                }
+                if (ops_at(&p, ")")) {
+                    advance(&p);
+                }
+            }
+            /* Fallback for malformed signatures: the identifier before '(' is
+             * the type.  Skipped when the signature already gave us the type,
+             * otherwise forward progress past ';' would land on the next
+             * function and register it as a subroutine type. */
+            if (!st) {
+                while (tk(&p, 0)->kind != MGLGLSL_TOK_END && !ops_at(&p, "(")) {
+                    const MGLGLSLToken *t = tk(&p, 0);
+                    if (t->kind == MGLGLSL_TOK_IDENT && ops_at_off(&p, 1, "(")) {
+                        char *name = dup_current(&p);
+                        if (name) {
+                            record_struct_name(&p, name);
+                            subroutine_type_get(&p, name, 1);
+                            free(name);
+                        }
+                        break;
+                    }
+                    advance(&p);
+                }
             }
             while (tk(&p, 0)->kind != MGLGLSL_TOK_END && !ops_at(&p, ";")) {
                 advance(&p);
@@ -3815,6 +4068,15 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
             if (!tu->error && !ops_at(&p, ";")) {
                 parse_error(&p, "unexpected token at line %u", tk_line(&p));
             }
+            /* The declaration that the pending subroutine prefix applied to
+             * never materialised.  Drop the pending state, otherwise the next
+             * unrelated declaration inherits it and is silently mis-tagged as
+             * a subroutine implementation/uniform. */
+            free(pending_subroutine_type);
+            pending_subroutine_type = NULL;
+            pending_subroutine_uniform = 0;
+            pending_subroutine_location = -1;
+            pending_subroutine_index = -1;
             advance(&p);
             continue;
         }
@@ -3823,20 +4085,96 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
                 subroutine_type_get(&p, pending_subroutine_type, 1);
             if (st && d && d->name) {
                 if (pending_subroutine_uniform) {
+                    /* An arrayed subroutine uniform occupies one location per
+                     * element (GL 4.6 §7.10), so a multi-dimensional array
+                     * contributes the product of its dimensions. */
+                    uint32_t elements = 1;
+                    for (uint32_t dim = 0; dim < d->array_count; dim++) {
+                        if (d->array_dims[dim] == 0) continue;
+                        if (elements > UINT32_MAX / d->array_dims[dim]) {
+                            elements = UINT32_MAX;
+                            break;
+                        }
+                        elements *= d->array_dims[dim];
+                    }
                     subroutine_type_add_name(st, &st->uniforms,
                                              &st->uniform_count,
                                              &st->uniform_cap, d->name);
-                    d->qualifiers |= MGL_AST_Q_SUBROUTINE_UNIFORM;
+                    /* Keep the per-uniform metadata arrays in step with
+                     * `uniforms` (add_name dedups, so re-fetch by name). */
+                    if (st->uniform_count > 0 &&
+                        st->uniforms[st->uniform_count - 1] &&
+                        strcmp(st->uniforms[st->uniform_count - 1],
+                               d->name) == 0) {
+                        uint32_t u = st->uniform_count - 1;
+                        uint32_t nc = u + 1;
+                        uint32_t *counts = (uint32_t *)realloc(
+                            st->uniform_counts, nc * sizeof(uint32_t));
+                        if (counts) st->uniform_counts = counts;
+                        int32_t *locs = (int32_t *)realloc(
+                            st->uniform_locations, nc * sizeof(int32_t));
+                        if (locs) st->uniform_locations = locs;
+                        if (counts && locs) {
+                            st->uniform_counts[u] = elements;
+                            st->uniform_locations[u] =
+                                pending_subroutine_location;
+                            /* Record the declared dimensions so the
+                             * reflection table can name each element
+                             * "u1[i][j]" rather than a flat index. */
+                            uint32_t *dims = NULL;
+                            if (d->array_count > 0) {
+                                dims = (uint32_t *)malloc(
+                                    d->array_count * sizeof(uint32_t));
+                                if (dims)
+                                    memcpy(dims, d->array_dims,
+                                           d->array_count * sizeof(uint32_t));
+                            }
+                            uint32_t **grown_dims =
+                                (uint32_t **)realloc(
+                                    st->uniform_dims, nc * sizeof(uint32_t *));
+                            if (grown_dims) st->uniform_dims = grown_dims;
+                            uint32_t *grown_counts = (uint32_t *)realloc(
+                                st->uniform_dim_counts,
+                                nc * sizeof(uint32_t));
+                            if (grown_counts)
+                                st->uniform_dim_counts = grown_counts;
+                            if (grown_dims && grown_counts) {
+                                st->uniform_dims[u] = dims;
+                                st->uniform_dim_counts[u] = d->array_count;
+                            } else {
+                                free(dims);
+                            }
+                        }
+                    }
+                    /* A subroutine uniform is a uniform as far as symbol
+                     * storage goes: without MGL_AST_Q_UNIFORM the frontend
+                     * drops it from the uniform pack and codegen cannot find
+                     * its index slot. */
+                    d->qualifiers |= MGL_AST_Q_SUBROUTINE_UNIFORM |
+                                     MGL_AST_Q_UNIFORM;
                 } else {
                     subroutine_type_add_name(st, &st->impls,
                                              &st->impl_count, &st->impl_cap,
                                              d->name);
+                    if (st->impl_count > 0 && st->impls[st->impl_count - 1] &&
+                        strcmp(st->impls[st->impl_count - 1], d->name) == 0) {
+                        int32_t *grown = (int32_t *)realloc(
+                            st->impl_indices,
+                            st->impl_count * sizeof(int32_t));
+                        if (grown) {
+                            st->impl_indices = grown;
+                            st->impl_indices[st->impl_count - 1] =
+                                pending_subroutine_index;
+                        }
+                    }
                     d->qualifiers |= MGL_AST_Q_SUBROUTINE_IMPL;
                 }
             }
             free(pending_subroutine_type);
             pending_subroutine_type = NULL;
             pending_subroutine_uniform = 0;
+            pending_subroutine_location = -1;
+            pending_subroutine_index = -1;
         }
         record_decl_constants(&p, d);
         MGLDecl **decls = (MGLDecl **)realloc(
@@ -3879,10 +4217,22 @@ void mglGLSLTranslationUnitDestroy(MGLTranslationUnit *tu)
         MGLSubroutineType *st = &tu->subroutine_types[i];
         free(st->name);
         free_type_spec(st->ret_type);
+        for (unsigned k = 0; k < st->param_count; k++)
+            free_type_spec(st->param_types[k]);
+        free(st->param_types);
         for (unsigned k = 0; k < st->impl_count; k++) free(st->impls[k]);
         free(st->impls);
+        free(st->impl_indices);
         for (unsigned k = 0; k < st->uniform_count; k++) free(st->uniforms[k]);
         free(st->uniforms);
+        free(st->uniform_counts);
+        if (st->uniform_dims) {
+            for (uint32_t u = 0; u < st->uniform_count; u++)
+                free(st->uniform_dims[u]);
+            free(st->uniform_dims);
+        }
+        free(st->uniform_dim_counts);
+        free(st->uniform_locations);
     }
     free(tu->subroutine_types);
     free(tu->version_profile);
@@ -3931,6 +4281,7 @@ static void free_expr(MGLExpr *e)
         free(e->u.call.args);
         free(e->u.call.name);
         free(e->u.call.array_ctor_dims);
+        free_expr(e->u.call.subroutine_index_expr);
         break;
     }
     case MGL_EXPR_INIT_LIST: {

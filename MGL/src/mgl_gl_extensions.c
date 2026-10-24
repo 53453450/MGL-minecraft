@@ -791,6 +791,69 @@ static void mgl_finish_query_result(GLMContext ctx, QueryObject *q)
 /* Check if a program interface token is valid per the GL spec.
  * Subroutine and transform-feedback interfaces are valid but not
  * backed by shader resource types, so they need separate handling. */
+/* Map a GL_*_SUBROUTINE / GL_*_SUBROUTINE_UNIFORM program interface to the
+ * stage slot used by pptr->subroutine_tables (the _*_SHADER constants), and
+ * report whether it addresses the uniform side.  Returns -1 for any other
+ * interface.  Used so glGetProgramResourceIndex/Location agree with
+ * glGetSubroutineIndex/glGetSubroutineUniformLocation (GL 4.6 §7.10). */
+static int mglSubroutineStageFromInterface(GLenum programInterface)
+{
+	switch (programInterface)
+	{
+		case GL_VERTEX_SUBROUTINE:
+		case GL_VERTEX_SUBROUTINE_UNIFORM:
+			return _VERTEX_SHADER;
+		case GL_TESS_CONTROL_SUBROUTINE:
+		case GL_TESS_CONTROL_SUBROUTINE_UNIFORM:
+			return _TESS_CONTROL_SHADER;
+		case GL_TESS_EVALUATION_SUBROUTINE:
+		case GL_TESS_EVALUATION_SUBROUTINE_UNIFORM:
+			return _TESS_EVALUATION_SHADER;
+		case GL_GEOMETRY_SUBROUTINE:
+		case GL_GEOMETRY_SUBROUTINE_UNIFORM:
+			return _GEOMETRY_SHADER;
+		case GL_FRAGMENT_SUBROUTINE:
+		case GL_FRAGMENT_SUBROUTINE_UNIFORM:
+			return _FRAGMENT_SHADER;
+		case GL_COMPUTE_SUBROUTINE:
+		case GL_COMPUTE_SUBROUTINE_UNIFORM:
+			return _COMPUTE_SHADER;
+		default:
+			return -1;
+	}
+}
+
+static int mglSubroutineIsUniformInterface(GLenum programInterface)
+{
+	switch (programInterface)
+	{
+		case GL_VERTEX_SUBROUTINE_UNIFORM:
+		case GL_TESS_CONTROL_SUBROUTINE_UNIFORM:
+		case GL_TESS_EVALUATION_SUBROUTINE_UNIFORM:
+		case GL_GEOMETRY_SUBROUTINE_UNIFORM:
+		case GL_FRAGMENT_SUBROUTINE_UNIFORM:
+		case GL_COMPUTE_SUBROUTINE_UNIFORM:
+			return 1;
+		default:
+			return 0;
+	}
+}
+
+/* Inverse of mglSubroutineStageFromInterface's stage slot. */
+static GLenum mglSubroutineStageToShaderType(int stage)
+{
+	switch (stage)
+	{
+		case _VERTEX_SHADER:          return GL_VERTEX_SHADER;
+		case _TESS_CONTROL_SHADER:    return GL_TESS_CONTROL_SHADER;
+		case _TESS_EVALUATION_SHADER: return GL_TESS_EVALUATION_SHADER;
+		case _GEOMETRY_SHADER:        return GL_GEOMETRY_SHADER;
+		case _FRAGMENT_SHADER:        return GL_FRAGMENT_SHADER;
+		case _COMPUTE_SHADER:         return GL_COMPUTE_SHADER;
+		default:                      return 0;
+	}
+}
+
 static GLboolean mgl_program_interface_is_valid(GLenum programInterface)
 {
 	switch (programInterface)
@@ -3813,30 +3876,159 @@ void mglGetActiveAtomicCounterBufferiv(GLMContext ctx, GLuint program, GLuint bu
 	}
 }
 
+/* Both helpers live further down the file next to glGetSubroutineIndex. */
+static int mglSubroutineStageIndex(GLenum type);
+
+/* GL 4.6 §7.10 introspection for subroutine types and uniforms.  The name at
+ * `index` is the implementation/type name the program-wide index space and the
+ * subroutine-uniform location space expose. */
 void mglGetActiveSubroutineName(GLMContext ctx, GLuint program, GLenum shadertype, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	// Subroutines - return empty string
-	(void)program; (void)shadertype; (void)index; (void)bufSize;
-	if (length) *length = 0;
-	if (name && bufSize > 0) name[0] = '\0';
+	int stage = mglSubroutineStageIndex(shadertype);
+	if (stage < 0) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
+		if (length) *length = 0;
+		if (name && bufSize > 0) name[0] = '\0';
+		return;
+	}
+	Program *pptr = findProgram(ctx, program);
+	if (!pptr) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		if (length) *length = 0;
+		if (name && bufSize > 0) name[0] = '\0';
+		return;
+	}
+	if (!pptr->link_success) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+		if (length) *length = 0;
+		if (name && bufSize > 0) name[0] = '\0';
+		return;
+	}
+	const MGLAIRSubroutineTable *table = &pptr->subroutine_tables[stage];
+	const char *found = NULL;
+	/* GL 4.6 §7.10: `index` enumerates the stage's active subroutines in
+	 * the order the implementation reports them (which is ascending
+	 * index), so it is an ordinal, not a subroutine index. */
+	{
+		uint32_t ordinal = 0;
+		for (uint32_t ti = 0; ti < table->type_count && !found; ti++) {
+			const MGLAIRSubroutineTypeInfo *t = &table->types[ti];
+			if (index < ordinal + t->impl_name_count) {
+				found = t->impl_names[index - ordinal];
+				break;
+			}
+			ordinal += t->impl_name_count;
+		}
+	}
+	if (!found) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		if (length) *length = 0;
+		if (name && bufSize > 0) name[0] = '\0';
+		return;
+	}
+	if (length) *length = (GLsizei)strlen(found);
+	if (name && bufSize > 0) {
+		snprintf(name, (size_t)bufSize, "%s", found);
+	}
 }
 
 void mglGetActiveSubroutineUniformName(GLMContext ctx, GLuint program, GLenum shadertype, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	// Subroutine uniforms - return empty string
-	(void)program; (void)shadertype; (void)index; (void)bufSize;
-	if (length) *length = 0;
-	if (name && bufSize > 0) name[0] = '\0';
+	int stage = mglSubroutineStageIndex(shadertype);
+	if (stage < 0) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
+		if (length) *length = 0;
+		if (name && bufSize > 0) name[0] = '\0';
+		return;
+	}
+	Program *pptr = findProgram(ctx, program);
+	if (!pptr) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		if (length) *length = 0;
+		if (name && bufSize > 0) name[0] = '\0';
+		return;
+	}
+	if (!pptr->link_success) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+		if (length) *length = 0;
+		if (name && bufSize > 0) name[0] = '\0';
+		return;
+	}
+	const MGLAIRSubroutineTable *table = &pptr->subroutine_tables[stage];
+	if (index >= table->uniform_count) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		if (length) *length = 0;
+		if (name && bufSize > 0) name[0] = '\0';
+		return;
+	}
+	const char *found = table->uniform_names[index];
+	if (length) *length = (GLsizei)strlen(found);
+	if (name && bufSize > 0) {
+		snprintf(name, (size_t)bufSize, "%s", found);
+	}
 }
 
 void mglGetActiveSubroutineUniformiv(GLMContext ctx, GLuint program, GLenum shadertype, GLuint index, GLenum pname, GLint *values)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	// Subroutine uniform parameters - return 0
-	(void)program; (void)shadertype; (void)index; (void)pname;
-	if (values) *values = 0;
+	int stage = mglSubroutineStageIndex(shadertype);
+	if (stage < 0) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
+		return;
+	}
+	Program *pptr = findProgram(ctx, program);
+	if (!pptr) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		return;
+	}
+	if (!pptr->link_success) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+		return;
+	}
+	if (!values) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		return;
+	}
+	const MGLAIRSubroutineTable *table = &pptr->subroutine_tables[stage];
+	if (index >= table->uniform_count) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		return;
+	}
+	uint32_t typeIdx = table->uniform_type[index];
+	if (typeIdx >= table->type_count) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		return;
+	}
+	const MGLAIRSubroutineTypeInfo *t = &table->types[typeIdx];
+	switch (pname) {
+		uint32_t compatible;
+		case GL_NUM_COMPATIBLE_SUBROUTINES:
+			/* Every named implementation of the uniform's type is
+			 * compatible.  A sparse layout(index = N) leaves unnamed gaps
+			 * in the type's slot range; those are not implementations. */
+			compatible = 0;
+			for (uint32_t i = 0; i < t->impl_count; i++)
+				if (t->impls[i][0]) compatible++;
+			*values = (GLint)compatible;
+			break;
+		case GL_COMPATIBLE_SUBROUTINES:
+			/* Writes the program-wide indices in ascending slot order. */
+			compatible = 0;
+			for (uint32_t i = 0; i < t->impl_count; i++) {
+				if (!t->impls[i][0]) continue;
+				values[compatible++] =
+				    (GLint)(table->type_impl_base[typeIdx] + i);
+			}
+			break;
+		case GL_UNIFORM_SIZE:
+			*values = 1;
+			break;
+		case GL_UNIFORM_NAME_LENGTH:
+			*values = (GLint)strlen(table->uniform_names[index]) + 1;
+			break;
+		default:
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
+			break;
+	}
 }
 
 void mglGetBooleani_v(GLMContext ctx, GLenum target, GLuint index, GLboolean *data)
@@ -4399,8 +4591,104 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 			return;
 		}
-		/* Valid interface (subroutine) with no shader resource backing —
-		 * return 0 for all valid pnames. */
+		/* Subroutine interfaces are backed by the stage's subroutine
+		 * table (GL 4.6 §7.10).  ACTIVE_RESOURCES counts the
+		 * implementations / subroutine uniforms, MAX_NAME_LENGTH the
+		 * longest name including its terminator, and
+		 * MAX_NUM_COMPATIBLE_SUBROUTINES the largest implementation count
+		 * of any one type. */
+		{
+			int sub_stage = mglSubroutineStageFromInterface(programInterface);
+			if (sub_stage >= 0)
+			{
+				const MGLAIRSubroutineTable *table =
+				    &pptr->subroutine_tables[sub_stage];
+				if (mglSubroutineIsUniformInterface(programInterface))
+				{
+					GLint max_len = 0;
+					switch (pname)
+					{
+						case GL_ACTIVE_RESOURCES: {
+							/* Distinct uniforms: an arrayed uniform is
+							 * one resource, not one per element. */
+							GLint distinct = 0;
+							for (uint32_t i = 0;
+							     i < table->uniform_count; i++)
+								if (table->uniform_element[i] == 0)
+									distinct++;
+							*params = distinct;
+							return;
+						}
+						case GL_MAX_NAME_LENGTH:
+							for (uint32_t i = 0;
+							     i < table->uniform_count; i++)
+							{
+								GLint n = (GLint)strlen(
+								    table->uniform_names[i]) + 1;
+								if (n > max_len) max_len = n;
+							}
+							*params = max_len;
+							return;
+						case GL_MAX_NUM_COMPATIBLE_SUBROUTINES: {
+							GLint most = 0;
+							for (uint32_t ti = 0;
+							     ti < table->type_count; ti++)
+							{
+								GLint n = 0;
+								const MGLAIRSubroutineTypeInfo *t =
+								    &table->types[ti];
+								for (uint32_t k = 0;
+								     k < t->impl_count; k++)
+									if (t->impls[k][0]) n++;
+								if (n > most) most = n;
+							}
+							*params = most;
+							return;
+						}
+						default:
+							mglDispatchError(ctx, __FUNCTION__,
+							                 GL_INVALID_ENUM);
+							return;
+					}
+				}
+				GLint max_len = 0;
+				switch (pname)
+				{
+					case GL_ACTIVE_RESOURCES: {
+						GLint n = 0;
+						for (uint32_t ti = 0;
+						     ti < table->type_count; ti++)
+							n += (GLint)table->types[ti]
+							          .impl_name_count;
+						*params = n;
+						return;
+					}
+					case GL_MAX_NAME_LENGTH:
+						for (uint32_t ti = 0;
+						     ti < table->type_count; ti++)
+						{
+							const MGLAIRSubroutineTypeInfo *t =
+							    &table->types[ti];
+							for (uint32_t k = 0;
+							     k < t->impl_count; k++)
+							{
+								if (!t->impls[k][0]) continue;
+								GLint n = (GLint)strlen(
+								    t->impls[k]) + 1;
+								if (n > max_len) max_len = n;
+							}
+						}
+						*params = max_len;
+						return;
+					default:
+						mglDispatchError(ctx, __FUNCTION__,
+						                 GL_INVALID_ENUM);
+						return;
+				}
+			}
+		}
+		/* Valid interface with no shader resource backing — return 0 for
+		 * all valid pnames. */
 		if (pname == GL_ACTIVE_RESOURCES ||
 		    pname == GL_MAX_NAME_LENGTH ||
 		    pname == GL_MAX_NUM_ACTIVE_VARIABLES ||
@@ -4705,6 +4993,23 @@ GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum progra
 	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
 	if (res_type_count <= 0)
 	{
+		/* GL 4.6 §7.10: the subroutine interfaces are queried through the
+		 * program resource API too, and must agree with
+		 * glGetSubroutineIndex / glGetSubroutineUniformLocation. */
+		int sub_stage = mglSubroutineStageFromInterface(programInterface);
+		if (sub_stage >= 0)
+		{
+			if (mglSubroutineIsUniformInterface(programInterface))
+			{
+				GLint loc = mglGetSubroutineUniformLocation(
+				    ctx, program, mglSubroutineStageToShaderType(sub_stage),
+				    name);
+				return (loc < 0) ? GL_INVALID_INDEX : (GLuint)loc;
+			}
+			return mglGetSubroutineIndex(
+			    ctx, program, mglSubroutineStageToShaderType(sub_stage),
+			    name);
+		}
 		/* GL_TRANSFORM_FEEDBACK_VARYING: look up by name in the varyings
 		 * array.  Built-in names (gl_NextBuffer, gl_SkipComponents*)
 		 * always return GL_INVALID_INDEX per the GL spec. */
@@ -4720,8 +5025,6 @@ GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum progra
 			}
 			return GL_INVALID_INDEX;
 		}
-		/* Valid interface (subroutine) with no shader resource backing —
-		 * return GL_INVALID_INDEX without error. */
 		if (mgl_program_interface_is_valid(programInterface))
 			return GL_INVALID_INDEX;
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
@@ -4788,6 +5091,20 @@ GLint  mglGetProgramResourceLocation(GLMContext ctx, GLuint program, GLenum prog
 	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
 	if (res_type_count <= 0)
 	{
+		/* Subroutine-uniform interfaces answer with the location the
+		 * subroutine query family reports (GL 4.6 §7.10); a subroutine
+		 * function interface has no location at all. */
+		int sub_stage = mglSubroutineStageFromInterface(programInterface);
+		if (sub_stage >= 0)
+		{
+			if (mglSubroutineIsUniformInterface(programInterface))
+			{
+				return mglGetSubroutineUniformLocation(
+				    ctx, program,
+				    mglSubroutineStageToShaderType(sub_stage), name);
+			}
+			return -1;
+		}
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return -1;
 	}
@@ -4895,6 +5212,57 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
 	if (res_type_count <= 0)
 	{
+		/* Subroutine interfaces enumerate the implementations /
+		 * subroutine uniforms of one stage (GL 4.6 §7.10). */
+		{
+			int sub_stage = mglSubroutineStageFromInterface(programInterface);
+			if (sub_stage >= 0)
+			{
+				const MGLAIRSubroutineTable *table =
+				    &pptr->subroutine_tables[sub_stage];
+				const char *resolved = NULL;
+				if (mglSubroutineIsUniformInterface(programInterface))
+				{
+					if (index < table->uniform_count)
+						resolved = table->uniform_names[index];
+				}
+				else
+				{
+					uint32_t ordinal = 0;
+					for (uint32_t ti = 0;
+					     ti < table->type_count && !resolved; ti++)
+					{
+						const MGLAIRSubroutineTypeInfo *t =
+						    &table->types[ti];
+						if (index < ordinal + t->impl_name_count) {
+							resolved = t->impl_names[index - ordinal];
+							break;
+						}
+						ordinal += t->impl_name_count;
+					}
+				}
+				if (!resolved)
+				{
+					mglDispatchError(ctx, __FUNCTION__,
+					                 GL_INVALID_VALUE);
+					return;
+				}
+				src = resolved;
+				src_len = (GLsizei)strlen(src);
+				copy_len = (src_len < bufSize) ? src_len : bufSize;
+				/* Per GL spec, length does NOT include the null
+				 * terminator. */
+				if (length)
+					*length = copy_len;
+				if (name && bufSize > 0)
+				{
+					if (copy_len > 0)
+						memcpy(name, src, (size_t)copy_len);
+					name[copy_len] = '\0';
+				}
+				return;
+			}
+		}
 		/* GL_TRANSFORM_FEEDBACK_VARYING: return the name stored at index. */
 		if (programInterface == GL_TRANSFORM_FEEDBACK_VARYING)
 		{
@@ -5027,6 +5395,8 @@ static GLenum mglValidateProgramResourceProp(GLenum prop, GLenum programInterfac
 		case GL_REFERENCED_BY_GEOMETRY_SHADER:
 		case GL_REFERENCED_BY_FRAGMENT_SHADER:
 		case GL_REFERENCED_BY_COMPUTE_SHADER:
+		case GL_NUM_COMPATIBLE_SUBROUTINES:
+		case GL_COMPATIBLE_SUBROUTINES:
 			return GL_NO_ERROR;
 		/* Valid only for GL_UNIFORM and GL_BUFFER_VARIABLE */
 		case GL_OFFSET:
@@ -5044,7 +5414,13 @@ static GLenum mglValidateProgramResourceProp(GLenum prop, GLenum programInterfac
 		case GL_LOCATION:
 			return (programInterface == GL_UNIFORM ||
 			        programInterface == GL_PROGRAM_INPUT ||
-			        programInterface == GL_PROGRAM_OUTPUT)
+			        programInterface == GL_PROGRAM_OUTPUT ||
+			        programInterface == GL_VERTEX_SUBROUTINE_UNIFORM ||
+			        programInterface == GL_TESS_CONTROL_SUBROUTINE_UNIFORM ||
+			        programInterface == GL_TESS_EVALUATION_SUBROUTINE_UNIFORM ||
+			        programInterface == GL_GEOMETRY_SUBROUTINE_UNIFORM ||
+			        programInterface == GL_FRAGMENT_SUBROUTINE_UNIFORM ||
+			        programInterface == GL_COMPUTE_SUBROUTINE_UNIFORM)
 				? GL_NO_ERROR : GL_INVALID_OPERATION;
 		case GL_LOCATION_INDEX:
 			return (programInterface == GL_PROGRAM_OUTPUT)
@@ -5112,6 +5488,142 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
 	if (res_type_count <= 0)
 	{
+		/* Subroutine interfaces (GL 4.6 §7.10).  A subroutine function
+		 * reports NAME_LENGTH only; a subroutine uniform additionally
+		 * reports its compatible implementations and location. */
+		{
+			int sub_stage = mglSubroutineStageFromInterface(programInterface);
+			if (sub_stage >= 0)
+			{
+				const MGLAIRSubroutineTable *table =
+				    &pptr->subroutine_tables[sub_stage];
+				GLboolean is_uniform =
+				    mglSubroutineIsUniformInterface(programInterface) ?
+				    GL_TRUE : GL_FALSE;
+				const char *resolved = NULL;
+				uint32_t type_idx = 0, impl_slot = 0;
+				if (is_uniform)
+				{
+					if (index >= table->uniform_count)
+					{
+						mglDispatchError(ctx, __FUNCTION__,
+						                 GL_INVALID_VALUE);
+						return;
+					}
+					resolved = table->uniform_names[index];
+					type_idx = table->uniform_type[index];
+				}
+				else
+				{
+					uint32_t ordinal = 0;
+					for (uint32_t ti = 0;
+					     ti < table->type_count && !resolved; ti++)
+					{
+						const MGLAIRSubroutineTypeInfo *t =
+						    &table->types[ti];
+						if (index < ordinal + t->impl_name_count)
+						{
+							resolved =
+							    t->impl_names[index - ordinal];
+							type_idx = ti;
+							impl_slot =
+							    t->impl_name_index[index - ordinal];
+							break;
+						}
+						ordinal += t->impl_name_count;
+					}
+					if (!resolved)
+					{
+						mglDispatchError(ctx, __FUNCTION__,
+						                 GL_INVALID_VALUE);
+						return;
+					}
+				}
+				for (GLsizei i = 0; i < propCount; i++)
+				{
+					GLenum err = mglValidateProgramResourceProp(
+					    props[i], programInterface);
+					GLboolean ok = (err == GL_NO_ERROR) ? GL_TRUE : GL_FALSE;
+					if (ok && !is_uniform &&
+					    props[i] != GL_NAME_LENGTH)
+						ok = GL_FALSE;
+					if (!ok)
+					{
+						mglDispatchError(ctx, __FUNCTION__,
+						                 err != GL_NO_ERROR
+						                     ? err
+						                     : GL_INVALID_OPERATION);
+						return;
+					}
+				}
+				GLsizei out_idx = 0;
+				for (GLsizei i = 0; i < propCount && out_idx < count; i++)
+				{
+					switch (props[i])
+					{
+						case GL_NAME_LENGTH:
+							params[out_idx++] =
+							    (GLint)strlen(resolved) + 1;
+							break;
+						case GL_ARRAY_SIZE:
+							params[out_idx++] = is_uniform
+							    ? (GLint)table->uniform_declared_elements[index]
+							    : 1;
+							break;
+						case GL_NUM_COMPATIBLE_SUBROUTINES: {
+							GLint n = 0;
+							if (type_idx < table->type_count) {
+								const MGLAIRSubroutineTypeInfo *t =
+								    &table->types[type_idx];
+								for (uint32_t k = 0;
+								     k < t->impl_count; k++)
+									if (t->impls[k][0]) n++;
+							}
+							params[out_idx++] = n;
+							break;
+						}
+						case GL_COMPATIBLE_SUBROUTINES: {
+							const MGLAIRSubroutineTypeInfo *t =
+							    type_idx < table->type_count
+							        ? &table->types[type_idx] : NULL;
+							if (t) {
+								for (uint32_t k = 0;
+								     k < t->impl_count &&
+								     out_idx < count; k++) {
+									if (!t->impls[k][0])
+										continue;
+									params[out_idx++] = (GLint)
+									    (table->type_impl_base[type_idx] + k);
+								}
+							}
+							break;
+						}
+						case GL_LOCATION:
+							/* The location the subroutine-uniform query
+							 * family reports, including an explicit
+							 * layout(location = N) offset by the array
+							 * element index. */
+							params[out_idx++] = is_uniform
+							    ? (GLint)mglSubroutineUniformLocationAt(
+							          table, index)
+							    : -1;
+							/* For an arrayed uniform this equals the
+							 * base location reported for "b", which is the
+							 * first element's slot. */
+							break;
+						case GL_LOCATION_INDEX:
+							params[out_idx++] = -1;
+							break;
+						default:
+							break;
+					}
+				}
+				(void)impl_slot;
+				if (length)
+					*length = out_idx;
+				return;
+			}
+		}
 		/* GL_TRANSFORM_FEEDBACK_VARYING: report properties from the
 		 * stored varyings array.  Built-in names (gl_NextBuffer,
 		 * gl_SkipComponents*) report GL_TYPE=GL_NONE and array_size
@@ -5643,10 +6155,157 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 		*length = out_idx;
 }
 
+/* No explicit layout(location = N): the linker assigns the lowest slot not
+ * already reserved, in declaration order.  Used by both
+ * glGetSubroutineUniformLocation and the ACTIVE_SUBROUTINE_UNIFORM_LOCATIONS
+ * span so the two can never disagree. */
+int mglSubroutineUniformImplicitLocation(const MGLAIRSubroutineTable *table,
+                                         uint32_t slot)
+{
+	/* Walk the slots in declaration order, handing each implicit uniform the
+	 * lowest location no earlier uniform (explicit or implicit) took. */
+	GLboolean used[MGL_AIR_MAX_SUBROUTINE_UNIFORMS * 4] = { GL_FALSE };
+	for (uint32_t j = 0; j < table->uniform_count; j++) {
+		GLint loc = table->uniform_location[j];
+		if (loc < 0) continue;
+		if ((size_t)loc < sizeof(used) / sizeof(used[0]))
+			used[loc] = GL_TRUE;
+	}
+	GLint assigned_for_slot = -1;
+	for (uint32_t j = 0; j < table->uniform_count; j++) {
+		GLint loc = table->uniform_location[j];
+		if (loc < 0) {
+			GLint free_slot = 0;
+			while ((size_t)free_slot < sizeof(used) / sizeof(used[0]) &&
+			       used[free_slot])
+				free_slot++;
+			if ((size_t)free_slot >= sizeof(used) / sizeof(used[0]))
+				return -1;
+			used[free_slot] = GL_TRUE;
+			loc = free_slot;
+		}
+		if (j == slot) {
+			assigned_for_slot = loc;
+			break;
+		}
+	}
+	return assigned_for_slot;
+}
+
+int mglSubroutineValidateTable(const MGLAIRSubroutineTable *table,
+                               uint32_t maxLocations)
+{
+	if (!table) return 1;
+	for (uint32_t i = 0; i < table->uniform_count; i++) {
+		int loc = table->uniform_location[i];
+		if (loc < 0) continue;      /* linker-assigned, cannot collide */
+		if ((uint32_t)loc >= maxLocations) return 0;
+		for (uint32_t j = 0; j < i; j++) {
+			if (table->uniform_location[j] == loc) return 0;
+		}
+	}
+	/* An arrayed uniform occupies consecutive locations, so its whole span
+	 * has to fit below the limit too. */
+	for (uint32_t i = 0; i < table->uniform_count; i++) {
+		int loc = table->uniform_location[i];
+		if (loc < 0) continue;
+		uint32_t size = table->uniform_declared_elements[i]
+		                    ? table->uniform_declared_elements[i] : 1u;
+		if ((uint32_t)loc + size > maxLocations) return 0;
+	}
+	return 1;
+}
+
+int mglSubroutineUniformLocationAt(const MGLAIRSubroutineTable *table,
+                                   uint32_t uniform)
+{
+	if (table->uniform_location[uniform] != MGL_SUBROUTINE_LOCATION_NONE)
+		return table->uniform_location[uniform];
+	return mglSubroutineUniformImplicitLocation(table, uniform);
+}
+
+int mglSubroutineUniformLocationSpan(const MGLAIRSubroutineTable *table)
+{
+	int span = 0;
+	for (uint32_t i = 0; i < table->uniform_count; i++) {
+		int loc = table->uniform_location[i];
+		if (loc < 0)
+			loc = mglSubroutineUniformImplicitLocation(table, i);
+		if (loc >= span) span = loc + 1;
+	}
+	return span;
+}
+
 void mglGetProgramStageiv(GLMContext ctx, GLuint program, GLenum shadertype, GLenum pname, GLint *values)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	int stage = mglSubroutineStageIndex(shadertype);
+	if (stage < 0) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
+		return;
+	}
+	Program *pptr = findProgram(ctx, program);
+	if (!pptr) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		return;
+	}
+	if (!pptr->link_success) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+		return;
+	}
+	if (!values) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		return;
+	}
+	const MGLAIRSubroutineTable *table = &pptr->subroutine_tables[stage];
+	switch (pname) {
+		case GL_ACTIVE_SUBROUTINES: {
+			/* GL 4.6 §7.10: the number of active subroutine functions,
+			 * i.e. named implementations -- not the size of the index
+			 * space, which may include gaps reserved by
+			 * layout(index = N). */
+			GLint n = 0;
+			for (uint32_t ti = 0; ti < table->type_count; ti++)
+				n += (GLint)table->types[ti].impl_name_count;
+			*values = n;
+			break;
+		}
+		case GL_ACTIVE_SUBROUTINE_UNIFORMS:
+			/* Distinct subroutine uniforms, not locations: an arrayed
+			 * uniform counts once however many elements it expands to. */
+			{
+				GLint distinct = 0;
+				for (uint32_t i = 0; i < table->uniform_count; i++)
+					if (table->uniform_element[i] == 0) distinct++;
+				*values = distinct;
+			}
+			break;
+		case GL_ACTIVE_SUBROUTINE_UNIFORM_LOCATIONS:
+			*values = mglSubroutineUniformLocationSpan(table);
+			break;
+		case GL_ACTIVE_SUBROUTINE_MAX_LENGTH:
+		case GL_ACTIVE_SUBROUTINE_UNIFORM_MAX_LENGTH: {
+			GLint maxLen = 0;
+			if (pname == GL_ACTIVE_SUBROUTINE_MAX_LENGTH) {
+				for (uint32_t ti = 0; ti < table->type_count; ti++) {
+					const MGLAIRSubroutineTypeInfo *t = &table->types[ti];
+					for (uint32_t i = 0; i < t->impl_count; i++) {
+						GLint n = (GLint)strlen(t->impls[i]) + 1;
+						if (n > maxLen) maxLen = n;
+					}
+				}
+			} else {
+				for (uint32_t i = 0; i < table->uniform_count; i++) {
+					GLint n = (GLint)strlen(table->uniform_names[i]) + 1;
+					if (n > maxLen) maxLen = n;
+				}
+			}
+			*values = maxLen;
+			break;
+		}
+		default:
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
+			break;
+	}
 }
 
 void mglGetQueryBufferObjecti64v(GLMContext ctx, GLuint id, GLuint buffer, GLenum pname, GLintptr offset)
@@ -5958,18 +6617,101 @@ void mglGetShaderPrecisionFormat(GLMContext ctx, GLenum shadertype, GLenum preci
 	}
 }
 
+/* GLSL 4.0 subroutine queries.  The link stored the frontend's tables on the
+ * program (see MGLAIRSubroutineTable); the queries only read them. */
+static int mglSubroutineStageIndex(GLenum type)
+{
+	switch (type) {
+		case GL_VERTEX_SHADER:          return _VERTEX_SHADER;
+		case GL_TESS_CONTROL_SHADER:    return _TESS_CONTROL_SHADER;
+		case GL_TESS_EVALUATION_SHADER: return _TESS_EVALUATION_SHADER;
+		case GL_GEOMETRY_SHADER:        return _GEOMETRY_SHADER;
+		case GL_FRAGMENT_SHADER:        return _FRAGMENT_SHADER;
+		case GL_COMPUTE_SHADER:         return _COMPUTE_SHADER;
+		default:                        return -1;
+	}
+}
+
 GLuint mglGetSubroutineIndex(GLMContext ctx, GLuint program, GLenum shadertype, const GLchar *name)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
-	return 0;
+	int stage = mglSubroutineStageIndex(shadertype);
+	if (stage < 0) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
+		return GL_INVALID_INDEX;
+	}
+	Program *pptr = findProgram(ctx, program);
+	if (!pptr) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		return GL_INVALID_INDEX;
+	}
+	if (!pptr->link_success) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+		return GL_INVALID_INDEX;
+	}
+	if (!name) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		return GL_INVALID_INDEX;
+	}
+	const MGLAIRSubroutineTable *table = &pptr->subroutine_tables[stage];
+	/* GL 4.6 §7.10: subroutine indices are unique within a stage across all
+	 * subroutine types, so the answer is the implementation's offset in the
+	 * program-wide index space, not its ordinal inside its own type. */
+	for (uint32_t ti = 0; ti < table->type_count; ti++) {
+		const MGLAIRSubroutineTypeInfo *t = &table->types[ti];
+		for (uint32_t i = 0; i < t->impl_name_count; i++) {
+			if (strcmp(t->impl_names[i], name) == 0) {
+				/* The absolute program-wide index, which honours an
+				 * explicit layout(index = N) (GLSL 4.60 §6.1.2). */
+				return (GLuint)t->impl_name_index[i];
+			}
+		}
+	}
+	return GL_INVALID_INDEX;
 }
 
 GLint mglGetSubroutineUniformLocation(GLMContext ctx, GLuint program, GLenum shadertype, const GLchar *name)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
-	return 0;
+	int stage = mglSubroutineStageIndex(shadertype);
+	if (stage < 0) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
+		return -1;
+	}
+	Program *pptr = findProgram(ctx, program);
+	if (!pptr) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		return -1;
+	}
+	if (!pptr->link_success) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+		return -1;
+	}
+	if (!name) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		return -1;
+	}
+	const MGLAIRSubroutineTable *table = &pptr->subroutine_tables[stage];
+	for (uint32_t i = 0; i < table->uniform_count; i++) {
+		/* An arrayed uniform is queryable both by "b" (GL 4.6 §7.10: the
+		 * name without a subscript maps to the first element) and by
+		 * "b[0]"-style element names. */
+		GLboolean match = (strcmp(table->uniform_names[i], name) == 0);
+		if (!match && table->uniform_element[i] == 0) {
+			size_t nl = strlen(name);
+			const char *nm = table->uniform_names[i];
+			size_t ml = strlen(nm);
+			if (ml > nl && nm[nl] == '[' &&
+			    strncmp(nm, name, nl) == 0)
+				match = GL_TRUE;
+		}
+		if (!match) continue;
+		/* GL 4.6 §7.10: an explicit layout(location = N) is the location the
+		 * whole subroutine-uniform family reports; without one the linker
+		 * assigns the lowest free slot (see the helper). */
+		if (table->uniform_location[i] != MGL_SUBROUTINE_LOCATION_NONE)
+			return table->uniform_location[i];
+		return mglSubroutineUniformImplicitLocation(table, i);
+	}
+	return -1;
 }
 void mglGetTransformFeedbackVarying(GLMContext ctx, GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLsizei *size, GLenum *type, GLchar *name)
 {
@@ -6115,8 +6857,41 @@ void mglGetTransformFeedbackiv(GLMContext ctx, GLuint xfb, GLenum pname, GLint *
 
 void mglGetUniformSubroutineuiv(GLMContext ctx, GLenum shadertype, GLint location, GLuint *params)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	int stage = mglSubroutineStageIndex(shadertype);
+	if (stage < 0) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
+		return;
+	}
+	Program *pptr = STATE(program);
+	if (!pptr && STATE(program_pipeline)) {
+		pptr = STATE(program_pipeline)->active_program;
+	}
+	if (!pptr) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+		return;
+	}
+	if (!pptr->link_success) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+		return;
+	}
+	if (!params) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		return;
+	}
+	const MGLAIRSubroutineTable *table = &pptr->subroutine_tables[stage];
+	if (location < 0 || (uint32_t)location >= table->uniform_count) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		return;
+	}
+	GLint loc = mglGetUniformLocation(ctx, pptr->name,
+	                                  table->uniform_names[location]);
+	if (loc < 0) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+		return;
+	}
+	GLuint value = 0;
+	mglGetUniformuiv(ctx, pptr->name, loc, &value);
+	*params = value;
 }
 
 void mglGetVertexAttribIiv(GLMContext ctx, GLuint index, GLenum pname, GLint *params)
@@ -7339,12 +8114,6 @@ void mglTransformFeedbackVaryings(GLMContext ctx, GLuint program, GLsizei count,
 		pptr->transform_feedback_varying_names[i][0] = '\0';
 	}
 	pptr->dirty_bits |= DIRTY_PROGRAM;
-}
-
-void mglUniformSubroutinesuiv(GLMContext ctx, GLenum shadertype, GLsizei count, const GLuint *indices)
-{
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
 }
 
 void mglValidateProgram(GLMContext ctx, GLuint program)
