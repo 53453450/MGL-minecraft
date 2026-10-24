@@ -548,7 +548,6 @@ static void mglBindNullBufferForTarget(GLMContext ctx, GLenum target, GLint inde
             bound_vao &&
             mglObjectPointerLooksPlausible(bound_vao) &&
             mglHashTableContainsData(&STATE(vao_table), bound_vao) &&
-            mglPointerRangeIsReadable(bound_vao, sizeof(*bound_vao)) &&
             bound_vao->magic == MGL_VAO_MAGIC;
 
         if (bound_vao && !vao_is_valid)
@@ -741,9 +740,9 @@ static inline void mglClearVAOBufferReferences(GLMContext ctx, Buffer *ptr, GLui
             continue;
 
         VertexArray *vao = (VertexArray *)table->keys[slot].data;
-        if (!mglObjectPointerLooksPlausible(vao) ||
-            !mglPointerRangeIsReadable(vao, sizeof(*vao)) ||
-            vao->magic != MGL_VAO_MAGIC)
+        /* Table entries are live objects; only the cheap user-space magic
+         * sanity check remains (no readability probe). */
+        if (vao->magic != MGL_VAO_MAGIC)
             continue;
 
         if (vao->element_array.buffer == ptr ||

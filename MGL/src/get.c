@@ -336,8 +336,8 @@ static GLuint mglCurrentVertexArrayBinding(GLMContext ctx)
     VertexArray *vao = ctx ? STATE(vao) : NULL;
     if (vao &&
         mglObjectPointerLooksPlausible(vao) &&
-        mglHashTableContainsData(&STATE(vao_table), vao) &&
-        mglPointerRangeIsReadable(vao, sizeof(*vao))) {
+        mglHashTableContainsData(&STATE(vao_table), vao)) {
+        /* Hash membership proves liveness; read the name directly. */
         /* Context-private attrib default reports as unbound (VAO 0). */
         if (ctx->core_attrib_default_vao != 0u &&
             vao->name == ctx->core_attrib_default_vao) {
@@ -788,8 +788,8 @@ static bool mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
             if (vao &&
                 mglObjectPointerLooksPlausible(vao) &&
                 mglHashTableContainsData(&STATE(vao_table), vao) &&
-                mglPointerRangeIsReadable(vao, sizeof(*vao)) &&
                 vao->element_array.buffer) {
+                /* Hash membership proves liveness; read the name directly. */
                 ebo = vao->element_array.buffer->name;
             } else if (STATE(default_vao_element_array_buffer)) {
                 ebo = STATE(default_vao_element_array_buffer)->name;

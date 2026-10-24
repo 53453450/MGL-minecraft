@@ -52,11 +52,9 @@ static GLboolean mglReadDispatchIndirectGroups(Buffer *buf,
         return GL_FALSE;
     }
 
+    /* The bounds check above already proves base+offset..+12 lies inside the
+     * CPU shadow whose size buffer_data carries — copy directly. */
     base = (const uint8_t *)(uintptr_t)buf->data.buffer_data;
-    if (!mglPointerRangeIsReadable(base + offset, 3u * sizeof(GLuint))) {
-        return GL_FALSE;
-    }
-
     memcpy(groups, base + offset, 3u * sizeof(GLuint));
     return GL_TRUE;
 }

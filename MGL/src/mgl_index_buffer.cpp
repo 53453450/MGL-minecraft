@@ -391,7 +391,10 @@ const uint8_t *mglReadableBufferBytes(Buffer *gl_buffer,
             : static_cast<size_t>(gl_buffer->size > 0 ? gl_buffer->size : 0);
         const uint8_t *bytes = static_cast<const uint8_t *>(
             reinterpret_cast<const void *>(static_cast<uintptr_t>(gl_buffer->data.buffer_data)));
-        if (bytes && count && mglPointerRangeIsReadable(bytes, count)) {
+        /* The CPU shadow pointer is maintained by gl_buffer->data itself;
+         * its size is carried alongside it, so no kernel readability probe
+         * is needed (callers bound-check offset/count against it). */
+        if (bytes && count) {
             if (out_count) *out_count = count;
             return bytes;
         }
