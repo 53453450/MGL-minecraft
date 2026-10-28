@@ -71,8 +71,18 @@
  */
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#ifdef MC_HARNESS_SYSTEM_GL
+/* Built against Apple's OpenGL (4.1 core) for A/B comparison.  That ceiling has
+ * no separate attribute formats and no glBindVertexBuffer, so the VAO path
+ * degrades to glVertexAttribPointer pinned to slot 0 and the draw stream loses
+ * its per-draw vertex rebinding.  The state/texture/uniform stream this
+ * comparison is about is unchanged. */
+#define GL_SILENCE_DEPRECATION 1
+#include <OpenGL/gl3.h>
+#else
 #define GL_GLEXT_PROTOTYPES 1
 #include <GL/glcorearb.h>
+#endif
 #include <dlfcn.h>
 #include <errno.h>
 #include <stdint.h>
@@ -131,6 +141,15 @@
  * HARNESS_NO_PRESENT=1 nothing drains the commit queue, so the frame count is
  * capped hard rather than letting the process grow without bound. */
 #define MAX_NO_PRESENT_FRAMES 300
+
+/* HARNESS_PER_DRAW_TEXTURE=1 uploads eight distinct solid textures instead of
+ * one atlas.  Every pass must then show its own colour: it is the A/B probe for
+ * whether a backend honours the texture bound at draw time. */
+static int g_per_draw_texture;
+/* HARNESS_STATIC_VERTEX=1 pins every draw to vertex slot 0, the way the 4.1
+ * build has to.  It isolates the per-draw glBindVertexBuffer churn from whatever
+ * else a backend does per draw. */
+static int g_static_vertex;
 
 /* ------------------------------------------------------------------ */
 /* Timing                                                              */
@@ -255,9 +274,13 @@ static PFNGLBUFFERDATAPROC p_glBufferData;
 static PFNGLDRAWARRAYSPROC p_glDrawArrays;
 static PFNGLDRAWELEMENTSPROC p_glDrawElements;
 static PFNGLBINDVERTEXARRAYPROC p_glBindVertexArray;
+#ifndef MC_HARNESS_SYSTEM_GL
 static PFNGLBINDVERTEXBUFFERPROC p_glBindVertexBuffer;
+#endif
+#ifndef MC_HARNESS_SYSTEM_GL
 static PFNGLVERTEXATTRIBFORMATPROC p_glVertexAttribFormat;
 static PFNGLVERTEXATTRIBBINDINGPROC p_glVertexAttribBinding;
+#endif
 static PFNGLENABLEVERTEXATTRIBARRAYPROC p_glEnableVertexAttribArray;
 static PFNGLGENVERTEXARRAYSPROC p_glGenVertexArrays;
 static PFNGLBINDTEXTUREPROC p_glBindTexture;
@@ -290,9 +313,11 @@ static int load_gl(void)
     LOAD_GL(p_glDrawArrays, PFNGLDRAWARRAYSPROC, "glDrawArrays");
     LOAD_GL(p_glDrawElements, PFNGLDRAWELEMENTSPROC, "glDrawElements");
     LOAD_GL(p_glBindVertexArray, PFNGLBINDVERTEXARRAYPROC, "glBindVertexArray");
+#ifndef MC_HARNESS_SYSTEM_GL
     LOAD_GL(p_glBindVertexBuffer, PFNGLBINDVERTEXBUFFERPROC, "glBindVertexBuffer");
     LOAD_GL(p_glVertexAttribFormat, PFNGLVERTEXATTRIBFORMATPROC, "glVertexAttribFormat");
     LOAD_GL(p_glVertexAttribBinding, PFNGLVERTEXATTRIBBINDINGPROC, "glVertexAttribBinding");
+#endif
     LOAD_GL(p_glEnableVertexAttribArray, PFNGLENABLEVERTEXATTRIBARRAYPROC, "glEnableVertexAttribArray");
     LOAD_GL(p_glGenVertexArrays, PFNGLGENVERTEXARRAYSPROC, "glGenVertexArrays");
     LOAD_GL(p_glBindTexture, PFNGLBINDTEXTUREPROC, "glBindTexture");
@@ -476,6 +501,15 @@ static void setup_format_vao(GLuint vao)
 {
     p_glBindVertexArray(vao);
     for (GLuint i = 0; i < 4; i++) p_glEnableVertexAttribArray(i);
+#ifdef MC_HARNESS_SYSTEM_GL
+    /* 4.1: attribute pointers replace per-attribute formats.  They are pinned
+     * to slot 0 (the bound array buffer) and every draw reuses that quad,
+     * because glBindVertexBuffer does not exist here. */
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 28, (const void *)0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 28, (const void *)12);
+    glVertexAttribPointer(2, 2, GL_SHORT, GL_FALSE, 28, (const void *)20);
+    glVertexAttribPointer(3, 4, GL_UNSIGNED_BYTE, GL_TRUE, 28, (const void *)24);
+#else
     p_glVertexAttribFormat(0, 3, GL_FLOAT, GL_FALSE, 0);
     p_glVertexAttribFormat(1, 2, GL_FLOAT, GL_FALSE, 12);
     /* Vanilla light (UV2) is Type.SHORT via Usage.UV — a non-integer SHORT
@@ -484,6 +518,7 @@ static void setup_format_vao(GLuint vao)
     p_glVertexAttribFormat(2, 2, GL_SHORT, GL_FALSE, 20);
     p_glVertexAttribFormat(3, 4, GL_UNSIGNED_BYTE, GL_TRUE, 24);
     for (GLuint i = 0; i < 4; i++) p_glVertexAttribBinding(i, 0);
+#endif
 }
 
 /* Slices one frame actually issues.  Single source of truth: the ring is sized
@@ -670,9 +705,12 @@ static void fill_ubo_image(unsigned char *image, size_t block, int slices)
         f[5] = sy;                                  /*                y */
         f[15] = 1.0f;                               /*                w */
         /* uColor: a vertical brightness gradient over the grid, so the frame
-         * reads as a scene and per-draw uniform delivery is visible. */
+         * reads as a scene and per-draw uniform delivery is visible.  The
+         * texture probe needs an unmodified texel instead. */
         {
-            float t = 0.62f + 0.38f * (float)row / (float)(rows > 1 ? rows - 1 : 1);
+            float t = g_per_draw_texture
+                    ? 1.0f
+                    : 0.62f + 0.38f * (float)row / (float)(rows > 1 ? rows - 1 : 1);
 
             f[16] = f[17] = f[18] = t;
         }
@@ -691,6 +729,8 @@ static int init_scene(HarnessScene *s, int width, int height)
     s->gui_draws = env_int("HARNESS_GUI_DRAWS", DEFAULT_GUI_DRAWS, 0, MAX_DRAWS);
     s->frames = env_int("HARNESS_FRAMES", 120, 1, MAX_FRAMES);
     s->emit_startup_location_queries = env_flag("HARNESS_STARTUP_QUERIES");
+    g_per_draw_texture = env_flag("HARNESS_PER_DRAW_TEXTURE");
+    g_static_vertex = env_flag("HARNESS_STATIC_VERTEX");
 
     /* POSITION_TEX_LIGHTMAP_COLOR: pos(3f) uv0(2f) uv2(2s) color(4ub-norm) */
     s->vertex_slice_bytes = 28;
@@ -698,9 +738,8 @@ static int init_scene(HarnessScene *s, int width, int height)
     s->width = width;
     s->height = height;
 
-    glGenVertexArrays(VAO_CACHE_SIZE, s->vaos);
-    for (int i = 0; i < VAO_CACHE_SIZE; i++) setup_format_vao(s->vaos[i]);
-
+    /* The arena is created first: the system-GL build configures attribute
+     * pointers against the buffer that is bound now. */
     glGenBuffers(1, &s->vertex_arena);
     p_glBindBuffer(GL_ARRAY_BUFFER, s->vertex_arena);
     {
@@ -709,6 +748,9 @@ static int init_scene(HarnessScene *s, int width, int height)
         build_quads(quads, 64);
         p_glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof quads, quads, GL_STATIC_DRAW);
     }
+
+    glGenVertexArrays(VAO_CACHE_SIZE, s->vaos);
+    for (int i = 0; i < VAO_CACHE_SIZE; i++) setup_format_vao(s->vaos[i]);
 
     glGenBuffers(VAO_CACHE_SIZE, s->ebos);
     for (int i = 0; i < VAO_CACHE_SIZE; i++) {
@@ -806,25 +848,42 @@ static int init_scene(HarnessScene *s, int width, int height)
         /* One atlas, uploaded into every texture name.  Terrain sections all
          * sample the same block atlas in the real game, and this keeps the
          * image correct no matter which unit's texture a backend ends up
-         * resolving — per-draw variety comes from uColor instead. */
+         * resolving — per-draw variety comes from uColor instead.
+         *
+         * That is not just convenience.  With HARNESS_PER_DRAW_TEXTURE=1 the
+         * eight names get distinct solids, and MGL then paints the whole frame
+         * with textures[7] (the last pass's) while the same binary built
+         * against Apple's GL (make mc-harness-system) shows each pass its own
+         * colour, entity included ((0,255,0) and (0,0,255) sampled together
+         * give (0,128,128)).  Pinning every draw to one vertex slot
+         * (HARNESS_STATIC_VERTEX=1) does not change it, so the per-draw
+         * glBindVertexBuffer churn is not the trigger. */
         static const uint8_t tile[8][3] = {
             {  96, 140,  64 }, { 148, 184, 100 }, {  72, 104, 160 }, { 168,  96,  72 },
             { 176, 160, 120 }, { 104,  88, 144 }, {  64, 120, 132 }, { 200, 208, 216 },
         };
+        /* Distinct solids for the per-draw-texture probe: one saturated colour
+         * per name, so the image says which texture each draw actually read. */
+        static const uint8_t probe[8][3] = {
+            { 255,   0,   0 }, {   0, 255,   0 }, {   0,   0, 255 }, { 255, 255,   0 },
+            {   0, 255, 255 }, { 255,   0, 255 }, { 128, 128, 128 }, {  64,  64,  64 },
+        };
         uint8_t px[64 * 64 * 4];
 
-        for (int y = 0; y < 64; y++) {
-            for (int x = 0; x < 64; x++) {
-                const uint8_t *c = tile[((y / 32) * 2 + (x / 32)) % 8];
-                uint8_t *d = px + ((size_t)y * 64 + x) * 4;
-
-                d[0] = c[0];
-                d[1] = c[1];
-                d[2] = c[2];
-                d[3] = 255;
-            }
-        }
         for (int i = 0; i < 8; i++) {
+            for (int y = 0; y < 64; y++) {
+                for (int x = 0; x < 64; x++) {
+                    const uint8_t *c = g_per_draw_texture
+                                     ? probe[i]
+                                     : tile[((y / 32) * 2 + (x / 32)) % 8];
+                    uint8_t *d = px + ((size_t)y * 64 + x) * 4;
+
+                    d[0] = c[0];
+                    d[1] = c[1];
+                    d[2] = c[2];
+                    d[3] = 255;
+                }
+            }
             p_glBindTexture(GL_TEXTURE_2D, s->textures[i]);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
             /* Minecraft always sets explicit filters on its textures; without
@@ -985,6 +1044,13 @@ static void bind_vertex_source(HarnessScene *s, int slot, int *last_slot)
      * per-section variation is the vertex-buffer binding (offset here, a
      * separate section GpuBuffer in the real game). */
     p_glBindVertexArray(s->vaos[0]);
+#if defined(MC_HARNESS_SYSTEM_GL)
+    (void)slot;
+    (void)last_slot;
+#else
+    /* Static vertex: every draw reads slot 0, so the buffer is bound once and
+     * never rebound — but it still has to be bound once. */
+    if (g_static_vertex) slot = 0;
     if (slot != *last_slot) {
         p_glBindVertexBuffer(0, s->vertex_arena,
                              (GLintptr)((size_t)(slot % 64) * QUAD_VERTS *
@@ -992,6 +1058,7 @@ static void bind_vertex_source(HarnessScene *s, int slot, int *last_slot)
                              s->vertex_slice_bytes);
         *last_slot = slot;
     }
+#endif
 }
 
 /* GlCommandEncoder.finishRenderPass + the present that reaches the window.
@@ -1509,7 +1576,12 @@ int main(int argc, char **argv)
                            (double)(r1.ru_stime.tv_usec - r0.ru_stime.tv_usec)) / 1e3;
 
     int per_frame = draws_per_frame(&scene);
-    printf("backend=mgl frames=%d warmup=%d draws_per_frame=%d visual=%d image=%dx%d\n",
+    printf("backend=%s frames=%d warmup=%d draws_per_frame=%d visual=%d image=%dx%d\n",
+#ifdef MC_HARNESS_SYSTEM_GL
+           "system-gl",
+#else
+           "mgl",
+#endif
            frames, warmup, per_frame, g_visual, scene.width, scene.height);
     printf("frame_wall_ms=%.3f frame_cpu_ms=%.3f frame_user_ms=%.3f frame_sys_ms=%.3f "
            "frame_pcpu_ms=%.3f p50_ms=%.3f p95_ms=%.3f pcpu_p50_ms=%.3f "

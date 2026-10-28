@@ -598,6 +598,24 @@ bench-system: benchmark/mgl_benchmark.c
 		-o $(build_dir)/mgl_benchmark_system
 	@echo "✅ System OpenGL benchmark built: $(build_dir)/mgl_benchmark_system"
 
+# Same harness built against Apple's own OpenGL (4.1 core) and the system GLFW,
+# for A/B: pixel output and timings of the identical call stream without MGL.
+# Apple's GL stops at 4.1, so the harness's separate-attribute-format VAO path
+# degrades to glVertexAttribPointer (see MC_HARNESS_SYSTEM_GL in the source).
+mc-harness-system: benchmark/mc_offline_harness.c
+	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(HOST_ARCH) \
+		-I$(SYSTEM_GLFW_PREFIX)/include \
+		-DMC_HARNESS_SYSTEM_GL \
+		-isysroot $(SDK_ROOT) \
+		benchmark/mc_offline_harness.c \
+		-L$(SYSTEM_GLFW_PREFIX)/lib -lglfw \
+		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
+		-framework IOKit -framework Foundation -framework QuartzCore \
+		-framework OpenGL \
+		-Wl,-rpath,$(SYSTEM_GLFW_PREFIX)/lib \
+		-o $(build_dir)/mc_offline_harness_system
+	@echo "✅ System-GL harness built: $(build_dir)/mc_offline_harness_system"
+
 # Draw-pipeline regression suite (Stage 0.1 of RENDERER_EVOLUTION_TODO.md).
 # Non-interactive, headless, FBO-offscreen. Covers array/element/instanced/
 # multidraw/indirect + FBO switch + XFB + conditional render. Produces TGA
