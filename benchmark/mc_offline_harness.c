@@ -1442,6 +1442,22 @@ int main(int argc, char **argv)
         goto done;
     }
 
+    /* Optional GPU trace.  Started before the scene is built so that every
+     * command buffer MGL creates — including one made lazily during init — is
+     * created inside the capture window; a window opened later captures the
+     * commits but not the render passes that were already encoded into a
+     * pre-existing buffer. */
+#ifndef MC_HARNESS_SYSTEM_GL
+    const char *trace_path = getenv("HARNESS_GPU_TRACE");
+    int trace_active = 0;
+    if (trace_path && trace_path[0]) {
+        trace_active = (mgl_harness_gpu_trace_begin(trace_path) == 0);
+        if (!trace_active) {
+            fprintf(stderr, "harness: continuing without a GPU trace\n");
+        }
+    }
+#endif
+
     /* init_scene memsets first, so a partial scene is still safe to destroy. */
     scene_ready = 1;
     if (init_scene(&scene, width, height) != 0) {
@@ -1466,18 +1482,6 @@ int main(int argc, char **argv)
     }
     glFinish();
 
-    /* Optional GPU trace: one measured frame, captured device-wide so every
-     * pass MGL opens lands in the same document.  Xcode opens the result. */
-#ifndef MC_HARNESS_SYSTEM_GL
-    const char *trace_path = getenv("HARNESS_GPU_TRACE");
-    int trace_active = 0;
-    if (trace_path && trace_path[0]) {
-        trace_active = (mgl_harness_gpu_trace_begin(trace_path) == 0);
-        if (!trace_active) {
-            fprintf(stderr, "harness: continuing without a GPU trace\n");
-        }
-    }
-#endif
 
     int frames = scene.frames;
     if (!g_present_per_frame && frames > MAX_NO_PRESENT_FRAMES) {
