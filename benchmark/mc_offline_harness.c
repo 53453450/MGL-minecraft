@@ -64,7 +64,10 @@
  *   HARNESS_SKIP_SAMPLER_BLOCK, HARNESS_NO_PRESENT, HARNESS_FINISH,
  *   HARNESS_CHECK_GL, HARNESS_SUBMIT_ONLY, HARNESS_VSYNC,
  *   HARNESS_WIDTH, HARNESS_HEIGHT, HARNESS_HOLD (seconds to keep presenting),
- *   HARNESS_DUMP (write the frame as a PPM)  (flags accept 0 = off)
+ *   HARNESS_DUMP (write the frame as a PPM),
+ *   HARNESS_GPU_TRACE=<x.gputrace> (one device-scope Metal capture of the first
+ *     measured frame; needs MTL_CAPTURE_ENABLED=1 in the environment)
+ *   (flags accept 0 = off)
  *
  * Scratch/optimization tool: linked against build/libmgl.dylib like
  * mgl_benchmark (see Makefile target mc-harness).
@@ -91,6 +94,10 @@
 #include <string.h>
 #include <time.h>
 #include <sys/resource.h>
+
+#ifndef MC_HARNESS_SYSTEM_GL
+#include "mtl_capture.h"   /* optional Metal GPU trace (HARNESS_GPU_TRACE=<path>) */
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Scenario calibration                                                */
@@ -1459,6 +1466,19 @@ int main(int argc, char **argv)
     }
     glFinish();
 
+    /* Optional GPU trace: one measured frame, captured device-wide so every
+     * pass MGL opens lands in the same document.  Xcode opens the result. */
+#ifndef MC_HARNESS_SYSTEM_GL
+    const char *trace_path = getenv("HARNESS_GPU_TRACE");
+    int trace_active = 0;
+    if (trace_path && trace_path[0]) {
+        trace_active = (mgl_harness_gpu_trace_begin(trace_path) == 0);
+        if (!trace_active) {
+            fprintf(stderr, "harness: continuing without a GPU trace\n");
+        }
+    }
+#endif
+
     int frames = scene.frames;
     if (!g_present_per_frame && frames > MAX_NO_PRESENT_FRAMES) {
         fprintf(stderr,
@@ -1525,6 +1545,12 @@ int main(int argc, char **argv)
                      (double)(rf1.ru_stime.tv_usec - rf0.ru_stime.tv_usec)) / 1e3;
 
         measured++;
+#ifndef MC_HARNESS_SYSTEM_GL
+        if (trace_active && measured == 1) {
+            mgl_harness_gpu_trace_end();
+            printf("gpu_trace=%s\n", trace_path);
+        }
+#endif
         /* An exhausted ring means the frame no longer matches the model, so
          * further frames measure a different (shorter) stream.  Stop. */
         if (scene.ubo_overflow) break;
@@ -1669,6 +1695,9 @@ int main(int argc, char **argv)
     }
 
 done:
+#ifndef MC_HARNESS_SYSTEM_GL
+    mgl_harness_gpu_trace_end();   /* idempotent: no-op when not capturing */
+#endif
     if (scene_ready) destroy_scene(&scene);
     if (win) glfwDestroyWindow(win);
     g_window = NULL;

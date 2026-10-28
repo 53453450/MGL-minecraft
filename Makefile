@@ -563,7 +563,9 @@ bench: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 #        HARNESS_FINISH (time the GPU drain), HARNESS_CHECK_GL (count GL errors),
 #        HARNESS_SUBMIT_ONLY (hidden window, no payload, no blit),
 #        HARNESS_VSYNC, HARNESS_WIDTH/HEIGHT, HARNESS_HOLD (keep presenting for
-#        N seconds), HARNESS_DUMP (write the frame as a PPM)
+#        N seconds), HARNESS_DUMP (write the frame as a PPM),
+#        HARNESS_GPU_TRACE=<path.gputrace> (capture one frame device-wide; needs
+#        MTL_CAPTURE_ENABLED=1)
 mc-harness: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(HOST_ARCH) \
 		-I./external/glfw/include \
@@ -571,6 +573,7 @@ mc-harness: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 		-DMGL_GL_CORE \
 		-isysroot $(SDK_ROOT) \
 		benchmark/mc_offline_harness.c \
+		benchmark/mtl_capture.m -fobjc-arc \
 		-L$(build_dir) -lmgl -lglfw \
 		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
 		-framework IOKit -framework Foundation -framework QuartzCore \
