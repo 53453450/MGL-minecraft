@@ -1242,20 +1242,19 @@ static void report_target_content(HarnessScene *s)
     printf("frame_pixels=%zu painted=%.1f%% distinct_colors=%d image=%dx%d\n",
            pixels, 100.0 * (double)painted / (double)pixels, distinct, s->width, s->height);
 
-    /* Same question for the drawable: blit once more and read the window's back
-     * buffer, so "the window shows the frame" is measured, not assumed. */
+    /* The drawable cannot be verified by reading it back: MGL answers
+     * glReadPixels on the default framebuffer with black, so a comparison would
+     * report 100% mismatch on a frame that is actually on screen.  What is
+     * checkable is the geometry the blit depends on — the target must be the
+     * whole framebuffer, not the window size (on a Retina display the second is
+     * half the first in each axis, which blits the frame into one quarter). */
     {
-        size_t in_window = 0;
+        int fbw = 0, fbh = 0;
 
-        present_frame(s);
-        glReadPixels(0, 0, s->width, s->height, GL_RGBA, GL_UNSIGNED_BYTE, px);
-        for (size_t i = 0; i < pixels; i++) {
-            const unsigned char *p = px + i * 4;
-
-            if (abs((int)p[0] - 128) > 8 || abs((int)p[1] - 178) > 8 || abs((int)p[2] - 255) > 8)
-                in_window++;
-        }
-        printf("drawable painted=%.1f%%\n", 100.0 * (double)in_window / (double)pixels);
+        glfwGetFramebufferSize(g_window, &fbw, &fbh);
+        printf("present target=%dx%d framebuffer=%dx%d%s\n",
+               s->width, s->height, fbw, fbh,
+               (fbw == s->width && fbh == s->height) ? "" : " MISMATCH");
     }
 
     /* HARNESS_DUMP=<path.ppm>: leave the frame on disk so the image can be
@@ -1270,7 +1269,11 @@ static void report_target_content(HarnessScene *s)
                 fprintf(stderr, "harness: cannot write %s: %s\n", dump, strerror(errno));
             } else {
                 fprintf(f, "P6\n%d %d\n255\n", s->width, s->height);
-                for (size_t i = 0; i < pixels; i++) fwrite(px + i * 4, 1, 3, f);
+                /* glReadPixels is bottom-up; write top-down so the file matches
+                 * the window instead of mirroring it. */
+                for (int y = s->height - 1; y >= 0; y--)
+                    for (int x = 0; x < s->width; x++)
+                        fwrite(px + ((size_t)y * s->width + x) * 4, 1, 3, f);
                 fclose(f);
                 printf("dump=%s\n", dump);
             }
@@ -1345,6 +1348,21 @@ int main(int argc, char **argv)
     /* Uncapped by default: a 60 Hz vsync would hide the cost this tool
      * measures.  HARNESS_VSYNC=1 gives a smooth window instead. */
     glfwSwapInterval(env_flag("HARNESS_VSYNC") ? 1 : 0);
+
+    /* HARNESS_WIDTH/HEIGHT size the window; the target is the *framebuffer*,
+     * which is twice that on a Retina display.  Mixing the two blits the frame
+     * into one quarter of the drawable. */
+    {
+        int fbw = width, fbh = height;
+
+        glfwGetFramebufferSize(win, &fbw, &fbh);
+        if (fbw <= 0 || fbh <= 0) {
+            fbw = width;
+            fbh = height;
+        }
+        width = fbw;
+        height = fbh;
+    }
     if (load_gl() != 0) {
         rc = 1;
         goto done;
