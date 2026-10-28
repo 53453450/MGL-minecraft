@@ -1545,12 +1545,6 @@ int main(int argc, char **argv)
                      (double)(rf1.ru_stime.tv_usec - rf0.ru_stime.tv_usec)) / 1e3;
 
         measured++;
-#ifndef MC_HARNESS_SYSTEM_GL
-        if (trace_active && measured == 1) {
-            mgl_harness_gpu_trace_end();
-            printf("gpu_trace=%s\n", trace_path);
-        }
-#endif
         /* An exhausted ring means the frame no longer matches the model, so
          * further frames measure a different (shorter) stream.  Stop. */
         if (scene.ubo_overflow) break;
@@ -1559,6 +1553,14 @@ int main(int argc, char **argv)
             if (glfwWindowShouldClose(g_window)) break;
         }
     }
+
+#ifndef MC_HARNESS_SYSTEM_GL
+    if (trace_active) {
+        glFinish();                 /* commits must land inside the capture window */
+        mgl_harness_gpu_trace_end();
+        printf("gpu_trace=%s frames=%d\n", trace_path, measured);
+    }
+#endif
 
     if (measured > 0 && measured < frames) {
         fprintf(stderr, "harness: stopped after %d of %d frames (%s)\n", measured, frames,
