@@ -22,12 +22,19 @@
  *    blend + blendFuncSeparate, polygon mode, depth/color mask.
  *  - createRenderPass per pass: glBindFramebuffer, optional clear, viewport.
  *
- * What is modelled is the *shape* of the stream (binding counts, slice
- * arithmetic, state churn), not fragment work: vertex/index data and the UBO
- * payload are never uploaded, so the geometry collapses and the GPU cost is
- * ~0.  The numbers are therefore MGL-side submit cost, which is what this
- * tool is for; HARNESS_FINISH turns the GPU drain into its own measurement
- * instead of silently folding it into (or out of) the wall time.
+ * Visual mode (default) renders for real: a visible window, one unit quad per
+ * draw placed on a grid by the per-draw UBO slice, an atlas in every texture
+ * unit, and all six passes accumulating on one target that is blitted to the
+ * drawable.  The frame therefore reaches the screen and can be inspected, and
+ * frame_pixels / drawable painted report how much of it was actually drawn
+ * (a readback at the end, after the timings, so it costs nothing).
+ *
+ * HARNESS_SUBMIT_ONLY=1 restores the older shape — hidden window, one target
+ * per pass, empty payload, no blit — which rasterises nothing and keeps the
+ * timing comparable with pre-visual runs.  Either way the measured stream is
+ * the same call shape (binding counts, slice arithmetic, state churn); visual
+ * mode adds ~3 ms/frame of GPU rasterisation to the wall number, not to the
+ * CPU one.  HARNESS_FINISH turns the GPU drain into its own measurement.
  *
  * Invariants enforced at init (the harness fails fast instead of quietly
  * measuring a broken frame):
@@ -55,7 +62,9 @@
  *   HARNESS_ENTITY_DRAWS, HARNESS_GUI_DRAWS,
  *   HARNESS_STARTUP_QUERIES, HARNESS_SKIP_LOD_PARAMS,
  *   HARNESS_SKIP_SAMPLER_BLOCK, HARNESS_NO_PRESENT, HARNESS_FINISH,
- *   HARNESS_CHECK_GL  (all flags accept 0 = off)
+ *   HARNESS_CHECK_GL, HARNESS_SUBMIT_ONLY, HARNESS_VSYNC,
+ *   HARNESS_WIDTH, HARNESS_HEIGHT, HARNESS_HOLD (seconds to keep presenting),
+ *   HARNESS_DUMP (write the frame as a PPM)  (flags accept 0 = off)
  *
  * Scratch/optimization tool: linked against build/libmgl.dylib like
  * mgl_benchmark (see Makefile target mc-harness).
@@ -66,6 +75,7 @@
 #include <GL/glcorearb.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -106,6 +116,16 @@
 #define MAX_FRAMES 1000000
 #define MAX_WARMUP 100000
 #define MAX_DRAWS  100000
+
+/* Visual mode (default): a visible window, real vertex/index/texture/UBO data,
+ * and every pass accumulating on pass 0's target — the way the game's main pass
+ * renders — then blitted to the window.  HARNESS_SUBMIT_ONLY=1 restores the old
+ * shape (hidden window, one target per pass, empty payload, no blit) for timing
+ * runs that should stay comparable with pre-visual numbers. */
+#define QUAD_VERTS 6                /* two triangles per draw */
+#define GRID_COLS 40                /* quads per row when the frame is tiled */
+#define DEFAULT_WIDTH 960
+#define DEFAULT_HEIGHT 540
 
 /* Present every frame keeps MGL's in-flight work bounded at one frame.  With
  * HARNESS_NO_PRESENT=1 nothing drains the commit queue, so the frame count is
@@ -244,6 +264,7 @@ static PFNGLBINDTEXTUREPROC p_glBindTexture;
 static PFNGLACTIVETEXTUREPROC p_glActiveTexture;
 static PFNGLBINDSAMPLERPROC p_glBindSampler;
 static PFNGLBINDFRAMEBUFFERPROC p_glBindFramebuffer;
+static PFNGLBLITFRAMEBUFFERPROC p_glBlitFramebuffer;
 static PFNGLVIEWPORTPROC p_glViewport;
 static PFNGLUSEPROGRAMPROC p_glUseProgram;
 static PFNGLGETUNIFORMLOCATIONPROC p_glGetUniformLocation;
@@ -278,6 +299,7 @@ static int load_gl(void)
     LOAD_GL(p_glActiveTexture, PFNGLACTIVETEXTUREPROC, "glActiveTexture");
     LOAD_GL(p_glBindSampler, PFNGLBINDSAMPLERPROC, "glBindSampler");
     LOAD_GL(p_glBindFramebuffer, PFNGLBINDFRAMEBUFFERPROC, "glBindFramebuffer");
+    LOAD_GL(p_glBlitFramebuffer, PFNGLBLITFRAMEBUFFERPROC, "glBlitFramebuffer");
     LOAD_GL(p_glViewport, PFNGLVIEWPORTPROC, "glViewport");
     LOAD_GL(p_glUseProgram, PFNGLUSEPROGRAMPROC, "glUseProgram");
     LOAD_GL(p_glGetUniformLocation, PFNGLGETUNIFORMLOCATIONPROC, "glGetUniformLocation");
@@ -324,6 +346,7 @@ typedef struct {
     /* geometry shape */
     GLsizei vertex_slice_bytes;
     GLsizei index_count;
+    int width, height;          /* drawable size; FBO attachments match it */
 
     /* per-draw UBO allocator (DynamicUniformStorage) */
     size_t ubo_block;           /* rounded TRANSFORM_UBO_SIZE */
@@ -361,17 +384,19 @@ static const char *kTerrainFS =
     "#version 330 core\n"
     "in vec2 vUV;\n"
     "in vec2 vLight;\n"
+"layout(std140) uniform DynamicTransforms { mat4 uModelView; vec4 uColor; vec3 uOffset; mat4 uTexMat; };\n"
     "uniform sampler2D Sampler0;\n"
     "out vec4 C;\n"
-    "void main(){ C = texture(Sampler0, vUV) * vec4(vLight, 1.0, 1.0); }\n";
+    "void main(){ C = texture(Sampler0, vUV) * uColor * vec4(vLight * (1.0 / 255.0), 1.0, 1.0); }\n";
 static const char *kEntityFS =
     "#version 330 core\n"
     "in vec2 vUV;\n"
     "in vec2 vLight;\n"
+"layout(std140) uniform DynamicTransforms { mat4 uModelView; vec4 uColor; vec3 uOffset; mat4 uTexMat; };\n"
     "uniform sampler2D Sampler0;\n"
     "uniform sampler2D Sampler1;\n"
     "out vec4 C;\n"
-    "void main(){ C = texture(Sampler0, vUV) * texture(Sampler1, vUV) * vec4(vLight, 1.0, 1.0); }\n";
+    "void main(){ C = (texture(Sampler0, vUV) * 0.5 + texture(Sampler1, vUV) * 0.5) * uColor * vec4(vLight * (1.0 / 255.0), 1.0, 1.0); }\n";
 static const char *kGuiVS =
     "#version 330 core\n"
     "layout(location=0) in vec3 aPos;\n"
@@ -379,7 +404,7 @@ static const char *kGuiVS =
     "layout(std140) uniform DynamicTransforms { mat4 uModelView; vec4 uColor; vec3 uOffset; mat4 uTexMat; };\n"
     "uniform sampler2D Sampler0;\n"
     "out vec2 vUV;\n"
-    "void main(){ vUV = aUV; gl_Position = uModelView * vec4(aPos, 1.0); }\n";
+    "void main(){ vUV = aUV; gl_Position = uModelView * vec4(aPos + uOffset, 1.0); }\n";
 /* GUI gets its own FS: kTerrainFS reads the vLight varying that only
  * kTerrainVS writes, and an unwritten FS input is an undefined value. */
 static const char *kGuiFS =
@@ -587,7 +612,78 @@ static int bind_sampler_units(HarnessScene *s)
     return 0;
 }
 
-static int init_scene(HarnessScene *s)
+/* ------------------------------------------------------------------ */
+/* Drawable payload                                                    */
+/* ------------------------------------------------------------------ */
+
+/* POSITION_TEX_LIGHTMAP_COLOR, 28 bytes: pos(3f) uv0(2f) uv2(2s) color(4ub). */
+typedef struct {
+    float    pos[3];
+    float    uv[2];
+    int16_t  light[2];
+    uint8_t  color[4];
+} QuadVertex;
+
+/* One unit quad per vertex slot.  Per-draw placement comes from the UBO offset
+ * (each draw owns a slice), so every draw can share these six vertices and the
+ * per-draw glBindVertexBuffer stride/offset model stays exactly as before. */
+static void build_quads(QuadVertex *v, int slots)
+{
+    static const float corner[QUAD_VERTS][2] = {
+        { -0.5f, -0.5f }, { 0.5f, -0.5f }, { 0.5f, 0.5f },
+        { -0.5f, -0.5f }, { 0.5f, 0.5f },  { -0.5f, 0.5f },
+    };
+
+    for (int s = 0; s < slots; s++) {
+        for (int i = 0; i < QUAD_VERTS; i++) {
+            QuadVertex *q = &v[s * QUAD_VERTS + i];
+            memset(q, 0, sizeof(*q));
+            q->pos[0] = corner[i][0];
+            q->pos[1] = corner[i][1];
+            q->uv[0] = corner[i][0] + 0.5f;
+            q->uv[1] = corner[i][1] + 0.5f;
+            q->light[0] = 255;      /* shader scales by 1/255, so: full light */
+            q->light[1] = 255;
+            q->color[0] = q->color[1] = q->color[2] = q->color[3] = 255;
+        }
+    }
+}
+
+
+/* std140 DynamicTransforms for one slice: an orthographic projection over the
+ * grid, a per-draw offset (the quad's cell), and an identity texture matrix.
+ * Written once per slice and uploaded as the ring's initial content — vanilla
+ * memcpy's these into a persistent map without a GL call, so doing it at init
+ * keeps the per-draw call stream the same shape. */
+static void fill_ubo_image(unsigned char *image, size_t block, int slices)
+{
+    const int rows = (slices + GRID_COLS - 1) / GRID_COLS;
+    const float sx = 2.0f / (float)GRID_COLS;
+    const float sy = 2.0f / (float)rows;
+
+    memset(image, 0, block * (size_t)slices);
+    for (int k = 0; k < slices; k++) {
+        float *f = (float *)(void *)(image + (size_t)k * block);
+        int col = k % GRID_COLS, row = k / GRID_COLS;
+
+        f[0] = sx;                                  /* uModelView: scale x */
+        f[5] = sy;                                  /*                y */
+        f[15] = 1.0f;                               /*                w */
+        /* uColor: a vertical brightness gradient over the grid, so the frame
+         * reads as a scene and per-draw uniform delivery is visible. */
+        {
+            float t = 0.62f + 0.38f * (float)row / (float)(rows > 1 ? rows - 1 : 1);
+
+            f[16] = f[17] = f[18] = t;
+        }
+        f[19] = 1.0f;
+        f[20] = (float)col + 0.5f - 0.5f * (float)GRID_COLS;
+        f[21] = (float)row + 0.5f - 0.5f * (float)rows;
+        f[24] = f[29] = f[34] = f[39] = 1.0f;       /* uTexMat = identity */
+    }
+}
+
+static int init_scene(HarnessScene *s, int width, int height)
 {
     memset(s, 0, sizeof(*s));
     s->terrain_draws = env_int("HARNESS_TERRAIN_DRAWS", DEFAULT_TERRAIN_DRAWS, 0, MAX_DRAWS);
@@ -598,21 +694,30 @@ static int init_scene(HarnessScene *s)
 
     /* POSITION_TEX_LIGHTMAP_COLOR: pos(3f) uv0(2f) uv2(2s) color(4ub-norm) */
     s->vertex_slice_bytes = 28;
-    s->index_count = 6;
+    s->index_count = QUAD_VERTS;
+    s->width = width;
+    s->height = height;
 
     glGenVertexArrays(VAO_CACHE_SIZE, s->vaos);
     for (int i = 0; i < VAO_CACHE_SIZE; i++) setup_format_vao(s->vaos[i]);
 
     glGenBuffers(1, &s->vertex_arena);
     p_glBindBuffer(GL_ARRAY_BUFFER, s->vertex_arena);
-    p_glBufferData(GL_ARRAY_BUFFER,
-                   (GLsizeiptr)s->vertex_slice_bytes * 64 * 1024, NULL, GL_STATIC_DRAW);
+    {
+        QuadVertex quads[64 * QUAD_VERTS];
+
+        build_quads(quads, 64);
+        p_glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)sizeof quads, quads, GL_STATIC_DRAW);
+    }
 
     glGenBuffers(VAO_CACHE_SIZE, s->ebos);
     for (int i = 0; i < VAO_CACHE_SIZE; i++) {
+        /* build_quads writes six standalone vertices (two triangles, not a
+         * shared four-vertex strip), so the indices are just 0..5. */
+        static const GLuint indices[QUAD_VERTS] = { 0, 1, 2, 3, 4, 5 };
+
         p_glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s->ebos[i]);
-        p_glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-                       (GLsizeiptr)s->index_count * sizeof(GLuint), NULL, GL_STATIC_DRAW);
+        p_glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)sizeof indices, indices, GL_STATIC_DRAW);
     }
 
     /* DynamicUniforms ring: persistent storage, TRANSFORM_UBO_SIZE blocks
@@ -629,9 +734,20 @@ static int init_scene(HarnessScene *s)
         return 1;
     }
     glGenBuffers(UBO_RING_BUFFERS, s->dynamic_ubo);
-    for (int i = 0; i < UBO_RING_BUFFERS; i++) {
-        p_glBindBuffer(GL_UNIFORM_BUFFER, s->dynamic_ubo[i]);
-        p_glBufferData(GL_UNIFORM_BUFFER, (GLsizeiptr)s->ubo_ring_bytes, NULL, GL_DYNAMIC_DRAW);
+    {
+        unsigned char *image = calloc(1, s->ubo_ring_bytes);
+
+        if (!image) {
+            fprintf(stderr, "harness: out of memory for the %zu-byte UBO image\n",
+                    s->ubo_ring_bytes);
+            return 1;
+        }
+        fill_ubo_image(image, s->ubo_block, s->ubo_ring_slices);
+        for (int i = 0; i < UBO_RING_BUFFERS; i++) {
+            p_glBindBuffer(GL_UNIFORM_BUFFER, s->dynamic_ubo[i]);
+            p_glBufferData(GL_UNIFORM_BUFFER, (GLsizeiptr)s->ubo_ring_bytes, image, GL_DYNAMIC_DRAW);
+        }
+        free(image);
     }
 
     /* Render-pass targets: every pass FBO gets color+depth like the real
@@ -641,9 +757,10 @@ static int init_scene(HarnessScene *s)
     glGenTextures(PASS_COUNT, s->fbo_depth);
     for (int i = 0; i < PASS_COUNT; i++) {
         p_glBindTexture(GL_TEXTURE_2D, s->fbo_color[i]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 640, 480, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, s->width, s->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
         p_glBindTexture(GL_TEXTURE_2D, s->fbo_depth[i]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, 640, 480, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, s->width, s->height, 0,
+                     GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
         p_glBindFramebuffer(GL_FRAMEBUFFER, s->fbos[i]);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s->fbo_color[i], 0);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, s->fbo_depth[i], 0);
@@ -685,14 +802,37 @@ static int init_scene(HarnessScene *s)
     if (setup_ubo_bindings(s) != 0) return 1;
 
     glGenTextures(8, s->textures);
-    for (int i = 0; i < 8; i++) {
-        p_glBindTexture(GL_TEXTURE_2D, s->textures[i]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-        /* Minecraft always sets explicit filters on its textures; without
-         * this the default mipmap filter makes the texture sampling-
-         * incomplete and MGL substitutes its fallback texture per draw. */
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    {
+        /* One atlas, uploaded into every texture name.  Terrain sections all
+         * sample the same block atlas in the real game, and this keeps the
+         * image correct no matter which unit's texture a backend ends up
+         * resolving — per-draw variety comes from uColor instead. */
+        static const uint8_t tile[8][3] = {
+            {  96, 140,  64 }, { 148, 184, 100 }, {  72, 104, 160 }, { 168,  96,  72 },
+            { 176, 160, 120 }, { 104,  88, 144 }, {  64, 120, 132 }, { 200, 208, 216 },
+        };
+        uint8_t px[64 * 64 * 4];
+
+        for (int y = 0; y < 64; y++) {
+            for (int x = 0; x < 64; x++) {
+                const uint8_t *c = tile[((y / 32) * 2 + (x / 32)) % 8];
+                uint8_t *d = px + ((size_t)y * 64 + x) * 4;
+
+                d[0] = c[0];
+                d[1] = c[1];
+                d[2] = c[2];
+                d[3] = 255;
+            }
+        }
+        for (int i = 0; i < 8; i++) {
+            p_glBindTexture(GL_TEXTURE_2D, s->textures[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            /* Minecraft always sets explicit filters on its textures; without
+             * this the default mipmap filter makes the texture sampling-
+             * incomplete and MGL substitutes its fallback texture per draw. */
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        }
     }
     p_glGenSamplers(3, s->samplers);
     /* RenderPipeline sampler descriptions always set explicit filters; a
@@ -761,6 +901,9 @@ static int bind_draw_ubo_slice(HarnessScene *s, GLuint program_binding)
  * block (both are measurement knobs, vanilla keeps them). */
 static int g_skip_lod_params;
 static int g_skip_sampler_block;
+/* Visual mode: visible window, shared pass target, blit to the drawable.
+ * HARNESS_SUBMIT_ONLY=1 turns it off for pure submit timing. */
+static int g_visual = 1;
 /* Present every frame like the real game (default on).  Disabling is only
  * for pure submit stress; unbounded in-flight commits then accumulate, so the
  * frame count is capped (see MAX_NO_PRESENT_FRAMES). */
@@ -807,11 +950,23 @@ static void apply_pipeline_state(int depth, int cull, int blend)
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 }
 
-/* createRenderPass: FBO bind (+ optional clear) + viewport. */
-static void begin_pass(HarnessScene *s, int pass, int width, int height)
+/* createRenderPass: FBO bind (+ optional clear) + viewport.  In visual mode
+ * every pass accumulates on pass 0's target — that is how the game's main pass
+ * renders, and it is what makes the window show the scene instead of one
+ * pass's worth of it.  Submit-only keeps one target per pass. */
+static GLuint pass_target(const HarnessScene *s, int pass)
 {
-    p_glBindFramebuffer(GL_FRAMEBUFFER, s->fbos[pass]);
-    if (pass < CLEAR_PASSES) {
+    return g_visual ? s->fbos[0] : s->fbos[pass];
+}
+
+static void begin_pass(HarnessScene *s, int pass)
+{
+    /* Every target the frame draws into must start defined, or the window shows
+     * uninitialised memory.  Submit-only keeps the traced ~2 clears/frame. */
+    int clear = g_visual ? (pass == 0) : (pass < CLEAR_PASSES);
+
+    p_glBindFramebuffer(GL_FRAMEBUFFER, pass_target(s, pass));
+    if (clear) {
         glDisable(GL_SCISSOR_TEST);
         glDepthMask(GL_TRUE);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -819,7 +974,7 @@ static void begin_pass(HarnessScene *s, int pass, int width, int height)
         glClearDepth(1.0);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     }
-    p_glViewport(0, 0, width, height);
+    p_glViewport(0, 0, s->width, s->height);
 }
 
 /* VertexArrayCache.bindVertexArray on the Separate path: VAO cache hit +
@@ -832,15 +987,32 @@ static void bind_vertex_source(HarnessScene *s, int slot, int *last_slot)
     p_glBindVertexArray(s->vaos[0]);
     if (slot != *last_slot) {
         p_glBindVertexBuffer(0, s->vertex_arena,
-                             (GLintptr)((size_t)(slot % 64) * s->vertex_slice_bytes),
+                             (GLintptr)((size_t)(slot % 64) * QUAD_VERTS *
+                                        (size_t)s->vertex_slice_bytes),
                              s->vertex_slice_bytes);
         *last_slot = slot;
     }
 }
 
+/* GlCommandEncoder.finishRenderPass + the present that reaches the window.
+ * The FBO is the frame's real target; the drawable only ever sees a blit, which
+ * is also what a game does when it resolves to the default framebuffer. */
+static void present_frame(HarnessScene *s)
+{
+    if (!g_visual) {
+        p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        return;
+    }
+    p_glBindFramebuffer(GL_READ_FRAMEBUFFER, s->fbos[0]);
+    p_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    p_glBlitFramebuffer(0, 0, s->width, s->height,
+                        0, 0, s->width, s->height,
+                        GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
 static void draw_frame(HarnessScene *s, int frame)
 {
-    int width = 640, height = 480;
     int last_vbo_slot = -1;
     int last_program = -1;
 
@@ -849,7 +1021,7 @@ static void draw_frame(HarnessScene *s, int frame)
     s->ubo_next_block = 0;
 
     /* ---- pass 0: sky (array draws, no depth, own program) ---- */
-    begin_pass(s, 0, width, height);
+    begin_pass(s, 0);
     apply_pipeline_state(0, 1, 0);
     if (last_program != 0) {
         p_glUseProgram(s->programs[0]);
@@ -867,7 +1039,7 @@ static void draw_frame(HarnessScene *s, int frame)
      * Vanilla renders layer-by-layer (SectionRenderDispatcher runs one
      * section sweep per layer), so the program changes per LAYER, not per
      * draw. */
-    begin_pass(s, 1, width, height);
+    begin_pass(s, 1);
     apply_pipeline_state(1, 1, 0);
     for (int layer = 0; layer < TERRAIN_LAYERS; layer++) {
       for (int i = layer; i < s->terrain_draws; i += TERRAIN_LAYERS) {
@@ -885,7 +1057,7 @@ static void draw_frame(HarnessScene *s, int frame)
     }
 
     /* ---- pass 2: entities (per-draw texture alternation, 2 samplers) ---- */
-    begin_pass(s, 2, width, height);
+    begin_pass(s, 2);
     apply_pipeline_state(1, 0, 0);
     for (int i = 0; i < s->entity_draws; i++) {
         if (last_program != TERRAIN_LAYERS) {
@@ -905,7 +1077,7 @@ static void draw_frame(HarnessScene *s, int frame)
     }
 
     /* ---- pass 3: translucent (blend on) ---- */
-    begin_pass(s, 3, width, height);
+    begin_pass(s, 3);
     apply_pipeline_state(1, 0, 1);
     for (int i = 0; i < s->terrain_draws / TRANSLUCENT_DIVISOR; i++) {
         int layer = i % TERRAIN_LAYERS;
@@ -922,7 +1094,7 @@ static void draw_frame(HarnessScene *s, int frame)
     }
 
     /* ---- pass 4: clouds + weather (small, array draws, blend) ---- */
-    begin_pass(s, 4, width, height);
+    begin_pass(s, 4);
     apply_pipeline_state(0, 0, 1);
     for (int i = 0; i < CLOUD_DRAWS; i++) {
         bind_vertex_source(s, i, &last_vbo_slot);
@@ -932,7 +1104,7 @@ static void draw_frame(HarnessScene *s, int frame)
     }
 
     /* ---- pass 5: GUI (blend, texture per 8 draws, scissor sometimes) ---- */
-    begin_pass(s, 5, width, height);
+    begin_pass(s, 5);
     apply_pipeline_state(0, 0, 1);
     if (last_program != TERRAIN_LAYERS + 1) {
         p_glUseProgram(s->programs[TERRAIN_LAYERS + 1]);
@@ -942,7 +1114,9 @@ static void draw_frame(HarnessScene *s, int frame)
     for (int i = 0; i < s->gui_draws; i++) {
         if ((i % 16) == 0) {
             glEnable(GL_SCISSOR_TEST);
-            glScissor((i * 8) % width, 0, 128, 64);
+            /* Vanilla scissor rects track GUI widget bounds; keeping the call but
+             * covering the whole target means the visual pass is not clipped away. */
+            glScissor(0, 0, s->width, s->height);
         }
         bind_vertex_source(s, 0, &last_vbo_slot);
         p_glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s->ebos[i % VAO_CACHE_SIZE]);
@@ -953,8 +1127,8 @@ static void draw_frame(HarnessScene *s, int frame)
     }
     glDisable(GL_SCISSOR_TEST);
 
-    /* GlCommandEncoder.finishRenderPass */
-    p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    /* GlCommandEncoder.finishRenderPass, then put the frame on the drawable */
+    present_frame(s);
 
     /* The slice count is what sizes the ring, so a disagreement here means the
      * modelled draw mix and the emitted stream have drifted apart — the next
@@ -1032,6 +1206,79 @@ static void drain_gl_errors(int frame)
     }
 }
 
+/* Proof that the stream put something on the target: read pass 0's colour
+ * attachment back once, at the end, and report how much of it stopped being the
+ * clear colour.  A harness that issues 1384 draws and rasterises nothing looks
+ * identical in the timings, so this is the only way to know the window is real.
+ * Runs after the measurement, so the readback stall costs nothing. */
+static void report_target_content(HarnessScene *s)
+{
+    const size_t pixels = (size_t)s->width * (size_t)s->height;
+    unsigned char *px = malloc(pixels * 4);
+    uint8_t seen[4096 / 8];
+    size_t painted = 0;
+    int distinct = 0;
+
+    if (!px) return;
+    memset(seen, 0, sizeof seen);
+
+    p_glBindFramebuffer(GL_READ_FRAMEBUFFER, s->fbos[0]);
+    glReadPixels(0, 0, s->width, s->height, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    for (size_t i = 0; i < pixels; i++) {
+        const unsigned char *p = px + i * 4;
+        unsigned hash;
+
+        /* clear colour is (128, 178, 255); anything far from it was drawn */
+        if (abs((int)p[0] - 128) > 8 || abs((int)p[1] - 178) > 8 || abs((int)p[2] - 255) > 8)
+            painted++;
+        hash = ((unsigned)p[0] * 257u ^ (unsigned)p[1] * 1299709u ^ (unsigned)p[2] * 65537u) & 4095u;
+        if (!(seen[hash >> 3] & (1u << (hash & 7)))) {
+            seen[hash >> 3] |= (uint8_t)(1u << (hash & 7));
+            distinct++;
+        }
+    }
+    printf("frame_pixels=%zu painted=%.1f%% distinct_colors=%d image=%dx%d\n",
+           pixels, 100.0 * (double)painted / (double)pixels, distinct, s->width, s->height);
+
+    /* Same question for the drawable: blit once more and read the window's back
+     * buffer, so "the window shows the frame" is measured, not assumed. */
+    {
+        size_t in_window = 0;
+
+        present_frame(s);
+        glReadPixels(0, 0, s->width, s->height, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        for (size_t i = 0; i < pixels; i++) {
+            const unsigned char *p = px + i * 4;
+
+            if (abs((int)p[0] - 128) > 8 || abs((int)p[1] - 178) > 8 || abs((int)p[2] - 255) > 8)
+                in_window++;
+        }
+        printf("drawable painted=%.1f%%\n", 100.0 * (double)in_window / (double)pixels);
+    }
+
+    /* HARNESS_DUMP=<path.ppm>: leave the frame on disk so the image can be
+     * looked at instead of inferred from a percentage. */
+    {
+        const char *dump = getenv("HARNESS_DUMP");
+
+        if (dump && dump[0]) {
+            FILE *f = fopen(dump, "wb");
+
+            if (!f) {
+                fprintf(stderr, "harness: cannot write %s: %s\n", dump, strerror(errno));
+            } else {
+                fprintf(f, "P6\n%d %d\n255\n", s->width, s->height);
+                for (size_t i = 0; i < pixels; i++) fwrite(px + i * 4, 1, 3, f);
+                fclose(f);
+                printf("dump=%s\n", dump);
+            }
+        }
+    }
+    free(px);
+}
+
 int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IOLBF, 0);
@@ -1072,6 +1319,10 @@ int main(int argc, char **argv)
     g_present_per_frame = !env_flag("HARNESS_NO_PRESENT");
     g_finish_per_frame = env_flag("HARNESS_FINISH");
     g_check_gl = env_flag("HARNESS_CHECK_GL");
+    g_visual = !env_flag("HARNESS_SUBMIT_ONLY");
+
+    int width = env_int("HARNESS_WIDTH", DEFAULT_WIDTH, 16, 8192);
+    int height = env_int("HARNESS_HEIGHT", DEFAULT_HEIGHT, 16, 8192);
 
     if (!glfwInit()) {
         fprintf(stderr, "glfwInit failed\n");
@@ -1079,11 +1330,11 @@ int main(int argc, char **argv)
         goto done;
     }
     glfw_ready = 1;
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    glfwWindowHint(GLFW_VISIBLE, g_visual ? GLFW_TRUE : GLFW_FALSE);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    win = glfwCreateWindow(640, 480, "mc_offline_harness", NULL, NULL);
+    win = glfwCreateWindow(width, height, "mc_offline_harness", NULL, NULL);
     g_window = win;
     if (!win) {
         fprintf(stderr, "glfwCreateWindow failed\n");
@@ -1091,6 +1342,9 @@ int main(int argc, char **argv)
         goto done;
     }
     glfwMakeContextCurrent(win);
+    /* Uncapped by default: a 60 Hz vsync would hide the cost this tool
+     * measures.  HARNESS_VSYNC=1 gives a smooth window instead. */
+    glfwSwapInterval(env_flag("HARNESS_VSYNC") ? 1 : 0);
     if (load_gl() != 0) {
         rc = 1;
         goto done;
@@ -1098,7 +1352,7 @@ int main(int argc, char **argv)
 
     /* init_scene memsets first, so a partial scene is still safe to destroy. */
     scene_ready = 1;
-    if (init_scene(&scene) != 0) {
+    if (init_scene(&scene, width, height) != 0) {
         rc = 1;
         goto done;
     }
@@ -1112,7 +1366,12 @@ int main(int argc, char **argv)
     double startup_wall_ms = (now_ns(CLOCK_MONOTONIC) - startup_wall_0) / 1e6;
     unsigned long startup_probes = probe_count() - probes_before_startup;
 
-    for (int i = 0; i < warmup; i++) draw_frame(&scene, i);
+    /* A visible window must service its event loop or macOS marks the process
+     * unresponsive; it also lets the user close the window to end the run. */
+    for (int i = 0; i < warmup; i++) {
+        draw_frame(&scene, i);
+        if (g_visual) glfwPollEvents();
+    }
     glFinish();
 
     int frames = scene.frames;
@@ -1184,10 +1443,15 @@ int main(int argc, char **argv)
         /* An exhausted ring means the frame no longer matches the model, so
          * further frames measure a different (shorter) stream.  Stop. */
         if (scene.ubo_overflow) break;
+        if (g_visual) {
+            glfwPollEvents();
+            if (glfwWindowShouldClose(g_window)) break;
+        }
     }
 
     if (measured > 0 && measured < frames) {
-        fprintf(stderr, "harness: stopped after %d of %d frames\n", measured, frames);
+        fprintf(stderr, "harness: stopped after %d of %d frames (%s)\n", measured, frames,
+                scene.ubo_overflow ? "UBO ring exhausted" : "window closed");
     }
     if (measured <= 0) {
         fprintf(stderr, "harness: no frame completed\n");
@@ -1227,8 +1491,8 @@ int main(int argc, char **argv)
                            (double)(r1.ru_stime.tv_usec - r0.ru_stime.tv_usec)) / 1e3;
 
     int per_frame = draws_per_frame(&scene);
-    printf("backend=mgl frames=%d warmup=%d draws_per_frame=%d\n",
-           frames, warmup, per_frame);
+    printf("backend=mgl frames=%d warmup=%d draws_per_frame=%d visual=%d image=%dx%d\n",
+           frames, warmup, per_frame, g_visual, scene.width, scene.height);
     printf("frame_wall_ms=%.3f frame_cpu_ms=%.3f frame_user_ms=%.3f frame_sys_ms=%.3f "
            "frame_pcpu_ms=%.3f p50_ms=%.3f p95_ms=%.3f pcpu_p50_ms=%.3f "
            "swap_p50_ms=%.3f finish_p50_ms=%.3f present=%d\n",
@@ -1246,6 +1510,7 @@ int main(int argc, char **argv)
            g_probe_counter ? (double)probes_total / frames : 0.0,
            startup_wall_ms, startup_probes);
     printf("gl_errors=%lu checked=%d\n", g_gl_errors, g_check_gl);
+    if (g_visual) report_target_content(&scene);
 
     if (json_fp) {
         int wrote = fprintf(json_fp,
@@ -1259,7 +1524,8 @@ int main(int argc, char **argv)
                 "\"ubo_block_data_size\":%d,\"ubo_overflow\":%s,"
                 "\"window_user_ms\":%.1f,\"window_sys_ms\":%.1f,"
                 "\"probes_available\":%s,\"probes_per_frame\":%.1f,"
-                "\"startup_queries_ms\":%.3f,\"startup_probes\":%lu,\"gl_errors\":%lu}\n",
+                "\"startup_queries_ms\":%.3f,\"startup_probes\":%lu,\"gl_errors\":%lu,"
+                "\"visual\":%s,\"width\":%d,\"height\":%d}\n",
                 frames, warmup, per_frame,
                 st.wall_per_frame_ms, st.cpu_per_frame_ms, st.user_per_frame_ms,
                 st.sys_per_frame_ms, st.pcpu_per_frame_ms,
@@ -1270,13 +1536,34 @@ int main(int argc, char **argv)
                 total_user_ms, total_sys_ms,
                 g_probe_counter ? "true" : "false",
                 g_probe_counter ? (double)probes_total / frames : 0.0,
-                startup_wall_ms, startup_probes, g_gl_errors);
+                startup_wall_ms, startup_probes, g_gl_errors,
+                g_visual ? "true" : "false", scene.width, scene.height);
         if (wrote < 0 || fclose(json_fp) != 0) {
             fprintf(stderr, "harness: writing JSON to %s failed: %s\n", json_path, strerror(errno));
             json_fp = NULL;
             rc = 1;
         } else {
             json_fp = NULL;
+        }
+    }
+
+    /* HARNESS_HOLD=<seconds>: keep presenting after the measurement so the
+     * frame can actually be looked at.  Closing the window ends it early. */
+    {
+        int hold = env_int("HARNESS_HOLD", 0, 0, 3600);
+
+        if (hold > 0 && g_visual) {
+            double deadline = now_ns(CLOCK_MONOTONIC) + (double)hold * 1e9;
+            int f = 0;
+
+            printf("holding=%ds width=%d height=%d (close the window to end)\n",
+                   hold, scene.width, scene.height);
+            while (now_ns(CLOCK_MONOTONIC) < deadline) {
+                draw_frame(&scene, f++);
+                glfwSwapBuffers(g_window);
+                glfwPollEvents();
+                if (glfwWindowShouldClose(g_window)) break;
+            }
         }
     }
 

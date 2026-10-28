@@ -560,7 +560,10 @@ bench: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 # knobs: HARNESS_FRAMES/WARMUP/TERRAIN_DRAWS/ENTITY_DRAWS/GUI_DRAWS,
 #        HARNESS_STARTUP_QUERIES, HARNESS_SKIP_LOD_PARAMS,
 #        HARNESS_SKIP_SAMPLER_BLOCK, HARNESS_NO_PRESENT (frames capped at 300),
-#        HARNESS_FINISH (time the GPU drain), HARNESS_CHECK_GL (count GL errors)
+#        HARNESS_FINISH (time the GPU drain), HARNESS_CHECK_GL (count GL errors),
+#        HARNESS_SUBMIT_ONLY (hidden window, no payload, no blit),
+#        HARNESS_VSYNC, HARNESS_WIDTH/HEIGHT, HARNESS_HOLD (keep presenting for
+#        N seconds), HARNESS_DUMP (write the frame as a PPM)
 mc-harness: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(HOST_ARCH) \
 		-I./external/glfw/include \
