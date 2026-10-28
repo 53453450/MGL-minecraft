@@ -36,8 +36,14 @@
  *    GLSL 3.30 cannot spell layout(binding=) on a uniform block;
  *  - the block's std140 size comes from GL_UNIFORM_BLOCK_DATA_SIZE and must
  *    fit one aligned slice;
+ *  - vertex inputs match the VAO's feed path: aLight is read back as
+ *    GL_FLOAT_VEC2, since the VAO converts SHORT data with glVertexAttribFormat
+ *    and a float-format attribute must not feed an integer input;
+ *  - every sampler uniform is assigned its unit once and read back, so the
+ *    entity pass really samples two units (Sampler1 -> 1, not the default 0);
  *  - the UBO ring is sized from draws_per_frame() — the same function that
- *    labels the run — and bind_draw_ubo_slice() refuses to step past it.
+ *    labels the run — and once a slice would fall outside it the draws stop and
+ *    the run exits 2 instead of measuring ranges that do not exist.
  *
  * Measured: per-frame wall/CPU, getrusage user/sys split, CLOCK_PROCESS_CPUTIME
  * per-frame cross-check, and — when linked against an MGL build carrying the
@@ -244,6 +250,10 @@ static PFNGLGETUNIFORMLOCATIONPROC p_glGetUniformLocation;
 static PFNGLUNIFORM1IPROC p_glUniform1i;
 static PFNGLGETUNIFORMBLOCKINDEXPROC p_glGetUniformBlockIndex;
 static PFNGLUNIFORMBLOCKBINDINGPROC p_glUniformBlockBinding;
+static PFNGLGETACTIVEUNIFORMBLOCKIVPROC p_glGetActiveUniformBlockiv;
+static PFNGLGENSAMPLERSPROC p_glGenSamplers;
+static PFNGLSAMPLERPARAMETERIPROC p_glSamplerParameteri;
+static PFNGLDELETESAMPLERSPROC p_glDeleteSamplers;
 
 #define LOAD_GL(ptr, type, name) \
     do { \
@@ -274,6 +284,10 @@ static int load_gl(void)
     LOAD_GL(p_glUniform1i, PFNGLUNIFORM1IPROC, "glUniform1i");
     LOAD_GL(p_glGetUniformBlockIndex, PFNGLGETUNIFORMBLOCKINDEXPROC, "glGetUniformBlockIndex");
     LOAD_GL(p_glUniformBlockBinding, PFNGLUNIFORMBLOCKBINDINGPROC, "glUniformBlockBinding");
+    LOAD_GL(p_glGetActiveUniformBlockiv, PFNGLGETACTIVEUNIFORMBLOCKIVPROC, "glGetActiveUniformBlockiv");
+    LOAD_GL(p_glGenSamplers, PFNGLGENSAMPLERSPROC, "glGenSamplers");
+    LOAD_GL(p_glSamplerParameteri, PFNGLSAMPLERPARAMETERIPROC, "glSamplerParameteri");
+    LOAD_GL(p_glDeleteSamplers, PFNGLDELETESAMPLERSPROC, "glDeleteSamplers");
     return 0;
 }
 
@@ -303,6 +317,7 @@ typedef struct {
     GLuint fbo_depth[PASS_COUNT];
     GLuint programs[TERRAIN_LAYERS + 2];   /* 3 terrain layers + entity + GUI */
     GLint  sampler_locs[TERRAIN_LAYERS + 2];
+    GLint  entity_sampler1_loc;  /* entity FS's second sampler -> unit 1 */
     GLuint textures[8];
     GLuint samplers[3];
 
@@ -324,28 +339,39 @@ typedef struct {
     int emit_startup_location_queries;
 } HarnessScene;
 
+/* Terrain/entity VS: POSITION_TEX_LIGHTMAP_COLOR exactly as vanilla declares
+ * it — SHORT buffer data (UV2) converted to a *float* shader input by
+ * glVertexAttribFormat.  That conversion is the MGL cost this file measures.
+ * The integer spelling (uvec2 + glVertexAttribIFormat) is a different,
+ * non-vanilla path: a float-format attribute must not feed an integer shader
+ * input, so mixing the two leaves the attribute undefined.  Staying on the
+ * Format path here means the VS must declare aLight as vec2, and
+ * validate_attributes() fails the run if the input stops being active. */
 static const char *kTerrainVS =
     "#version 330 core\n"
     "layout(location=0) in vec3 aPos;\n"
     "layout(location=1) in vec2 aUV;\n"
-    "layout(location=2) in uvec2 aLight;\n"
+    "layout(location=2) in vec2 aLight;\n"
     "layout(std140) uniform DynamicTransforms { mat4 uModelView; vec4 uColor; vec3 uOffset; mat4 uTexMat; };\n"
     "uniform sampler2D Sampler0;\n"
     "out vec2 vUV;\n"
-    "void main(){ vUV = aUV; gl_Position = uModelView * vec4(aPos + uOffset, 1.0); }\n";
+    "out vec2 vLight;\n"
+    "void main(){ vUV = aUV; vLight = aLight; gl_Position = uModelView * vec4(aPos + uOffset, 1.0); }\n";
 static const char *kTerrainFS =
     "#version 330 core\n"
     "in vec2 vUV;\n"
+    "in vec2 vLight;\n"
     "uniform sampler2D Sampler0;\n"
     "out vec4 C;\n"
-    "void main(){ C = texture(Sampler0, vUV); }\n";
+    "void main(){ C = texture(Sampler0, vUV) * vec4(vLight, 1.0, 1.0); }\n";
 static const char *kEntityFS =
     "#version 330 core\n"
     "in vec2 vUV;\n"
+    "in vec2 vLight;\n"
     "uniform sampler2D Sampler0;\n"
     "uniform sampler2D Sampler1;\n"
     "out vec4 C;\n"
-    "void main(){ C = texture(Sampler0, vUV) * texture(Sampler1, vUV); }\n";
+    "void main(){ C = texture(Sampler0, vUV) * texture(Sampler1, vUV) * vec4(vLight, 1.0, 1.0); }\n";
 static const char *kGuiVS =
     "#version 330 core\n"
     "layout(location=0) in vec3 aPos;\n"
@@ -354,6 +380,14 @@ static const char *kGuiVS =
     "uniform sampler2D Sampler0;\n"
     "out vec2 vUV;\n"
     "void main(){ vUV = aUV; gl_Position = uModelView * vec4(aPos, 1.0); }\n";
+/* GUI gets its own FS: kTerrainFS reads the vLight varying that only
+ * kTerrainVS writes, and an unwritten FS input is an undefined value. */
+static const char *kGuiFS =
+    "#version 330 core\n"
+    "in vec2 vUV;\n"
+    "uniform sampler2D Sampler0;\n"
+    "out vec4 C;\n"
+    "void main(){ C = texture(Sampler0, vUV); }\n";
 
 static int check_shader(GLuint sh, const char *stage, const char *src)
 {
@@ -469,6 +503,90 @@ static int setup_ubo_bindings(HarnessScene *s)
     return 0;
 }
 
+/* The VAO feeds aLight through glVertexAttribFormat (float path), so the shader
+ * must consume it as float: a float-format attribute feeding an integer input
+ * is undefined, and the two spellings measure different MGL code.  Checked from
+ * the program's active-attribute list rather than trusted, because a shader
+ * edit that flips the type is otherwise invisible at run time.  The location
+ * check pins what the VAO enables: layout(location=) is only a promise. */
+static int expect_attribute(HarnessScene *s, int prog, const char *name,
+                            GLint want_location, GLenum want_type)
+{
+    GLint count = 0, found = 0;
+    GLint loc = glGetAttribLocation(s->programs[prog], name);
+
+    if (loc != want_location) {
+        fprintf(stderr, "harness: program %d attribute %s is at %d, expected %d\n",
+                prog, name, loc, want_location);
+        return 1;
+    }
+    glGetProgramiv(s->programs[prog], GL_ACTIVE_ATTRIBUTES, &count);
+    for (GLint i = 0; i < count; i++) {
+        char buf[256];
+        GLsizei len = 0;
+        GLint size = 0;
+        GLenum type = 0;
+
+        glGetActiveAttrib(s->programs[prog], (GLuint)i, (GLsizei)sizeof buf, &len, &size, &type, buf);
+        if (strcmp(buf, name) != 0) continue;
+        found = 1;
+        if (type != want_type) {
+            fprintf(stderr, "harness: program %d attribute %s is type 0x%04x, expected 0x%04x; "
+                    "a float-format vertex array must not feed an integer input\n",
+                    prog, name, type, want_type);
+            return 1;
+        }
+    }
+    if (!found) {
+        fprintf(stderr, "harness: program %d has no active attribute %s\n", prog, name);
+        return 1;
+    }
+    return 0;
+}
+
+static int validate_attributes(HarnessScene *s)
+{
+    for (int i = 0; i <= TERRAIN_LAYERS; i++) {
+        if (expect_attribute(s, i, "aPos", 0, GL_FLOAT_VEC3) != 0) return 1;
+        if (expect_attribute(s, i, "aUV", 1, GL_FLOAT_VEC2) != 0) return 1;
+        /* SHORT buffer data converted to float by glVertexAttribFormat. */
+        if (expect_attribute(s, i, "aLight", 2, GL_FLOAT_VEC2) != 0) return 1;
+    }
+    if (expect_attribute(s, TERRAIN_LAYERS + 1, "aPos", 0, GL_FLOAT_VEC3) != 0) return 1;
+    if (expect_attribute(s, TERRAIN_LAYERS + 1, "aUV", 1, GL_FLOAT_VEC2) != 0) return 1;
+    return 0;
+}
+
+/* Vanilla's GlProgram assigns each sampler its unit once at load time.  Read
+ * the value back: a glUniform1i that silently does nothing (dead uniform, wrong
+ * location) leaves every sampler on unit 0, which still "works" — two binds,
+ * one sampler state — and quietly stops testing the second unit. */
+static int bind_sampler_units(HarnessScene *s)
+{
+    for (int i = 0; i < TERRAIN_LAYERS + 2; i++) {
+        GLint got = -1;
+
+        p_glUseProgram(s->programs[i]);
+        p_glUniform1i(s->sampler_locs[i], 0);
+        if (i == TERRAIN_LAYERS) p_glUniform1i(s->entity_sampler1_loc, 1);
+
+        glGetUniformiv(s->programs[i], s->sampler_locs[i], &got);
+        if (got != 0) {
+            fprintf(stderr, "harness: program %d Sampler0 reads unit %d, expected 0\n", i, got);
+            return 1;
+        }
+        if (i == TERRAIN_LAYERS) {
+            glGetUniformiv(s->programs[i], s->entity_sampler1_loc, &got);
+            if (got != 1) {
+                fprintf(stderr, "harness: entity Sampler1 reads unit %d, expected 1\n", got);
+                return 1;
+            }
+        }
+    }
+    p_glUseProgram(0);
+    return 0;
+}
+
 static int init_scene(HarnessScene *s)
 {
     memset(s, 0, sizeof(*s));
@@ -544,8 +662,9 @@ static int init_scene(HarnessScene *s)
     s->programs[TERRAIN_LAYERS] = compile_program(kTerrainVS, kEntityFS);
     if (!s->programs[TERRAIN_LAYERS]) return 1;
     s->sampler_locs[TERRAIN_LAYERS] = p_glGetUniformLocation(s->programs[TERRAIN_LAYERS], "Sampler0");
+    s->entity_sampler1_loc = p_glGetUniformLocation(s->programs[TERRAIN_LAYERS], "Sampler1");
 
-    s->programs[TERRAIN_LAYERS + 1] = compile_program(kGuiVS, kTerrainFS);
+    s->programs[TERRAIN_LAYERS + 1] = compile_program(kGuiVS, kGuiFS);
     if (!s->programs[TERRAIN_LAYERS + 1]) return 1;
     s->sampler_locs[TERRAIN_LAYERS + 1] = p_glGetUniformLocation(s->programs[TERRAIN_LAYERS + 1], "Sampler0");
 
@@ -555,6 +674,14 @@ static int init_scene(HarnessScene *s)
             return 1;
         }
     }
+    /* Without an explicit unit Sampler1 keeps its default 0, so the entity
+     * pass would sample unit 0 twice — two binds, one sampler state. */
+    if (s->entity_sampler1_loc < 0) {
+        fprintf(stderr, "harness: entity program has no active Sampler1 uniform\n");
+        return 1;
+    }
+    if (validate_attributes(s) != 0) return 1;
+    if (bind_sampler_units(s) != 0) return 1;
     if (setup_ubo_bindings(s) != 0) return 1;
 
     glGenTextures(8, s->textures);
@@ -567,15 +694,15 @@ static int init_scene(HarnessScene *s)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     }
-    glGenSamplers(3, s->samplers);
+    p_glGenSamplers(3, s->samplers);
     /* RenderPipeline sampler descriptions always set explicit filters; a
      * default sampler object (mipmap min filter) would make every sampled
      * texture incomplete and push MGL into its fallback path. */
     for (int i = 0; i < 3; i++) {
-        glSamplerParameteri(s->samplers[i], GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glSamplerParameteri(s->samplers[i], GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glSamplerParameteri(s->samplers[i], GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glSamplerParameteri(s->samplers[i], GL_TEXTURE_WRAP_T, GL_REPEAT);
+        p_glSamplerParameteri(s->samplers[i], GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        p_glSamplerParameteri(s->samplers[i], GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        p_glSamplerParameteri(s->samplers[i], GL_TEXTURE_WRAP_S, GL_REPEAT);
+        p_glSamplerParameteri(s->samplers[i], GL_TEXTURE_WRAP_T, GL_REPEAT);
     }
     return 0;
 }
@@ -586,7 +713,7 @@ static void destroy_scene(HarnessScene *s)
 {
     for (int i = 0; i < TERRAIN_LAYERS + 2; i++)
         if (s->programs[i]) glDeleteProgram(s->programs[i]);
-    glDeleteSamplers(3, s->samplers);
+    p_glDeleteSamplers(3, s->samplers);
     glDeleteTextures(8, s->textures);
     glDeleteFramebuffers(PASS_COUNT, s->fbos);
     glDeleteTextures(PASS_COUNT, s->fbo_color);
@@ -598,30 +725,33 @@ static void destroy_scene(HarnessScene *s)
     memset(s, 0, sizeof(*s));
 }
 
-/* GlRenderPass.setUniform + trySetup's per-draw UBO slice binding. */
-static void bind_draw_ubo_slice(HarnessScene *s, GLuint program_binding)
+/* GlRenderPass.setUniform + trySetup's per-draw UBO slice binding.
+ * Returns non-zero once the ring is exhausted; the caller then skips the draw
+ * instead of binding a range that does not exist. */
+static int bind_draw_ubo_slice(HarnessScene *s, GLuint program_binding)
 {
-    size_t offset = s->ubo_next_block * s->ubo_block;
-    size_t size = s->ubo_block;
+    size_t offset;
+
+    if (s->ubo_overflow) return -1;
+    offset = s->ubo_next_block * s->ubo_block;
 
     /* Running past the store is not an error MGL reports (it implements the
      * GL 4.2+ "range may exceed the store" reading and clamps at use time), so
-     * an over-full ring silently measures nonsense.  Refuse loudly instead. */
-    if (offset + size > s->ubo_ring_bytes) {
-        if (!s->ubo_overflow) {
-            fprintf(stderr,
-                    "harness: UBO ring exhausted at slice %zu of %d (%zu-byte ring); "
-                    "raise UBO_RING_HEADROOM or fix draws_per_frame()\n",
-                    s->ubo_next_block, s->ubo_ring_slices, s->ubo_ring_bytes);
-        }
+     * an over-full ring silently measures nonsense.  Refuse to bind, and let
+     * the run die with rc=2. */
+    if (offset + s->ubo_block > s->ubo_ring_bytes) {
+        fprintf(stderr,
+                "harness: UBO ring exhausted at slice %zu of %d (%zu-byte ring); "
+                "raise UBO_RING_HEADROOM or fix draws_per_frame()\n",
+                s->ubo_next_block, s->ubo_ring_slices, s->ubo_ring_bytes);
         s->ubo_overflow = 1;
-        s->ubo_next_block = 0;
-        offset = 0;
+        return -1;
     }
     p_glBindBufferRange(GL_UNIFORM_BUFFER, program_binding,
                         s->dynamic_ubo[s->ubo_ring_index],
-                        (GLintptr)offset, (GLsizeiptr)size);
+                        (GLintptr)offset, (GLsizeiptr)s->ubo_block);
     s->ubo_next_block++;
+    return 0;
 }
 
 /* GlCommandEncoder.trySetup sampler block: runs for every sampler uniform on
@@ -642,12 +772,12 @@ static int g_check_gl;
 static unsigned long g_gl_errors;
 static GLFWwindow *g_window;
 
-static void try_setup_samplers(int sampler_count, GLuint texture, GLuint sampler)
+static void try_setup_samplers(int sampler_count, GLuint tex0, GLuint tex1, GLuint sampler)
 {
     if (g_skip_sampler_block) return;
     for (int u = 0; u < sampler_count; u++) {
         p_glActiveTexture(GL_TEXTURE0 + u);
-        p_glBindTexture(GL_TEXTURE_2D, texture);
+        p_glBindTexture(GL_TEXTURE_2D, u == 0 ? tex0 : tex1);
         p_glBindSampler(u, sampler);
         if (!g_skip_lod_params) {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_LOD, 0);
@@ -728,8 +858,8 @@ static void draw_frame(HarnessScene *s, int frame)
     }
     for (int i = 0; i < SKY_DRAWS; i++) {
         bind_vertex_source(s, i, &last_vbo_slot);
-        try_setup_samplers(1, s->textures[0], s->samplers[0]);
-        bind_draw_ubo_slice(s, UBO_BINDING);
+        try_setup_samplers(1, s->textures[0], s->textures[0], s->samplers[0]);
+        if (bind_draw_ubo_slice(s, UBO_BINDING) != 0) continue;
         p_glDrawArrays(GL_TRIANGLES, 0, 6);
     }
 
@@ -748,8 +878,8 @@ static void draw_frame(HarnessScene *s, int frame)
         }
         bind_vertex_source(s, i, &last_vbo_slot);
         p_glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s->ebos[i % VAO_CACHE_SIZE]);
-        try_setup_samplers(1, s->textures[0], s->samplers[0]);
-        bind_draw_ubo_slice(s, UBO_BINDING);
+        try_setup_samplers(1, s->textures[0], s->textures[0], s->samplers[0]);
+        if (bind_draw_ubo_slice(s, UBO_BINDING) != 0) continue;
         p_glDrawElements(GL_TRIANGLES, s->index_count, GL_UNSIGNED_INT, (void *)0);
       }
     }
@@ -761,12 +891,16 @@ static void draw_frame(HarnessScene *s, int frame)
         if (last_program != TERRAIN_LAYERS) {
             p_glUseProgram(s->programs[TERRAIN_LAYERS]);
             p_glUniform1i(s->sampler_locs[TERRAIN_LAYERS], 0);
+            /* Sampler1 -> unit 1, or both samplers read unit 0 and the pass
+             * stops exercising a second sampler state. */
+            p_glUniform1i(s->entity_sampler1_loc, 1);
             last_program = TERRAIN_LAYERS;
         }
         bind_vertex_source(s, i, &last_vbo_slot);
         p_glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s->ebos[i % VAO_CACHE_SIZE]);
-        try_setup_samplers(2, s->textures[1 + (i % ENTITY_TEXTURE_CYCLE)], s->samplers[1]);
-        bind_draw_ubo_slice(s, UBO_BINDING);
+        try_setup_samplers(2, s->textures[1 + (i % ENTITY_TEXTURE_CYCLE)],
+                           s->textures[1 + ((i + 1) % ENTITY_TEXTURE_CYCLE)], s->samplers[1]);
+        if (bind_draw_ubo_slice(s, UBO_BINDING) != 0) continue;
         p_glDrawElements(GL_TRIANGLES, s->index_count, GL_UNSIGNED_INT, (void *)0);
     }
 
@@ -782,8 +916,8 @@ static void draw_frame(HarnessScene *s, int frame)
         }
         bind_vertex_source(s, i, &last_vbo_slot);
         p_glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s->ebos[i % VAO_CACHE_SIZE]);
-        try_setup_samplers(1, s->textures[0], s->samplers[2]);
-        bind_draw_ubo_slice(s, UBO_BINDING);
+        try_setup_samplers(1, s->textures[0], s->textures[0], s->samplers[2]);
+        if (bind_draw_ubo_slice(s, UBO_BINDING) != 0) continue;
         p_glDrawElements(GL_TRIANGLES, s->index_count, GL_UNSIGNED_INT, (void *)0);
     }
 
@@ -792,8 +926,8 @@ static void draw_frame(HarnessScene *s, int frame)
     apply_pipeline_state(0, 0, 1);
     for (int i = 0; i < CLOUD_DRAWS; i++) {
         bind_vertex_source(s, i, &last_vbo_slot);
-        try_setup_samplers(1, s->textures[7], s->samplers[2]);
-        bind_draw_ubo_slice(s, UBO_BINDING);
+        try_setup_samplers(1, s->textures[7], s->textures[7], s->samplers[2]);
+        if (bind_draw_ubo_slice(s, UBO_BINDING) != 0) continue;
         p_glDrawArrays(GL_TRIANGLES, 0, 6);
     }
 
@@ -812,8 +946,9 @@ static void draw_frame(HarnessScene *s, int frame)
         }
         bind_vertex_source(s, 0, &last_vbo_slot);
         p_glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s->ebos[i % VAO_CACHE_SIZE]);
-        try_setup_samplers(1, s->textures[(i / GUI_TEXTURE_GROUP) % 4], s->samplers[0]);
-        bind_draw_ubo_slice(s, UBO_BINDING);
+        try_setup_samplers(1, s->textures[(i / GUI_TEXTURE_GROUP) % 4],
+                           s->textures[(i / GUI_TEXTURE_GROUP) % 4], s->samplers[0]);
+        if (bind_draw_ubo_slice(s, UBO_BINDING) != 0) continue;
         p_glDrawElements(GL_TRIANGLES, s->index_count, GL_UNSIGNED_INT, (void *)0);
     }
     glDisable(GL_SCISSOR_TEST);
@@ -1005,6 +1140,7 @@ int main(int argc, char **argv)
     struct rusage r0, r1;
     getrusage(RUSAGE_SELF, &r0);
     double wall0 = now_ns(CLOCK_MONOTONIC);
+    int measured = 0;
 
     for (int f = 0; f < frames; f++) {
         struct rusage rf0, rf1;
@@ -1043,7 +1179,23 @@ int main(int argc, char **argv)
                       (double)(rf1.ru_utime.tv_usec - rf0.ru_utime.tv_usec)) / 1e3;
         sys_ms[f] = ((double)(rf1.ru_stime.tv_sec - rf0.ru_stime.tv_sec) * 1e6 +
                      (double)(rf1.ru_stime.tv_usec - rf0.ru_stime.tv_usec)) / 1e3;
+
+        measured++;
+        /* An exhausted ring means the frame no longer matches the model, so
+         * further frames measure a different (shorter) stream.  Stop. */
+        if (scene.ubo_overflow) break;
     }
+
+    if (measured > 0 && measured < frames) {
+        fprintf(stderr, "harness: stopped after %d of %d frames\n", measured, frames);
+    }
+    if (measured <= 0) {
+        fprintf(stderr, "harness: no frame completed\n");
+        rc = scene.ubo_overflow ? 2 : 1;
+        goto done;
+    }
+    /* Every statistic below covers what actually ran, not what was asked for. */
+    frames = measured;
 
     getrusage(RUSAGE_SELF, &r1);
     double wall_total_ms = (now_ns(CLOCK_MONOTONIC) - wall0) / 1e6;
