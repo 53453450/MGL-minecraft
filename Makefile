@@ -559,7 +559,8 @@ bench: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 # vm_region probe counts per frame (dlsym, optional).
 # knobs: HARNESS_FRAMES/WARMUP/TERRAIN_DRAWS/ENTITY_DRAWS/GUI_DRAWS,
 #        HARNESS_STARTUP_QUERIES, HARNESS_SKIP_LOD_PARAMS,
-#        HARNESS_SKIP_SAMPLER_BLOCK
+#        HARNESS_SKIP_SAMPLER_BLOCK, HARNESS_NO_PRESENT (frames capped at 300),
+#        HARNESS_FINISH (time the GPU drain), HARNESS_CHECK_GL (count GL errors)
 mc-harness: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(HOST_ARCH) \
 		-I./external/glfw/include \
