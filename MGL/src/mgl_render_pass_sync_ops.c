@@ -1526,6 +1526,19 @@ int mglRenderPassRestoreRenderEncoderAfterTextureUpload(void *renderer,
     mglPassManagerUpdateRenderPassIdentityForContext(areas.render_pass_manager, ctx);
     mglRenderPassUpdateCurrentRenderEncoder(renderer);
 
+    /* The encoder that closed had every piece of state applied to it; this new
+     * one has none of it.  The binding caches (texture slots, viewport, scissor,
+     * pipeline, masks) live in MGLBindingState and survive the recreation, so
+     * every "set if needed" would answer "already bound" and the new encoder
+     * would keep sampling whatever it was created with — with per-draw texture
+     * changes that means every draw in the pass sees the last binding.  Drop the
+     * cache and mark the render state dirty so the next apply re-emits all of it
+     * unconditionally. */
+    if (bindingOwner) {
+        mglRenderBindingSetValid((MGLBindingState *)bindingOwner, 0);
+    }
+    mglMarkRendererDirtyBits(ctx->active_state, DIRTY_RENDER_STATE);
+
     if (!cacheState->pipelineState) {
         mglMarkRendererDirtyBits(ctx->active_state,
                                  DIRTY_PROGRAM | DIRTY_VAO |
