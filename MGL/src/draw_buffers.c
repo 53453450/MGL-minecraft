@@ -1292,7 +1292,10 @@ static void mglCPUFeedbackGateReject(unsigned reason)
         reason = 2u;
     }
     n = ++s_mglXfbGateRejects[reason];
-    if (n <= 4u || (n % 512u) == 0u) {
+    /* Log the first few rejections per reason only: vanilla workloads reject
+     * every frame, and the periodic every-512 pulse spammed megabytes of
+     * stderr per session.  The counters stay queryable for diagnostics. */
+    if (n <= 4u) {
         fprintf(stderr, "MGL XFB GATE: capture skipped (%s) count=%llu\n",
                 kMglXfbGateReasons[reason], (unsigned long long)n);
     }
