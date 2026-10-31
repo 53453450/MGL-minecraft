@@ -6250,15 +6250,27 @@ int mglSubroutineUniformImplicitLocation(const MGLAIRSubroutineTable *table,
 }
 
 int mglSubroutineValidateTable(const MGLAIRSubroutineTable *table,
-                               uint32_t maxLocations)
+                               uint32_t maxLocations,
+                               char *err, size_t errcap)
 {
+	if (err && errcap) err[0] = '\0';
 	if (!table) return 1;
 	for (uint32_t i = 0; i < table->uniform_count; i++) {
 		int loc = table->uniform_location[i];
 		if (loc < 0) continue;      /* linker-assigned, cannot collide */
-		if ((uint32_t)loc >= maxLocations) return 0;
+		if ((uint32_t)loc >= maxLocations) {
+			if (err && errcap) snprintf(err, errcap,
+			    "subroutine uniform '%s' location %d >= %u",
+			    table->uniform_names[i], loc, maxLocations);
+			return 0;
+		}
 		for (uint32_t j = 0; j < i; j++) {
-			if (table->uniform_location[j] == loc) return 0;
+			if (table->uniform_location[j] == loc) {
+				if (err && errcap) snprintf(err, errcap,
+				    "subroutine uniforms '%s' and '%s' share location %d",
+				    table->uniform_names[j], table->uniform_names[i], loc);
+				return 0;
+			}
 		}
 	}
 	/* An arrayed uniform occupies consecutive locations, so its whole span
@@ -6268,7 +6280,12 @@ int mglSubroutineValidateTable(const MGLAIRSubroutineTable *table,
 		if (loc < 0) continue;
 		uint32_t size = table->uniform_declared_elements[i]
 		                    ? table->uniform_declared_elements[i] : 1u;
-		if ((uint32_t)loc + size > maxLocations) return 0;
+		if ((uint32_t)loc + size > maxLocations) {
+			if (err && errcap) snprintf(err, errcap,
+			    "subroutine uniform '%s' spans %d..%d, past %u",
+			    table->uniform_names[i], loc, loc + (int)size - 1, maxLocations);
+			return 0;
+		}
 	}
 	/* ARB_shader_subroutine: "A program will fail to link if any stage has
 	 * one or more subroutine uniforms that has no subroutine associated
@@ -6280,6 +6297,11 @@ int mglSubroutineValidateTable(const MGLAIRSubroutineTable *table,
 		uint32_t type_idx = table->uniform_type[i];
 		if (type_idx >= table->type_count ||
 		    table->types[type_idx].impl_name_count == 0u) {
+			if (err && errcap) snprintf(err, errcap,
+			    "subroutine uniform '%s' has type '%s' with no implementation",
+			    table->uniform_names[i],
+			    (type_idx < table->type_count && table->types[type_idx].name)
+			        ? table->types[type_idx].name : "?");
 			return 0;
 		}
 	}

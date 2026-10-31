@@ -82,8 +82,12 @@ int mglSubroutineUniformLocationAt(const MGLAIRSubroutineTable *table,
 /* Link-time validation (GL 4.6 §7.10): subroutine-uniform locations must be
  * unique within the stage and below `maxLocations`.  Returns 1 when the table
  * is linkable, 0 when it is not. */
+/* Returns 1 when the table is linkable, 0 otherwise.  On failure `err` (when
+ * non-NULL) receives a one-line reason: the caller used to print an empty
+ * buffer borrowed from the reflection step, which said nothing. */
 int mglSubroutineValidateTable(const MGLAIRSubroutineTable *table,
-                               uint32_t maxLocations);
+                               uint32_t maxLocations,
+                               char *err, size_t errcap);
 
 /* ACTIVE_SUBROUTINE_UNIFORM_LOCATIONS: one past the highest assigned location.
  * This is also the exact `count` glUniformSubroutinesuiv requires. */

@@ -1936,7 +1936,8 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
              * and the second selection silently aliased the first. */
             if (!mglSubroutineValidateTable(
                     &pptr->subroutine_tables[stage],
-                    1024u)) {   /* GL_MAX_SUBROUTINE_UNIFORM_LOCATIONS */
+                    1024u,      /* GL_MAX_SUBROUTINE_UNIFORM_LOCATIONS */
+                    sub_err, sizeof sub_err)) {
                 fprintf(stderr, "MGL DIAG subroutine table validate failed "
                         "program=%u stage=%d err=[%s]\n",
                         (unsigned)pptr->name, stage, sub_err);
