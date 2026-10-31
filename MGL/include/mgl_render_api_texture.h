@@ -363,6 +363,11 @@ int mglRenderEncodePackedDepthStencilUploadForCommandBufferOwner(MGLCommandBuffe
 int mglRenderCreateTextureStagingOwner(const void *bytes, uint64_t length, uint64_t resource_options, MGLTextureStagingOwner **owner_out, void **buffer_out);
 
 void mglRenderDestroyTextureStagingOwner(MGLTextureStagingOwner **owner);
+/* Return the staging owner to the pool only once `command_buffer` completes:
+ * the upload blit keeps reading those bytes until the GPU is finished with it,
+ * and the upload command buffer is committed without being waited on. */
+int mglRenderDestroyTextureStagingOwnerAfterCommandBuffer(
+    MGLTextureStagingOwner **owner, void *command_buffer);
 
 int mglRenderGetTextureInfo(const void *texture,
                                MGLRenderTextureInfo *info_out);

@@ -1101,26 +1101,143 @@ int mglRenderSetRenderSampler(void* render_encoder,
     return 0;
 }
 
+/* === texture staging pool ==============================================
+ * Upload staging MTLBuffers are recycled across uploads once the command
+ * buffer that last read them completed.  Destroy tags a returned slot with
+ * the currently-accumulating generation, which is always >= the generation
+ * of the command buffer the upload was encoded into (a dedicated upload
+ * buffer commits and mints the next generation before Destroy runs), so a
+ * slot is conservatively held until that generation completes. */
+namespace {
+constexpr size_t kTextureStagingPoolMaxSlots = 8;
+constexpr uint64_t kTextureStagingPoolMaxBytes = 32ull << 20;
+std::mutex gTextureStagingPoolMutex;
+MTL::Buffer* gTextureStagingPoolBuffers[kTextureStagingPoolMaxSlots] = {};
+uint64_t gTextureStagingPoolGenerations[kTextureStagingPoolMaxSlots] = {};
+uint64_t gTextureStagingPoolOptions[kTextureStagingPoolMaxSlots] = {};
+uint64_t gTextureStagingPoolBytes = 0;
+
+void mglTextureStagingPoolReleaseLocked(size_t index) {
+    MTL::Buffer* buffer = gTextureStagingPoolBuffers[index];
+    if (!buffer) return;
+    gTextureStagingPoolBytes -= static_cast<uint64_t>(buffer->length());
+    gTextureStagingPoolBuffers[index] = nullptr;
+    gTextureStagingPoolGenerations[index] = 0;
+    gTextureStagingPoolOptions[index] = 0;
+    buffer->release();
+}
+}  // namespace
+
 int mglRenderCreateTextureStagingOwner(const void* bytes, uint64_t length, uint64_t resource_options, MGLTextureStagingOwner ** owner_out, void** buffer_out) {
     if (owner_out) *owner_out = nullptr;
     if (buffer_out) *buffer_out = nullptr;
     if (!owner_out || !buffer_out || !bytes || length == 0) return -1;
-    void* rawBuffer = nullptr;
-    if (mglRenderCreateBufferWithBytes(
-            bytes, length, resource_options, "MGL.texture_staging",
-            &rawBuffer) != 0 || !rawBuffer) {
-        return -1;
+    MTL::Buffer* pooled = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gTextureStagingPoolMutex);
+        const uint64_t completed = mglRenderCompletedBufferGeneration();
+        size_t best = SIZE_MAX;
+        NS::UInteger bestLength = 0;
+        for (size_t i = 0; i < kTextureStagingPoolMaxSlots; ++i) {
+            MTL::Buffer* candidate = gTextureStagingPoolBuffers[i];
+            if (!candidate) continue;
+            if (completed < gTextureStagingPoolGenerations[i]) continue;
+            if (gTextureStagingPoolOptions[i] != resource_options) continue;
+            const NS::UInteger candidateLength = candidate->length();
+            if (static_cast<NS::UInteger>(length) > candidateLength) continue;
+            if (best == SIZE_MAX || candidateLength < bestLength) {
+                best = i;
+                bestLength = candidateLength;
+            }
+        }
+        if (best != SIZE_MAX && !getenv("MGL_NO_STAGING_POOL")) {
+            pooled = gTextureStagingPoolBuffers[best];
+            gTextureStagingPoolBytes -= static_cast<uint64_t>(pooled->length());
+            gTextureStagingPoolBuffers[best] = nullptr;
+        }
+    }
+    MTL::Buffer* buffer = pooled;
+    if (buffer) {
+        std::memcpy(buffer->contents(), bytes, static_cast<size_t>(length));
+    } else {
+        void* rawBuffer = nullptr;
+        if (mglRenderCreateBufferWithBytes(
+                bytes, length, resource_options, "MGL.texture_staging",
+                &rawBuffer) != 0 || !rawBuffer) {
+            return -1;
+        }
+        buffer = static_cast<MTL::Buffer*>(rawBuffer);
     }
     mgl::TextureStagingOwner* owner =
         new (std::nothrow) mgl::TextureStagingOwner();
     if (!owner) {
-        static_cast<MTL::Buffer*>(rawBuffer)->release();
+        buffer->release();
         return -1;
     }
-    owner->buffer = static_cast<MTL::Buffer*>(rawBuffer);
+    owner->buffer = buffer;
+    owner->options = resource_options;
     *owner_out = reinterpret_cast<decltype(*owner_out)>(owner);
     *buffer_out = owner->buffer;
     return 0;
+}
+
+/* Return a staging buffer to the pool.  `generation` is the frame generation
+ * that must have completed before the bytes may be handed out again; the pool
+ * refuses a slot until mglRenderCompletedBufferGeneration() reaches it. */
+static void mglTextureStagingOwnerReturn(mgl::TextureStagingOwner* owner,
+                                         uint64_t generation) {
+    if (!owner) return;
+    MTL::Buffer* buffer = owner->buffer;
+    const uint64_t options = owner->options;
+    owner->buffer = nullptr;
+    delete owner;
+    if (!buffer) return;
+    std::lock_guard<std::mutex> lock(gTextureStagingPoolMutex);
+    const uint64_t length = static_cast<uint64_t>(buffer->length());
+    if (length > kTextureStagingPoolMaxBytes) {
+        buffer->release();
+        return;
+    }
+    /* Make room: free slots first, then evict completed slots, then the
+     * oldest, while the byte budget would overflow. */
+    while (gTextureStagingPoolBytes + length > kTextureStagingPoolMaxBytes) {
+        size_t victim = SIZE_MAX;
+        for (size_t i = 0; i < kTextureStagingPoolMaxSlots; ++i) {
+            if (gTextureStagingPoolBuffers[i] &&
+                (victim == SIZE_MAX)) {
+                victim = i;
+                break;
+            }
+        }
+        if (victim == SIZE_MAX) break;
+        mglTextureStagingPoolReleaseLocked(victim);
+    }
+    size_t slot = SIZE_MAX;
+    for (size_t i = 0; i < kTextureStagingPoolMaxSlots; ++i) {
+        if (!gTextureStagingPoolBuffers[i]) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot == SIZE_MAX) {
+        /* All slots live: evict a completed one (or the oldest) for this
+         * buffer; if nothing is evictable, drop the incoming buffer. */
+        const uint64_t completed = mglRenderCompletedBufferGeneration();
+        for (size_t i = 0; i < kTextureStagingPoolMaxSlots && slot == SIZE_MAX; ++i) {
+            if (completed >= gTextureStagingPoolGenerations[i]) {
+                mglTextureStagingPoolReleaseLocked(i);
+                slot = i;
+            }
+        }
+        if (slot == SIZE_MAX) {
+            buffer->release();
+            return;
+        }
+    }
+    gTextureStagingPoolBuffers[slot] = buffer;
+    gTextureStagingPoolGenerations[slot] = generation;
+    gTextureStagingPoolOptions[slot] = options;
+    gTextureStagingPoolBytes += length;
 }
 
 void mglRenderDestroyTextureStagingOwner(MGLTextureStagingOwner ** owner_handle) {
@@ -1128,7 +1245,59 @@ void mglRenderDestroyTextureStagingOwner(MGLTextureStagingOwner ** owner_handle)
     mgl::TextureStagingOwner* owner =
         reinterpret_cast<mgl::TextureStagingOwner*>(*owner_handle);
     *owner_handle = nullptr;
-    delete owner;
+    /* +1 on purpose: the blit that reads these bytes was encoded into the
+     * command buffer *being accumulated*, and that buffer only mints its
+     * generation when it is committed.  Stamping `current` would make the slot
+     * look reusable the moment it is returned — while the blit has not even
+     * been submitted — so the next upload in the same frame overwrites the
+     * bytes and every texture takes the last upload's pixels. */
+    mglTextureStagingOwnerReturn(owner, mglRenderCurrentBufferGeneration() + 1u);
+}
+
+/* Deferred return: the upload that read these bytes rides in its own command
+ * buffer, which is committed without waiting, so the pool must not hand the
+ * buffer out again until that buffer completes.  At completion time the blit is
+ * done, so the slot may be reused immediately — stamping it with the *completed*
+ * generation says exactly that, instead of burning a whole frame (which is what
+ * an unconditional "current + 1" would do). */
+namespace {
+struct MglStagingDeferredRelease {
+    mgl::TextureStagingOwner* owner;
+};
+void mglStagingDeferredReleaseBody(void* ctx,
+                                   const MGLRenderCommandBufferState* state) {
+    (void)state;
+    MglStagingDeferredRelease* release =
+        static_cast<MglStagingDeferredRelease*>(ctx);
+    if (!release) return;
+    mgl::TextureStagingOwner* owner = release->owner;
+    release->owner = nullptr;
+    mglTextureStagingOwnerReturn(owner, mglRenderCompletedBufferGeneration());
+}
+void mglStagingDeferredReleaseDestroy(void* ctx) {
+    delete static_cast<MglStagingDeferredRelease*>(ctx);
+}
+}  /* namespace */
+
+extern "C" int mglRenderDestroyTextureStagingOwnerAfterCommandBuffer(
+    MGLTextureStagingOwner ** owner_handle, void * command_buffer) {
+    if (!owner_handle || !*owner_handle || !command_buffer) return -1;
+    MglStagingDeferredRelease* release = new (std::nothrow) MglStagingDeferredRelease();
+    if (!release) return -1;
+    release->owner = reinterpret_cast<mgl::TextureStagingOwner*>(*owner_handle);
+    *owner_handle = nullptr;
+    if (mglRenderAddCommandBufferCompletion(
+            command_buffer, mglStagingDeferredReleaseBody, release,
+            mglStagingDeferredReleaseDestroy) != 0) {
+        /* No completion slot: fall back to the conservative path (the pool's
+         * generation guard keeps the bytes alive for the frame). */
+        mglTextureStagingOwnerReturn(release->owner,
+                                     mglRenderCurrentBufferGeneration());
+        release->owner = nullptr;
+        delete release;
+        return -1;
+    }
+    return 0;
 }
 
 int mglRenderCreateTextureFromState(

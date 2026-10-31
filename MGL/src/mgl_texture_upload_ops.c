@@ -196,17 +196,7 @@ static void *mglUpTextureBufferContents(void *buffer)
                : NULL;
 }
 
-/* Twin of the .m's mglTextureCreateBufferWithBytes (returns the +1 handle). */
-static void *mglUpCreateBufferWithBytes(const void *bytes, uint64_t length,
-                                        uint64_t options)
-{
-    void *buffer = NULL;
-    if (mglRenderCreateBufferWithBytes(bytes, (size_t)length, options, NULL,
-                                       &buffer) == 0 && buffer) {
-        return buffer;
-    }
-    return NULL;
-}
+
 
 
 typedef struct MglPdUploadCompletionCtx_t {
@@ -242,7 +232,8 @@ int mglTextureCopyUploadWithDedicatedCommandBuffer(
     uint64_t sourceBytesPerRow, uint64_t sourceBytesPerImage,
     uint64_t sourceLayerStride, uint64_t layerCount, MGLSizeValue sourceSize,
     void *texture, uint64_t destinationSlice, uint64_t destinationLevel,
-    MGLOriginValue destinationOrigin, int flipY, const char *reason)
+    MGLOriginValue destinationOrigin, int flipY, const char *reason,
+    MGLTextureStagingOwner **staging_owner_io)
 {
     MGLRendererStateView areas;
     mglRendererFillStateView(renderer, &areas);
@@ -292,7 +283,12 @@ int mglTextureCopyUploadWithDedicatedCommandBuffer(
         if (areas.batching) {
             mglRendererSetCommandBufferHasWork(renderer, 1);
         }
-
+        /* The blit rides in the frame's command buffer: the pool's generation
+         * guard keeps these bytes out of circulation until that buffer
+         * completes, so returning the owner now is safe. */
+        if (staging_owner_io) {
+            mglRenderDestroyTextureStagingOwner(staging_owner_io);
+        }
         return 1;
     }
 
@@ -341,6 +337,14 @@ int mglTextureCopyUploadWithDedicatedCommandBuffer(
     (void)mglRenderAddCommandBufferCompletion(uploadCB, mglPdUploadCompletionBody,
                                               completionCtx,
                                               mglPdUploadCompletionDestroy);
+
+    /* This buffer is committed without being waited on, and the blit keeps
+     * reading the staging bytes until it completes — hand the owner to that
+     * completion instead of returning it now. */
+    if (staging_owner_io && *staging_owner_io) {
+        (void)mglRenderDestroyTextureStagingOwnerAfterCommandBuffer(
+            staging_owner_io, uploadCB);
+    }
 
     if (mglRenderCommitCommandBuffer(uploadCB) != 0) {
         fprintf(stderr,
@@ -696,9 +700,11 @@ int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
         mglTextureSize(width, uploadPlan.normalized_height,
                        uploadPlan.copy_depth),
         texture, uploadPlan.destination_slice, uploadPlan.destination_level,
-        mglTextureOrigin(0, 0, 0), flipY, "texture_upload_blit");
-    /* The encoded blit retains its source resource until command-buffer
-     * completion; release the C++ staging owner as soon as encoding ends. */
+        mglTextureOrigin(0, 0, 0), flipY, "texture_upload_blit",
+        &stagingOwner);
+    /* Consumed by the upload path above (deferred to the upload command
+     * buffer's completion when it travelled in its own buffer); still a no-op
+     * when an early return left it with us. */
     mglRenderDestroyTextureStagingOwner(&stagingOwner);
     if (!uploaded) {
         fprintf(stderr,
@@ -761,13 +767,16 @@ static int mglUpSafeFillBody(void *renderer, void *rawCtx)
 
                                 // Create a temporary MTLBuffer with the texture data
 
-                                void *tempBuffer =
-                                    mglUpCreateBufferWithBytes(
+                                MGLTextureStagingOwner *stagingOwner = NULL;
+                                void *tempBuffer = NULL;
+                                const int staged = mglRenderCreateTextureStagingOwner(
                                         properData, fillSize,
-                                        MGL_PD_TEXTURE_RESOURCE_STORAGE_SHARED);
+                                        MGL_PD_TEXTURE_RESOURCE_STORAGE_SHARED,
+                                        &stagingOwner, &tempBuffer) == 0 &&
+                                    stagingOwner != NULL && tempBuffer != NULL;
 
 
-                                if (tempBuffer) {
+                                if (staged) {
 
                                     fprintf(stderr, "MGL INFO: Created temporary MTLBuffer for texture data\n");
 
@@ -779,7 +788,7 @@ static int mglUpSafeFillBody(void *renderer, void *rawCtx)
                                     } else {
 
                                         int uploaded = mglTextureCopyUploadWithDedicatedCommandBuffer(
-            renderer, tempBuffer, 0, properBytesPerRow, fillSize, 0, 1, mglTextureSize(properRegion.size.width, properRegion.size.height, 1), texture, 0, 0, mglTextureOrigin(0, 0, 0), 0, "texture_fill_initialization");
+            renderer, tempBuffer, 0, properBytesPerRow, fillSize, 0, 1, mglTextureSize(properRegion.size.width, properRegion.size.height, 1), texture, 0, 0, mglTextureOrigin(0, 0, 0), 0, "texture_fill_initialization", NULL);
 
                                         if (uploaded) {
 
@@ -796,8 +805,13 @@ static int mglUpSafeFillBody(void *renderer, void *rawCtx)
                                     }
 
 
-                                    // Clean up the temporary buffer
+                                    // Clean up the temporary buffer: the
+                                    // encoded upload retains its source until
+                                    // command-buffer completion, so the
+                                    // staging owner can be released now (this
+                                    // used to leak one MTLBuffer per fill).
 
+                                    mglRenderDestroyTextureStagingOwner(&stagingOwner);
                                     tempBuffer = NULL;
 
                                 }
@@ -1064,7 +1078,7 @@ int mglTextureEncodeBytesUpload(void *renderer, Texture *tex, void *buffer,
     return mglTextureCopyUploadWithDedicatedCommandBuffer(
             renderer, buffer, sourceOffset, sourceBytesPerRow, copyBytesPerImage, sourceLayerStride, layerCount, mglTextureSize(
                                                        (uint64_t)uploadPlan.copy_width,
-                                                       copyHeight, copyDepth), texture, destinationSlice, level, destinationOrigin, flipY, reason ? reason : "texture_sub_upload");
+                                                       copyHeight, copyDepth), texture, destinationSlice, level, destinationOrigin, flipY, reason ? reason : "texture_sub_upload", NULL);
 }
 
 /* ALTERNATIVE 1 of the safe fill: the MTLBuffer-to-texture copy, which the .m
@@ -3325,15 +3339,23 @@ int mglTextureSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
                             free(expanded);
                         }
                         if (expandOK) {
-                            void *uploadBuffer = mglUpCreateBufferWithBytes(
-                                packedUpload, packedBytes,
-                                MGL_PD_TEXTURE_RESOURCE_STORAGE_SHARED);
-                            if (uploadBuffer) {
+                            MGLTextureStagingOwner *stagingOwner = NULL;
+                            void *uploadBuffer = NULL;
+                            if (mglRenderCreateTextureStagingOwner(
+                                    packedUpload, packedBytes,
+                                    MGL_PD_TEXTURE_RESOURCE_STORAGE_SHARED,
+                                    &stagingOwner, &uploadBuffer) == 0 &&
+                                stagingOwner && uploadBuffer) {
                                 bool uploaded = mglTextureEncodeBytesUpload(
                                     renderer, tex, uploadBuffer, 0, dstRowBytes,
                                     dstImageBytes, width, height, depth, slice,
                                     level, xoffset, yoffset, zoffset,
                                     "mtlTexSubImage");
+                                /* The encoded upload retains its source until
+                                 * command-buffer completion; return the
+                                 * staging buffer instead of leaking the +1
+                                 * reference this path used to drop. */
+                                mglRenderDestroyTextureStagingOwner(&stagingOwner);
                                 if (!uploaded) {
                                     fprintf(stderr, "MGL ERROR: mtlTexSubImage expanded PBO upload failed (tex=%u slice=%u level=%u)\n",
                                           tex->name, slice, level);
@@ -3571,17 +3593,22 @@ int mglTextureSubImageBytes(void *renderer, GLMContext glm_ctx,
                 copyHeight, level, metalSlice + z, xoffset, yoffset, flipY);
         }
     } else {
-        void *uploadBuffer = mglUpCreateBufferWithBytes(
-            packedBytesPtr, dstImageBytes * copyDepth,
-            MGL_PD_TEXTURE_RESOURCE_STORAGE_SHARED);
-        if (!uploadBuffer) {
-            free(packedUpload);
-            return false;
+        MGLTextureStagingOwner *stagingOwner = NULL;
+        void *uploadBuffer = NULL;
+        if (mglRenderCreateTextureStagingOwner(
+                packedBytesPtr, dstImageBytes * copyDepth,
+                MGL_PD_TEXTURE_RESOURCE_STORAGE_SHARED, &stagingOwner,
+                &uploadBuffer) == 0 &&
+            stagingOwner && uploadBuffer) {
+            /* The encoded upload retains its source until command-buffer
+             * completion; return the staging buffer to the pool right after
+             * encoding instead of leaking the +1 reference per upload. */
+            uploaded = mglTextureEncodeBytesUpload(
+                renderer, tex, uploadBuffer, 0, dstRowBytes, dstImageBytes,
+                width, height, depth, slice, level, xoffset, yoffset, zoffset,
+                "mtlTexSubImageBytes");
+            mglRenderDestroyTextureStagingOwner(&stagingOwner);
         }
-        uploaded = mglTextureEncodeBytesUpload(
-            renderer, tex, uploadBuffer, 0, dstRowBytes, dstImageBytes, width,
-            height, depth, slice, level, xoffset, yoffset, zoffset,
-            "mtlTexSubImageBytes");
     }
     if (uploaded && mglRenderTargetHasGPUContent(
                         tex->is_render_target ? 1 : 0,
