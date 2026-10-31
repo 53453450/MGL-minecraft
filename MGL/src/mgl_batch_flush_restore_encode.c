@@ -304,8 +304,12 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
     MGL_SIGNPOST_BEGIN(RestoreStateForBatch);
     mglCoreAssertDualProxy(areas.core, glm_ctx);
     if (batch->state_snapshot) {
-        mglCopyHotStateFields(replay, (const GLMState *)batch->state_snapshot);
-        MGL_PERF_ADD(g_mglReplayMemcpyCountSinceSwap, mglSnapshotHotStateBytes());
+        /* Region-skip copy: consecutive batches usually differ only in their
+         * buffer_base slice offsets, so the large unchanged regions of the
+         * snapshot are left untouched instead of rewritten. */
+        const size_t restoredBytes = mglCopyHotStateFieldsIfChanged(
+            replay, (const GLMState *)batch->state_snapshot);
+        MGL_PERF_ADD(g_mglReplayMemcpyCountSinceSwap, restoredBytes);
         mgl_batch_replay_copy_object_hash_tables(replay, savedState);
         mglRestoreProgramPipelinePair(glm_ctx, replay->program_name,
                                       replay->var.program_pipeline_binding);
