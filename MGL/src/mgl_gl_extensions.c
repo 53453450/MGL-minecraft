@@ -3926,7 +3926,14 @@ void mglGetActiveSubroutineName(GLMContext ctx, GLuint program, GLenum shadertyp
 		if (name && bufSize > 0) name[0] = '\0';
 		return;
 	}
-	if (length) *length = (GLsizei)strlen(found);
+	/* GL 4.6: `length` is the number of characters actually written to
+	 * `name`, excluding the NUL -- with bufSize 0 nothing is written (CTS
+	 * name_getters). */
+	if (length) {
+		GLsizei len = (GLsizei)strlen(found);
+		*length = (bufSize > 0) ? ((len < bufSize - 1) ? len : bufSize - 1)
+		                        : 0;
+	}
 	if (name && bufSize > 0) {
 		snprintf(name, (size_t)bufSize, "%s", found);
 	}
@@ -3955,14 +3962,25 @@ void mglGetActiveSubroutineUniformName(GLMContext ctx, GLuint program, GLenum sh
 		return;
 	}
 	const MGLAIRSubroutineTable *table = &pptr->subroutine_tables[stage];
-	if (index >= table->uniform_count) {
+	/* GL 4.6 §7.10/§7.3.1: `index` enumerates the stage's subroutine
+	 * uniforms; an arrayed uniform is ONE entry whose name is the element-0
+	 * spelling ("g[0]"), like any other uniform resource. */
+	uint32_t row = 0;
+	if (mglSubroutineDistinctUniformRow(table, index, &row) != 0) {
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		if (length) *length = 0;
 		if (name && bufSize > 0) name[0] = '\0';
 		return;
 	}
-	const char *found = table->uniform_names[index];
-	if (length) *length = (GLsizei)strlen(found);
+	const char *found = table->uniform_names[row];
+	/* GL 4.6: `length` is the number of characters actually written to
+	 * `name`, excluding the NUL -- with bufSize 0 nothing is written (CTS
+	 * name_getters). */
+	if (length) {
+		GLsizei len = (GLsizei)strlen(found);
+		*length = (bufSize > 0) ? ((len < bufSize - 1) ? len : bufSize - 1)
+		                        : 0;
+	}
 	if (name && bufSize > 0) {
 		snprintf(name, (size_t)bufSize, "%s", found);
 	}
@@ -3989,11 +4007,15 @@ void mglGetActiveSubroutineUniformiv(GLMContext ctx, GLuint program, GLenum shad
 		return;
 	}
 	const MGLAIRSubroutineTable *table = &pptr->subroutine_tables[stage];
-	if (index >= table->uniform_count) {
+	/* GL 4.6 §7.10: `index` enumerates the stage's subroutine uniforms; an
+	 * arrayed uniform is one entry (UNIFORM_SIZE reports its element count,
+	 * the name queries report the base name). */
+	uint32_t row = 0;
+	if (mglSubroutineDistinctUniformRow(table, index, &row) != 0) {
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
-	uint32_t typeIdx = table->uniform_type[index];
+	uint32_t typeIdx = table->uniform_type[row];
 	if (typeIdx >= table->type_count) {
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
@@ -4020,10 +4042,12 @@ void mglGetActiveSubroutineUniformiv(GLMContext ctx, GLuint program, GLenum shad
 			}
 			break;
 		case GL_UNIFORM_SIZE:
-			*values = 1;
+			*values = (GLint)(table->uniform_declared_elements[row]
+			                      ? table->uniform_declared_elements[row]
+			                      : 1u);
 			break;
 		case GL_UNIFORM_NAME_LENGTH:
-			*values = (GLint)strlen(table->uniform_names[index]) + 1;
+			*values = (GLint)strlen(table->uniform_names[row]) + 1;
 			break;
 		default:
 			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
@@ -4619,16 +4643,21 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 							*params = distinct;
 							return;
 						}
-						case GL_MAX_NAME_LENGTH:
-							for (uint32_t i = 0;
-							     i < table->uniform_count; i++)
-							{
-								GLint n = (GLint)strlen(
-								    table->uniform_names[i]) + 1;
-								if (n > max_len) max_len = n;
-							}
-							*params = max_len;
-							return;
+					case GL_MAX_NAME_LENGTH:
+						/* Distinct uniforms only (an arrayed uniform
+						 * reports its element-0 name "g[0]"), matching
+						 * glGetActiveSubroutineUniformName. */
+						for (uint32_t i = 0;
+						     i < table->uniform_count; i++)
+						{
+							if (table->uniform_element[i] != 0)
+								continue;
+							GLint n = (GLint)strlen(
+							    table->uniform_names[i]) + 1;
+							if (n > max_len) max_len = n;
+						}
+						*params = max_len;
+						return;
 						case GL_MAX_NUM_COMPATIBLE_SUBROUTINES: {
 							GLint most = 0;
 							for (uint32_t ti = 0;
@@ -5001,10 +5030,27 @@ GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum progra
 		{
 			if (mglSubroutineIsUniformInterface(programInterface))
 			{
-				GLint loc = mglGetSubroutineUniformLocation(
-				    ctx, program, mglSubroutineStageToShaderType(sub_stage),
-				    name);
-				return (loc < 0) ? GL_INVALID_INDEX : (GLuint)loc;
+				/* GL 4.6 §7.10: the resource index is the enumeration
+				 * ordinal of the distinct uniform (what
+				 * glGetProgramResourceName reports for it), not its
+				 * location -- the two differ with an explicit
+				 * layout(location = N).  An array is named "g[0]"; the
+				 * base spelling is accepted too. */
+				const MGLAIRSubroutineTable *table =
+				    &pptr->subroutine_tables[sub_stage];
+				GLuint ordinal = 0;
+				for (uint32_t i = 0; i < table->uniform_count; i++) {
+					if (table->uniform_element[i] != 0u) continue;
+					if (strcmp(table->uniform_names[i], name) == 0)
+						return ordinal;
+					char base[MGL_AIR_SUBROUTINE_NAME_MAX];
+					mglSubroutineUniformBaseName(
+					    table->uniform_names[i], base, sizeof(base));
+					if (strcmp(base, name) == 0)
+						return ordinal;
+					ordinal++;
+				}
+				return GL_INVALID_INDEX;
 			}
 			return mglGetSubroutineIndex(
 			    ctx, program, mglSubroutineStageToShaderType(sub_stage),
@@ -5223,8 +5269,15 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 				const char *resolved = NULL;
 				if (mglSubroutineIsUniformInterface(programInterface))
 				{
-					if (index < table->uniform_count)
-						resolved = table->uniform_names[index];
+					/* Distinct uniforms, reported under the element-0
+					 * name ("g[0]") like any other uniform resource,
+					 * matching ACTIVE_RESOURCES which counts an arrayed
+					 * uniform once (GL 4.6 §7.10). */
+					uint32_t row = 0;
+					if (mglSubroutineDistinctUniformRow(table, index,
+					                                    &row) == 0) {
+						resolved = table->uniform_names[row];
+					}
 				}
 				else
 				{
@@ -5502,16 +5555,21 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 				    GL_TRUE : GL_FALSE;
 				const char *resolved = NULL;
 				uint32_t type_idx = 0, impl_slot = 0;
+				uint32_t uniform_row = 0;   /* element-0 row when is_uniform */
 				if (is_uniform)
 				{
-					if (index >= table->uniform_count)
+					/* Distinct uniforms (an arrayed uniform is one
+					 * resource named "g[0]"); `uniform_row` is its
+					 * element-0 row. */
+					if (mglSubroutineDistinctUniformRow(table, index,
+					                                    &uniform_row) != 0)
 					{
 						mglDispatchError(ctx, __FUNCTION__,
 						                 GL_INVALID_VALUE);
 						return;
 					}
-					resolved = table->uniform_names[index];
-					type_idx = table->uniform_type[index];
+					resolved = table->uniform_names[uniform_row];
+					type_idx = table->uniform_type[uniform_row];
 				}
 				else
 				{
@@ -5565,11 +5623,13 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 							params[out_idx++] =
 							    (GLint)strlen(resolved) + 1;
 							break;
-						case GL_ARRAY_SIZE:
-							params[out_idx++] = is_uniform
-							    ? (GLint)table->uniform_declared_elements[index]
-							    : 1;
-							break;
+					case GL_ARRAY_SIZE:
+						params[out_idx++] = is_uniform
+						    ? (GLint)(table->uniform_declared_elements[uniform_row]
+						              ? table->uniform_declared_elements[uniform_row]
+						              : 1u)
+						    : 1;
+						break;
 						case GL_NUM_COMPATIBLE_SUBROUTINES: {
 							GLint n = 0;
 							if (type_idx < table->type_count) {
@@ -5598,19 +5658,16 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 							}
 							break;
 						}
-						case GL_LOCATION:
-							/* The location the subroutine-uniform query
-							 * family reports, including an explicit
-							 * layout(location = N) offset by the array
-							 * element index. */
-							params[out_idx++] = is_uniform
-							    ? (GLint)mglSubroutineUniformLocationAt(
-							          table, index)
-							    : -1;
-							/* For an arrayed uniform this equals the
-							 * base location reported for "b", which is the
-							 * first element's slot. */
-							break;
+					case GL_LOCATION:
+						/* The location the subroutine-uniform query
+						 * family reports; for an arrayed uniform this is
+						 * the first element's slot, which is what
+						 * querying the base name reports. */
+						params[out_idx++] = is_uniform
+						    ? (GLint)mglSubroutineUniformLocationAt(
+						          table, uniform_row)
+						    : -1;
+						break;
 						case GL_LOCATION_INDEX:
 							params[out_idx++] = -1;
 							break;
@@ -6213,6 +6270,19 @@ int mglSubroutineValidateTable(const MGLAIRSubroutineTable *table,
 		                    ? table->uniform_declared_elements[i] : 1u;
 		if ((uint32_t)loc + size > maxLocations) return 0;
 	}
+	/* ARB_shader_subroutine: "A program will fail to link if any stage has
+	 * one or more subroutine uniforms that has no subroutine associated
+	 * with the subroutine type of the uniform."  A type with no named
+	 * implementation therefore fails the link as soon as a uniform of that
+	 * type is declared; without this check the program linked and the
+	 * dispatch lowered the call to a no-op. */
+	for (uint32_t i = 0; i < table->uniform_count; i++) {
+		uint32_t type_idx = table->uniform_type[i];
+		if (type_idx >= table->type_count ||
+		    table->types[type_idx].impl_name_count == 0u) {
+			return 0;
+		}
+	}
 	return 1;
 }
 
@@ -6234,6 +6304,37 @@ int mglSubroutineUniformLocationSpan(const MGLAIRSubroutineTable *table)
 		if (loc >= span) span = loc + 1;
 	}
 	return span;
+}
+
+int mglSubroutineDistinctUniformRow(const MGLAIRSubroutineTable *table,
+                                    GLuint ordinal, uint32_t *row_out)
+{
+	if (!table || !row_out) return -1;
+	uint32_t distinct = 0;
+	for (uint32_t i = 0; i < table->uniform_count; i++) {
+		if (table->uniform_element[i] != 0u) continue;
+		if (distinct == ordinal) {
+			*row_out = i;
+			return 0;
+		}
+		distinct++;
+	}
+	return -1;
+}
+
+void mglSubroutineUniformBaseName(const char *row_name, char *out, size_t cap)
+{
+	if (!out || cap == 0u) return;
+	if (!row_name) {
+		out[0] = '\0';
+		return;
+	}
+	size_t n = 0;
+	while (row_name[n] != '\0' && row_name[n] != '[' && n + 1u < cap) {
+		out[n] = row_name[n];
+		n++;
+	}
+	out[n] = '\0';
 }
 
 void mglGetProgramStageiv(GLMContext ctx, GLuint program, GLenum shadertype, GLenum pname, GLint *values)
@@ -6294,7 +6395,11 @@ void mglGetProgramStageiv(GLMContext ctx, GLuint program, GLenum shadertype, GLe
 					}
 				}
 			} else {
+				/* Distinct uniforms only (an arrayed uniform reports its
+				 * element-0 name "g[0]"), matching
+				 * glGetActiveSubroutineUniformName. */
 				for (uint32_t i = 0; i < table->uniform_count; i++) {
+					if (table->uniform_element[i] != 0u) continue;
 					GLint n = (GLint)strlen(table->uniform_names[i]) + 1;
 					if (n > maxLen) maxLen = n;
 				}
@@ -6855,6 +6960,9 @@ void mglGetTransformFeedbackiv(GLMContext ctx, GLuint xfb, GLenum pname, GLint *
 	}
 }
 
+/* Per-stage plain-uniform location for subroutine uniforms (uniforms.c). */
+extern GLint mglUniformSubroutinePlainLocation(Program *pptr, int stage, const char *base);
+
 void mglGetUniformSubroutineuiv(GLMContext ctx, GLenum shadertype, GLint location, GLuint *params)
 {
 	int stage = mglSubroutineStageIndex(shadertype);
@@ -6878,19 +6986,53 @@ void mglGetUniformSubroutineuiv(GLMContext ctx, GLenum shadertype, GLint locatio
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
+	/* CTS subroutine_errors: querying a shader stage the active program
+	 * does not define is GL_INVALID_OPERATION, not a location error. */
+	if (pptr->attached_shader_counts[stage] == 0u) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+		return;
+	}
 	const MGLAIRSubroutineTable *table = &pptr->subroutine_tables[stage];
-	if (location < 0 || (uint32_t)location >= table->uniform_count) {
+	/* GL 4.6 §7.10: `location` is a subroutine-uniform location in
+	 * [0, ACTIVE_SUBROUTINE_UNIFORM_LOCATIONS) -- it may be sparse because
+	 * of an explicit layout(location = N) -- not an index into the uniform
+	 * rows.  Find the row that owns it, mirroring the owner search of
+	 * glUniformSubroutinesuiv so set and readback always agree. */
+	if (location < 0 || location >= mglSubroutineUniformLocationSpan(table)) {
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
-	GLint loc = mglGetUniformLocation(ctx, pptr->name,
-	                                  table->uniform_names[location]);
+	int owner = -1;
+	for (uint32_t u = 0; u < table->uniform_count; u++) {
+		if (mglSubroutineUniformLocationAt(table, u) == location) {
+			owner = (int)u;
+			break;
+		}
+	}
+	/* A reserved-but-unused location has no uniform behind it: nothing ever
+	 * stores there, so report the never-set default selection. */
+	if (owner < 0) {
+		*params = 0u;
+		return;
+	}
+	/* The selection lives in the plain-uniform pack under the uniform's
+	 * base name, one uint per element (same layout the setter writes).
+	 * Resolve from THIS stage's resource list: the generic name lookup
+	 * returns the first stage that declares the name. */
+	char base[MGL_AIR_SUBROUTINE_NAME_MAX];
+	mglSubroutineUniformBaseName(table->uniform_names[owner], base,
+	                             sizeof(base));
+	GLint loc = mglUniformSubroutinePlainLocation(pptr, stage, base);
+	if (loc < 0) {
+		loc = mglGetUniformLocation(ctx, pptr->name, base);
+	}
 	if (loc < 0) {
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	GLuint value = 0;
-	mglGetUniformuiv(ctx, pptr->name, loc, &value);
+	mglGetUniformuiv(ctx, pptr->name,
+	                 loc + (GLint)table->uniform_element[owner], &value);
 	*params = value;
 }
 
