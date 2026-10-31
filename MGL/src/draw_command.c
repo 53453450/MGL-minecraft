@@ -3659,6 +3659,107 @@ static bool mglCommandReadIndexValue(const uint8_t *data, GLenum type, GLsizei i
     }
 }
 
+/* Cached element-index scan (min/max) shared by the hazard vertex-range walk
+ * and the stream-merge candidate walk.  One O(count) pass fills both the
+ * restart-excluding range and the all-index range; repeated draws of the same
+ * (buffer, offset, count, type, restart) with no intervening content_version
+ * bump reuse it.  Buffers whose bytes can move without a GL call (mapped,
+ * persistently mappable, GPU-write targets) are scanned live every time. */
+typedef struct MGLCommandElementIndexScan {
+    uint64_t min_index;       /* excluding restart indices */
+    uint64_t max_index;
+    uint64_t all_min_index;   /* min over every index */
+    uint64_t all_max_index;   /* max over every index */
+    bool live_valid;          /* at least one non-restart index exists */
+} MGLCommandElementIndexScan;
+
+static bool mglElementIndexScanCacheable(const Buffer *elementBuffer)
+{
+    return elementBuffer && !elementBuffer->mapped &&
+           !elementBuffer->gpu_write_target &&
+           !(elementBuffer->access_flags & GL_MAP_PERSISTENT_BIT);
+}
+
+static bool mglScanCommandElementIndices(Buffer *elementBuffer,
+                                         GLenum indexType,
+                                         uint64_t indexOffset,
+                                         GLsizei count,
+                                         bool hasRestart,
+                                         uint64_t restart,
+                                         MGLCommandElementIndexScan *out)
+{
+    if (!elementBuffer || !elementBuffer->data.buffer_data || count <= 0 || !out) {
+        return false;
+    }
+    size_t indexSize = mglCommandIndexSize(indexType);
+    if (indexSize == 0) return false;
+    if ((uint64_t)count > UINT64_MAX / (uint64_t)indexSize) return false;
+    uint64_t indexBytes = (uint64_t)count * (uint64_t)indexSize;
+    if (indexBytes > UINT64_MAX - indexOffset ||
+        indexOffset + indexBytes > (uint64_t)elementBuffer->size) {
+        return false;
+    }
+
+    const uint32_t restart32 = hasRestart ? (uint32_t)restart : 0u;
+    if (mglElementIndexScanCacheable(elementBuffer) &&
+        elementBuffer->scan_cache_valid &&
+        elementBuffer->scan_cache_content_version == elementBuffer->content_version &&
+        elementBuffer->scan_cache_offset == indexOffset &&
+        elementBuffer->scan_cache_count == (uint32_t)count &&
+        elementBuffer->scan_cache_type == indexType &&
+        elementBuffer->scan_cache_restart_enabled == (hasRestart ? 1 : 0) &&
+        elementBuffer->scan_cache_restart_index == restart32) {
+        out->min_index = elementBuffer->scan_cache_min_index;
+        out->max_index = elementBuffer->scan_cache_max_index;
+        out->all_min_index = elementBuffer->scan_cache_all_min_index;
+        out->all_max_index = elementBuffer->scan_cache_all_max_index;
+        out->live_valid = elementBuffer->scan_cache_live_valid != 0;
+        return true;
+    }
+
+    const uint8_t *data =
+        (const uint8_t *)(uintptr_t)elementBuffer->data.buffer_data + indexOffset;
+    uint64_t minIndex = UINT64_MAX;
+    uint64_t maxIndex = 0;
+    uint64_t allMinIndex = UINT64_MAX;
+    uint64_t allMaxIndex = 0;
+    for (GLsizei i = 0; i < count; i++) {
+        uint64_t index = 0;
+        if (!mglCommandReadIndexValue(data, indexType, i, &index)) {
+            return false;
+        }
+        if (index < allMinIndex) allMinIndex = index;
+        if (index > allMaxIndex) allMaxIndex = index;
+        if (!hasRestart || index != restart) {
+            if (index < minIndex) minIndex = index;
+            if (index > maxIndex) maxIndex = index;
+        }
+    }
+
+    const bool liveValid = (minIndex != UINT64_MAX);
+    out->min_index = liveValid ? minIndex : 0;
+    out->max_index = maxIndex;
+    out->all_min_index = allMinIndex;
+    out->all_max_index = allMaxIndex;
+    out->live_valid = liveValid;
+
+    if (mglElementIndexScanCacheable(elementBuffer)) {
+        elementBuffer->scan_cache_min_index = (uint32_t)out->min_index;
+        elementBuffer->scan_cache_max_index = (uint32_t)out->max_index;
+        elementBuffer->scan_cache_all_min_index = (uint32_t)allMinIndex;
+        elementBuffer->scan_cache_all_max_index = (uint32_t)allMaxIndex;
+        elementBuffer->scan_cache_content_version = elementBuffer->content_version;
+        elementBuffer->scan_cache_offset = indexOffset;
+        elementBuffer->scan_cache_count = (uint32_t)count;
+        elementBuffer->scan_cache_type = indexType;
+        elementBuffer->scan_cache_restart_index = restart32;
+        elementBuffer->scan_cache_restart_enabled = hasRestart ? 1 : 0;
+        elementBuffer->scan_cache_valid = 1;
+        elementBuffer->scan_cache_live_valid = liveValid ? 1 : 0;
+    }
+    return true;
+}
+
 static bool mglCommandComputeElementVertexRange(GLMContext ctx,
                                                 const MGLDrawCommand *cmd,
                                                 uint64_t *minVertex,
@@ -3679,27 +3780,20 @@ static bool mglCommandComputeElementVertexRange(GLMContext ctx,
         return false;
     }
 
-    const uint8_t *data = (const uint8_t *)(uintptr_t)elementBuffer->data.buffer_data + offset;
     uint64_t restart = 0;
     bool hasRestart = mglCommandPrimitiveRestartIndex(ctx, cmd->indexType, &restart);
 
-    uint64_t minIndex = UINT64_MAX;
-    uint64_t maxIndex = 0;
-    for (GLsizei i = 0; i < cmd->count; i++) {
-        uint64_t index = 0;
-        if (!mglCommandReadIndexValue(data, cmd->indexType, i, &index)) {
-            return false;
-        }
-        if (hasRestart && index == restart) {
-            continue;
-        }
-        if (index < minIndex) minIndex = index;
-        if (index > maxIndex) maxIndex = index;
-    }
-
-    if (minIndex == UINT64_MAX) {
+    MGLCommandElementIndexScan scan;
+    if (!mglScanCommandElementIndices(elementBuffer, cmd->indexType, offset,
+                                      cmd->count, hasRestart, restart, &scan)) {
         return false;
     }
+    if (!scan.live_valid) {
+        return false;
+    }
+
+    uint64_t minIndex = scan.min_index;
+    uint64_t maxIndex = scan.max_index;
 
     if (cmd->baseVertex < 0) {
         uint64_t negBase = (uint64_t)(-((int64_t)cmd->baseVertex));
@@ -4428,28 +4522,32 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
     uint64_t minSourceIndex = UINT64_MAX;
     uint64_t maxSourceIndex = 0u;
     if (uses_elements) {
-        for (GLsizei i = 0; i < cmd->count; i++) {
-            uint64_t rawIndex = (uint64_t)cmd->first + (uint64_t)i;
-            if (!mglCommandReadIndexValue(indices, cmd->indexType, i, &rawIndex)) {
-                return false;
-            }
-
-            int64_t sourceIndex = (int64_t)rawIndex + (int64_t)cmd->baseVertex;
-            if (sourceIndex < 0) return false;
-            uint64_t sourceIndexU = (uint64_t)sourceIndex;
-            if (sourceIndexU > (UINT64_MAX - (uint64_t)bindingOffset) / (uint64_t)vertexStride) {
-                return false;
-            }
-
-            uint64_t vertexByte = (uint64_t)bindingOffset +
-                                  (sourceIndexU * (uint64_t)vertexStride);
-            if (vertexByte > UINT64_MAX - (uint64_t)maxAttribEnd ||
-                vertexByte + (uint64_t)maxAttribEnd > (uint64_t)vertexBuffer->size) {
-                return false;
-            }
-            if (sourceIndexU < minSourceIndex) minSourceIndex = sourceIndexU;
-            if (sourceIndexU > maxSourceIndex) maxSourceIndex = sourceIndexU;
+        /* Restart is disabled on this path (gated above), so the cached
+         * all-index range carries the same information the per-index loop
+         * used to recompute on every draw: bounds failure is monotonic in
+         * the source index, so checking the range endpoints is equivalent
+         * to checking every index. */
+        MGLCommandElementIndexScan scan;
+        if (!mglScanCommandElementIndices(indexBuffer, cmd->indexType, indexOffset,
+                                          cmd->count, false, 0, &scan)) {
+            return false;
         }
+        int64_t minSource = (int64_t)scan.all_min_index + (int64_t)cmd->baseVertex;
+        int64_t maxSource = (int64_t)scan.all_max_index + (int64_t)cmd->baseVertex;
+        if (minSource < 0) return false;
+        uint64_t minSourceU = (uint64_t)minSource;
+        uint64_t maxSourceU = (uint64_t)maxSource;
+        if (maxSourceU > (UINT64_MAX - (uint64_t)bindingOffset) / (uint64_t)vertexStride) {
+            return false;
+        }
+        uint64_t maxVertexByte = (uint64_t)bindingOffset +
+                                 (maxSourceU * (uint64_t)vertexStride);
+        if (maxVertexByte > UINT64_MAX - (uint64_t)maxAttribEnd ||
+            maxVertexByte + (uint64_t)maxAttribEnd > (uint64_t)vertexBuffer->size) {
+            return false;
+        }
+        minSourceIndex = minSourceU;
+        maxSourceIndex = maxSourceU;
     } else {
         /* Non-indexed draws reference a linear vertex sequence; the source
          * index range is closed-form, so skip the per-vertex scan. */

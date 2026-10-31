@@ -815,6 +815,27 @@ int mglRenderSnapshotSharedDirtyBuffer(Buffer* buffer,
         return 0;
     }
 
+    /* Fast path: when no in-flight command buffer references the live Metal
+     * store (the same generation gate that governs pool-slot recycling),
+     * fold the shadow's written range straight into it.  Submitted work has
+     * finished reading the old bytes, so there is nothing a copy-on-write
+     * snapshot has to preserve. */
+    if (mgl::bufferMetalDataIdle(buffer, current)) {
+        size_t uploadOffset = 0;
+        size_t uploadLength = 0;
+        if (mgl::bufferDirtyShadowRange(
+                buffer, snapshotLength, &uploadOffset, &uploadLength)) {
+            memcpy(static_cast<uint8_t*>(current->contents()) + uploadOffset,
+                   cpuData + uploadOffset, uploadLength);
+            if (current->storageMode() == MTL::StorageModeManaged) {
+                current->didModifyRange(
+                    NS::Range::Make(uploadOffset, uploadLength));
+            }
+        }
+        *metal_buffer_out = current;
+        return 0;
+    }
+
     MTL::ResourceOptions options = MTL::ResourceStorageModeShared;
     if (current->cpuCacheMode() == MTL::CPUCacheModeWriteCombined) {
         options = static_cast<MTL::ResourceOptions>(

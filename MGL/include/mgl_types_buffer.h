@@ -165,27 +165,34 @@ typedef struct Buffer_t {
     GLboolean gpu_write_target;
     GLintptr written_min;
     GLintptr written_max; // exclusive byte offset, -1 when unknown/unwritten
+    /* Bumped by every CPU-side content mutation (mglBufferMarkWrite and the
+     * allocate-uninitialized reset).  Consumers that snapshot derived facts
+     * about the bytes (index scans) key their cache on this version instead
+     * of re-deriving validity from the write parameters. */
+    uint64_t content_version;
     MGLBufferInitSource last_init_source;
     GLintptr last_write_offset;
     GLsizeiptr last_write_size;
     const void *last_write_src_ptr;
     uint64_t last_write_src_hash;
-    /* Cached drawElements index-range scan (min/max) used by the drawElements
-     * VBO-range guard.  Keyed on last_write_src_hash + (offset,count,type,
-     * restart) — the same invalidation contract as the backend's expanded
-     * index copy (MGLBufferBackend):
-     * only valid while the hash matches AND the bytes came from CPU-side
-     * buffer_data (GPU-own buffers and persistent maps can change without a
-     * GL call).  Skips the O(count) scan on every draw of unchanged EBOs. */
-    uint32_t    scan_cache_min_index;
-    uint32_t    scan_cache_max_index;
-    uint64_t    scan_cache_src_hash;
+    /* Cached drawElements index-range scan (min/max), shared by the hazard
+     * vertex-range walk and the stream-merge candidate walk in
+     * draw_command.c.  Keyed on content_version + (offset,count,type,
+     * restart).  Only stored while the bytes came from CPU-side buffer_data
+     * and cannot change without a GL call: mapped, persistently mappable or
+     * GPU-write-target buffers are rescanned every draw. */
+    uint32_t    scan_cache_min_index;   /* restart-excluding min */
+    uint32_t    scan_cache_max_index;   /* restart-excluding max */
+    uint32_t    scan_cache_all_min_index; /* min over every index */
+    uint32_t    scan_cache_all_max_index; /* max over every index */
+    uint64_t    scan_cache_content_version;
     uint64_t    scan_cache_offset;
     uint32_t    scan_cache_count;
     GLenum      scan_cache_type;
     uint32_t    scan_cache_restart_index;
     uint8_t     scan_cache_restart_enabled;
-    uint8_t     scan_cache_valid;
+    uint8_t     scan_cache_valid;       /* entry holds a completed scan */
+    uint8_t     scan_cache_live_valid;  /* scan saw a non-restart index */
     /* Backend state kept beside the buffer's own storage (CoW snapshot pool,
      * expanded index copy).  Opaque here; see mgl_backend_objects.h.  Release
      * only through mglRenderReleaseBufferBackend. */

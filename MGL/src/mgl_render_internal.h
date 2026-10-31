@@ -522,6 +522,47 @@ inline bool bufferShadowUploadRange(const Buffer* buffer,
     return true;
 }
 
+/* True when the buffer's live Metal store provably has no in-flight command
+ * buffer references left: it lives in a pool slot and every command buffer
+ * that encoded it (slot.lastUseGeneration) has completed.  Unpooled stores
+ * carry no generation tag, so they are conservatively busy. */
+inline bool bufferMetalDataIdle(const Buffer* owner, MTL::Buffer* current) {
+    if (!owner || !current || !owner->backend) return false;
+    const BufferCowPool* pool =
+        static_cast<const BufferCowPool*>(owner->backend->cow_pool);
+    if (!pool) return false;
+    const uint64_t completed =
+        gBufferCompletedGeneration.load(std::memory_order_acquire);
+    for (const BufferCowSlot& slot : pool->slots) {
+        if (slot.buffer == current) {
+            return completed >= slot.lastUseGeneration;
+        }
+    }
+    return false;
+}
+
+/* CPU shadow range not yet folded into the Metal store, for buffers that are
+ * not gpu_write_target: the recorded written range when one is pending, the
+ * whole limit otherwise (matching what a full-length snapshot copy would
+ * transfer). */
+inline bool bufferDirtyShadowRange(const Buffer* buffer,
+                            size_t limit,
+                            size_t* offsetOut,
+                            size_t* lengthOut) {
+    size_t offset = 0;
+    size_t length = limit;
+    if (buffer->written_min >= 0 && buffer->written_max > buffer->written_min) {
+        offset = std::min(static_cast<size_t>(buffer->written_min), limit);
+        const size_t end =
+            std::min(static_cast<size_t>(buffer->written_max), limit);
+        length = end - offset;
+    }
+    if (length == 0) return false;
+    *offsetOut = offset;
+    *lengthOut = length;
+    return true;
+}
+
 inline void installBufferCowSnapshot(Buffer* owner,
                               const BufferCowSnapshot& snapshot) {
     if (snapshot.poolOwnsReference) snapshot.buffer->retain();
@@ -831,6 +872,9 @@ struct TextureStagingOwner {
     }
 
     MTL::Buffer* buffer = nullptr;
+    /* Resource options the buffer was created with; carried to the staging
+     * pool on destroy so reuse only matches compatible allocations. */
+    uint64_t options = 0;
 };
 
 struct RenderEncoderOwner {

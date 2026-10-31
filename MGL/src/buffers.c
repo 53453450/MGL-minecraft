@@ -114,6 +114,7 @@ static void mglBufferMarkWrite(Buffer *ptr,
     }
 
     ptr->ever_written = GL_TRUE;
+    ptr->content_version++;
     if (size > 0 &&
         offset >= 0 &&
         offset <= ptr->size &&
@@ -168,6 +169,8 @@ static void mglBufferMarkAllocatedUninitialized(Buffer *ptr, MGLBufferInitSource
     ptr->ever_written = GL_FALSE;
     ptr->written_min = -1;
     ptr->written_max = -1;
+    ptr->content_version++;
+    ptr->scan_cache_valid = 0;
     ptr->last_init_source = source;
     ptr->last_write_offset = 0;
     ptr->last_write_size = ptr->size;
