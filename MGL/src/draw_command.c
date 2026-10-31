@@ -636,7 +636,15 @@ static bool mglInitializeOrShareBatchStateSnapshot(GLMContext ctx,
                                                    MGLDrawBatch *batch)
 {
     if (ctx && cb && batch) {
-        for (uint32_t i = 0; i < cb->batch_count; i++) {
+        /* Bounded donor window: the full cb scan was O(batches²) key memcmps
+         * per flush, and workloads with monotone keys (per-draw UBO ring
+         * offsets) never revisit an earlier state, paying the whole search
+         * for nothing.  Revisited states almost always occur close together,
+         * so the last kMGLBatchSnapshotDonorWindow batches still share;
+         * anything older simply takes a fresh capture (always correct). */
+        const uint32_t window = cb->batch_count > 16u
+            ? cb->batch_count - 16u : 0u;
+        for (uint32_t i = window; i < cb->batch_count; i++) {
             MGLDrawBatch *donor = &cb->batches[i];
             if (donor == batch || donor->stream_merged || !donor->state_snapshot) {
                 continue;
