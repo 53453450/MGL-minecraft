@@ -171,9 +171,19 @@ static int sIdx(void *v, void **mtl)
 static void sDraw(void *v, void *mtl)
 {
     SCtx *c = v; MGLDrawCommand *cmd = &c->batch->commands[0];
-    (void)mgl_batch_mtl_draw_indexed(c->enc->render_encoder_owner,
-        (uint32_t)c->batch->key.primitive_type, (uint64_t)c->batch->stream_index_count,
-        MGL_DRAW_INDEX_UINT32, mtl, 0, 1, 0, (uint64_t)cmd->baseInstance);
+    /* Not (void): a NULL encoder makes mglRenderEncodeDraw return -1 and the
+     * draw is then dropped with no trace anywhere. */
+    if (mgl_batch_mtl_draw_indexed(c->enc->render_encoder_owner,
+            (uint32_t)c->batch->key.primitive_type, (uint64_t)c->batch->stream_index_count,
+            MGL_DRAW_INDEX_UINT32, mtl, 0, 1, 0, (uint64_t)cmd->baseInstance) < 0) {
+        static unsigned long long s_streamDrawDrop = 0;
+        unsigned long long hit = ++s_streamDrawDrop;
+        if (hit <= 8ull || (hit % 512ull) == 0ull) {
+            fprintf(stderr,
+                    "MGL WARNING: stream-merged draw rejected (no encoder?) hit=%llu\n",
+                    hit);
+        }
+    }
     mglBatchTraceStreamCmd0(c->r, c->batch, c->ctx, "SUBMIT",
                             mgl_batch_issue_stream_index_reason(MGL_BATCH_STREAM_INDEX_OK));
 }
