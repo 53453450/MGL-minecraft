@@ -846,6 +846,10 @@ void mglFreeActiveUniformCache(Program *program)
     program->active_uniform_cache_count = 0u;
     program->active_uniform_cache_max_name_length = 0;
     program->active_uniform_cache_valid = GL_FALSE;
+    if (program->plain_uniform_type_table) {
+        free(program->plain_uniform_type_table);
+        program->plain_uniform_type_table = NULL;
+    }
 }
 
 MGLShaderResource *mglProgramActiveUniformAt(Program *program, GLuint index, int *stage_out, int *res_type_out)
@@ -2959,10 +2963,95 @@ static bool checkUniformUploadParams(GLMContext ctx, GLint location, const void 
     return true;
 }
 
+/* Fill one [base, base+count) location span of the type table.  Earlier
+ * stages own a location once written, matching the linear scan's
+ * first-stage-wins result. */
+static void mglFillPlainUniformTypeSpan(MGLPlainUniformTypeInfo *table,
+                                        GLint base,
+                                        GLint count,
+                                        GLuint glType)
+{
+    if (base < 0 || count <= 0 || base >= MAX_PLAIN_UNIFORM_LOCATIONS) {
+        return;
+    }
+    GLint end = base + count;
+    if (end > MAX_PLAIN_UNIFORM_LOCATIONS) {
+        end = MAX_PLAIN_UNIFORM_LOCATIONS;
+    }
+    for (GLint loc = base; loc < end; loc++) {
+        if (table[loc].gl_type == 0u) {
+            table[loc].gl_type = glType;
+            table[loc].base = base;
+            table[loc].size = count;
+        }
+    }
+}
+
+/* Lazily build the location→(glType, base, size) table for glUniform*
+ * uploads, replacing the per-upload stage×resource linear scan.  Freed with
+ * the active-uniform cache wherever uniform reflection is invalidated. */
+static MGLPlainUniformTypeInfo *mglBuildPlainUniformTypeTable(Program *program)
+{
+    MGLPlainUniformTypeInfo *table = (MGLPlainUniformTypeInfo *)calloc(
+        MAX_PLAIN_UNIFORM_LOCATIONS, sizeof(MGLPlainUniformTypeInfo));
+    if (!table) {
+        return NULL;
+    }
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *resources =
+            mglUniformSafeResourceList(program, stage, _UNIFORM_CONSTANT_RES, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
+        for (GLuint i = 0; i < resources->count; i++) {
+            MGLShaderResource *res = &resources->list[i];
+            if (mglUniformResourceLooksSamplerLike(res, _UNIFORM_CONSTANT_RES)) {
+                continue;
+            }
+            GLint base = mglPlainUniformResourceLocation(res);
+            if (base < 0) {
+                continue;
+            }
+            if (res->ubo_members && res->ubo_member_count > 0u) {
+                for (GLuint m = 0u; m < res->ubo_member_count; m++) {
+                    const SpirvUBOMember *member = &res->ubo_members[m];
+                    GLint memberBase = base + member->location_offset;
+                    GLint memberSize = member->size > 1 ? member->size : 1;
+                    mglFillPlainUniformTypeSpan(table, memberBase, memberSize,
+                                                member->gl_type);
+                }
+            } else {
+                GLint arraySize = res->gl_array_size > 1
+                    ? res->gl_array_size : 1;
+                mglFillPlainUniformTypeSpan(table, base, arraySize, res->gl_type);
+            }
+        }
+    }
+    program->plain_uniform_type_table = table;
+    return table;
+}
+
 static GLuint mglPlainUniformTypeAtLocation(Program *program, GLint location,
                                             GLint *base_out, GLint *size_out)
 {
     if (!program || location < 0) {
+        return 0u;
+    }
+
+    MGLPlainUniformTypeInfo *table = program->plain_uniform_type_table;
+    if (!table) {
+        table = mglBuildPlainUniformTypeTable(program);
+    }
+    if (table && location < MAX_PLAIN_UNIFORM_LOCATIONS) {
+        /* The table spans every occupied location below the cap, so a zero
+         * row is a definitive miss; only explicit layout locations above the
+         * cap need the reflection scan. */
+        const MGLPlainUniformTypeInfo *info = &table[location];
+        if (info->gl_type != 0u) {
+            if (base_out) *base_out = info->base;
+            if (size_out) *size_out = info->size;
+            return info->gl_type;
+        }
         return 0u;
     }
 
@@ -3314,6 +3403,7 @@ static void mglUniformStore(GLMContext ctx, Program *program, GLint location,
      */
     BufferBaseTarget *uniformSlot = &program->plain_uniform_buffers[location];
     Buffer *buf = uniformSlot->buf;
+    (void)0;
     if (mglUniformUploadDiagEnabled())
         fprintf(stderr, "MGL UNIFORM UPLOAD prog=%u loc=%d size=%lld w0=%u w1=%u\n",
                 (unsigned)program->name, location, (long long)size,
@@ -3484,6 +3574,141 @@ static int mglSubroutineShaderStage(GLenum type)
     }
 }
 
+/* ARB_shader_subroutine: subroutine selections are context state -- "When
+ * UseProgram is called, the subroutine uniforms for all shader stages are
+ * reset to arbitrarily chosen default functions."  MGL keeps selections in
+ * the program's plain-uniform pack, so the reset rewrites every subroutine
+ * row to the never-set value 0, which the dispatch chain routes to the
+ * first implementation (its default function).  mglUniformStore memcmps and
+ * only flushes pending draws when a value actually changes, so rebinding a
+ * program whose selections are already default costs nothing. */
+
+/* Resolve the plain-uniform location of a subroutine uniform from ONE
+ * stage's resource list.  Subroutine uniforms are per-stage state (GL 4.6
+ * §7.10), but the generic name-based lookup walks the stages in order and
+ * returns the first match, so a selection intended for stage N would land
+ * in whichever stage declares the name first -- the cross-stage aliasing
+ * behind CTS subroutine_uniform_reset / same_subroutine / SSO.  Matching
+ * mirrors the setter: the base name, or the element-0 spelling of an
+ * arrayed uniform. */
+GLint mglUniformSubroutinePlainLocation(Program *pptr, int stage,
+                                        const char *base)
+{
+    if (!pptr || stage < 0 || stage >= _MAX_SHADER_TYPES || !base) {
+        return -1;
+    }
+    /* Stage-qualified pack spelling ("op@fs") first: subroutine uniforms
+     * are per-stage state, and the pack leaves carry the same qualifier
+     * the codegen writes (GL 4.6 §7.10).  Tag order matches the _*_SHADER
+     * enum (VS, TCS, TES, GS, FS, CS). */
+    static const char *const kTags[] = {
+        "vs", "tc", "te", "gs", "fs", "cs"
+    };
+    char qualified[MGL_AIR_SUBROUTINE_NAME_MAX + 8];
+    snprintf(qualified, sizeof(qualified), "%s@%s",
+             base, (stage <= 5) ? kTags[stage] : "s");
+    MGLShaderResourceList *resources =
+        mglUniformSafeResourceList(pptr, stage, _UNIFORM_CONSTANT_RES,
+                                   __FUNCTION__);
+    if (!resources) {
+        return -1;
+    }
+    size_t base_len = strlen(base);
+    for (GLuint i = 0; i < resources->count; i++) {
+        const MGLShaderResource *res = &resources->list[i];
+        if (!res->name) {
+            continue;
+        }
+        if (strcmp(res->name, qualified) == 0) {
+            return mglPlainUniformResourceLocation(res);
+        }
+        if (strcmp(res->name, base) == 0) {
+            return mglPlainUniformResourceLocation(res);
+        }
+        /* Arrayed uniform: the resource is spelled "g[0]"; the caller adds
+         * the element offset itself. */
+        if (strncmp(res->name, base, base_len) == 0 &&
+            res->name[base_len] == '[') {
+            return mglPlainUniformResourceLocation(res);
+        }
+        /* A stage's default-block uniforms are reflected as members of its
+         * plain-uniform pack block ("air_uniforms_sN"), not as standalone
+         * resources.  Resolve through the member list so the answer is this
+         * stage's slot. */
+        if (res->ubo_members && res->ubo_member_count > 0) {
+            GLint base_location = mglPlainUniformResourceLocation(res);
+            if (base_location < 0) {
+                continue;
+            }
+            for (GLuint m = 0; m < res->ubo_member_count; m++) {
+                const SpirvUBOMember *member = &res->ubo_members[m];
+                const char *mqn =
+                    member->query_name ? member->query_name : member->name;
+                if (!mqn) {
+                    continue;
+                }
+                if (strcmp(mqn, qualified) == 0) {
+                    return base_location + member->location_offset;
+                }
+                if (strcmp(mqn, base) == 0 ||
+                    mglActiveUniformNamesMatch(mqn, base)) {
+                    return base_location + member->location_offset;
+                }
+            }
+        }
+    }
+    return -1;
+}
+
+void mglUniformResetSubroutineSelections(GLMContext ctx, GLuint program)
+{
+    if (!ctx || program == 0u) {
+        return;
+    }
+    Program *pptr = getProgram(ctx, program);
+    if (!pptr || !pptr->link_success) {
+        return;
+    }
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        const MGLAIRSubroutineTable *table = &pptr->subroutine_tables[stage];
+        if (table->uniform_count == 0u) {
+            continue;
+        }
+        for (uint32_t u = 0; u < table->uniform_count; u++) {
+            /* Arrayed uniforms contribute one row per element; only the
+             * element-0 row carries the whole span (same grouping as the
+             * setter). */
+            if (table->uniform_element[u] != 0u) {
+                continue;
+            }
+            char base[MGL_AIR_SUBROUTINE_NAME_MAX];
+            mglSubroutineUniformBaseName(table->uniform_names[u], base,
+                                         sizeof(base));
+            /* Per-stage resolution: the generic name lookup would return
+             * the first stage that declares this name. */
+            GLint uniformLoc = mglUniformSubroutinePlainLocation(pptr, stage,
+                                                                base);
+            if (uniformLoc < 0) {
+                uniformLoc = mglGetUniformLocation(ctx, pptr->name, base);
+            }
+            if (uniformLoc < 0) {
+                continue;
+            }
+            uint32_t elements = table->uniform_declared_elements[u]
+                                    ? table->uniform_declared_elements[u]
+                                    : 1u;
+            if (elements > MGL_AIR_MAX_SUBROUTINE_UNIFORM_ARRAY) {
+                elements = MGL_AIR_MAX_SUBROUTINE_UNIFORM_ARRAY;
+            }
+            GLuint zero = 0u;
+            for (uint32_t e = 0; e < elements; e++) {
+                mglUniformStore(ctx, pptr, uniformLoc + (GLint)e, &zero,
+                                sizeof(zero));
+            }
+        }
+    }
+}
+
 void mglUniformSubroutinesuiv(GLMContext ctx, GLenum shadertype,
                               GLsizei count, const GLuint *indices)
 {
@@ -3549,14 +3774,28 @@ void mglUniformSubroutinesuiv(GLMContext ctx, GLenum shadertype,
         }
         /* `indices[i]` is an absolute program-wide subroutine index, and it
          * must name a named implementation of this uniform's type (a sparse
-         * layout(index = N) leaves gaps that are not selectable). */
+         * layout(index = N) leaves gaps that are not selectable).  An index
+         * that names an implementation of a DIFFERENT type of the same stage
+         * is INVALID_OPERATION; an index that is no stage subroutine at all
+         * is INVALID_VALUE (CTS subroutine_errors). */
         const MGLAIRSubroutineTypeInfo *ty = &table->types[typeIdx];
         GLboolean ok = GL_FALSE;
         for (uint32_t nm = 0; nm < ty->impl_name_count; nm++) {
             if (ty->impl_name_index[nm] == indices[i]) { ok = GL_TRUE; break; }
         }
         if (!ok) {
-            mglUniformSetError(ctx, GL_INVALID_VALUE);
+            GLboolean in_stage = GL_FALSE;
+            for (uint32_t ti = 0; ti < table->type_count && !in_stage; ti++) {
+                const MGLAIRSubroutineTypeInfo *other = &table->types[ti];
+                for (uint32_t nm = 0; nm < other->impl_name_count; nm++) {
+                    if (other->impl_name_index[nm] == indices[i]) {
+                        in_stage = GL_TRUE;
+                        break;
+                    }
+                }
+            }
+            mglUniformSetError(ctx, in_stage ? GL_INVALID_OPERATION
+                                             : GL_INVALID_VALUE);
             return;
         }
     }
@@ -3583,14 +3822,26 @@ void mglUniformSubroutinesuiv(GLMContext ctx, GLenum shadertype,
             GLsizei at = loc + (GLsizei)e;
             values[e] = (at < count) ? indices[at] : indices[loc];
         }
-        GLint uniformLoc =
-            mglGetUniformLocation(ctx, pptr->name, table->uniform_names[u]);
-        if (uniformLoc < 0) {
-            char baseName[MGL_AIR_SUBROUTINE_NAME_MAX];
-            snprintf(baseName, sizeof(baseName), "%s", table->uniform_names[u]);
-            char *bracket = strchr(baseName, '[');
+        /* Per-stage resolution first (subroutine uniforms are per-stage
+         * state; the generic name lookup returns the first stage that
+         * declares the name, aliasing every stage's selection onto one
+         * slot).  Fall back to the generic lookup for programs whose
+         * per-stage reflection did not produce a location. */
+        char setName[MGL_AIR_SUBROUTINE_NAME_MAX];
+        snprintf(setName, sizeof(setName), "%s", table->uniform_names[u]);
+        {
+            char *bracket = strchr(setName, '[');
             if (bracket) *bracket = '\0';
-            uniformLoc = mglGetUniformLocation(ctx, pptr->name, baseName);
+        }
+        GLint uniformLoc =
+            mglUniformSubroutinePlainLocation(pptr, stage, setName);
+        if (uniformLoc < 0) {
+            uniformLoc =
+                mglGetUniformLocation(ctx, pptr->name,
+                                      table->uniform_names[u]);
+        }
+        if (uniformLoc < 0) {
+            uniformLoc = mglGetUniformLocation(ctx, pptr->name, setName);
         }
         if (uniformLoc < 0) {
             mglUniformSetError(ctx, GL_INVALID_OPERATION);

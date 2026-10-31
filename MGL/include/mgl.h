@@ -804,6 +804,9 @@ void mglGetActiveSubroutineUniformiv(GLMContext ctx, GLuint program, GLenum shad
 void mglGetActiveSubroutineUniformName(GLMContext ctx, GLuint program, GLenum shadertype, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name);
 void mglGetActiveSubroutineName(GLMContext ctx, GLuint program, GLenum shadertype, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name);
 void mglUniformSubroutinesuiv(GLMContext ctx, GLenum shadertype, GLsizei count, const GLuint *indices);
+/* ARB_shader_subroutine: the selection reset UseProgram performs (the
+ * selections are context state, reset to default functions on every bind). */
+void mglUniformResetSubroutineSelections(GLMContext ctx, GLuint program);
 void mglGetUniformSubroutineuiv(GLMContext ctx, GLenum shadertype, GLint location, GLuint *params);
 void mglGetProgramStageiv(GLMContext ctx, GLuint program, GLenum shadertype, GLenum pname, GLint *values);
 void mglPatchParameteri(GLMContext ctx, GLenum pname, GLint value);

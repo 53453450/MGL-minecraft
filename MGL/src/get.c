@@ -94,6 +94,10 @@ static const char *kMglExtensions[] = {
      * CTS shader_integer_mix.* gates on this string (desktop always). */
     "GL_EXT_shader_integer_mix",
     "GL_ARB_texture_view",
+    /* GLSL 4.0 subroutines: parse/sema, AIR dispatch chain, the §7.10
+     * query family and the UniformSubroutinesuiv paths are implemented;
+     * CTS shader_subroutine.* gates on this string (core since 4.0). */
+    "GL_ARB_shader_subroutine",
 };
 static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
               "MGL_NUM_EXTENSIONS must match kMglExtensions");

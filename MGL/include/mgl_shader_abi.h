@@ -59,10 +59,13 @@ typedef struct GLMContextRec_t *GLMContext;
  *       slot too low, colliding with the last varying's argument index.
  *   2 - argument indices derived from the real parameter slots, plus a
  *       structural verification guard over the emitted argument metadata.
+ *   5 - subroutine dispatch chain falls through to the first implementation
+ *       when the loaded selection matches no implementation (the ARB
+ *       default-selection case), instead of executing nothing.
  */
 /* Plain integer (no u suffix): the pipeline archive key stringizes this macro,
  * and a suffix would end up inside the file name. */
-#define MGL_AIR_CODEGEN_EPOCH 4
+#define MGL_AIR_CODEGEN_EPOCH 5
 
 #ifdef __cplusplus
 extern "C" {

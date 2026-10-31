@@ -1937,9 +1937,15 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             if (!mglSubroutineValidateTable(
                     &pptr->subroutine_tables[stage],
                     1024u)) {   /* GL_MAX_SUBROUTINE_UNIFORM_LOCATIONS */
+                fprintf(stderr, "MGL DIAG subroutine table validate failed "
+                        "program=%u stage=%d err=[%s]\n",
+                        (unsigned)pptr->name, stage, sub_err);
                 free(merged_src);
                 return 0;
             }
+        } else {
+            fprintf(stderr, "MGL DIAG subroutine reflect failed program=%u "
+                    "stage=%d err=[%s]\n", (unsigned)pptr->name, stage, sub_err);
         }
     }
     MGLAIRStageInfo stage_info = {0};
@@ -3634,6 +3640,13 @@ void mglUseProgram(GLMContext ctx, GLuint program)
     if (STATE(program_name) == program &&
         ((program == 0u && STATE(program) == NULL) ||
          (program != 0u && STATE(program) != NULL))) {
+        /* ARB_shader_subroutine: the selection reset happens on every
+         * UseProgram call, including a same-program rebind (the selections
+         * are context state, not program state).  No-op for programs
+         * without subroutine uniforms. */
+        if (program != 0u) {
+            mglUniformResetSubroutineSelections(ctx, program);
+        }
         return;
     }
 
@@ -3720,6 +3733,13 @@ void mglUseProgram(GLMContext ctx, GLuint program)
      */
     STATE(program_name) = program;
 
+    /* ARB_shader_subroutine: subroutine selections are context state reset
+     * to default functions whenever UseProgram runs, so they never survive
+     * unbind/rebind of the same program.  No-op for programs without
+     * subroutine uniforms. */
+    if (pptr) {
+        mglUniformResetSubroutineSelections(ctx, pptr->name);
+    }
 }
 
 void mglBindAttribLocation(GLMContext ctx, GLuint program, GLuint index, const GLchar *name)

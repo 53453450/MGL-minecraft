@@ -1165,6 +1165,10 @@ static int mglAirReflectModuleImpl(
     memset(&agg, 0, sizeof(agg));
     MGLIRType **agg_types = NULL;
     const char **agg_names = NULL;
+    /* Owned qualified names for subroutine-uniform pack leaves ("op@fs");
+     * agg_names only borrows them. */
+    char **sub_qualified_names = NULL;
+    uint32_t sub_qualified_count = 0;
     uint32_t agg_count = 0;
     uint32_t agg_size = 0;
 
@@ -1583,7 +1587,46 @@ static int mglAirReflectModuleImpl(
             }
             agg_names = nn;
             agg_types[agg_count] = (MGLIRType *)t;
-            agg_names[agg_count] = s->name;
+            /* Subroutine uniforms are per-stage state (GL 4.6 §7.10);
+             * qualify the pack leaf name the same way the AIR codegen's
+             * collectUniforms pass does ("op@fs"), so two stages declaring
+             * the same uniform name keep independent pack slots and
+             * locations. */
+            if (s->qualifiers & MGL_AST_Q_SUBROUTINE_UNIFORM) {
+                /* `stage` here is the AIR ABI stage (MGLShaderStage):
+                 * VS, FS, CS, TCS, TES, GS.  The tag must match the
+                 * codegen's collectUniforms qualifier, which uses the same
+                 * stage numbering. */
+                static const char *const kTags[] = {
+                    "vs", "fs", "cs", "tc", "te", "gs"
+                };
+                const char *tag = (stage >= 0 && stage <= 5)
+                                      ? kTags[stage] : "s";
+                size_t qn_cap = strlen(s->name) + strlen(tag) + 2u;
+                char *qn = (char *)malloc(qn_cap);
+                if (!qn) {
+                    reflect_set_error(err, errCap, "out of memory");
+                    free(agg_types);
+                    free(agg_names);
+                    return -1;
+                }
+                snprintf(qn, qn_cap, "%s@%s", s->name, tag);
+                char **sqn = (char **)realloc(
+                    sub_qualified_names,
+                    (sub_qualified_count + 1) * sizeof(char *));
+                if (!sqn) {
+                    free(qn);
+                    reflect_set_error(err, errCap, "out of memory");
+                    free(agg_types);
+                    free(agg_names);
+                    return -1;
+                }
+                sub_qualified_names = sqn;
+                sub_qualified_names[sub_qualified_count++] = qn;
+                agg_names[agg_count] = qn;
+            } else {
+                agg_names[agg_count] = s->name;
+            }
             agg_count++;
             continue;
         }
@@ -1997,6 +2040,11 @@ static int mglAirReflectModuleImpl(
         l->list[l->count++] = agg;
         free(agg_types);
         free(agg_names);
+    }
+    if (sub_qualified_names) {
+        for (uint32_t i = 0; i < sub_qualified_count; i++)
+            free(sub_qualified_names[i]);
+        free(sub_qualified_names);
     }
     return 0;
 }

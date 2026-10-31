@@ -97,6 +97,9 @@ struct Codegen {
     llvm::IRBuilder<> *b;
     llvm::Function *fn;
     llvm::Module *mod = nullptr;       /* current LLVM module */
+    /* AIR ABI stage of this compile; subroutine-uniform pack names are
+     * stage-qualified with the same tag map (mgl_air_backend.cpp). */
+    int stage = 0;
     bool isVS = false;
     bool isCompute = false;
     bool isTessControl = false;

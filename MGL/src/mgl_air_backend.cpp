@@ -10070,9 +10070,24 @@ static bool emitCallUserFunction(
                 return true;
             }
             /* An arrayed subroutine uniform has one storage entry per element
-             * ("name[i]"), so the plain name only exists for scalars. */
+             * ("name[i]"), so the plain name only exists for scalars.  The
+             * pack name is stage-qualified ("op@fs") for per-stage
+             * selections (GL 4.6 §7.10). */
+            const char *stage_tag0 = "s0";
+            switch (cg.stage) {
+            case MGL_STAGE_VERTEX:          stage_tag0 = "vs"; break;
+            case MGL_STAGE_FRAGMENT:        stage_tag0 = "fs"; break;
+            case MGL_STAGE_COMPUTE:         stage_tag0 = "cs"; break;
+            case MGL_STAGE_TESS_CONTROL:    stage_tag0 = "tc"; break;
+            case MGL_STAGE_TESS_EVALUATION: stage_tag0 = "te"; break;
+            case MGL_STAGE_GEOMETRY:        stage_tag0 = "gs"; break;
+            default: break;
+            }
+            const std::string qualifiedName =
+                std::string(name) + "@" + stage_tag0;
             if (!cg.bufferPtr ||
-                (!cg.bufferOffsets.count(name) &&
+                (!cg.bufferOffsets.count(qualifiedName) &&
+                 !cg.bufferOffsets.count(name) &&
                  !cg.bufferOffsets.count(std::string(name) + "[0]"))) {
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: subroutine uniform '") + name +
@@ -10090,6 +10105,7 @@ static bool emitCallUserFunction(
                 dynamicUniformKey = std::string(name) + "[0]";
             }
             if (!dynamicUniformKey.empty() &&
+                !cg.bufferOffsets.count(qualifiedName) &&
                 !cg.bufferOffsets.count(name) &&
                 !cg.bufferOffsets.count(dynamicUniformKey)) {
                 cg.err = 1;
@@ -10112,9 +10128,13 @@ static bool emitCallUserFunction(
                 }
             }
             /* An arrayed subroutine uniform has one pack entry per element
-             * ("C[0]", "C[1]", ...); a scalar has just "C". */
+             * ("C[0]", "C[1]", ...); a scalar has just "C".  The pack name
+             * is stage-qualified ("op@fs"); the bare name is a fallback for
+             * older artifacts. */
             uint32_t baseOffset = 0;
-            if (cg.bufferOffsets.count(name)) {
+            if (cg.bufferOffsets.count(qualifiedName)) {
+                baseOffset = cg.bufferOffsets[qualifiedName];
+            } else if (cg.bufferOffsets.count(name)) {
                 baseOffset = cg.bufferOffsets[name];
             } else {
                 std::string elem0 = std::string(name) + "[0]";
@@ -10139,8 +10159,14 @@ static bool emitCallUserFunction(
                     cg.b->getInt8Ty(), cg.bufferPtr,
                     cg.b->getInt64(baseOffset));
                 uint32_t dynStride =
-                    cg.bufferStrides.count(name) && cg.bufferStrides[name]
-                        ? cg.bufferStrides[name]
+                    (cg.bufferStrides.count(qualifiedName)
+                         ? cg.bufferStrides[qualifiedName]
+                         : (cg.bufferStrides.count(name)
+                                ? cg.bufferStrides[name]
+                                : 0u))
+                        ? (cg.bufferStrides.count(qualifiedName)
+                               ? cg.bufferStrides[qualifiedName]
+                               : cg.bufferStrides[name])
                         : 16u;
                 addr = cg.b->CreateGEP(
                     cg.b->getInt8Ty(), addr,
@@ -10154,8 +10180,14 @@ static bool emitCallUserFunction(
                                               llvm::Align(4));
             } else {
                 uint32_t stride =
-                    cg.bufferStrides.count(name) && cg.bufferStrides[name]
-                        ? cg.bufferStrides[name]
+                    (cg.bufferStrides.count(qualifiedName)
+                         ? cg.bufferStrides[qualifiedName]
+                         : (cg.bufferStrides.count(name)
+                                ? cg.bufferStrides[name]
+                                : 0u))
+                        ? (cg.bufferStrides.count(qualifiedName)
+                               ? cg.bufferStrides[qualifiedName]
+                               : cg.bufferStrides[name])
                         : 4u;
                 llvm::Value *addr = cg.b->CreateGEP(
                     cg.b->getInt8Ty(), cg.bufferPtr,
@@ -10177,9 +10209,9 @@ static bool emitCallUserFunction(
             }
             llvm::BasicBlock *merge =
                 llvm::BasicBlock::Create(*cg.ctx, "sub_merge", cg.fn);
-            llvm::BasicBlock *disp =
+            llvm::BasicBlock *entry =
                 llvm::BasicBlock::Create(*cg.ctx, "sub_disp0", cg.fn);
-            cg.b->CreateBr(disp);
+            cg.b->CreateBr(entry);
             /* Implementations are inlined in mutually exclusive branches and
              * may write shader globals (stage outs, SSBO-backed temps).  Their
              * values therefore have to be merged exactly like if/else does:
@@ -10189,24 +10221,19 @@ static bool emitCallUserFunction(
             std::vector<std::pair<llvm::BasicBlock *,
                                   std::map<std::string, llvm::Value *>>>
                 branches;
-            llvm::BasicBlock *fallthrough = nullptr;
+            /* Call blocks first, then the comparison chain.  The first
+             * implementation is the chain's fallthrough default instead of a
+             * no-op merge: ARB_shader_subroutine resets unset subroutine
+             * uniforms to an arbitrarily chosen default function, so an
+             * index that matches no implementation (the never-set value 0
+             * when every implementation has an explicit layout(index = N)
+             * that skips 0) must still run a compatible implementation. */
+            std::vector<llvm::BasicBlock *> callBBs(sub->impl_count);
             for (uint32_t i = 0; i < sub->impl_count; i++) {
                 llvm::BasicBlock *callBB = llvm::BasicBlock::Create(
                     *cg.ctx, std::string("sub_call") + std::to_string(i),
                     cg.fn);
-                llvm::BasicBlock *next =
-                    (i + 1 < sub->impl_count)
-                        ? llvm::BasicBlock::Create(
-                              *cg.ctx,
-                              std::string("sub_disp") + std::to_string(i + 1),
-                              cg.fn)
-                        : merge;
-                if (i + 1 == sub->impl_count) fallthrough = disp;
-                cg.b->SetInsertPoint(disp);
-                llvm::Value *cond = cg.b->CreateICmpEQ(
-                    idx, llvm::ConstantInt::get(
-                             cg.b->getInt32Ty(), slotOfImpl[i]));
-                cg.b->CreateCondBr(cond, callBB, next);
+                callBBs[i] = callBB;
                 cg.b->SetInsertPoint(callBB);
                 /* Each branch starts from the pre-dispatch values: letting a
                  * later branch see a phi/SSA value created in an earlier one
@@ -10237,7 +10264,34 @@ static bool emitCallUserFunction(
                     cg.b->CreateBr(merge);
                     branches.push_back({after, branchL});
                 }
-                disp = next;
+            }
+            llvm::BasicBlock *disp = entry;
+            if (sub->impl_count == 0u) {
+                /* Unreachable through a valid link (an empty compatible set
+                     * fails the link), but keep the IR well formed. */
+                cg.b->SetInsertPoint(disp);
+                cg.b->CreateBr(merge);
+            } else {
+                for (uint32_t i = 1; i < sub->impl_count; i++) {
+                    llvm::BasicBlock *next =
+                        (i + 1 < sub->impl_count)
+                            ? llvm::BasicBlock::Create(
+                                  *cg.ctx,
+                                  std::string("sub_disp") +
+                                      std::to_string(i + 1),
+                                  cg.fn)
+                            : callBBs[0];
+                    cg.b->SetInsertPoint(disp);
+                    llvm::Value *cond = cg.b->CreateICmpEQ(
+                        idx, llvm::ConstantInt::get(
+                                 cg.b->getInt32Ty(), slotOfImpl[i]));
+                    cg.b->CreateCondBr(cond, callBBs[i], next);
+                    disp = next;
+                }
+                if (sub->impl_count == 1u) {
+                    cg.b->SetInsertPoint(disp);
+                    cg.b->CreateBr(callBBs[0]);
+                }
             }
             cg.b->SetInsertPoint(merge);
             cg.lvalues = snapBefore;
@@ -10284,8 +10338,7 @@ static bool emitCallUserFunction(
                         if (!ty) ty = it->second->getType();
                     }
                     if (!changed || !ty) continue;
-                    unsigned incoming =
-                        (unsigned)branches.size() + (fallthrough ? 1u : 0u);
+                    unsigned incoming = (unsigned)branches.size();
                     llvm::PHINode *phi =
                         cg.b->CreatePHI(ty, incoming ? incoming : 1u, n);
                     for (const auto &br : branches) {
@@ -10295,12 +10348,6 @@ static bool emitCallUserFunction(
                         if (!v || v->getType() != ty)
                             v = llvm::UndefValue::get(ty);
                         phi->addIncoming(v, br.first);
-                    }
-                    if (fallthrough) {
-                        llvm::Value *v = base;
-                        if (!v || v->getType() != ty)
-                            v = llvm::UndefValue::get(ty);
-                        phi->addIncoming(v, fallthrough);
                     }
                     cg.lvalues[n] = phi;
                 }
@@ -10556,6 +10603,19 @@ static bool emitCallUserFunction(
                     if (!arg) continue;
                     auto pit = cg.lvalues.find(pd->name);
                     if (pit == cg.lvalues.end()) continue;
+                    /* `gl_out[i].gl_Position` (TCS) lives in the per-vertex
+                     * capture buffer, not in an lvalue slot -- route the
+                     * writeback through the per-vertex store. */
+                    {
+                        const char *pvRoot = nullptr, *pvField = nullptr;
+                        const MGLExpr *pvIndex = nullptr;
+                        if (perVertexPath(arg, &pvRoot, &pvIndex,
+                                          &pvField)) {
+                            (void)emitPerVertexStore(cg, arg, pit->second,
+                                                     mod, locals);
+                            continue;
+                        }
+                    }
                     if (arg->kind == MGL_EXPR_VAR_REF &&
                         arg->u.var_ref.name) {
                         cg.lvalues[arg->u.var_ref.name] = pit->second;
@@ -10573,8 +10633,26 @@ static bool emitCallUserFunction(
                             : rootE->u.member.object;
                     }
                     if (!rootE || rootE->kind != MGL_EXPR_VAR_REF ||
-                        !rootE->u.var_ref.name ||
-                        !cg.lvalues.count(rootE->u.var_ref.name)) {
+                        !rootE->u.var_ref.name) {
+                        cg.err = 1;
+                        cg.errmsg =
+                            "codegen: out/inout argument writeback "
+                            "unsupported for this lvalue";
+                        break;
+                    }
+                    /* The param may shadow its own argument's root variable
+                     * (`u1(result.x)` into `void f(inout float result)`
+                     * besides a global `out vec4 result`): the by-name SSA
+                     * slot then holds the float param, not the caller's
+                     * vector.  Root the update at the pre-bind value. */
+                    const std::string rootName = rootE->u.var_ref.name;
+                    llvm::Value *rootBase = nullptr;
+                    auto rsit = saved.find(rootName);
+                    if (rsit != saved.end())
+                        rootBase = rsit->second;
+                    else if (cg.lvalues.count(rootName))
+                        rootBase = cg.lvalues[rootName];
+                    if (!rootBase) {
                         cg.err = 1;
                         cg.errmsg =
                             "codegen: out/inout argument writeback "
@@ -10582,8 +10660,7 @@ static bool emitCallUserFunction(
                         break;
                     }
                     llvm::Value *nv = updateIndexPath(
-                        cg, arg, cg.lvalues[rootE->u.var_ref.name],
-                        pit->second, mod, locals);
+                        cg, arg, rootBase, pit->second, mod, locals);
                     if (!nv) {
                         cg.err = 1;
                         if (cg.errmsg.empty())
@@ -10592,13 +10669,17 @@ static bool emitCallUserFunction(
                                 "writeback failed";
                         break;
                     }
-                    cg.lvalues[rootE->u.var_ref.name] = nv;
-                    wroteBack.insert(rootE->u.var_ref.name);
-                    storeStageOut(cg, rootE->u.var_ref.name, nv);
+                    cg.lvalues[rootName] = nv;
+                    wroteBack.insert(rootName);
+                    storeStageOut(cg, rootName.c_str(), nv);
                 }
                 for (uint32_t a = 0; a < fd->param_count; a++) {
                     MGLDecl *pd = fd->params[a];
                     if (!pd || !pd->name) continue;
+                    /* A param whose out/inout writeback already updated the
+                     * caller's slot (including the shadowing-name case)
+                     * must not be "restored" over it. */
+                    if (wroteBack.count(pd->name)) continue;
                     auto sit = saved.find(pd->name);
                     if (sit != saved.end())
                         cg.lvalues[pd->name] = sit->second;
@@ -14129,6 +14210,35 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         return -1;
     }
 
+    /* Subroutine uniforms are per-stage context state (GL 4.6 §7.10), but
+     * the plain-uniform pack and its locations are program-global: two
+     * stages declaring the same uniform name ("op") collapsed onto one
+     * slot, so each stage's UniformSubroutinesuiv call overwrote every
+     * other stage's selection (the reset/SSO/same-name CTS failures).
+     * Stage-qualify the pack name -- "op@vs" -- so the program-level merge
+     * keeps one slot per stage; the dispatch lowering and the GL-side
+     * setter/readback resolve the same qualified names.  The reflection
+     * table keeps the bare name for the §7.10 query family. */
+    {
+        const char *stage_tag = "s0";
+        switch (stage) {
+        case MGL_STAGE_VERTEX:          stage_tag = "vs"; break;
+        case MGL_STAGE_FRAGMENT:        stage_tag = "fs"; break;
+        case MGL_STAGE_COMPUTE:         stage_tag = "cs"; break;
+        case MGL_STAGE_TESS_CONTROL:    stage_tag = "tc"; break;
+        case MGL_STAGE_TESS_EVALUATION: stage_tag = "te"; break;
+        case MGL_STAGE_GEOMETRY:        stage_tag = "gs"; break;
+        default: break;
+        }
+        std::string suffix = std::string("@") + stage_tag;
+        for (Uniform &u : uniforms) {
+            const MGLIRSymbol *us = findSymbol(&mod, u.name.c_str());
+            if (us && (us->qualifiers & MGL_AST_Q_SUBROUTINE_UNIFORM)) {
+                u.name += suffix;
+            }
+        }
+    }
+
     /* Find main and the stage's interface symbols. */
     MGLDecl *mainDecl = nullptr;
     std::vector<VarSym> syms;
@@ -14983,6 +15093,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     cg.b = &b;
     cg.fn = fn;
     cg.mod = &module;
+    cg.stage = stage;
     cg.isVS = isVS || isTES;
     cg.pointSize = usesPointSize;
     cg.has_gs = ifaceGs;

@@ -89,4 +89,17 @@ int mglSubroutineValidateTable(const MGLAIRSubroutineTable *table,
  * This is also the exact `count` glUniformSubroutinesuiv requires. */
 int mglSubroutineUniformLocationSpan(const MGLAIRSubroutineTable *table);
 
+/* GL 4.6 §7.10 counts an arrayed subroutine uniform (`subroutine uniform
+ * T g[2];`) as ONE subroutine uniform for the enumerating queries
+ * (glGetActiveSubroutineUniform*, the program resource API), while the
+ * location space stays one location per element.  This maps a
+ * distinct-uniform ordinal to its element-0 row.  Returns 0 and sets
+ * *row_out on success, -1 when the ordinal is out of range. */
+int mglSubroutineDistinctUniformRow(const MGLAIRSubroutineTable *table,
+                                    GLuint ordinal, uint32_t *row_out);
+
+/* Base name of a uniform row ("g[0][1]" -> "g"); a scalar row copies
+ * through.  The enumerating queries report this spelling for arrays. */
+void mglSubroutineUniformBaseName(const char *row_name, char *out, size_t cap);
+
 #endif

@@ -113,6 +113,11 @@ typedef struct Sema {
     struct AoaPartial *aoa_partials;
     uint32_t aoa_partial_count;
     uint32_t aoa_partial_cap;
+    /* Set while type-checking the object of a `.length` member access: a
+     * subroutine uniform's only legal non-call use is `.length()` on an
+     * arrayed uniform (GLSL 4.60 §6.1.2; CTS NegativeTest9 rejects plain
+     * assignment/comparison of the uniform). */
+    int subroutine_length_probe;
 } Sema;
 
 /* node is INDEX(x, row) where x is a flattened array of arrays and row
@@ -743,8 +748,15 @@ static MGLIRType *subroutine_uniform_call_type(Sema *s, SymTab *tab,
     if (!st) {
         return NULL;
     }
-    return st->ret_type ? resolve_type_spec(s, tab, st->ret_type)
-                        : mglIRTypeScalar(MGLIR_SCALAR_VOID);
+    MGLIRType *ret = st->ret_type ? resolve_type_spec(s, tab, st->ret_type)
+                                  : mglIRTypeScalar(MGLIR_SCALAR_VOID);
+    if (ret && st->ret_array_size > 0u) {
+        /* `subroutine mat2[2] T(...)`: a call through the uniform evaluates
+         * to the array (GLSL 4.20 array returns; CTS FunctionalTest1_2). */
+        MGLIRType *arr = mglIRTypeArray(ret, st->ret_array_size);
+        if (arr) ret = arr;
+    }
+    return ret;
 }
 
 
@@ -3350,6 +3362,16 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         if (sym && sym->ir) {
             sym->ir->statically_used = 1;
         }
+        /* GLSL 4.60 §6.1.2: a subroutine uniform has no value of its own;
+         * outside a call (and the `.length` of an arrayed uniform) a bare
+         * reference is a compile error (CTS NegativeTest9). */
+        if (!s->subroutine_length_probe &&
+            subroutine_type_for_uniform(s, e->u.var_ref.name)) {
+            sema_error(s, e->line,
+                       "subroutine uniform '%s' may only be called",
+                       e->u.var_ref.name);
+            return NULL;
+        }
         if (!sym) {
             if (strcmp(e->u.var_ref.name, "gl_Position") == 0) {
                 /* Vertex-stage built-in output; the AIR backend maps it to
@@ -3638,7 +3660,12 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         return sym->type;
     }
     case MGL_EXPR_MEMBER: {
+        const int length_probe =
+            e->u.member.field && strcmp(e->u.member.field, "length") == 0;
+        const int saved_probe = s->subroutine_length_probe;
+        if (length_probe) s->subroutine_length_probe = 1;
         MGLIRType *obj = check_expr(s, tab, e->u.member.object);
+        s->subroutine_length_probe = saved_probe;
         if (!obj) {
             return NULL;
         }
@@ -3739,7 +3766,13 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         return (MGLIRType *)m;
     }
     case MGL_EXPR_INDEX: {
+        /* An arrayed subroutine uniform is selected by indexing
+         * (`routine[i](...)`, GLSL 4.60 §6.1.2), so the object position of
+         * an index is as legal as a `.length` object. */
+        const int saved_probe = s->subroutine_length_probe;
+        s->subroutine_length_probe = 1;
         MGLIRType *obj = check_expr(s, tab, e->u.index.object);
+        s->subroutine_length_probe = saved_probe;
         if (!obj) {
             return NULL;
         }
@@ -3810,7 +3843,12 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 sema_error(s, e->line, "array length() takes no arguments");
                 return NULL;
             }
+            /* `routine.length()` on an arrayed subroutine uniform: the
+             * object is the uniform's one legal non-call use. */
+            const int saved_probe = s->subroutine_length_probe;
+            s->subroutine_length_probe = 1;
             MGLIRType *obj = check_expr(s, tab, e->u.call.args[0]);
+            s->subroutine_length_probe = saved_probe;
             if (!obj) {
                 return NULL;
             }
@@ -4138,6 +4176,13 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                         }
                         MGLIRType *want =
                             resolve_type_spec(s, tab, sub_type->param_types[i]);
+                        if (want && sub_type->param_array_sizes &&
+                            sub_type->param_array_sizes[i] > 0u) {
+                            /* `in mat2 in_value[2]`: the formal is an array. */
+                            MGLIRType *arr = mglIRTypeArray(
+                                want, sub_type->param_array_sizes[i]);
+                            if (arr) want = arr;
+                        }
                         if (want && at && !check_assign_op(want, at)) {
                             sema_error(s, e->line,
                                        "argument %u of subroutine '%s' has "

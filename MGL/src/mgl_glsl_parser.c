@@ -2404,6 +2404,19 @@ static uint32_t parse_array_extent(MGLParser *p)
     return (uint32_t)value;
 }
 
+/* Structural equality of two type specs (GLSL subroutine signature match:
+ * base/shape and struct name; qualifiers are not part of the type). */
+static int type_spec_equal(const MGLTypeSpec *a, const MGLTypeSpec *b)
+{
+    if (!a || !b) return a == b;
+    if (a->base != b->base || a->vec_size != b->vec_size ||
+        a->mat_cols != b->mat_cols || a->mat_rows != b->mat_rows) {
+        return 0;
+    }
+    if ((a->name == NULL) != (b->name == NULL)) return 0;
+    return !a->name || strcmp(a->name, b->name) == 0;
+}
+
 /* Append one array dimension to a declarator.  GLSL arrays-of-arrays require
  * version >= 430 (or ES 3.10); earlier versions reject a second dimension. */
 static void append_array_dim(MGLParser *p, MGLDecl *d, uint32_t sz)
@@ -3911,7 +3924,10 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
     }
 
     /* top-level directives skipped; parse declarations */
-    char *pending_subroutine_type = NULL;
+    /* `subroutine(T1, T2, ...)` may qualify an implementation with several
+     * types (GLSL 4.60 §6.1.2); the declaration registers under each. */
+    char *pending_subroutine_types[8];
+    uint32_t pending_subroutine_type_count = 0;
     int pending_subroutine_uniform = 0;
     int pending_subroutine_location = -1;
     int pending_subroutine_index = -1;   /* layout(index=N) on an impl */
@@ -3950,23 +3966,64 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
         }
         if (at_ident(&p, "subroutine")) {
             if (ops_at_off(&p, 1, "(")) {
-                pending_subroutine_type = dup_token_text(&p, tk(&p, 2));
+                /* `subroutine(T1, T2, ...)`: collect every type name in the
+                 * qualifier list; the declaration registers under all of
+                 * them. */
                 advance(&p);          /* subroutine */
-                skip_balanced_parens(&p);
+                advance(&p);          /* '(' */
+                while (tk(&p, 0)->kind != MGLGLSL_TOK_END) {
+                    if (ops_at(&p, ")")) {
+                        break;
+                    }
+                    if (tk(&p, 0)->kind == MGLGLSL_TOK_IDENT &&
+                        pending_subroutine_type_count <
+                            (sizeof(pending_subroutine_types) /
+                             sizeof(pending_subroutine_types[0]))) {
+                        pending_subroutine_types[pending_subroutine_type_count++] =
+                            dup_current(&p);
+                    }
+                    if (eat_punct(&p, ",")) {
+                        continue;
+                    }
+                    if (ops_at(&p, ")")) {
+                        break;
+                    }
+                    advance(&p);
+                }
+                if (ops_at(&p, ")")) {
+                    advance(&p);
+                }
                 continue;             /* the implementation parses normally */
             }
             if (at_ident_off(&p, 1, "uniform")) {
-                pending_subroutine_type = dup_token_text(&p, tk(&p, 2));
+                pending_subroutine_types[pending_subroutine_type_count++] =
+                    dup_token_text(&p, tk(&p, 2));
                 pending_subroutine_uniform = 1;
                 advance(&p);          /* subroutine */
                 continue;             /* `uniform T g;` parses normally */
             }
             advance(&p);              /* subroutine */
-            /* ret? Type ( args ) ;  -- parse the return type first, then the
-             * type name; the signature's return type is what a call through
-             * the uniform evaluates to, and the argument list is what call
-             * sites are checked against. */
+            /* ret? Type[N]? ( args ) ;  -- parse the return type first, then
+             * the type name; the signature's return type is what a call
+             * through the uniform evaluates to, and the argument list is what
+             * call sites are checked against.  `subroutine mat2[2] T(...)`
+             * array suffixes the return type (CTS FunctionalTest1_2). */
             MGLTypeSpec *ret_type = parse_type_spec(&p);
+            uint32_t ret_array_size = 0u;
+            while (ret_type && ops_at(&p, "[")) {
+                advance(&p);          /* '[' */
+                uint32_t dim = parse_array_extent(&p);
+                if (ops_at(&p, "]")) advance(&p);
+                if (dim == 0u) {
+                    parse_error(&p, "subroutine return arrays must be sized");
+                    break;
+                }
+                if (ret_array_size && dim > UINT32_MAX / ret_array_size) {
+                    parse_error(&p, "subroutine return array size overflow");
+                    break;
+                }
+                ret_array_size = ret_array_size ? ret_array_size * dim : dim;
+            }
             char *declared_type = NULL;
             if (ret_type && at_any_ident(&p)) {
                 declared_type = dup_current(&p);
@@ -3980,6 +4037,10 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
                      * release the previous one instead of leaking it. */
                     free_type_spec(st->ret_type);
                     st->ret_type = ret_type;   /* ownership moves to the TU */
+                    st->ret_array_size = ret_array_size;
+                    for (unsigned k = 0; k < st->param_count; k++)
+                        free_type_spec(st->param_types[k]);
+                    st->param_count = 0;
                     ret_type = NULL;
                 }
                 free(declared_type);
@@ -4002,6 +4063,31 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
                     if (!pt) {
                         break;
                     }
+                    /* Optional formal name and array dimensions
+                     * (`in vec4 left[2]`) before the ','.  Without this the
+                     * name token blocks eat_punct(",") and only the first
+                     * parameter of the signature is recorded.  Function
+                     * parameters allow a single declared dimension. */
+                    uint32_t param_array = 0u;
+                    if (at_any_ident(&p)) {
+                        advance(&p);
+                        while (ops_at(&p, "[")) {
+                            advance(&p);      /* '[' */
+                            uint32_t dim = parse_array_extent(&p);
+                            if (ops_at(&p, "]")) advance(&p);
+                            if (dim == 0u) {
+                                parse_error(&p, "subroutine parameter arrays "
+                                                "must be sized");
+                                dim = 1u;
+                            }
+                            if (param_array &&
+                                dim > UINT32_MAX / param_array) {
+                                dim = 1u;
+                            }
+                            param_array = param_array ? param_array * dim
+                                                      : dim;
+                        }
+                    }
                     if (st) {
                         MGLTypeSpec **grown = (MGLTypeSpec **)realloc(
                             st->param_types,
@@ -4012,6 +4098,16 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
                             break;
                         }
                         st->param_types = grown;
+                        uint32_t *grown_sizes = (uint32_t *)realloc(
+                            st->param_array_sizes,
+                            (st->param_count + 1) * sizeof(uint32_t));
+                        if (!grown_sizes) {
+                            free_type_spec(pt);
+                            parse_error(&p, "out of memory");
+                            break;
+                        }
+                        st->param_array_sizes = grown_sizes;
+                        st->param_array_sizes[st->param_count] = param_array;
                         st->param_types[st->param_count++] = pt;
                     } else {
                         free_type_spec(pt);
@@ -4072,17 +4168,19 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
              * never materialised.  Drop the pending state, otherwise the next
              * unrelated declaration inherits it and is silently mis-tagged as
              * a subroutine implementation/uniform. */
-            free(pending_subroutine_type);
-            pending_subroutine_type = NULL;
+            for (uint32_t pt = 0; pt < pending_subroutine_type_count; pt++)
+                free(pending_subroutine_types[pt]);
+            pending_subroutine_type_count = 0;
             pending_subroutine_uniform = 0;
             pending_subroutine_location = -1;
             pending_subroutine_index = -1;
             advance(&p);
             continue;
         }
-        if (pending_subroutine_type) {
+        if (pending_subroutine_type_count > 0) {
+          for (uint32_t pt = 0; pt < pending_subroutine_type_count; pt++) {
             MGLSubroutineType *st =
-                subroutine_type_get(&p, pending_subroutine_type, 1);
+                subroutine_type_get(&p, pending_subroutine_types[pt], 1);
             if (st && d && d->name) {
                 if (pending_subroutine_uniform) {
                     /* An arrayed subroutine uniform occupies one location per
@@ -4153,28 +4251,103 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
                     d->qualifiers |= MGL_AST_Q_SUBROUTINE_UNIFORM |
                                      MGL_AST_Q_UNIFORM;
                 } else {
-                    subroutine_type_add_name(st, &st->impls,
-                                             &st->impl_count, &st->impl_cap,
-                                             d->name);
-                    if (st->impl_count > 0 && st->impls[st->impl_count - 1] &&
-                        strcmp(st->impls[st->impl_count - 1], d->name) == 0) {
-                        int32_t *grown = (int32_t *)realloc(
-                            st->impl_indices,
-                            st->impl_count * sizeof(int32_t));
-                        if (grown) {
-                            st->impl_indices = grown;
-                            st->impl_indices[st->impl_count - 1] =
-                                pending_subroutine_index;
+                    /* A prototype is not an implementation: only a body is
+                     * something a uniform can dispatch to.  A prototype-only
+                     * subroutine leaves its type's compatible set empty,
+                     * which the link rejects (CTS subroutine_wo_body). */
+                    if (d->body) {
+                        /* GLSL 4.60 §6.1.2 forbids overloading subroutines:
+                         * the same function name may not also exist as a
+                         * plain function (either declaration order). */
+                        for (uint32_t di = 0; di < tu->decl_count; di++) {
+                            MGLDecl *od = tu->decls[di];
+                            if (od && od != d && od->name && d->name &&
+                                strcmp(od->name, d->name) == 0 &&
+                                od->params) {
+                                parse_error(&p,
+                                    "subroutine '%s' conflicts with a "
+                                    "function of the same name at line %u",
+                                    d->name, od->line);
+                                break;
+                            }
                         }
+                        /* The implementation's signature must match the
+                         * subroutine type's declared signature (CTS
+                         * subroutines_incompatible_with_subroutine_type). */
+                        if (st->ret_type) {
+                            int sig_ok =
+                                type_spec_equal(st->ret_type, d->type);
+                            uint32_t dparams = d->param_count;
+                            if (sig_ok && dparams != st->param_count) {
+                                sig_ok = 0;
+                            }
+                            for (uint32_t pi = 0;
+                                 sig_ok && pi < dparams &&
+                                 pi < st->param_count;
+                                 pi++) {
+                                const MGLTypeSpec *want = st->param_types[pi];
+                                MGLTypeSpec *got =
+                                    d->params[pi] ? d->params[pi]->type
+                                                  : NULL;
+                                if (!type_spec_equal(want, got)) {
+                                    sig_ok = 0;
+                                }
+                            }
+                            if (!sig_ok) {
+                                parse_error(&p,
+                                    "subroutine '%s' does not match the "
+                                    "signature of subroutine type '%s'",
+                                    d->name ? d->name : "?",
+                                    st->name ? st->name : "?");
+                            }
+                        }
+                        subroutine_type_add_name(st, &st->impls,
+                                                 &st->impl_count, &st->impl_cap,
+                                                 d->name);
+                        if (st->impl_count > 0 &&
+                            st->impls[st->impl_count - 1] &&
+                            strcmp(st->impls[st->impl_count - 1],
+                                   d->name) == 0) {
+                            int32_t *grown = (int32_t *)realloc(
+                                st->impl_indices,
+                                st->impl_count * sizeof(int32_t));
+                            if (grown) {
+                                st->impl_indices = grown;
+                                st->impl_indices[st->impl_count - 1] =
+                                    pending_subroutine_index;
+                            }
+                        }
+                        d->qualifiers |= MGL_AST_Q_SUBROUTINE_IMPL;
                     }
-                    d->qualifiers |= MGL_AST_Q_SUBROUTINE_IMPL;
                 }
             }
-            free(pending_subroutine_type);
-            pending_subroutine_type = NULL;
-            pending_subroutine_uniform = 0;
-            pending_subroutine_location = -1;
-            pending_subroutine_index = -1;
+          }
+          for (uint32_t pt = 0; pt < pending_subroutine_type_count; pt++)
+              free(pending_subroutine_types[pt]);
+          pending_subroutine_type_count = 0;
+          pending_subroutine_uniform = 0;
+          pending_subroutine_location = -1;
+          pending_subroutine_index = -1;
+        }
+        /* Reverse duplicate order: a plain function whose name was already
+         * taken by a subroutine implementation (GLSL 4.60 §6.1.2 forbids
+         * overloading subroutines; CTS two_duplicate_functions /
+         * function_overloading). */
+        if (d && d->name && d->params &&
+            !(d->qualifiers & MGL_AST_Q_SUBROUTINE_IMPL)) {
+            for (uint32_t ti = 0; ti < tu->subroutine_type_count; ti++) {
+                const MGLSubroutineType *t = &tu->subroutine_types[ti];
+                for (uint32_t ii = 0; ii < t->impl_count; ii++) {
+                    if (t->impls[ii] && strcmp(t->impls[ii], d->name) == 0) {
+                        parse_error(&p,
+                            "function '%s' conflicts with a subroutine of "
+                            "the same name",
+                            d->name);
+                        ti = tu->subroutine_type_count;
+                        break;
+                    }
+                }
+            }
         }
         record_decl_constants(&p, d);
         MGLDecl **decls = (MGLDecl **)realloc(
@@ -4220,6 +4393,7 @@ void mglGLSLTranslationUnitDestroy(MGLTranslationUnit *tu)
         for (unsigned k = 0; k < st->param_count; k++)
             free_type_spec(st->param_types[k]);
         free(st->param_types);
+        free(st->param_array_sizes);
         for (unsigned k = 0; k < st->impl_count; k++) free(st->impls[k]);
         free(st->impls);
         free(st->impl_indices);

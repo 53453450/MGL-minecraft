@@ -30751,6 +30751,131 @@ static int test_subroutine_dispatch(unsigned char *pixels, const char *out_path)
 
     glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 
+    /* ---- ARB_shader_subroutine conformance ---- */
+
+    /* UseProgram resets the selections: they are context state, reset to
+     * default functions on every bind, so the green selection above must
+     * not survive the rebind (readback reports the never-set value 0). */
+    glUseProgram(prog);
+    GLuint back_reset = 0xFFFFFFFFu;
+    glGetUniformSubroutineuiv(GL_FRAGMENT_SHADER, loc_g, &back_reset);
+    if (glGetError() != GL_NO_ERROR) return 12;
+    if (back_reset != 0u) return 13;
+
+    /* A count != ACTIVE_SUBROUTINE_UNIFORM_LOCATIONS is INVALID_VALUE and
+     * must leave the selections untouched (failed GL commands change
+     * nothing). */
+    while (glGetError() != GL_NO_ERROR) {}
+    GLuint good[2];
+    good[(size_t)loc_g] = i_red;
+    good[(size_t)loc_h] = i_high;
+    glUniformSubroutinesuiv(GL_FRAGMENT_SHADER, 2, good);
+    if (glGetError() != GL_NO_ERROR) return 14;
+    GLuint wrong_count = i_red;
+    glUniformSubroutinesuiv(GL_FRAGMENT_SHADER, 1, &wrong_count);
+    if (glGetError() != GL_INVALID_VALUE) return 15;
+    GLuint back_after_fail = 0xFFFFFFFFu;
+    glGetUniformSubroutineuiv(GL_FRAGMENT_SHADER, loc_g, &back_after_fail);
+    if (back_after_fail != i_red) return 16;
+    while (glGetError() != GL_NO_ERROR) {}
+
+    /* A subroutine uniform whose type has no implementations must fail to
+     * link ("A program will fail to link if any stage has one or more
+     * subroutine uniforms that has no subroutine associated with the
+     * subroutine type of the uniform"). */
+    {
+        const char *bad_fs =
+            "#version 430 core\n"
+            "out vec4 frag;\n"
+            "subroutine vec4 Z();\n"
+            "subroutine uniform Z q;\n"
+            "void main() { frag = vec4(1.0, 0.0, 1.0, 1.0); }\n";
+        GLuint bad = glCreateProgram();
+        GLuint vs2 = compile_shader(GL_VERTEX_SHADER, vs);
+        GLuint fs2 = compile_shader(GL_FRAGMENT_SHADER, bad_fs);
+        glAttachShader(bad, vs2);
+        glAttachShader(bad, fs2);
+        glLinkProgram(bad);
+        GLint bad_ok = 1;
+        glGetProgramiv(bad, GL_LINK_STATUS, &bad_ok);
+        glDeleteShader(vs2);
+        glDeleteShader(fs2);
+        glDeleteProgram(bad);
+        while (glGetError() != GL_NO_ERROR) {}
+        if (bad_ok) return 17;
+    }
+
+    /* Arrayed uniforms: ONE subroutine uniform under the base name, one
+     * location per element; every implementation carrying an explicit
+     * layout(index) that skips 0 still dispatches the default function
+     * when the selection was never set (spec: an arbitrarily chosen
+     * compatible function). */
+    {
+        const char *arr_fs =
+            "#version 430 core\n"
+            "out vec4 frag;\n"
+            "subroutine vec4 T();\n"
+            "subroutine uniform T g;\n"
+            "subroutine uniform T arr[2];\n"
+            "layout(index = 3) subroutine(T) vec4 blue()  { return vec4(0.0, 0.0, 1.0, 1.0); }\n"
+            "layout(index = 5) subroutine(T) vec4 cyan()  { return vec4(0.0, 1.0, 1.0, 1.0); }\n"
+            "void main() { frag = g(); }\n";
+        GLuint p2 = link_program(vs, arr_fs);
+        if (!p2) return 18;
+        glUseProgram(p2);
+
+        GLint active_uni = -1, locations2 = -1;
+        glGetProgramStageiv(p2, GL_FRAGMENT_SHADER,
+                            GL_ACTIVE_SUBROUTINE_UNIFORMS, &active_uni);
+        glGetProgramStageiv(p2, GL_FRAGMENT_SHADER,
+                            GL_ACTIVE_SUBROUTINE_UNIFORM_LOCATIONS, &locations2);
+        if (active_uni != 2 || locations2 != 3) return 19;
+
+        /* Arrayed uniforms enumerate as ONE subroutine uniform under the
+         * element-0 name (the uniform-resource naming convention). */
+        char uname[64] = {0};
+        GLsizei ulen = 0;
+        glGetActiveSubroutineUniformName(p2, GL_FRAGMENT_SHADER, 1,
+                                         sizeof(uname), &ulen, uname);
+        if (strcmp(uname, "arr[0]") != 0) return 20;
+        GLint usize = 0;
+        glGetActiveSubroutineUniformiv(p2, GL_FRAGMENT_SHADER, 1,
+                                       GL_UNIFORM_SIZE, &usize);
+        if (usize != 2) return 21;
+
+        GLint loc_arr = glGetSubroutineUniformLocation(p2, GL_FRAGMENT_SHADER, "arr");
+        GLint loc_arr1 = glGetSubroutineUniformLocation(p2, GL_FRAGMENT_SHADER, "arr[1]");
+        GLint loc_g2 = glGetSubroutineUniformLocation(p2, GL_FRAGMENT_SHADER, "g");
+        if (loc_g2 < 0 || loc_arr < 0 || loc_arr1 != loc_arr + 1) return 22;
+
+        GLuint i_blue2 = glGetSubroutineIndex(p2, GL_FRAGMENT_SHADER, "blue");
+        if (i_blue2 != 3u) return 23;
+
+        /* Never set: value 0 matches no implementation slot (3 and 5), so
+         * the dispatch default must still run blue. */
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        unsigned char px2[4] = {0, 0, 0, 0};
+        glReadPixels(REG_W / 2, REG_H / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px2);
+        if (px2[2] != 255 || px2[0] != 0) return 24;
+
+        /* Arrayed elements select and read back through their own
+         * locations. */
+        GLuint sel3[3];
+        sel3[(size_t)loc_g2] = 5u;             /* g -> cyan */
+        sel3[(size_t)loc_arr] = 3u;            /* arr[0] -> blue */
+        sel3[(size_t)loc_arr1] = 3u;           /* arr[1] -> blue */
+        glUniformSubroutinesuiv(GL_FRAGMENT_SHADER, 3, sel3);
+        if (glGetError() != GL_NO_ERROR) return 25;
+        GLuint back_elem = 0xFFFFFFFFu;
+        glGetUniformSubroutineuiv(GL_FRAGMENT_SHADER, loc_arr1, &back_elem);
+        if (back_elem != 3u) return 26;
+
+        glDeleteProgram(p2);
+        while (glGetError() != GL_NO_ERROR) {}
+    }
+
     glDeleteVertexArrays(1, &vao);
     glDeleteBuffers(1, &vbo);
     glDeleteProgram(prog);

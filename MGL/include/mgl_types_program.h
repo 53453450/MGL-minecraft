@@ -269,6 +269,15 @@ typedef struct MGLActiveUniformEntry_t {
     const SpirvUBOMember *ubo_member;  /* NULL for non-member uniforms */
 } MGLActiveUniformEntry;
 
+/* Row of the lazily built plain-uniform location table (glUniform* uploads).
+ * gl_type==0 marks an unoccupied location; base is the array/element base
+ * location and size its element count (1 for non-arrays). */
+typedef struct MGLPlainUniformTypeInfo_t {
+    uint32_t gl_type;
+    int32_t base;
+    int32_t size;
+} MGLPlainUniformTypeInfo;
+
 #define MAX_ATTACHED_SHADERS_PER_STAGE 8
 /* Forward declaration: full type defined in mgl_buffer_plan.h.  The plan
  * caches static reflection-derived buffer binding data (metal slots, client
@@ -463,6 +472,10 @@ typedef struct Program_t {
     GLuint active_uniform_cache_count;
     GLint active_uniform_cache_max_name_length;
     GLboolean active_uniform_cache_valid;
+    /* Location→type table for plain uniform uploads (mglUniformWithPayload
+     * lookup).  Built lazily on first upload after link; freed together with
+     * the active-uniform cache wherever uniform reflection is invalidated. */
+    MGLPlainUniformTypeInfo *plain_uniform_type_table;
     char *debug_label;
 } Program;
 /* Dirty-bit bookkeeping for the program record. */

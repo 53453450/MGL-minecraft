@@ -377,11 +377,18 @@ struct MGLDecl {
 typedef struct MGLSubroutineType {
     char *name;          /* type name (owned) */
     struct MGLTypeSpec *ret_type; /* return type of the signature (owned) */
+    /* Array element count of the return type (`subroutine mat2[2] T(..);`),
+     * 0 = not arrayed.  CTS FunctionalTest1_2 exercises array returns. */
+    uint32_t ret_array_size;
     /* Formal parameter types of the signature (owned), in declaration order.
-     * Sema needs them to reject calls whose arity or argument types do not
+     * Sema needs them to reject calls whose arity and argument types do not
      * match the signature (GLSL 4.60 §6.1: a compatible subroutine signature
      * requires matching argument lists). */
     struct MGLTypeSpec **param_types;
+    /* Parallel to param_types: array element count of each formal
+     * (`in mat2 in_value[2]`), 0 = not arrayed (single declared dimension,
+     * which is all GLSL allows for function parameters). */
+    uint32_t *param_array_sizes;
     uint32_t param_count;
     char **impls;        /* implementation function names (owned) */
     uint32_t impl_count;
