@@ -3650,6 +3650,17 @@ GLint mglUniformSubroutinePlainLocation(Program *pptr, int stage,
                 if (strcmp(mqn, qualified) == 0) {
                     return base_location + member->location_offset;
                 }
+                /* Arrayed subroutine uniform: the pack leaf spells the stage
+                 * qualifier before the element subscript ("arr@fs[0]"), so
+                 * neither the qualified base ("arr@fs") nor the bare name
+                 * matches it and the selection had no plain location to land
+                 * on — glUniformSubroutinesuiv then failed with
+                 * INVALID_OPERATION for a perfectly valid index.  The element
+                 * rows are consecutive, so element 0 anchors the array. */
+                if (strncmp(mqn, qualified, strlen(qualified)) == 0 &&
+                    mqn[strlen(qualified)] == '[') {
+                    return base_location + member->location_offset;
+                }
                 if (strcmp(mqn, base) == 0 ||
                     mglActiveUniformNamesMatch(mqn, base)) {
                     return base_location + member->location_offset;
