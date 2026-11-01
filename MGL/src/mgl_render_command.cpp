@@ -568,10 +568,16 @@ static void mglBufferGenerationCompletedBody(
  * run BEFORE commit: Metal asserts when addCompletedHandler: is called on an
  * already-committed buffer. */
 static void mglRegisterBufferGenerationCompletion(void *command_buffer) {
-    if (!command_buffer ||
-        !mgl::gBufferWindowTagged.exchange(false, std::memory_order_acq_rel)) {
+    if (!command_buffer) {
         return;
     }
+    /* Consume the tag flag either way.  Pairing every commit with its own
+     * completion is what makes `completed` advance monotonically; guarding the
+     * advance on "this buffer tagged a COW slot" left current == completed for
+     * any commit that touched no COW buffer, so pools that stamp `current`
+     * (transient batch scratch, texture upload staging) saw their slots as free
+     * while the GPU was still reading them. */
+    (void)mgl::gBufferWindowTagged.exchange(false, std::memory_order_acq_rel);
     const uint64_t generation =
         mgl::gBufferFrameGeneration.load(std::memory_order_acquire);
     if (mglRenderAddCommandBufferCompletion(
