@@ -296,6 +296,59 @@ static int at_ident(MGLParser *p, const char *s)
 }
 
 
+/* GLSL 4.60 §3.6 (keywords) and §3.7 (reserved for future use): neither may
+ * name a declared entity.  The lexer keeps every keyword as an identifier and
+ * the parser matches them by text, so a declaration site that has to reject one
+ * consults this table. */
+static const char *const kGlslReservedWords[] = {
+    "attribute", "const", "uniform", "varying", "layout", "centroid",
+    "flat", "smooth", "noperspective", "break", "continue", "do",
+    "for", "while", "switch", "case", "default", "if",
+    "else", "in", "out", "inout", "float", "int",
+    "void", "bool", "true", "false", "invariant", "discard",
+    "return", "mat2", "mat3", "mat4", "mat2x2", "mat2x3",
+    "mat2x4", "mat3x2", "mat3x3", "mat3x4", "mat4x2", "mat4x3",
+    "mat4x4", "vec2", "vec3", "vec4", "ivec2", "ivec3",
+    "ivec4", "bvec2", "bvec3", "bvec4", "uint", "uvec2",
+    "uvec3", "uvec4", "lowp", "mediump", "highp", "precision",
+    "sampler1D", "sampler2D", "sampler3D", "samplerCube", "sampler1DShadow", "sampler2DShadow",
+    "samplerCubeShadow", "sampler1DArray", "sampler2DArray", "sampler1DArrayShadow", "sampler2DArrayShadow", "isampler1D",
+    "isampler2D", "isampler3D", "isamplerCube", "isampler1DArray", "isampler2DArray", "usampler1D",
+    "usampler2D", "usampler3D", "usamplerCube", "usampler1DArray", "usampler2DArray", "sampler2DRect",
+    "sampler2DRectShadow", "isampler2DRect", "usampler2DRect", "samplerBuffer", "isamplerBuffer", "usamplerBuffer",
+    "sampler2DMS", "isampler2DMS", "usampler2DMS", "sampler2DMSArray", "isampler2DMSArray", "usampler2DMSArray",
+    "patch", "sample", "subroutine", "double", "dmat2", "dmat3",
+    "dmat4", "dmat2x2", "dmat2x3", "dmat2x4", "dmat3x2", "dmat3x3",
+    "dmat3x4", "dmat4x2", "dmat4x3", "dmat4x4", "dvec2", "dvec3",
+    "dvec4", "samplerCubeArray", "samplerCubeArrayShadow", "isamplerCubeArray", "usamplerCubeArray", "coherent",
+    "volatile", "restrict", "readonly", "writeonly", "atomic_uint", "image1D",
+    "iimage1D", "uimage1D", "image2D", "iimage2D", "uimage2D", "image3D",
+    "iimage3D", "uimage3D", "image2DRect", "iimage2DRect", "uimage2DRect", "imageCube",
+    "iimageCube", "uimageCube", "imageBuffer", "iimageBuffer", "uimageBuffer", "image1DArray",
+    "iimage1DArray", "uimage1DArray", "image2DArray", "iimage2DArray", "uimage2DArray", "imageCubeArray",
+    "iimageCubeArray", "uimageCubeArray", "image2DMS", "iimage2DMS", "uimage2DMS", "image2DMSArray",
+    "iimage2DMSArray", "uimage2DMSArray", "buffer", "shared", "precise", "struct",
+    "common", "partition", "active", "asm", "class", "union",
+    "enum", "typedef", "template", "this", "packed", "goto",
+    "inline", "noinline", "public", "static", "extern", "external",
+    "interface", "long", "short", "half", "fixed", "unsigned",
+    "superp", "input", "output", "hvec2", "hvec3", "hvec4",
+    "fvec2", "fvec3", "fvec4", "sampler3DRect", "filter", "image1DShadow",
+    "image2DShadow", "image1DArrayShadow", "image2DArrayShadow", "sizeof", "cast", "namespace",
+    "using", "row_major", "resource",
+};
+
+static int is_reserved_word(const char *name)
+{
+    if (!name) return 0;
+    for (size_t i = 0;
+         i < sizeof(kGlslReservedWords) / sizeof(kGlslReservedWords[0]); i++) {
+        if (strcmp(kGlslReservedWords[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
+
 /* Identifier text at a lookahead offset (subroutine needs one token of
  * lookahead to tell its three forms apart). */
 static int at_ident_off(MGLParser *p, uint32_t off, const char *s)
@@ -4029,7 +4082,13 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
                 declared_type = dup_current(&p);
             }
             MGLSubroutineType *st = NULL;
-            if (declared_type) {
+            if (declared_type && is_reserved_word(declared_type)) {
+                /* `subroutine void float;` is not a declaration.  Keep the name
+                 * (the token is consumed below, so the rest of the signature
+                 * still parses) and let the recorded error fail the compile;
+                 * no type is registered for a reserved word. */
+                parse_error(&p, "subroutine type name is a reserved word");
+            } else if (declared_type) {
                 record_struct_name(&p, declared_type);
                 st = subroutine_type_get(&p, declared_type, 1);
                 if (st && ret_type) {
