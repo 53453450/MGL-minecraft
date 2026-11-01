@@ -306,6 +306,31 @@ static Program *mglUniformGetCurrentProgram(GLMContext ctx, const char *func)
     return mglUniformValidateProgramPointer(ctx, STATE(program), STATE(program_name), func);
 }
 
+/* GL 4.6 §7.10: subroutine selections are per-stage state.  With a bound
+ * pipeline the selection belongs to that stage's program, which is not
+ * `active_program` (that one is the last stage bound and stays NULL until a
+ * draw resolves it) -- CTS shader_subroutine.subroutine_uniform_reset sets and
+ * reads back every stage of a pipeline. */
+static Program *mglUniformGetCurrentProgramForStage(GLMContext ctx, int stage,
+                                                    const char *func)
+{
+    if (!ctx) {
+        return NULL;
+    }
+    if (!STATE(program) && STATE(program_pipeline)) {
+        ProgramPipeline *pipeline = STATE(program_pipeline);
+        Program *stage_program =
+            (stage >= 0 && stage < _MAX_SHADER_TYPES)
+                ? pipeline->stage_programs[stage] : NULL;
+        if (!stage_program) {
+            stage_program = pipeline->active_program;
+        }
+        return mglUniformValidateProgramPointer(
+            ctx, stage_program, stage_program ? stage_program->name : 0u, func);
+    }
+    return mglUniformValidateProgramPointer(ctx, STATE(program), STATE(program_name), func);
+}
+
 static Program *mglUniformGetNamedProgram(GLMContext ctx, GLuint program, const char *func)
 {
     if (!ctx || program == 0u) {
@@ -3736,7 +3761,7 @@ void mglUniformSubroutinesuiv(GLMContext ctx, GLenum shadertype,
         mglUniformSetError(ctx, GL_INVALID_VALUE);
         return;
     }
-    Program *pptr = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
+    Program *pptr = mglUniformGetCurrentProgramForStage(ctx, stage, __FUNCTION__);
     if (!pptr) {
         mglUniformSetError(ctx, GL_INVALID_OPERATION);
         return;

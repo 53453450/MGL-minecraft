@@ -7005,7 +7005,13 @@ void mglGetUniformSubroutineuiv(GLMContext ctx, GLenum shadertype, GLint locatio
 	}
 	Program *pptr = STATE(program);
 	if (!pptr && STATE(program_pipeline)) {
-		pptr = STATE(program_pipeline)->active_program;
+		/* GL 4.6 §7.10: subroutine selections live in the stage program, so a
+		 * bound pipeline answers from that stage's program -- not from
+		 * `active_program`, which is the last stage bound and is NULL until
+		 * something draws.  CTS shader_subroutine.subroutine_uniform_reset
+		 * queries every stage of a pipeline. */
+		pptr = STATE(program_pipeline)->stage_programs[stage];
+		if (!pptr) pptr = STATE(program_pipeline)->active_program;
 	}
 	if (!pptr) {
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
