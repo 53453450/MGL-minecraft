@@ -130,6 +130,11 @@ typedef struct MGLXfbVsField {
     uint32_t component_count;
     uint32_t gl_type;
     uint8_t has_source;
+    /* Matrix varyings: the record keeps one 16-byte slot per column, so the
+     * capture has to walk columns instead of copying component_count floats
+     * contiguously.  Zero means "not a matrix". */
+    uint8_t matrix_columns;
+    uint8_t matrix_rows;
 } MGLXfbVsField;
 
 typedef struct MGLXfbVsPlan {

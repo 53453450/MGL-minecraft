@@ -2417,6 +2417,35 @@ extern "C" bool mglXfbVsOnlyEligible(const Program *program)
            program->transform_feedback_varying_count > 0;
 }
 
+/* GLSL matrix typing: mat<C>x<R> is C columns of R rows; the square and
+ * vec-matrix spellings are the same enum family.  Returns false for anything
+ * that is not a matrix, which keeps the caller on the contiguous path. */
+static bool mglXfbMatrixShape(uint32_t gl_type, uint32_t *columns,
+                              uint32_t *rows)
+{
+    switch (gl_type) {
+    case GL_FLOAT_MAT2: *columns = 2; *rows = 2; return true;
+    case GL_FLOAT_MAT3: *columns = 3; *rows = 3; return true;
+    case GL_FLOAT_MAT4: *columns = 4; *rows = 4; return true;
+    case GL_FLOAT_MAT2x3: *columns = 2; *rows = 3; return true;
+    case GL_FLOAT_MAT2x4: *columns = 2; *rows = 4; return true;
+    case GL_FLOAT_MAT3x2: *columns = 3; *rows = 2; return true;
+    case GL_FLOAT_MAT3x4: *columns = 3; *rows = 4; return true;
+    case GL_FLOAT_MAT4x2: *columns = 4; *rows = 2; return true;
+    case GL_FLOAT_MAT4x3: *columns = 4; *rows = 3; return true;
+    case GL_DOUBLE_MAT2: *columns = 2; *rows = 2; return true;
+    case GL_DOUBLE_MAT3: *columns = 3; *rows = 3; return true;
+    case GL_DOUBLE_MAT4: *columns = 4; *rows = 4; return true;
+    case GL_DOUBLE_MAT2x3: *columns = 2; *rows = 3; return true;
+    case GL_DOUBLE_MAT2x4: *columns = 2; *rows = 4; return true;
+    case GL_DOUBLE_MAT3x2: *columns = 3; *rows = 2; return true;
+    case GL_DOUBLE_MAT3x4: *columns = 3; *rows = 4; return true;
+    case GL_DOUBLE_MAT4x2: *columns = 4; *rows = 2; return true;
+    case GL_DOUBLE_MAT4x3: *columns = 4; *rows = 3; return true;
+    default: return false;
+    }
+}
+
 extern "C" bool mglXfbPlanVsCapture(const Program *program, MGLXfbVsPlan *out)
 {
     if (!out || !mglXfbVsOnlyEligible(program)) {
@@ -2444,8 +2473,7 @@ extern "C" bool mglXfbPlanVsCapture(const Program *program, MGLXfbVsPlan *out)
         field->buffer_index = layout->buffer_index;
         field->component_offset = layout->component_offset;
         field->component_count = layout->component_count;
-        if (layout->buffer_index >= buffer_count || layout->stream > 0 ||
-            layout->component_count > 4u) {
+        if (layout->buffer_index >= buffer_count || layout->stream > 0) {
             return false;
         }
         const char *name = program->transform_feedback_varying_names[varying];
@@ -2496,6 +2524,31 @@ extern "C" bool mglXfbPlanVsCapture(const Program *program, MGLXfbVsPlan *out)
                 MGL_AIR_PER_VERTEX_STRIDE + record_slot * 16u;
             field->gl_type = (uint32_t)output->gl_type;
             field->has_source = 1u;
+        }
+        {
+            /* A matrix varying is several locations wide: one 16-byte record
+             * slot per column.  component_count still reports the total the
+             * buffer must reserve, but the copy walks columns. */
+            uint32_t cols = 0u, rows = 0u;
+            if (mglXfbMatrixShape(field->gl_type, &cols, &rows)) {
+                if (cols == 0u || rows == 0u ||
+                    cols * rows != layout->component_count) {
+                    return false;
+                }
+                field->matrix_columns = (uint8_t)cols;
+                field->matrix_rows = (uint8_t)rows;
+            } else if (layout->component_count > 4u) {
+                return false;
+            }
+        }
+        if (getenv("MGL_TRACE_XFB")) {
+            fprintf(stderr,
+                    "MGL XFB FIELD '%s' type=0x%x comps=%u srcOff=%u cols=%u rows=%u\n",
+                    name ? name : "?", (unsigned)field->gl_type,
+                    (unsigned)field->component_count,
+                    (unsigned)field->source_offset,
+                    (unsigned)field->matrix_columns,
+                    (unsigned)field->matrix_rows);
         }
         const uint32_t comp_bytes =
             (field->gl_type == GL_DOUBLE || field->gl_type == GL_DOUBLE_VEC2 ||
@@ -2600,6 +2653,19 @@ extern "C" uint32_t mglXfbPackVsRecords(const MGLXfbVsPlan *plan, uint32_t buffe
                  field->gl_type == GL_DOUBLE_VEC4)
                     ? (uint32_t)sizeof(double)
                     : (uint32_t)sizeof(uint32_t);
+            if (field->matrix_columns > 1u) {
+                /* Column-major record: rows floats per 16-byte slot. */
+                const uint32_t row_bytes =
+                    (uint32_t)field->matrix_rows * dst_elem;
+                for (uint32_t c = 0u; c < field->matrix_columns; c++) {
+                    memcpy(dst_record +
+                               (field->component_offset +
+                                c * (uint32_t)field->matrix_rows) * dst_elem,
+                           src_record + field->source_offset + c * 16u,
+                           row_bytes);
+                }
+                continue;
+            }
             const uint32_t field_bytes = field->component_count * dst_elem;
             mglTessPackXFBFieldFromCarrier(
                 field->gl_type, src_record + field->source_offset,
