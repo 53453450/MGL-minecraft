@@ -1740,6 +1740,26 @@ static bool mglValidateTransformFeedbackVaryings(GLMContext ctx, Program *pptr)
         if (bufferOffsets[i] > pptr->transform_feedback_layout_component_count)
             pptr->transform_feedback_layout_component_count = bufferOffsets[i];
     }
+    /* MGL_TRACE_XFB=1 prints the link-time scatter plan: which varying lands
+     * in which buffer at which component offset, and how many components it
+     * claims.  A matrix varying is several locations wide, so the component
+     * count is the first thing to check when a capture reads zeros. */
+    if (getenv("MGL_TRACE_XFB")) {
+        fprintf(stderr, "MGL XFB PLAN: program=%u varyings=%d mode=0x%x\n",
+                (unsigned)pptr->name, (int)pptr->transform_feedback_varying_count,
+                (unsigned)pptr->transform_feedback_buffer_mode);
+        for (GLsizei i = 0; i < pptr->transform_feedback_varying_count; i++) {
+            const MGLTransformFeedbackVaryingPlan *pl =
+                &pptr->transform_feedback_layout[i];
+            fprintf(stderr,
+                    "MGL XFB PLAN   [%d] '%s' comps=%u off=%u buf=%d stream=%d\n",
+                    (int)i,
+                    pptr->transform_feedback_varying_names[i]
+                        ? pptr->transform_feedback_varying_names[i] : "?",
+                    (unsigned)pl->component_count, (unsigned)pl->component_offset,
+                    (int)pl->buffer_index, (int)pl->stream);
+        }
+    }
     pptr->transform_feedback_layout_valid = GL_TRUE;
     return true;
 }
