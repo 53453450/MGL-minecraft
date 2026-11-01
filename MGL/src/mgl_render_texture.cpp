@@ -1245,13 +1245,10 @@ void mglRenderDestroyTextureStagingOwner(MGLTextureStagingOwner ** owner_handle)
     mgl::TextureStagingOwner* owner =
         reinterpret_cast<mgl::TextureStagingOwner*>(*owner_handle);
     *owner_handle = nullptr;
-    /* +1 on purpose: the blit that reads these bytes was encoded into the
-     * command buffer *being accumulated*, and that buffer only mints its
-     * generation when it is committed.  Stamping `current` would make the slot
-     * look reusable the moment it is returned — while the blit has not even
-     * been submitted — so the next upload in the same frame overwrites the
-     * bytes and every texture takes the last upload's pixels. */
-    mglTextureStagingOwnerReturn(owner, mglRenderCurrentBufferGeneration() + 1u);
+    /* The stamp names the accumulating command buffer; its completion (paired
+     * in mglRegisterBufferGenerationCompletion) releases the slot only after the
+     * blit that reads these bytes has finished. */
+    mglTextureStagingOwnerReturn(owner, mglRenderCurrentBufferGeneration());
 }
 
 /* Deferred return: the upload that read these bytes rides in its own command
