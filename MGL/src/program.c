@@ -2121,6 +2121,20 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         fprintf(stderr,
                 "MGL WARNING: AIR compile failed program %u stage %d: %s\n",
                 pptr->name, stage, err);
+        /* MGL_DUMP_FAILED_SRC=1 leaves the exact source that failed next to the
+         * message; reproducing a codegen error offline needs the text, and the
+         * CTS side only has the test's builder. */
+        if (getenv("MGL_DUMP_FAILED_SRC") && compile_src) {
+            char path[256];
+            snprintf(path, sizeof(path), "/tmp/mgl_failed_p%u_s%d.glsl",
+                     (unsigned)pptr->name, stage);
+            FILE *fp = fopen(path, "wb");
+            if (fp) {
+                fwrite(compile_src, 1, strlen(compile_src), fp);
+                fclose(fp);
+                fprintf(stderr, "MGL WARNING: failed source written to %s\n", path);
+            }
+        }
         free(merged_src);
         return 0;
     }
