@@ -2114,6 +2114,13 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             air_rc = -1;
         }
     }
+    if (getenv("MGL_DUMP_SRC") && compile_src) {
+        char path[256];
+        snprintf(path, sizeof(path), "/tmp/mgl_src_p%u_s%d.glsl",
+                 (unsigned)pptr->name, stage);
+        FILE *fp = fopen(path, "wb");
+        if (fp) { fwrite(compile_src, 1, strlen(compile_src), fp); fclose(fp); }
+    }
     if (air_rc != 0) {
         for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
             free((void *)attrib_snapshot[ai]);
