@@ -104,6 +104,9 @@ static const char *kMglExtensions[] = {
      * this they were compile-side stubs returning 1, so the extension was
      * deliberately left unadvertised. */
     "GL_ARB_texture_query_levels",
+    /* Both spellings are registered in sema: the ARB extension text uses
+     * textureQueryLOD, the core 4.0 promotion uses textureQueryLod. */
+    "GL_ARB_texture_query_lod",
     /* GL_ARB_shader_texture_image_samples is NOT advertised yet: the two
      * functional cases need the sample count of the bound texture, and MGL
      * emulates multisample storage as sample planes on a plain texture2d_array

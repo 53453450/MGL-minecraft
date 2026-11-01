@@ -10953,7 +10953,9 @@ static bool emitCallTextureSample(
     if (isTextureSampleBuiltin(name) || isTextureGatherBuiltin(name) ||
         strcmp(name, "textureSize") == 0 ||
         strcmp(name, "textureQueryLevels") == 0 ||
-        strcmp(name, "textureSamples") == 0) {
+        strcmp(name, "textureSamples") == 0 ||
+        strcmp(name, "textureQueryLod") == 0 ||
+        strcmp(name, "textureQueryLOD") == 0) {
         const bool isProj = strstr(name, "Proj") != nullptr;
         const bool isLod = strstr(name, "Lod") != nullptr;
         const bool isGrad = strstr(name, "Grad") != nullptr;
@@ -11123,6 +11125,144 @@ static bool emitCallTextureSample(
             const std::string mipFn =
                 std::string("air.get_num_mip_levels_") + mipSuffix;
             *out = callAirFn(cg, mipFn.c_str(), i32, {tex});
+            return true;
+        }
+        if (strcmp(name, "textureQueryLod") == 0 ||
+            strcmp(name, "textureQueryLOD") == 0) {
+            /* GLSL 4.60 §8.9.1: the implicit LOD is log2(rho), rho being the
+             * larger of the two coordinate derivatives measured in texels.
+             * .x is that value clamped into the texture's level range, .y is
+             * the unclamped one. */
+            if (dynamicSamplerArray)
+                tex = selectArrayElement(cg, arrayIndex, *texArray);
+            llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod, locals);
+            if (!coord) return true;
+            llvm::Value *lod0 = cg.b->getInt32(0);
+            auto sizeF = [&](const char *fn) -> llvm::Value * {
+                llvm::Value *v = callAirFn(cg, fn, i32, {tex, lod0});
+                return v ? cg.b->CreateSIToFP(v, f32) : nullptr;
+            };
+            auto zeroF = [&]() { return llvm::ConstantFP::get(f32, 0.0); };
+            const bool cubeLike = sampleKind == MGLIR_TEX_CUBE ||
+                                  sampleKind == MGLIR_TEX_CUBE_ARRAY;
+            std::vector<llvm::Value *> sizeComps;
+            if (sampleKind == MGLIR_TEX_1D) {
+                llvm::Value *w = sizeF("air.get_width_texture_1d");
+                if (!w) return true;
+                sizeComps.push_back(w);
+            } else if (cubeLike) {
+                llvm::Value *w = sizeF("air.get_width_texture_cube");
+                if (!w) return true;
+                sizeComps.assign(3, w);
+            } else if (sampleKind == MGLIR_TEX_3D) {
+                llvm::Value *w = sizeF("air.get_width_texture_3d");
+                llvm::Value *h = sizeF("air.get_height_texture_3d");
+                llvm::Value *d = sizeF("air.get_depth_texture_3d");
+                if (!w || !h || !d) return true;
+                sizeComps = {w, h, d};
+            } else if (sampleKind == MGLIR_TEX_1D_ARRAY) {
+                llvm::Value *w = sizeF("air.get_width_texture_2d_array");
+                if (!w) return true;
+                sizeComps = {w, zeroF()};
+            } else if (sampleKind == MGLIR_TEX_2D_ARRAY) {
+                llvm::Value *w = sizeF("air.get_width_texture_2d_array");
+                llvm::Value *h = sizeF("air.get_height_texture_2d_array");
+                if (!w || !h) return true;
+                sizeComps = {w, h, zeroF()};
+            } else {
+                llvm::Value *w = sizeF("air.get_width_texture_2d");
+                llvm::Value *h = sizeF("air.get_height_texture_2d");
+                if (!w || !h) return true;
+                sizeComps = {w, h};
+            }
+
+            auto *coordVecTy =
+                llvm::dyn_cast<llvm::FixedVectorType>(coord->getType());
+            const uint32_t n =
+                coordVecTy ? (uint32_t)coordVecTy->getNumElements() : 1u;
+            auto axisDeriv = [&](bool y) -> llvm::Value * {
+                const char *fn;
+                if (n == 1) {
+                    fn = y ? "air.dfdy.f32" : "air.dfdx.f32";
+                } else {
+                    static thread_local std::string names[2][4];
+                    std::string &slot = names[y ? 1 : 0][n - 1];
+                    if (slot.empty())
+                        slot = std::string(y ? "air.dfdy.v" : "air.dfdx.v") +
+                               std::to_string(n) + "f32";
+                    fn = slot.c_str();
+                }
+                llvm::Value *d = callAirFn(cg, fn, coord->getType(), {coord});
+                return (d && y) ? applyDerivYSign(cg, d) : d;
+            };
+            llvm::Value *dx = axisDeriv(false);
+            llvm::Value *dy = axisDeriv(true);
+            if (!dx || !dy) return true;
+
+            /* Extend the size list / trim it to the coordinate width, then
+             * scale each axis into texel space. */
+            llvm::Value *sizeVal;
+            if (n == 1) {
+                sizeVal = sizeComps.empty() ? zeroF() : sizeComps[0];
+            } else {
+                llvm::Type *vecTy = llvm::FixedVectorType::get(f32, n);
+                sizeVal = llvm::UndefValue::get(vecTy);
+                for (uint32_t i = 0; i < n; i++) {
+                    llvm::Value *c = i < sizeComps.size() ? sizeComps[i]
+                                                          : zeroF();
+                    sizeVal = cg.b->CreateInsertElement(
+                        sizeVal, c, cg.b->getInt32(i));
+                }
+            }
+            auto rhoOf = [&](llvm::Value *d) -> llvm::Value * {
+                llvm::Value *scaled = cg.b->CreateFMul(d, sizeVal);
+                llvm::Value *sum = nullptr;
+                if (n == 1) {
+                    sum = cg.b->CreateFMul(scaled, scaled);
+                } else {
+                    for (uint32_t i = 0; i < n; i++) {
+                        llvm::Value *c = cg.b->CreateExtractElement(
+                            scaled, cg.b->getInt32(i));
+                        llvm::Value *sq = cg.b->CreateFMul(c, c);
+                        sum = sum ? cg.b->CreateFAdd(sum, sq) : sq;
+                    }
+                }
+                return cg.b->CreateIntrinsic(llvm::Intrinsic::sqrt, {f32},
+                                             {sum});
+            };
+            llvm::Value *rho = cg.b->CreateIntrinsic(
+                llvm::Intrinsic::maxnum, {f32},
+                {rhoOf(dx), rhoOf(dy)});
+            llvm::Value *lodVal = cg.b->CreateIntrinsic(
+                llvm::Intrinsic::log2, {f32}, {rho});
+
+            const char *lodMipSuffix = "texture_2d";
+            switch (sampleKind) {
+            case MGLIR_TEX_1D: lodMipSuffix = "texture_1d"; break;
+            case MGLIR_TEX_3D: lodMipSuffix = "texture_3d"; break;
+            case MGLIR_TEX_CUBE: lodMipSuffix = "texture_cube"; break;
+            case MGLIR_TEX_CUBE_ARRAY: lodMipSuffix = "texture_cube_array"; break;
+            case MGLIR_TEX_1D_ARRAY:
+            case MGLIR_TEX_2D_ARRAY: lodMipSuffix = "texture_2d_array"; break;
+            default: break;
+            }
+            const std::string levelsFn =
+                std::string("air.get_num_mip_levels_") + lodMipSuffix;
+            llvm::Value *levelsI = callAirFn(cg, levelsFn.c_str(), i32, {tex});
+            if (!levelsI) return true;
+            llvm::Value *levels = cg.b->CreateSIToFP(levelsI, f32);
+            llvm::Value *maxLod = cg.b->CreateFSub(
+                levels, llvm::ConstantFP::get(f32, 1.0));
+            llvm::Value *clamped = cg.b->CreateIntrinsic(
+                llvm::Intrinsic::minnum, {f32},
+                {cg.b->CreateIntrinsic(llvm::Intrinsic::maxnum, {f32},
+                                       {lodVal, llvm::ConstantFP::get(f32, 0.0)}),
+                 maxLod});
+            llvm::Type *v2f32 = llvm::FixedVectorType::get(f32, 2);
+            llvm::Value *res = llvm::UndefValue::get(v2f32);
+            res = cg.b->CreateInsertElement(res, clamped, cg.b->getInt32(0));
+            res = cg.b->CreateInsertElement(res, lodVal, cg.b->getInt32(1));
+            *out = res;
             return true;
         }
         if (strcmp(name, "textureSize") == 0) {
