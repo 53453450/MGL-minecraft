@@ -1996,11 +1996,24 @@ static const BiFn kBuiltins[] = {
     { "textureProjGradOffset", 5, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_IVEC3 }, BI_RET_SAMP },
     { "textureProjGradOffset", 5, { BI_ARG_SRECT, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureProjGradOffset", 5, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
-    /* GLSL 4.60 §8.9.1 — texture query (SPIR-V builtin probe). */
+    /* GLSL 4.60 §8.9.1 — texture query.  The sampler list is the spec's full
+     * gsampler set (1D/2D/3D/Cube + array forms and every shadow variant);
+     * textureSamples covers only the multisample sampler types. */
     { "textureQueryLod", 2, { BI_ARG_S2D, BI_ARG_VEC2 }, BI_RET_VEC2 },
     { "textureQueryLod", 2, { BI_ARG_S2D_SHADOW, BI_ARG_VEC2 }, BI_RET_VEC2 },
+    { "textureQueryLevels", 1, { BI_ARG_S1D }, BI_RET_INT },
+    { "textureQueryLevels", 1, { BI_ARG_S1D_SHADOW }, BI_RET_INT },
+    { "textureQueryLevels", 1, { BI_ARG_S1DA }, BI_RET_INT },
+    { "textureQueryLevels", 1, { BI_ARG_S1DA_SHADOW }, BI_RET_INT },
     { "textureQueryLevels", 1, { BI_ARG_S2D }, BI_RET_INT },
     { "textureQueryLevels", 1, { BI_ARG_S2D_SHADOW }, BI_RET_INT },
+    { "textureQueryLevels", 1, { BI_ARG_S2DA }, BI_RET_INT },
+    { "textureQueryLevels", 1, { BI_ARG_S2DA_SHADOW }, BI_RET_INT },
+    { "textureQueryLevels", 1, { BI_ARG_S3D }, BI_RET_INT },
+    { "textureQueryLevels", 1, { BI_ARG_SCUBE }, BI_RET_INT },
+    { "textureQueryLevels", 1, { BI_ARG_SCUBE_SHADOW }, BI_RET_INT },
+    { "textureQueryLevels", 1, { BI_ARG_SCUBEA }, BI_RET_INT },
+    { "textureQueryLevels", 1, { BI_ARG_SCUBEA_SHADOW }, BI_RET_INT },
     { "textureSamples", 1, { BI_ARG_S2DMS }, BI_RET_INT },
     { "textureSamples", 1, { BI_ARG_S2DMSA }, BI_RET_INT },
     { "textureSize", 2, { BI_ARG_S2D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },

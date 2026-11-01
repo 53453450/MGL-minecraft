@@ -98,6 +98,18 @@ static const char *kMglExtensions[] = {
      * query family and the UniformSubroutinesuiv paths are implemented;
      * CTS shader_subroutine.* gates on this string (core since 4.0). */
     "GL_ARB_shader_subroutine",
+    /* Core since 4.3 / 4.5.  Both lower to real AIR queries now:
+     * textureQueryLevels -> air.get_num_mip_levels_texture_*,
+     * textureSamples -> air.get_num_samples_texture_2d_ms[_array].  Before
+     * this they were compile-side stubs returning 1, so the extension was
+     * deliberately left unadvertised. */
+    "GL_ARB_texture_query_levels",
+    /* GL_ARB_shader_texture_image_samples is NOT advertised yet: the two
+     * functional cases need the sample count of the bound texture, and MGL
+     * emulates multisample storage as sample planes on a plain texture2d_array
+     * (no Metal object carries a sample count to ask).  Threading the GL sample
+     * count into the shader is the remaining piece; until then advertising it
+     * would turn four clean skips into two passes and two failures. */
 };
 static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
               "MGL_NUM_EXTENSIONS must match kMglExtensions");

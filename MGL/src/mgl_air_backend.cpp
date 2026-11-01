@@ -10951,7 +10951,9 @@ static bool emitCallTextureSample(
     /* texture / textureLod / textureGather / textureSize: the sampler
      * argument maps to paired AIR texture + sampler parameters. */
     if (isTextureSampleBuiltin(name) || isTextureGatherBuiltin(name) ||
-        strcmp(name, "textureSize") == 0) {
+        strcmp(name, "textureSize") == 0 ||
+        strcmp(name, "textureQueryLevels") == 0 ||
+        strcmp(name, "textureSamples") == 0) {
         const bool isProj = strstr(name, "Proj") != nullptr;
         const bool isLod = strstr(name, "Lod") != nullptr;
         const bool isGrad = strstr(name, "Grad") != nullptr;
@@ -10959,7 +10961,15 @@ static bool emitCallTextureSample(
         const bool isGather = isTextureGatherBuiltin(name);
         const bool isGatherOffsets =
             strcmp(name, "textureGatherOffsets") == 0;
-        if (strcmp(name, "textureSize") == 0) {
+        if (strcmp(name, "textureQueryLevels") == 0 ||
+            strcmp(name, "textureSamples") == 0) {
+            if (e->u.call.arg_count != 1) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: '") + name +
+                            "' expects 1 argument";
+                return true;
+            }
+        } else if (strcmp(name, "textureSize") == 0) {
             if (e->u.call.arg_count != 1 && e->u.call.arg_count != 2) {
                 cg.err = 1;
                 cg.errmsg = "codegen: textureSize expects 1 or 2 arguments";
@@ -11070,6 +11080,51 @@ static bool emitCallTextureSample(
                 : MGLIR_TEX_2D;
         llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
         llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+        if (strcmp(name, "textureQueryLevels") == 0 ||
+            strcmp(name, "textureSamples") == 0) {
+            if (dynamicSamplerArray)
+                tex = selectArrayElement(cg, arrayIndex, *texArray);
+            const bool msKind = sampleKind == MGLIR_TEX_2D_MS ||
+                                sampleKind == MGLIR_TEX_2D_MS_ARRAY;
+            if (strcmp(name, "textureSamples") == 0) {
+                if (!msKind) {
+                    /* GLSL defines textureSamples only on multisample
+                     * samplers, which always report their sample count. */
+                    *out = cg.b->getInt32(1);
+                    return true;
+                }
+                *out = callAirFn(
+                    cg, sampleKind == MGLIR_TEX_2D_MS_ARRAY
+                            ? "air.get_num_samples_texture_2d_ms_array"
+                            : "air.get_num_samples_texture_2d_ms",
+                    i32, {tex});
+                return true;
+            }
+            /* textureQueryLevels.  Rect and multisample textures carry exactly
+             * one level, so no intrinsic is needed for them; every other kind
+             * asks the bound texture itself.  MS storage is a texture2d_array
+             * of sample planes here, so a query on it would read the wrong
+             * object as well as the wrong level count. */
+            if (sampleKind == MGLIR_TEX_2D_RECT || msKind ||
+                sampleKind == MGLIR_TEX_BUFFER) {
+                *out = cg.b->getInt32(1);
+                return true;
+            }
+            const char *mipSuffix = "texture_2d";
+            switch (sampleKind) {
+            case MGLIR_TEX_1D: mipSuffix = "texture_1d"; break;
+            case MGLIR_TEX_3D: mipSuffix = "texture_3d"; break;
+            case MGLIR_TEX_CUBE: mipSuffix = "texture_cube"; break;
+            case MGLIR_TEX_CUBE_ARRAY: mipSuffix = "texture_cube_array"; break;
+            case MGLIR_TEX_1D_ARRAY:
+            case MGLIR_TEX_2D_ARRAY: mipSuffix = "texture_2d_array"; break;
+            default: break;
+            }
+            const std::string mipFn =
+                std::string("air.get_num_mip_levels_") + mipSuffix;
+            *out = callAirFn(cg, mipFn.c_str(), i32, {tex});
+            return true;
+        }
         if (strcmp(name, "textureSize") == 0) {
             if (dynamicSamplerArray)
                 tex = selectArrayElement(cg, arrayIndex, *texArray);
@@ -12121,9 +12176,10 @@ static bool emitCallTextureQuery(Codegen &cg, const MGLExpr *e,
             llvm::FixedVectorType::get(f32, 2));
         return true;
     }
-    if (strcmp(name, "textureQueryLevels") == 0 ||
-        strcmp(name, "textureSamples") == 0 ||
-        strcmp(name, "imageSamples") == 0) {
+    /* imageSamples: images are never multisampled in GL, so the count is
+     * always 1.  textureSamples/textureQueryLevels are handled by
+     * emitCallTextureSample, which can see the bound texture kind. */
+    if (strcmp(name, "imageSamples") == 0) {
         if (e->u.call.arg_count != 1) {
             cg.err = 1;
             cg.errmsg = std::string("codegen: '") + name +
