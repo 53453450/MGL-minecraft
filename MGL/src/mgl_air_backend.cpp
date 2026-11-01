@@ -3253,6 +3253,31 @@ static VarSym *codegenBlockMember(Codegen &cg, const char *instName,
     return nullptr;
 }
 
+/* An `out`/`inout` argument spelled as an interface-block member
+ * (`f(result.vs_data)`, `f(out_tc[i].data)`): sema flattens the member into a
+ * per-instance symbol, so the writeback targets that symbol's stage-out slot
+ * instead of an SSA root in cg.lvalues.  Returns the OUTPUT symbol or nullptr. */
+static VarSym *blockMemberArgSym(Codegen &cg, const MGLExpr *arg)
+{
+    if (!arg || arg->kind != MGL_EXPR_MEMBER) return nullptr;
+    const MGLExpr *obj = arg->u.member.object;
+    const char *inst = nullptr;
+    if (obj && obj->kind == MGL_EXPR_VAR_REF) {
+        inst = obj->u.var_ref.name;
+    } else if (obj && obj->kind == MGL_EXPR_INDEX && obj->u.index.object &&
+               obj->u.index.object->kind == MGL_EXPR_VAR_REF) {
+        inst = obj->u.index.object->u.var_ref.name;
+    }
+    if (!inst) return nullptr;
+    VarSym *member = codegenBlockMember(cg, inst, arg->u.member.field,
+                                        VarSym::OUTPUT);
+    if (!member)
+        member = codegenBlockMember(cg, inst, arg->u.member.field,
+                                    VarSym::VARYING);
+    if (!member || member->type.isArray()) return nullptr;
+    return member;
+}
+
 static llvm::Value *tessStageRecordIndex(Codegen &cg, llvm::Value *index,
                                          bool input)
 {
@@ -10436,9 +10461,6 @@ static bool emitCallUserFunction(
                                     a < e->u.call.arg_count; a++) {
                     MGLDecl *pd = fd->params[a];
                     if (!pd || !pd->name) continue;
-                    llvm::Value *av =
-                        emitExpr(cg, e->u.call.args[a], mod, locals);
-                    if (!av) return true;
                     MType pt;
                     pt.scalar = (MGLIRScalar)(pd->type ? pd->type->base
                                                        : MGL_AST_TYPE_FLOAT);
@@ -10450,6 +10472,24 @@ static bool emitCallUserFunction(
                     }
                     if (pd->array_count > 0 && pd->array_dims)
                         pt.arr = pd->array_dims[0];
+                    /* An `out`-only parameter never reads its argument, and
+                     * evaluating one that is an interface-block member used to
+                     * fail with "codegen: invalid swizzle" (the member was
+                     * parsed as a swizzle on a block instance).  Bind an undef
+                     * of the parameter's own type instead; the writeback below
+                     * stores through the flattened member symbol. */
+                    const bool out_only =
+                        (pd->qualifiers & MGL_AST_Q_OUT) &&
+                        !(pd->qualifiers & MGL_AST_Q_IN) &&
+                        pd->type &&
+                        pd->type->base != MGL_AST_TYPE_STRUCT &&
+                        pd->type->base != MGL_AST_TYPE_SAMPLER &&
+                        pd->type->base != MGL_AST_TYPE_IMAGE &&
+                        !pt.isArray();
+                    llvm::Value *av = out_only
+                        ? llvm::UndefValue::get(llvmType(pt, *cg.ctx))
+                        : emitExpr(cg, e->u.call.args[a], mod, locals);
+                    if (!av) return true;
                     if (pd->type &&
                         pd->type->base != MGL_AST_TYPE_STRUCT &&
                         pd->type->base != MGL_AST_TYPE_SAMPLER &&
@@ -10615,6 +10655,14 @@ static bool emitCallUserFunction(
                                                      mod, locals);
                             continue;
                         }
+                    }
+                    if (VarSym *bm = blockMemberArgSym(cg, arg)) {
+                        /* Block members are SSA'd by member name (the
+                         * assignment path does the same); the stage-out
+                         * epilogue publishes them. */
+                        cg.lvalues[bm->name] = pit->second;
+                        wroteBack.insert(bm->name);
+                        continue;
                     }
                     if (arg->kind == MGL_EXPR_VAR_REF &&
                         arg->u.var_ref.name) {
