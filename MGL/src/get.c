@@ -107,6 +107,12 @@ static const char *kMglExtensions[] = {
     /* Both spellings are registered in sema: the ARB extension text uses
      * textureQueryLOD, the core 4.0 promotion uses textureQueryLod. */
     "GL_ARB_texture_query_lod",
+    /* GL_ARB_shader_viewport_layer_array is NOT advertised: writing
+     * gl_ViewportIndex from the vertex stage needs a viewport array the
+     * renderer does not have (one viewport only), and the layered-framebuffer
+     * cases make AGX fail pipeline materialization outright.  Measured
+     * 2026-11-01: one case fails on pixel mismatch, two die in pipeline
+     * creation -- worse than three clean skips. */
     /* GL_ARB_shader_texture_image_samples is NOT advertised yet: the two
      * functional cases need the sample count of the bound texture, and MGL
      * emulates multisample storage as sample planes on a plain texture2d_array
