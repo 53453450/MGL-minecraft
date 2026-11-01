@@ -1759,7 +1759,9 @@ int mglRenderPassGeneratePipelineDescriptorState(
         (tessVertexCapture || cullDistanceCapture ||
          glState->caps.rasterizer_discard) ? 1 : 0;
 
-    if (!vertexProgram || (!fragmentProgram && !rasterizerDiscard)) {
+    /* A missing fragment stage is legal (and leaves rasterization off, see
+     * mglRenderRasterizationEnabled); only the vertex stage is mandatory. */
+    if (!vertexProgram) {
         fprintf(stderr,
                 "MGL PIPELINE DESC fail: missing stage program key=%u vs=%p fs=%p current=%u pipeline=%u\n",
                 (unsigned)renderProgramKey, (void *)vertexProgram,
@@ -1792,7 +1794,7 @@ int mglRenderPassGeneratePipelineDescriptorState(
     Shader *vertex_shader = vertexProgram->shader_slots[vertexStage];
     Shader *fragment_shader =
         fragmentProgram ? fragmentProgram->shader_slots[_FRAGMENT_SHADER] : NULL;
-    if (!vertex_shader || (!fragment_shader && !rasterizerDiscard)) {
+    if (!vertex_shader) {
         fprintf(stderr,
                 "MGL PIPELINE DESC fail: missing shaders key=%u vsProgram=%u fsProgram=%u (vs=%p fs=%p)\n",
                 (unsigned)renderProgramKey, (unsigned)vertexProgramName,

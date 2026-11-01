@@ -71,11 +71,23 @@ uint32_t mglRenderTessControlPointIndexType(int indexed_draw) {
 }
 
 int mglRenderRasterizationEnabled(int rasterizer_discard, int has_fragment) {
-    return rasterizer_discard ? (has_fragment ? 1 : 0) : 1;
+    (void)rasterizer_discard;
+    /* Metal requires rasterization to be disabled when the pipeline carries no
+     * fragment function, and GL allows exactly that: a program without a
+     * fragment shader is complete, the fragment stage simply writes nothing
+     * (CTS shader_subroutine's transform-feedback programs are vertex-only and
+     * never touch GL_RASTERIZER_DISCARD). */
+    return has_fragment ? 1 : 0;
 }
 
 int mglRenderPipelineFunctionsReady(int has_vs, int has_fs, int rasterizer_discard) {
-    return has_vs && (has_fs || rasterizer_discard) ? 1 : 0;
+    (void)has_fs;
+    (void)rasterizer_discard;
+    /* Only the vertex stage is mandatory.  A program with no fragment shader is
+     * complete in GL -- the fragment stage writes nothing -- and the pipeline
+     * then turns rasterization off (mglRenderRasterizationEnabled), which is
+     * exactly the case Metal allows a nil fragment function. */
+    return has_vs ? 1 : 0;
 }
 
 int mglRenderVSWritesLayer(const Program *vertex_program) {
