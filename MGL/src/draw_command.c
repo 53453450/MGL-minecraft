@@ -4052,6 +4052,12 @@ static Buffer *mglAcquireTransientBatchBuffer(GLMContext ctx, GLenum target)
                 buffer->last_write_size = 0;
                 buffer->last_write_src_ptr = NULL;
                 buffer->last_write_src_hash = 0;
+                /* Derived state must not survive into the new use: the index
+                 * scan cache is keyed on content_version, and a recycled buffer
+                 * keeps both unless they are bumped here. */
+                buffer->content_version++;
+                buffer->scan_cache_valid = 0;
+                buffer->scan_cache_live_valid = 0;
                 return buffer;
             }
             link = &node->next;
@@ -4077,7 +4083,14 @@ static void mglRecycleTransientBatchBuffer(GLMContext ctx, Buffer *buffer)
         return;
     }
     node->buffer = buffer;
-    node->generation = mglRenderCurrentBufferGeneration();
+    /* +1 on purpose.  The stream data this buffer carries was written into the
+     * command buffer that is accumulating right now, and the frame generation
+     * only advances when that buffer is committed — so a node stamped with
+     * `current` looks reusable the moment the commit lands, while the GPU may
+     * still be reading the vertices.  Handing it to the next batch then
+     * rewrites the bytes under an in-flight draw (fragdepth / texture_barrier
+     * read back what they just drew and see the later batch instead). */
+    node->generation = mglRenderCurrentBufferGeneration() + 1u;
     node->next = (MGLTransientPoolNode *)ctx->transient_pool[slot];
     ctx->transient_pool[slot] = node;
     ctx->transient_pool_count[slot]++;
