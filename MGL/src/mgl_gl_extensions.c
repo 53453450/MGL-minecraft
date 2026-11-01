@@ -5010,6 +5010,17 @@ GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum progra
 		return GL_INVALID_INDEX;
 	}
 
+	/* GL 4.6 §7.3.2: a program that never linked has no active resources, so
+	 * every ProgramResourceIndex query answers GL_INVALID_INDEX and nothing
+	 * else.  The subroutine interfaces used to fall through to
+	 * glGetSubroutineIndex, which raises INVALID_OPERATION for an unlinked
+	 * program -- CTS program_interface_query.empty-shaders queries exactly
+	 * that program and requires a clean GL_INVALID_INDEX. */
+	if (!pptr->link_success)
+	{
+		return GL_INVALID_INDEX;
+	}
+
 	/* Per the GL spec, GetProgramResourceIndex does not accept
 	 * GL_ATOMIC_COUNTER_BUFFER or GL_TRANSFORM_FEEDBACK_BUFFER. */
 	if (programInterface == GL_ATOMIC_COUNTER_BUFFER ||
