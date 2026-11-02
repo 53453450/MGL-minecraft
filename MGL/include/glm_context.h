@@ -262,6 +262,14 @@ static inline int mglCtxActiveIsReplayWorkspace(GLMContext ctx)
     return ctx && ctx->active_state && ctx->active_state != &ctx->state;
 }
 
+/* Profile selector.  A build still has one default profile (the ES image
+ * defaults to ES so libmgl_es.dylib keeps working), but the caller can now ask
+ * for either one explicitly -- that is what lets a single image serve both. */
+#define MGL_PROFILE_DEFAULT (-1)
+GLMContext createGLMContextProfile(int profile_es, GLenum format, GLenum type,
+                                   GLenum depth_format, GLenum depth_type,
+                                   GLenum stencil_format, GLenum stencil_type);
+
 GLMContext createGLMContext(GLenum format, GLenum type,
                             GLenum depth_format, GLenum depth_type,
                             GLenum stencil_format, GLenum stencil_type);

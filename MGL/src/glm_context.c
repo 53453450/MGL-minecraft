@@ -207,9 +207,9 @@ void MGLsetDefaultFramebufferSRGBCapable(GLMContext ctx, GLboolean capable)
     mglMarkStateDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_RENDER_STATE | DIRTY_DRAWABLE);
 }
 
-GLMContext createGLMContext(GLenum format, GLenum type,
-                            GLenum depth_format, GLenum depth_type,
-                            GLenum stencil_format, GLenum stencil_type)
+GLMContext createGLMContextProfile(int profile_es, GLenum format, GLenum type,
+                                   GLenum depth_format, GLenum depth_type,
+                                   GLenum stencil_format, GLenum stencil_type)
 {
     GLMContext ctx = (GLMContext)calloc(1, sizeof(GLMContextRec));
     GLMContext save = _ctx;
@@ -223,14 +223,16 @@ GLMContext createGLMContext(GLenum format, GLenum type,
         return NULL;
     }
 
-    /* Profile of this context.  Stage 1 keeps the two builds separate, so the
-     * value is a constant today; stage 2 will take it from the creation call
-     * and drop MGL_GL_ES from the build. */
+    /* Profile of this context: the caller's choice, or this build's default. */
+    if (profile_es == MGL_PROFILE_DEFAULT) {
 #ifdef MGL_GL_ES
-    ctx->is_es = 1;
+        ctx->is_es = 1;
 #else
-    ctx->is_es = 0;
+        ctx->is_es = 0;
 #endif
+    } else {
+        ctx->is_es = profile_es ? 1 : 0;
+    }
 
     /* calloc zeros state + replay_state (T6-2). Keep the explicit caps writes
      * below for the legacy-compat face defaults (T6-1). */
@@ -1127,4 +1129,15 @@ GLboolean glmDefaultFramebufferHasDepth(GLMContext ctx)
 GLboolean glmDefaultFramebufferHasStencil(GLMContext ctx)
 {
     return (ctx && ctx->stencil_format.mtl_pixel_format > 0) ? GL_TRUE : GL_FALSE;
+}
+
+/* Legacy entry point: keeps the build's default profile so existing callers
+ * (glfw's desktop path, the ES smoke test) behave exactly as before. */
+GLMContext createGLMContext(GLenum format, GLenum type,
+                            GLenum depth_format, GLenum depth_type,
+                            GLenum stencil_format, GLenum stencil_type)
+{
+    return createGLMContextProfile(MGL_PROFILE_DEFAULT, format, type,
+                                   depth_format, depth_type,
+                                   stencil_format, stencil_type);
 }
