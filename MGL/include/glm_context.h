@@ -135,13 +135,10 @@ typedef struct GLMContextRec_t {
      * both profiles. */
     int         is_es;
 
-#ifdef MGL_GL_CORE
+    /* One table for both profiles: the ES dispatch fills its 238 entries and
+     * leaves the desktop-only slots NULL (nothing calls them from an ES
+     * context), so a single image can carry either kind of context. */
     struct GLMDispatchTable dispatch;
-#endif
-
-#ifdef MGL_GL_ES
-    struct GLM_ES_DispatchTable dispatch;
-#endif
 
     GLMState    state;
     /* Pointer to the currently active GLMState.  Defaults to &state; batch
