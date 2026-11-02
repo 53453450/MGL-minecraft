@@ -1791,6 +1791,34 @@ static int process_directive(PP *pp, const char *line, int phys)
     return -1;
 }
 
+/* ES defines two macros every ES shader may rely on: GL_ES (1) and
+ * GL_FRAGMENT_PRECISION_HIGH (1, because highp is supported in fragment
+ * shaders here).  Desktop core must not see either.
+ *
+ * The preprocessor entry has no profile argument, so read it off the source's
+ * `#version` line -- the only place a shader declares `... es`.  A shader with
+ * no #version defaults to 100, which on this driver means desktop, so leaving
+ * the macros undefined there matches what the parser would assume anyway. */
+static int source_declares_es(const char *src, size_t len)
+{
+    size_t i = 0;
+    if (!src)
+        return 0;
+    while (i < len && (src[i] == ' ' || src[i] == '\t' || src[i] == '\n' ||
+                       src[i] == '\r'))
+        i++;
+    if (i + 8 > len || strncmp(src + i, "#version", 8) != 0)
+        return 0;
+    const char *nl = (const char *)memchr(src + i, '\n', len - i);
+    const size_t end = nl ? (size_t)(nl - src) : len;
+    for (size_t k = i; k + 2 < end; k++) {
+        if (src[k] == ' ' && src[k + 1] == 'e' && src[k + 2] == 's' &&
+            (k + 3 >= end || src[k + 3] == ' ' || src[k + 3] == '\r'))
+            return 1;
+    }
+    return 0;
+}
+
 char *mglGLSLPreprocess(const char *src, size_t len, char *err, size_t err_cap)
 {
     PP pp;
@@ -1807,6 +1835,15 @@ char *mglGLSLPreprocess(const char *src, size_t len, char *err, size_t err_cap)
         add_predef(&pp, "__FILE__", 2, "0", 0) != 0 ||
         add_predef(&pp, "__VERSION__", 3, "0", 0) != 0 ||
         add_predef(&pp, "GL_core_profile", 0, "1", 1) != 0) {
+        if (err && err_cap) {
+            snprintf(err, err_cap, "%s", pp.err);
+        }
+        return NULL;
+    }
+
+    if (source_declares_es(src, len) &&
+        (add_predef(&pp, "GL_ES", 0, "1", 1) != 0 ||
+         add_predef(&pp, "GL_FRAGMENT_PRECISION_HIGH", 0, "1", 1) != 0)) {
         if (err && err_cap) {
             snprintf(err, err_cap, "%s", pp.err);
         }
