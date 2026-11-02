@@ -2932,8 +2932,15 @@ static GLsizei mglGetInternalformatValues(GLMContext ctx, GLenum target, GLenum 
         case GL_SIMULTANEOUS_TEXTURE_AND_STENCIL_WRITE:
             value = mglInternalFormatSupportValue(supported && target != GL_RENDERBUFFER);
             break;
-        case 0x91A7: /* GL_NUM_VIRTUAL_PAGE_SIZES_ARB */
+        case 0x91A8: /* GL_NUM_VIRTUAL_PAGE_SIZES_ARB */
             /* One page size (64x64) when the format can be sparse at all. */
+            value = supported ? 1 : 0;
+            break;
+        case 0x91A7: /* GL_VIRTUAL_PAGE_SIZE_INDEX_ARB */
+            value = 0;
+            break;
+        case 0x91AA: /* GL_NUM_SPARSE_LEVELS_ARB */
+            /* Conservative: only level 0 is backed by pages here. */
             value = supported ? 1 : 0;
             break;
         case 0x9195: /* GL_VIRTUAL_PAGE_SIZE_X_ARB */
