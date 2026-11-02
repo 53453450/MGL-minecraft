@@ -1320,6 +1320,95 @@ int mglRenderCreateTextureFromState(
     return 0;
 }
 
+/* Sparse textures: a placement heap plus a placement-sparse texture.  The
+ * descriptor already carries placement_sparse_page_size (64 texels), which is
+ * the granularity GL exposes as GL_VIRTUAL_PAGE_SIZE_*. */
+extern "C" int mglRenderCreateSparseTextureFromState(
+    const MGLRenderTextureDescriptorState* texture_descriptor,
+    const char* label,
+    void** heap_out,
+    void** texture_out) {
+    if (heap_out) *heap_out = nullptr;
+    if (texture_out) *texture_out = nullptr;
+    if (!texture_descriptor || !heap_out || !texture_out) return -1;
+    mgl::Renderer& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.mutex);
+    if (!renderer.device) return -1;
+
+    MTL::TextureDescriptor* descriptor =
+        mgl::newTextureDescriptor(texture_descriptor);
+    if (!descriptor) return -1;
+
+    /* One page is 64x64 texels; reserve the whole texture up front so any
+     * commitment the client asks for can be satisfied without leaking heaps. */
+    const uint64_t page = 64;
+    const uint64_t pages_x = (texture_descriptor->width + page - 1) / page;
+    const uint64_t pages_y = (texture_descriptor->height + page - 1) / page;
+    const uint64_t pages_z = texture_descriptor->depth ? texture_descriptor->depth : 1;
+    const uint64_t slices =
+        texture_descriptor->array_length ? texture_descriptor->array_length : 1;
+    const uint64_t page_bytes = page * page * 4; /* widest texel MGL maps */
+    const NS::UInteger heap_size = static_cast<NS::UInteger>(
+        pages_x * pages_y * pages_z * slices * page_bytes);
+
+    MTL::HeapDescriptor* heap_descriptor = MTL::HeapDescriptor::alloc()->init();
+    heap_descriptor->setType(MTL::HeapTypePlacement);
+    heap_descriptor->setSize(heap_size);
+    heap_descriptor->setStorageMode(MTL::StorageModePrivate);
+    MTL::Heap* heap = renderer.device->newHeap(heap_descriptor);
+    heap_descriptor->release();
+    if (!heap) {
+        descriptor->release();
+        return -1;
+    }
+
+    MTL::Texture* texture = heap->newTexture(descriptor, 0);
+    descriptor->release();
+    if (!texture) {
+        heap->release();
+        return -1;
+    }
+    if (label && label[0]) {
+        texture->setLabel(NS::String::string(label, NS::UTF8StringEncoding));
+    }
+    *heap_out = heap;
+    *texture_out = texture;
+    return 0;
+}
+
+/* Commit or decommit a texel-space region.  GL states these in texels and
+ * requires page alignment; Metal takes the same region counted in tiles. */
+extern "C" int mglRenderSparseTextureCommit(void* heap, void* texture,
+                                            uint32_t x, uint32_t y, uint32_t z,
+                                            uint32_t width, uint32_t height,
+                                            uint32_t depth, int commit) {
+    MTL::Heap* source_heap = static_cast<MTL::Heap*>(heap);
+    MTL::Texture* target = static_cast<MTL::Texture*>(texture);
+    if (!source_heap || !target || width == 0 || height == 0) return -1;
+    mgl::Renderer& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.mutex);
+    if (!renderer.device) return -1;
+
+    MTL4::UpdateSparseTextureMappingOperation op = {};
+    op.mode = commit ? MTL::SparseTextureMappingModeMap
+                     : MTL::SparseTextureMappingModeUnmap;
+    op.textureRegion = MTL::Region::Make3D(
+        static_cast<NS::UInteger>(x / 64), static_cast<NS::UInteger>(y / 64),
+        static_cast<NS::UInteger>(z),
+        static_cast<NS::UInteger>((width + 63) / 64),
+        static_cast<NS::UInteger>((height + 63) / 64),
+        static_cast<NS::UInteger>(depth ? depth : 1));
+    op.textureLevel = 0;
+    op.textureSlice = 0;
+    op.heapOffset = 0;
+
+    MTL4::CommandQueue* queue = renderer.device->newMTL4CommandQueue();
+    if (!queue) return -1;
+    queue->updateTextureMappings(target, source_heap, &op, 1);
+    queue->release();
+    return 0;
+}
+
 int mglRenderCreateBufferTextureFromState(
     void* buffer,
     const MGLRenderTextureDescriptorState* texture_descriptor,

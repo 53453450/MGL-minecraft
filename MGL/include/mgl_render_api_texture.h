@@ -388,6 +388,22 @@ int mglRenderCreateTextureFromDescriptor(
     const char *label,
     void **texture_out);
 
+/* Sparse (ARB_sparse_texture) textures.  Creation hands back both the
+ * placement heap and the placement-sparse texture: the page commitment path
+ * needs the heap again when it maps tiles. */
+int mglRenderCreateSparseTextureFromState(
+    const MGLRenderTextureDescriptorState *texture_descriptor,
+    const char *label,
+    void **heap_out,
+    void **texture_out);
+
+/* Commit (commit != 0) or decommit a texel-space region.  The region must be
+ * page aligned; the page is GL_VIRTUAL_PAGE_SIZE_{X,Y,Z} = 64. */
+int mglRenderSparseTextureCommit(void *heap, void *texture,
+                                 uint32_t x, uint32_t y, uint32_t z,
+                                 uint32_t width, uint32_t height, uint32_t depth,
+                                 int commit);
+
 int mglRenderCreateBufferTextureFromState(
     void *buffer,
     const MGLRenderTextureDescriptorState *texture_descriptor,
