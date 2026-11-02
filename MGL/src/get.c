@@ -45,6 +45,7 @@ static const char *kMglExtensions[] = {
     "GL_ARB_vertex_array_object",
     "GL_ARB_framebuffer_object",
     "GL_ARB_texture_storage",
+    "GL_ARB_sparse_texture",
     "GL_ARB_sampler_objects",
     "GL_ARB_uniform_buffer_object",
     "GL_ARB_draw_buffers",
@@ -644,6 +645,15 @@ static bool mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
             }
             break;
         }
+        case 0x9198: /* GL_MAX_SPARSE_TEXTURE_SIZE_ARB */
+            RET_TYPE_VAR(type, max_texture_size);
+            break;
+        case 0x9199: /* GL_MAX_SPARSE_3D_TEXTURE_SIZE_ARB */
+            RET_TYPE_VAR(type, max_3d_texture_size);
+            break;
+        case 0x919A: /* GL_MAX_SPARSE_ARRAY_TEXTURE_LAYERS_ARB */
+            RET_TYPE_VAR(type, max_array_texture_layers);
+            break;
         case 0x9195: /* GL_VIRTUAL_PAGE_SIZE_X_ARB */
         case 0x9196: /* GL_VIRTUAL_PAGE_SIZE_Y_ARB */
         case 0x9197: /* GL_VIRTUAL_PAGE_SIZE_Z_ARB */ {
@@ -2921,6 +2931,19 @@ static GLsizei mglGetInternalformatValues(GLMContext ctx, GLenum target, GLenum 
         case GL_SIMULTANEOUS_TEXTURE_AND_DEPTH_WRITE:
         case GL_SIMULTANEOUS_TEXTURE_AND_STENCIL_WRITE:
             value = mglInternalFormatSupportValue(supported && target != GL_RENDERBUFFER);
+            break;
+        case 0x91A7: /* GL_NUM_VIRTUAL_PAGE_SIZES_ARB */
+            /* One page size (64x64) when the format can be sparse at all. */
+            value = supported ? 1 : 0;
+            break;
+        case 0x9195: /* GL_VIRTUAL_PAGE_SIZE_X_ARB */
+            value = supported ? 64 : 0;
+            break;
+        case 0x9196: /* GL_VIRTUAL_PAGE_SIZE_Y_ARB */
+            value = supported ? 64 : 0;
+            break;
+        case 0x9197: /* GL_VIRTUAL_PAGE_SIZE_Z_ARB */
+            value = supported ? 1 : 0;
             break;
         case GL_NUM_SAMPLE_COUNTS:
             value = supported ? mglInternalFormatSampleCounts(ctx, target, storage, NULL, 0) : 0;
