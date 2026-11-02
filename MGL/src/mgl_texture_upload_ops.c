@@ -2900,12 +2900,24 @@ int mglTextureUploadDirty(void *renderer, Texture *tex, void *texture,
 typedef struct MglUpCreateTextureCtx_t {
     const MGLRenderTextureDescriptorState *descriptor;
     void *out_texture;
+    /* Sparse textures come out of a placement heap; the caller keeps it. */
+    void *out_heap;
 } MglUpCreateTextureCtx;
 
 static void *mglUpCreateTexture(
-    const MGLRenderTextureDescriptorState *descriptor)
+    const MGLRenderTextureDescriptorState *descriptor, void **heap_out)
 {
     void *texture = NULL;
+    if (heap_out)
+        *heap_out = NULL;
+    if (descriptor && descriptor->placement_sparse_page_size != 0) {
+        if (mglRenderCreateSparseTextureFromState(descriptor, NULL, heap_out,
+                                                  &texture) == 0 &&
+            texture) {
+            return texture;
+        }
+        return NULL;
+    }
     if (mglRenderCreateTextureFromState(descriptor, NULL, &texture) == 0 &&
         texture) {
         return texture;
@@ -2916,7 +2928,7 @@ static void *mglUpCreateTexture(
 static int mglUpCreateTextureBody(void *renderer, void *rawCtx)
 {
     MglUpCreateTextureCtx *ctx = (MglUpCreateTextureCtx *)rawCtx;
-    ctx->out_texture = mglUpCreateTexture(ctx->descriptor);
+    ctx->out_texture = mglUpCreateTexture(ctx->descriptor, &ctx->out_heap);
     (void)renderer;
     return 1;
 }
@@ -3104,7 +3116,11 @@ void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex)
      * the guarded call does the same and hands the reason back (rule 58 (b)).
      * Note the texture identity travels through the ctx: the guarded body must
      * publish it even though the caller owns the result. */
-    MglUpCreateTextureCtx createCtx = { &tex_desc, NULL };
+    /* A sparse texture asks the descriptor for its page size; everything else
+     * in the create path then picks the sparse primitive on its own. */
+    if (tex->sparse)
+        tex_desc.placement_sparse_page_size = 64;
+    MglUpCreateTextureCtx createCtx = { &tex_desc, NULL, NULL };
     char createFailure[256] = {0};
     if (!mglPlatformShellGuardedCallCtxReason(
             renderer, "texture creation", mglUpCreateTextureBody, &createCtx,
@@ -3115,6 +3131,10 @@ void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex)
         return NULL;
     }
     texture = createCtx.out_texture;
+    /* The heap outlives this call: page commitment needs it and the texture's
+     * destroy path releases it. */
+    if (texture && createCtx.out_heap)
+        tex->sparse_heap = createCtx.out_heap;
 
     // CRITICAL FIX: Validate texture creation result instead of asserting
     if (!texture) {
@@ -3867,7 +3887,7 @@ static int mglUpFallbackBody(void *renderer, void *rawCtx)
         }
 
         void *fallbackTexture =
-            mglUpCreateTexture(&fallbackDesc);
+            mglUpCreateTexture(&fallbackDesc, NULL);
 
         if (fallbackTexture) {
             // Fill with simple gradient pattern using a simple approach

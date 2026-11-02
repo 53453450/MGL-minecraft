@@ -101,11 +101,6 @@ struct MGLTextureBackend {
      * retained owner texture the view was last built from, compared to see
      * whether the view must be rebuilt. */
     void *view_parent;
-    /* Sparse (ARB_sparse_texture) storage: the placement heap the Metal texture
-     * was carved out of, retained.  Page commitment needs it again, and it has
-     * to be released with the texture -- one heap per sparse texture. */
-    void *sparse_heap;
-    uint8_t is_sparse;
     /* The current Metal texture is the fallback texture, not real storage. */
     uint8_t storage_is_fallback;
     /* Generation of the last render-pass write (0 = never written). */

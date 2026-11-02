@@ -176,6 +176,12 @@ typedef struct Sampler_t {
 typedef struct Texture_t {
     GLuint dirty_bits;
     GLboolean is_render_target;
+    /* ARB_sparse_texture: the client asked for sparse storage
+     * (GL_TEXTURE_SPARSE_ARB) and, once created, the placement heap the Metal
+     * texture was carved out of.  Commitment needs that heap again, so it
+     * travels with the texture and is released with it. */
+    GLboolean sparse;
+    void *sparse_heap;
     GLenum access;
     GLboolean immutable_storage;
     GLuint name;
