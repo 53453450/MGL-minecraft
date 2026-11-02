@@ -8,8 +8,11 @@
 
 #include "mgl.h"
 
-#ifdef MGL_GL_CORE
-void init_dispatch(GLMContext ctx)
+/* Both tables are compiled into both builds: one image can then serve either
+ * profile, which is what stage 2 is for.  An ES image that links the desktop
+ * table proves every mgl* implementation is shared (gl_core.c is only the
+ * entry-point surface). */
+void init_dispatch_core(GLMContext ctx)
 {
     ctx->dispatch.cull_face = mglCullFace;
     ctx->dispatch.front_face = mglFrontFace;
@@ -1066,10 +1069,8 @@ void init_dispatch(GLMContext ctx)
     ctx->dispatch.polygon_offset_clamp = mglPolygonOffsetClamp;
     ctx->dispatch.max_shader_compiler_threads = mglMaxShaderCompilerThreadsKHR;
 };
-#endif
 
-#ifdef MGL_GL_ES
-void init_dispatch(GLMContext ctx)
+void init_dispatch_es(GLMContext ctx)
 {
     ctx->dispatch.read_buffer = mglReadBuffer;
     ctx->dispatch.draw_range_elements = mglDrawRangeElements;
@@ -1310,4 +1311,11 @@ void init_dispatch(GLMContext ctx)
     ctx->dispatch.tex_storage3_d_multisample = mglTexStorage3DMultisample;
     ctx->dispatch.max_shader_compiler_threads_es = mglMaxShaderCompilerThreadsKHR;
 };
-#endif
+
+void init_dispatch(GLMContext ctx)
+{
+    if (ctx && ctx->is_es)
+        init_dispatch_es(ctx);
+    else
+        init_dispatch_core(ctx);
+}

@@ -8838,7 +8838,6 @@ void mglViewportIndexedfv(GLMContext ctx, GLuint index, const GLfloat *v)
 	mglViewportIndexedf(ctx, index, v[0], v[1], v[2], v[3]);
 }
 
-#ifdef MGL_GL_ES
 void  mglBlendBarrier(GLMContext ctx)
 {
     // Unimplemented function
@@ -8848,6 +8847,6 @@ void  mglBlendBarrier(GLMContext ctx)
 
 void mglPrimitiveBoundingBox(GLMContext ctx, GLfloat minX, GLfloat minY, GLfloat minZ, GLfloat minW, GLfloat maxX, GLfloat maxY, GLfloat maxZ, GLfloat maxW)
 {
-    
+    (void)ctx; (void)minX; (void)minY; (void)minZ; (void)minW;
+    (void)maxX; (void)maxY; (void)maxZ; (void)maxW;
 }
-#endif

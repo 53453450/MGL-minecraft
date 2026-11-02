@@ -1104,10 +1104,10 @@ void mglMultiDrawElementsIndirectCount(GLMContext ctx, GLenum mode, GLenum type,
 void mglPolygonOffsetClamp(GLMContext ctx, GLfloat factor, GLfloat units, GLfloat clamp);
 void mglMaxShaderCompilerThreadsKHR(GLMContext ctx, GLuint count);
 
-#ifdef MGL_GL_ES
+/* ES 3.2 entry points, compiled for both profiles: the shared dispatch table
+ * references them from init_dispatch_es. */
 void  mglBlendBarrier(GLMContext ctx);
 void mglPrimitiveBoundingBox(GLMContext ctx, GLfloat minX, GLfloat minY, GLfloat minZ, GLfloat minW, GLfloat maxX, GLfloat maxY, GLfloat maxZ, GLfloat maxW);
-#endif
 
 #ifdef __cplusplus
 } /* extern "C" */
