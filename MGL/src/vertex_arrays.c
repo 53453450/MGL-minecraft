@@ -553,14 +553,11 @@ void setVertexAttrib(GLMContext ctx,
     vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
     ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
     array_buffer = STATE(buffers[_ARRAY_BUFFER]);
-#ifndef MGL_GL_ES
-    /* Desktop core: the attribute data must live in a bound buffer. */
-    ERROR_CHECK_RETURN(array_buffer, GL_INVALID_OPERATION);
-#else
-    /* GLES keeps buffer zero legal here -- the attribute simply has no data
-     * source.  CTS's state reset calls vertexAttribPointer with nothing bound,
-     * so rejecting it failed every ES case during deinit. */
-#endif
+    /* Desktop core needs the attribute data to live in a bound buffer; GLES
+     * keeps buffer zero legal (the attribute simply has no data source), and
+     * CTS's state reset calls this with nothing bound. */
+    if (!ctx->is_es)
+        ERROR_CHECK_RETURN(array_buffer, GL_INVALID_OPERATION);
     relativeoffset = (GLubyte *)pointer - (GLubyte *)NULL;
 
     VertexAttrib *attrib = &vao->attrib[index];
@@ -1215,18 +1212,15 @@ void mglVertexAttribDivisor(GLMContext ctx, GLuint index, GLuint divisor)
     /* GL 4.6: "no vertex array object is bound" is INVALID_OPERATION, not
      * INVALID_VALUE.  The DSA (mglVertexArray*) variants below already use
      * INVALID_OPERATION; these non-DSA entry points were inconsistent. */
-#ifdef MGL_GL_ES
-    /* GLES has a default vertex array object, and this build keeps it as a
-     * NULL STATE(vao) rather than a real object.  A divisor set on it cannot do
-     * anything (no attribute data), so accept and ignore it instead of raising
-     * INVALID_OPERATION -- CTS's state reset calls this right after
-     * bindVertexArray(0) and failed every ES case on it.
+    /* GLES has a default vertex array object, kept here as a NULL STATE(vao)
+     * rather than a real object.  A divisor set on it cannot do anything (no
+     * attribute data), so accept and ignore it there; desktop core raises.
      * TODO: give ES a real default VAO object so this can go away. */
-    if (!ptr)
-        return;
-#else
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
-#endif
+    if (!ptr) {
+        if (ctx->is_es)
+            return;
+        ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
+    }
     ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
 
     if (ptr->attrib[index].divisor == divisor &&

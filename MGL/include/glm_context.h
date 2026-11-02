@@ -128,6 +128,12 @@ typedef struct MGLDebugControlRule {
 
 typedef struct GLMContextRec_t {
     GLuint      context_flags;
+    /* Runtime profile flag.  Stage 1 of the single-library work: the two builds
+     * still differ at compile time, so this is a constant that mirrors the
+     * build, but every behaviour check below reads it instead of testing the
+     * macro.  Stage 2 fills it from the creation request so one image can serve
+     * both profiles. */
+    int         is_es;
 
 #ifdef MGL_GL_CORE
     struct GLMDispatchTable dispatch;

@@ -408,28 +408,19 @@ bool validate_vao(GLMContext ctx, bool uses_elements)
 
     vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
     if (!vao) {
-#ifdef MGL_GL_ES
-        /* GLES 3.2 §2.10: the default vertex array object always exists, so a
-         * draw with nothing explicitly bound is legal (the desktop core rule
-         * below does not apply).  The ES smoke test draws exactly this way and
-         * used to collect INVALID_OPERATION from here. */
-        return true;
-#else
-        /* GL 4.6 Core §10.3.1 / §10.4: draws require a bound VAO.
-         * Do not silently create/bind VAO 0 (compatibility-profile habit). */
-        return false;
-#endif
+        /* GLES 3.2 §2.10 keeps a default vertex array object alive, so a draw
+         * with nothing explicitly bound is legal there; GL 4.6 Core §10.3.1
+         * requires one.  (The ES smoke test draws exactly this way.) */
+        return ctx->is_es ? true : false;
     }
     /* Context-private attrib default is not a user-bound VAO; draws must
      * fail with INVALID_OPERATION (KHR-GL46.draw_indirect.negative-noVAO-*).
      * ES keeps the default VAO usable instead. */
     if (ctx->core_attrib_default_vao != 0u &&
         vao->name == ctx->core_attrib_default_vao) {
-#ifdef MGL_GL_ES
-        return true;
-#else
-        return false;
-#endif
+        /* Context-private attrib default: desktop core rejects the draw, ES
+         * keeps the default VAO usable. */
+        return ctx->is_es ? true : false;
     }
 
     // no attribs enabled..

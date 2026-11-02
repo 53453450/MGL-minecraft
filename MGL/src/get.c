@@ -1289,18 +1289,13 @@ const GLubyte *mglGetString(GLMContext ctx, GLenum name)
             return (const GLubyte *)"MGL";
 
         case GL_VERSION:
-#ifdef MGL_GL_ES
-            return (const GLubyte *)"OpenGL ES 3.2.0";
-#else
-            return (const GLubyte *)"4.6.0";
-#endif
+            return (const GLubyte *)(ctx && ctx->is_es ? "OpenGL ES 3.2.0"
+                                                       : "4.6.0");
 
         case GL_SHADING_LANGUAGE_VERSION:
-#ifdef MGL_GL_ES
-            return (const GLubyte *)"OpenGL ES GLSL ES 3.20";
-#else
-            return (const GLubyte *)"4.60";
-#endif
+            return (const GLubyte *)(ctx && ctx->is_es
+                                         ? "OpenGL ES GLSL ES 3.20"
+                                         : "4.60");
 
         case GL_EXTENSIONS:
             /* Core profile returns NULL for glGetString(GL_EXTENSIONS).

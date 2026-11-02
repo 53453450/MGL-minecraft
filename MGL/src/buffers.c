@@ -421,12 +421,12 @@ bool isBuffer(GLMContext ctx, GLuint buffer)
 
 bool mglBufferNameWasGenerated(GLMContext ctx, GLuint buffer)   /* F23: shared with vertex_buffers.c */
 {
-#ifdef MGL_GL_ES
-    (void)ctx;
-    return buffer != 0u;
-#else
-    return ctx && buffer != 0u && buffer <= STATE(buffer_table).current_name;
-#endif
+    if (!ctx)
+        return false;
+    /* GLES accepts any non-zero name here without a "was it generated" check. */
+    if (ctx->is_es)
+        return buffer != 0u;
+    return buffer != 0u && buffer <= STATE(buffer_table).current_name;
 }
 
 Buffer *findBuffer(GLMContext ctx, GLuint buffer)

@@ -223,6 +223,15 @@ GLMContext createGLMContext(GLenum format, GLenum type,
         return NULL;
     }
 
+    /* Profile of this context.  Stage 1 keeps the two builds separate, so the
+     * value is a constant today; stage 2 will take it from the creation call
+     * and drop MGL_GL_ES from the build. */
+#ifdef MGL_GL_ES
+    ctx->is_es = 1;
+#else
+    ctx->is_es = 0;
+#endif
+
     /* calloc zeros state + replay_state (T6-2). Keep the explicit caps writes
      * below for the legacy-compat face defaults (T6-1). */
     if (pthread_mutex_init(&ctx->sync_lock, NULL) != 0) {
