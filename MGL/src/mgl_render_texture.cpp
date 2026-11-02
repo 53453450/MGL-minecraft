@@ -1354,7 +1354,11 @@ extern "C" int mglRenderCreateSparseTextureFromState(
     MTL::HeapDescriptor* heap_descriptor = MTL::HeapDescriptor::alloc()->init();
     heap_descriptor->setType(MTL::HeapTypePlacement);
     heap_descriptor->setSize(heap_size);
-    heap_descriptor->setStorageMode(MTL::StorageModePrivate);
+    /* The heap has to agree with the texture on storage and CPU cache mode;
+     * MGL asks for write-combined textures, so copying the descriptor's modes
+     * here is what keeps newSubResourceAtOffset from asserting. */
+    heap_descriptor->setStorageMode(descriptor->storageMode());
+    heap_descriptor->setCpuCacheMode(descriptor->cpuCacheMode());
     MTL::Heap* heap = renderer.device->newHeap(heap_descriptor);
     heap_descriptor->release();
     if (!heap) {

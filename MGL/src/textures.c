@@ -4883,6 +4883,37 @@ void mglTexStorage2D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
 }
 
 
+/* ARB_sparse_texture: commit or decommit pages of a sparse texture.  GL states
+ * the region in texels and requires page alignment; the renderer converts to the
+ * tile-space region Metal takes. */
+void mglTexPageCommitmentARB(GLMContext ctx, GLenum target, GLint level,
+                             GLint xoffset, GLint yoffset, GLint zoffset,
+                             GLsizei width, GLsizei height, GLsizei depth,
+                             GLboolean commit)
+{
+    Texture *tex;
+
+    ERROR_CHECK_RETURN(level >= 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(xoffset >= 0 && yoffset >= 0 && zoffset >= 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(width > 0 && height > 0 && depth > 0, GL_INVALID_VALUE);
+
+    tex = getTex(ctx, 0, target);
+    ERROR_CHECK_RETURN(tex != NULL, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(tex->params.sparse, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(tex->immutable_storage, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(tex->sparse_heap != NULL, GL_INVALID_OPERATION);
+
+    /* Page granularity is GL_VIRTUAL_PAGE_SIZE_{X,Y} = 64. */
+    ERROR_CHECK_RETURN((xoffset % 64) == 0 && (yoffset % 64) == 0, GL_INVALID_VALUE);
+
+    (void)mglRenderSparseTextureCommit(tex->sparse_heap,
+                                       mglTextureBackendEnsure(tex)->mtl_data,
+                                       (uint32_t)xoffset, (uint32_t)yoffset,
+                                       (uint32_t)zoffset, (uint32_t)width,
+                                       (uint32_t)height, (uint32_t)depth,
+                                       commit ? 1 : 0);
+}
+
 void mglTextureStorage2D(GLMContext ctx, GLuint texture, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height)
 {
     Texture *tex;

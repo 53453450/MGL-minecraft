@@ -6322,6 +6322,16 @@ void glTexBufferRange(GLenum target, GLenum internalformat, GLuint buffer, GLint
     ctx->dispatch.tex_buffer_range(ctx, target, internalformat, buffer, offset, size);
 }
 
+void glTexPageCommitmentARB(GLenum target, GLint level, GLint xoffset,
+                            GLint yoffset, GLint zoffset, GLsizei width,
+                            GLsizei height, GLsizei depth, GLboolean commit)
+{
+    GLMContext ctx = GET_CONTEXT();
+
+    ctx->dispatch.tex_page_commitment(ctx, target, level, xoffset, yoffset,
+                                      zoffset, width, height, depth, commit);
+}
+
 void glTexStorage2DMultisample(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLboolean fixedsamplelocations)
 {
     GLMContext ctx = GET_CONTEXT();

@@ -1067,6 +1067,7 @@ void init_dispatch_core(GLMContext ctx)
     ctx->dispatch.multi_draw_arrays_indirect_count = mglMultiDrawArraysIndirectCount;
     ctx->dispatch.multi_draw_elements_indirect_count = mglMultiDrawElementsIndirectCount;
     ctx->dispatch.polygon_offset_clamp = mglPolygonOffsetClamp;
+    ctx->dispatch.tex_page_commitment = mglTexPageCommitmentARB;
     ctx->dispatch.max_shader_compiler_threads = mglMaxShaderCompilerThreadsKHR;
 };
 
@@ -1265,6 +1266,7 @@ void init_dispatch_es(GLMContext ctx)
     ctx->dispatch.vertex_attrib_i_format = mglVertexAttribIFormat;
     ctx->dispatch.vertex_attrib_binding = mglVertexAttribBinding;
     ctx->dispatch.vertex_binding_divisor = mglVertexBindingDivisor;
+    ctx->dispatch.tex_page_commitment = mglTexPageCommitmentARB;
     ctx->dispatch.blend_barrier = mglBlendBarrier;
     ctx->dispatch.copy_image_sub_data = mglCopyImageSubData;
     ctx->dispatch.debug_message_control = mglDebugMessageControl;

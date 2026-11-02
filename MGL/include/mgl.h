@@ -1106,6 +1106,11 @@ void mglMaxShaderCompilerThreadsKHR(GLMContext ctx, GLuint count);
 
 /* ES 3.2 entry points, compiled for both profiles: the shared dispatch table
  * references them from init_dispatch_es. */
+void mglTexPageCommitmentARB(GLMContext ctx, GLenum target, GLint level,
+                             GLint xoffset, GLint yoffset, GLint zoffset,
+                             GLsizei width, GLsizei height, GLsizei depth,
+                             GLboolean commit);
+
 void  mglBlendBarrier(GLMContext ctx);
 void mglPrimitiveBoundingBox(GLMContext ctx, GLfloat minX, GLfloat minY, GLfloat minZ, GLfloat minW, GLfloat maxX, GLfloat maxY, GLfloat maxZ, GLfloat maxW);
 

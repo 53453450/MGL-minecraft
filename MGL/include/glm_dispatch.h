@@ -1068,6 +1068,10 @@ struct GLMDispatchTable {
         void  (*max_shader_compiler_threads)(GLMContext ctx, GLuint count);
     /* ES 3.2 entry points with no desktop counterpart.  A desktop context
      * leaves these NULL; the ES dispatch fills them. */
+    void  (*tex_page_commitment)(GLMContext ctx, GLenum target, GLint level,
+                                 GLint xoffset, GLint yoffset, GLint zoffset,
+                                 GLsizei width, GLsizei height, GLsizei depth,
+                                 GLboolean commit);
     void  (*blend_barrier)(GLMContext ctx);
     void  (*primitive_bounding_box)(GLMContext ctx, GLfloat minX, GLfloat minY,
                                     GLfloat minZ, GLfloat minW, GLfloat maxX,
