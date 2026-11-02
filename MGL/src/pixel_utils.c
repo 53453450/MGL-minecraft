@@ -709,6 +709,9 @@ GLboolean validInternalFormat(GLint internalformat)
             break;
 
         // sized formats
+        case 0x8F9B: /* GL_RGBA16_SNORM */
+        case 0x8D62: /* GL_RGB565 (ARB_ES2_compatibility): a valid internal
+                      * format, and CTS asks for its sparse page sizes. */
         case GL_R8:
         case GL_R8_SNORM:
         case GL_R16:
