@@ -41,7 +41,6 @@
 
 typedef struct GLMContextRec_t *GLMContext;
 
-#ifdef MGL_GL_ES
 /* GLES 3.2 implementation-dependent values. Independent of the macOS
  * desktop CGL query used to seed Core; numbers are this Metal backend's
  * caps, never below the GLES 3.2 Table 20.40 minima. */
@@ -113,7 +112,6 @@ static void mglApplyES32Limits(GLMContext glm_ctx)
     v->max_compute_uniform_components = 1024;
     v->max_dual_source_draw_buffers = 0;
 }
-#endif
 
 void getMacOSDefaults(GLMContext glm_ctx)
 {
@@ -339,13 +337,8 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_MAX_CLIP_DISTANCES,&glm_ctx->active_state->var.max_clip_distances);
 
     //glGetIntegerv(GL_MAJOR_VERSION,&glm_ctx->active_state->var.major_version);
-#ifdef MGL_GL_ES
-    glm_ctx->active_state->var.major_version = 3;
-    glm_ctx->active_state->var.minor_version = 2;
-#else
-    glm_ctx->active_state->var.major_version = 4;
-    glm_ctx->active_state->var.minor_version = 6;
-#endif
+    glm_ctx->active_state->var.major_version = glm_ctx->is_es ? 3u : 4u;
+    glm_ctx->active_state->var.minor_version = glm_ctx->is_es ? 2u : 6u;
 
     glm_ctx->active_state->var.num_extensions = MGL_NUM_EXTENSIONS;
 
@@ -398,11 +391,9 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_MAX_GEOMETRY_OUTPUT_COMPONENTS,&glm_ctx->active_state->var.max_geometry_output_components);
     glGetIntegerv(GL_MAX_FRAGMENT_INPUT_COMPONENTS,&glm_ctx->active_state->var.max_fragment_input_components);
     glGetIntegerv(GL_CONTEXT_PROFILE_MASK,&glm_ctx->active_state->var.context_profile_mask);
-    glm_ctx->active_state->var.context_profile_mask = GL_CONTEXT_CORE_PROFILE_BIT;
-#ifdef MGL_GL_ES
-    /* Overwritten by mglApplyES32Limits after CGL seed. */
-    glm_ctx->active_state->var.context_profile_mask = 0;
-#endif
+    /* ES has no profiles; mglApplyES32Limits re-asserts 0 after the CGL seed. */
+    glm_ctx->active_state->var.context_profile_mask =
+        glm_ctx->is_es ? 0u : (GLuint)GL_CONTEXT_CORE_PROFILE_BIT;
     glGetIntegerv(GL_PROVOKING_VERTEX,&glm_ctx->active_state->var.provoking_vertex);
     glGetIntegerv(GL_MAX_SERVER_WAIT_TIMEOUT,&glm_ctx->active_state->var.max_server_wait_timeout);
     glGetIntegerv(GL_MAX_SAMPLE_MASK_WORDS,&glm_ctx->active_state->var.max_sample_mask_words);
@@ -958,9 +949,8 @@ apply_gl46_defaults:
         glm_ctx->active_state->var.texture_buffer_offset_alignment == 0x01010101u)
         glm_ctx->active_state->var.texture_buffer_offset_alignment = 16u;
 
-#ifdef MGL_GL_ES
-    mglApplyES32Limits(glm_ctx);
-#endif
+    if (glm_ctx->is_es)
+        mglApplyES32Limits(glm_ctx);
 
     /* GL 4.6 Table 23.63 †: each MAX_COMBINED_stage_UNIFORM_COMPONENTS is at
      * least MAX_stage_UNIFORM_BLOCKS * MAX_UNIFORM_BLOCK_SIZE / 4 +

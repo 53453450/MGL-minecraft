@@ -123,16 +123,15 @@ static const char *kMglExtensions[] = {
 static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
               "MGL_NUM_EXTENSIONS must match kMglExtensions");
 
-#ifndef MGL_GL_ES
 /* GL 4.6 §1.3.1/§1.3.3: GLSL 1.40-4.60 and GLSL ES 1.00/3.00/3.10. Index 0
- * must be the latest version with the API's profile (§22.2). */
+ * must be the latest version with the API's profile (§22.2).  Defined for both
+ * profiles; an ES context rejects the queries that read it. */
 static const char *const kMglShadingLanguageVersions[] = {
     "460 core", "450 core", "440 core", "430 core", "420 core", "410 core",
     "400 core", "330 core", "150 core", "140", "100", "300 es", "310 es",
 };
 #define MGL_NUM_SHADING_LANGUAGE_VERSIONS \
     (sizeof(kMglShadingLanguageVersions) / sizeof(kMglShadingLanguageVersions[0]))
-#endif
 
 static GLint mglClampGetInteger64ToInt(GLint64 value, const char *label)
 {
@@ -864,14 +863,15 @@ static bool mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
                 case kDouble: RET_DOUBLE(MGL_NUM_EXTENSIONS);
             }
             break;
-#ifndef MGL_GL_ES
         case GL_NUM_SHADING_LANGUAGE_VERSIONS:
+            /* Desktop-only queries; ES rejects them below. */
+            if (ctx && ctx->is_es) { ERROR_RETURN(GL_INVALID_ENUM); return false; }
             RET_TYPE_VAR_DERIVED((GLuint)MGL_NUM_SHADING_LANGUAGE_VERSIONS);
             break;
         case GL_NUM_SPIR_V_EXTENSIONS:
+            if (ctx && ctx->is_es) { ERROR_RETURN(GL_INVALID_ENUM); return false; }
             RET_TYPE_VAR_DERIVED(0u);
             break;
-#endif
         case 0x821E: RET_TYPE_VAR(type, context_flags); break; // GL_CONTEXT_FLAGS
         case 0x88FF: RET_TYPE_VAR(type, max_array_texture_layers); break; // GL_MAX_ARRAY_TEXTURE_LAYERS
         case 0x8904: RET_TYPE_VAR(type, min_program_texel_offset); break; // GL_MIN_PROGRAM_TEXEL_OFFSET
@@ -952,13 +952,13 @@ static bool mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x9125: RET_TYPE_VAR(type, max_fragment_input_components); break; // GL_MAX_FRAGMENT_INPUT_COMPONENTS
         case 0x8E5A: RET_TYPE_VAR(type, max_geometry_shader_invocations); break; // GL_MAX_GEOMETRY_SHADER_INVOCATIONS
         case 0x8E71: RET_TYPE_VAR(type, max_vertex_streams); break; // GL_MAX_VERTEX_STREAMS
-#ifdef MGL_GL_ES
         case 0x9126: /* GL_CONTEXT_PROFILE_MASK is desktop-only. */
-            ERROR_RETURN(GL_INVALID_ENUM);
-            return false;
-#else
-        case 0x9126: RET_TYPE_VAR(type, context_profile_mask); break; // GL_CONTEXT_PROFILE_MASK
-#endif
+            if (ctx && ctx->is_es) {
+                ERROR_RETURN(GL_INVALID_ENUM);
+                return false;
+            }
+            RET_TYPE_VAR(type, context_profile_mask);
+            break;
         case 0x8E4F: RET_TYPE_VAR(type, provoking_vertex); break; // GL_PROVOKING_VERTEX
         case 0x891C: RET_TYPE_VAR(type, clamp_read_color); break; // GL_CLAMP_READ_COLOR
         case 0x9111: RET_TYPE_VAR(type, max_server_wait_timeout); break; // GL_MAX_SERVER_WAIT_TIMEOUT
@@ -1538,9 +1538,10 @@ const GLubyte  *mglGetStringi(GLMContext ctx, GLenum name, GLuint index)
     if (!ctx)
         return NULL;
 
-#ifndef MGL_GL_ES
     if (name == GL_SHADING_LANGUAGE_VERSION)
     {
+        if (ctx && ctx->is_es)
+            ERROR_RETURN_VALUE(GL_INVALID_ENUM, NULL);
         if (index >= MGL_NUM_SHADING_LANGUAGE_VERSIONS)
         {
             ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
@@ -1550,9 +1551,12 @@ const GLubyte  *mglGetStringi(GLMContext ctx, GLenum name, GLuint index)
 
     if (name == GL_SPIR_V_EXTENSIONS)
     {
+        /* Desktop answers INVALID_VALUE (no SPIR-V); ES has no such query at
+         * all and falls through to the INVALID_ENUM below. */
+        if (ctx && ctx->is_es)
+            ERROR_RETURN_VALUE(GL_INVALID_ENUM, NULL);
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
     }
-#endif
 
     if (name != GL_EXTENSIONS)
     {
