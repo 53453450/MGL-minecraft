@@ -342,7 +342,13 @@ void mglGetVertexAttribdv(GLMContext ctx, GLuint index, GLenum pname, GLdouble *
     }
 
     vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
-    ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    if (!vao) {
+        /* GLES default VAO: legal, but it has no attribute state to describe,
+         * so the call is a no-op (CTS's state reset does exactly this). */
+        if (ctx && ctx->is_es)
+            return;
+        ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    }
     (void)vao;
 
     /* For binding-related queries with index >= MAX_ATTRIBS, treat the index
@@ -551,7 +557,13 @@ void setVertexAttrib(GLMContext ctx,
 
     ERROR_CHECK_RETURN(fetch_stride, GL_INVALID_ENUM);
     vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
-    ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    if (!vao) {
+        /* GLES default VAO: legal, but it has no attribute state to describe,
+         * so the call is a no-op (CTS's state reset does exactly this). */
+        if (ctx && ctx->is_es)
+            return;
+        ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    }
     array_buffer = STATE(buffers[_ARRAY_BUFFER]);
     /* Desktop core needs the attribute data to live in a bound buffer; GLES
      * keeps buffer zero legal (the attribute simply has no data source), and
@@ -610,7 +622,13 @@ void mglVertexAttribPointer(GLMContext ctx, GLuint index, GLint size, GLenum typ
     }
 
     vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
-    ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    if (!vao) {
+        /* GLES default VAO: legal, but it has no attribute state to describe,
+         * so the call is a no-op (CTS's state reset does exactly this). */
+        if (ctx && ctx->is_es)
+            return;
+        ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    }
     (void)vao;
 
     ERROR_CHECK_RETURN(stride >= 0, GL_INVALID_VALUE);
@@ -657,7 +675,13 @@ void mglVertexAttribIPointer(GLMContext ctx, GLuint index, GLint size, GLenum ty
     ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
 
     vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
-    ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    if (!vao) {
+        /* GLES default VAO: legal, but it has no attribute state to describe,
+         * so the call is a no-op (CTS's state reset does exactly this). */
+        if (ctx && ctx->is_es)
+            return;
+        ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    }
 
     ERROR_CHECK_RETURN(stride >= 0, GL_INVALID_VALUE);
 
@@ -699,7 +723,13 @@ void mglVertexAttribLPointer(GLMContext ctx, GLuint index, GLint size, GLenum ty
     ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
 
     vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
-    ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    if (!vao) {
+        /* GLES default VAO: legal, but it has no attribute state to describe,
+         * so the call is a no-op (CTS's state reset does exactly this). */
+        if (ctx && ctx->is_es)
+            return;
+        ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    }
 
     ERROR_CHECK_RETURN(stride >= 0, GL_INVALID_VALUE);
 
@@ -733,7 +763,13 @@ void mglGetVertexAttribPointerv(GLMContext ctx, GLuint index, GLenum pname, void
     ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
 
     vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
-    ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    if (!vao) {
+        /* GLES default VAO: legal, but it has no attribute state to describe,
+         * so the call is a no-op (CTS's state reset does exactly this). */
+        if (ctx && ctx->is_es)
+            return;
+        ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    }
 
     switch(pname)
     {
@@ -811,7 +847,14 @@ void mglEnableVertexAttribArray(GLMContext ctx, GLuint index)
     ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
 
     VertexArray *vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
-    ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    if (!vao) {
+        /* GLES keeps a default vertex array object alive; it has no attribute
+         * state, so these calls are no-ops there rather than errors.  (CTS's
+         * state reset runs them right after bindVertexArray(0).) */
+        if (ctx && ctx->is_es)
+            return;
+        ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    }
 
     if ((vao->enabled_attribs & (0x1 << index)) != 0)
         return;
@@ -829,7 +872,14 @@ void mglDisableVertexAttribArray(GLMContext ctx, GLuint index)
     ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
 
     VertexArray *vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
-    ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    if (!vao) {
+        /* GLES keeps a default vertex array object alive; it has no attribute
+         * state, so these calls are no-ops there rather than errors.  (CTS's
+         * state reset runs them right after bindVertexArray(0).) */
+        if (ctx && ctx->is_es)
+            return;
+        ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
+    }
 
     if ((vao->enabled_attribs & (0x1 << index)) == 0)
         return;

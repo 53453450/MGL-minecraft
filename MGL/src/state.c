@@ -308,6 +308,13 @@ void mglHint(GLMContext ctx, GLenum target, GLenum mode)
         case GL_FRAGMENT_SHADER_DERIVATIVE_HINT: HINT(fragment_shader_derivative_hint);
             break;
 
+        case 0x8192: /* GL_GENERATE_MIPMAP_HINT -- ES-only enum, not in glcorearb */
+            /* GLES 3.2 keeps this one (it is the ES default hint target) and it
+             * has no effect on this backend -- the hint only selects a mipmap
+             * generation quality MGL does not vary.  Accept it instead of
+             * rejecting an enum ES clients are allowed to pass. */
+            break;
+
         default:
             ERROR_RETURN(GL_INVALID_ENUM);
             return;
