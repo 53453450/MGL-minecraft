@@ -1078,6 +1078,11 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
                 tex->internalformat = store_format;
                 continue;
             }
+            /* One placement heap per sparse texture; nothing else holds it. */
+            if (tex->sparse_heap) {
+                mglRenderReleaseMetalObject(tex->sparse_heap);
+                tex->sparse_heap = NULL;
+            }
             mglTextureBackendRelease(ctx, tex);
             free(tex);
         }
