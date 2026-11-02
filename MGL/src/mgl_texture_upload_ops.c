@@ -3118,7 +3118,7 @@ void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex)
      * publish it even though the caller owns the result. */
     /* A sparse texture asks the descriptor for its page size; everything else
      * in the create path then picks the sparse primitive on its own. */
-    if (tex->sparse)
+    if (tex->params.sparse)
         tex_desc.placement_sparse_page_size = 64;
     MglUpCreateTextureCtx createCtx = { &tex_desc, NULL, NULL };
     char createFailure[256] = {0};

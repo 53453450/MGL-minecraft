@@ -760,6 +760,12 @@ bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, con
             }
             break;
 
+        case 0x91A6: /* GL_TEXTURE_SPARSE_ARB */
+            /* Only meaningful before immutable storage exists; the storage path
+             * refuses sparse when the texture is already immutable. */
+            tex_params->sparse = (*param != 0) ? GL_TRUE : GL_FALSE;
+            break;
+
         case GL_TEXTURE_BASE_LEVEL:
             if (*param < 0)
                 return mglTexParameterError(ctx, GL_INVALID_VALUE);
