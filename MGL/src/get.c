@@ -644,6 +644,21 @@ static bool mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
             }
             break;
         }
+        case 0x9195: /* GL_VIRTUAL_PAGE_SIZE_X_ARB */
+        case 0x9196: /* GL_VIRTUAL_PAGE_SIZE_Y_ARB */
+        case 0x9197: /* GL_VIRTUAL_PAGE_SIZE_Z_ARB */ {
+            /* Placement-sparse pages are 64x64 texels in the XY plane; Z stays 1
+             * because commitment works per slice.  Queried by the sparse CTS
+             * before it commits anything. */
+            const GLsizei page = (pname == 0x9197) ? 1 : 64;
+            switch(type) {
+                case kBool: RET_BOOL(page);
+                case kInt: RET_INT(page);
+                case kFloat: RET_FLOAT(page);
+                case kDouble: RET_DOUBLE(page);
+            }
+            break;
+        }
         case 0x0D3A: RET_TYPE_VAR_COUNT(type, max_viewport_dims, 2); break; // GL_MAX_VIEWPORT_DIMS
         case 0x0D50: RET_TYPE_VAR(type, subpixel_bits); break; // GL_SUBPIXEL_BITS
         case 0x0B00: RET_TYPE_VAR(type, current_color); break; // GL_CURRENT_COLOR
