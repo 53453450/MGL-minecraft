@@ -52,57 +52,29 @@ static MGLContextFns sMGLESFns;
 static GLFWbool      sMGLESReady = GLFW_FALSE;
 static void*         sMGLESHandle = NULL;
 
-/* Load libmgl_es.dylib from the directory that holds libmgl.dylib. */
+/* One image serves both profiles now: an ES context is the same library asked
+ * for a different profile, so there is no second dylib to load. */
+static GLMContext createESContext(GLenum format, GLenum type, GLenum depth_format,
+                                  GLenum depth_type, GLenum stencil_format,
+                                  GLenum stencil_type)
+{
+    return createGLMContextProfile(1, format, type, depth_format, depth_type,
+                                   stencil_format, stencil_type);
+}
+
 static GLFWbool loadMGLESLibrary(void)
 {
     if (sMGLESReady)
         return GLFW_TRUE;
 
-    char modulePath[PATH_MAX] = {0};
-    Dl_info info;
-    if (dladdr((const void*) createGLMContext, &info) && info.dli_fname)
-    {
-        const char* slash = strrchr(info.dli_fname, '/');
-        if (!slash)
-            return GLFW_FALSE;
-        const size_t dirLen = (size_t) (slash - info.dli_fname);
-        static const char kSuffix[] = "/libmgl_es.dylib";
-        if (dirLen + sizeof(kSuffix) > sizeof(modulePath))
-            return GLFW_FALSE;
-        memcpy(modulePath, info.dli_fname, dirLen);
-        memcpy(modulePath + dirLen, kSuffix, sizeof(kSuffix));
-        sMGLESHandle = _glfwPlatformLoadModule(modulePath);
-    }
-
-    if (!sMGLESHandle)
-    {
-        _glfwInputError(GLFW_API_UNAVAILABLE,
-                        "MGL: Failed to locate libmgl_es.dylib");
-        return GLFW_FALSE;
-    }
-
-    sMGLESFns.create      = (GLMContext (*)(GLenum, GLenum, GLenum, GLenum, GLenum, GLenum))
-        _glfwPlatformGetModuleSymbol(sMGLESHandle, "createGLMContext");
-    sMGLESFns.destroy     = (void (*)(GLMContext))
-        _glfwPlatformGetModuleSymbol(sMGLESHandle, "destroyGLMContext");
-    sMGLESFns.makeCurrent = (void (*)(GLMContext))
-        _glfwPlatformGetModuleSymbol(sMGLESHandle, "MGLsetCurrentContext");
-    sMGLESFns.swapBuffers = (void (*)(GLMContext))
-        _glfwPlatformGetModuleSymbol(sMGLESHandle, "MGLswapBuffers");
-    sMGLESFns.setSrgb     = (void (*)(GLMContext, GLboolean))
-        _glfwPlatformGetModuleSymbol(sMGLESHandle, "MGLsetDefaultFramebufferSRGBCapable");
-    sMGLESFns.hostOps     = (const MGLContextHostOps* (*)(void))
-        _glfwPlatformGetModuleSymbol(sMGLESHandle, "mglContextHostOps");
-
-    if (!sMGLESFns.create || !sMGLESFns.destroy || !sMGLESFns.makeCurrent ||
-        !sMGLESFns.swapBuffers || !sMGLESFns.hostOps)
-    {
-        _glfwInputError(GLFW_API_UNAVAILABLE,
-                        "MGL: libmgl_es.dylib is missing required entry points");
-        return GLFW_FALSE;
-    }
-
-    sMGLESReady = GLFW_TRUE;
+    sMGLESFns.create      = createESContext;
+    sMGLESFns.destroy     = destroyGLMContext;
+    sMGLESFns.makeCurrent = MGLsetCurrentContext;
+    sMGLESFns.swapBuffers = MGLswapBuffers;
+    sMGLESFns.setSrgb     = MGLsetDefaultFramebufferSRGBCapable;
+    sMGLESFns.hostOps     = mglContextHostOps;
+    sMGLESHandle          = _glfw.mgl.handle;
+    sMGLESReady           = GLFW_TRUE;
     return GLFW_TRUE;
 }
 

@@ -1314,8 +1314,19 @@ void init_dispatch_es(GLMContext ctx)
 
 void init_dispatch(GLMContext ctx)
 {
-    if (ctx && ctx->is_es)
+    if (!ctx)
+        return;
+
+    /* Fill the whole table first, then let the ES table override its 238
+     * entries.  Doing it this way means no slot is ever NULL, so an ES context
+     * cannot jump through a desktop-only entry point even if a client of the
+     * combined image reaches one -- it simply runs the desktop implementation.
+     *
+     * The alternative (leaving desktop-only slots NULL and guarding all 1,049
+     * shim call sites) buys a spec-accurate error for entry points that an ES
+     * client has no symbol to call in the first place, at the cost of a guard
+     * on every GL entry point in the driver.  Not worth it. */
+    init_dispatch_core(ctx);
+    if (ctx->is_es)
         init_dispatch_es(ctx);
-    else
-        init_dispatch_core(ctx);
 }
