@@ -650,7 +650,21 @@ static void mglInstallPlatformShellClasses(void)
     Class shellClass = objc_allocateClassPair(objc_getClass("NSObject"),
                                               "MGLPlatformRendererShell", 0);
     if (!shellClass) {
-        fprintf(stderr, "MGL ERROR: could not register MGLPlatformRendererShell\n");
+        /* A second copy of the library finds the classes already installed:
+         * libmgl and libmgl_es are separate images, and a process that wants
+         * both a desktop and an ES context loads both.  They share this source,
+         * so the ivar layout and the method table are identical -- reuse them
+         * instead of bailing out, which used to leave s_mglShellClass Nil and
+         * take the ES renderer down with it. */
+        Class existingShell = objc_getClass("MGLPlatformRendererShell");
+        Class existingRenderer = objc_getClass("MGLRenderer");
+        if (!existingShell || !existingRenderer) {
+            fprintf(stderr,
+                    "MGL ERROR: could not register MGLPlatformRendererShell\n");
+            return;
+        }
+        s_mglShellClass = existingShell;
+        s_mglRendererClass = existingRenderer;
         return;
     }
     for (size_t i = 0; i < sizeof(kMGLShellIvars) / sizeof(kMGLShellIvars[0]); i++) {
