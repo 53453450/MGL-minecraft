@@ -819,6 +819,40 @@ void *getBufferData(GLMContext ctx, Buffer *ptr)
     return buffer_data;
 }
 
+GLint mglSparseBufferPageSize(void)
+{
+    /* ARB_sparse_buffer.  Power of two, and the CTS getter rejects values
+     * outside 1..65536. */
+    return 65536;
+}
+
+static int mglSparseBufferStorageFlagsOk(GLMContext ctx, GLbitfield storage_flags, GLsizeiptr size)
+{
+    if (storage_flags & ~(GL_DYNAMIC_STORAGE_BIT | GL_MAP_READ_BIT | GL_MAP_WRITE_BIT |
+                          GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT |
+                          GL_CLIENT_STORAGE_BIT | GL_SPARSE_STORAGE_BIT_ARB)) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, 0);
+    }
+    if (storage_flags & GL_SPARSE_STORAGE_BIT_ARB) {
+        /* Mapping a sparse buffer is forbidden, so the map bits are too. */
+        if (storage_flags & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT)) {
+            ERROR_RETURN_VALUE(GL_INVALID_VALUE, 0);
+        }
+        if (size <= 0 || (size % mglSparseBufferPageSize()) != 0) {
+            ERROR_RETURN_VALUE(GL_INVALID_VALUE, 0);
+        }
+    }
+    if ((storage_flags & GL_MAP_PERSISTENT_BIT) &&
+        !(storage_flags & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT))) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, 0);
+    }
+    if ((storage_flags & GL_MAP_COHERENT_BIT) &&
+        !(storage_flags & GL_MAP_PERSISTENT_BIT)) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, 0);
+    }
+    return 1;
+}
+
 void bufferStorage(GLMContext ctx, Buffer *ptr, GLenum target, GLuint index, GLsizeiptr size, const void *data, GLbitfield storage_flags, GLenum usage)
 {
     kern_return_t err;
@@ -2719,6 +2753,10 @@ void *mglMapBuffer(GLMContext ctx, GLenum target, GLenum access)
 
     ERROR_CHECK_RETURN_VALUE((ptr != NULL), GL_INVALID_OPERATION, NULL);
 
+    if (ptr->storage_flags & GL_SPARSE_STORAGE_BIT_ARB) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
     if (ptr->mapped)
     {
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
@@ -2973,6 +3011,10 @@ void *mglMapBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeip
     if (!ptr)
     {
         fprintf(stderr, "MGL MapBufferRange NULL bound buffer target=0x%x\n", target);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    if (ptr->storage_flags & GL_SPARSE_STORAGE_BIT_ARB) {
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
 
@@ -3463,22 +3505,8 @@ void mglBufferStorage(GLMContext ctx, GLenum target, GLsizeiptr size, const void
         return;
     }
 
-    if (storage_flags & ~(GL_DYNAMIC_STORAGE_BIT | GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT |
-                  GL_CLIENT_STORAGE_BIT))
-    {
-        ERROR_RETURN(GL_INVALID_VALUE);
+    if (!mglSparseBufferStorageFlagsOk(ctx, storage_flags, size))
         return;
-    }
-    if ((storage_flags & GL_MAP_PERSISTENT_BIT) && !(storage_flags & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT)))
-    {
-        ERROR_RETURN(GL_INVALID_VALUE);
-        return;
-    }
-    if ((storage_flags & GL_MAP_COHERENT_BIT) && !(storage_flags & GL_MAP_PERSISTENT_BIT))
-    {
-        ERROR_RETURN(GL_INVALID_VALUE);
-        return;
-    }
 
     bufferStorage(ctx, ptr, target, index, size, data, storage_flags, 0);
 }
@@ -3498,22 +3526,8 @@ void mglNamedBufferStorage(GLMContext ctx, GLuint buffer, GLsizeiptr size, const
         return;
     }
 
-    if (storage_flags & ~(GL_DYNAMIC_STORAGE_BIT | GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT |
-                  GL_CLIENT_STORAGE_BIT))
-    {
-        ERROR_RETURN(GL_INVALID_VALUE);
+    if (!mglSparseBufferStorageFlagsOk(ctx, storage_flags, size))
         return;
-    }
-    if ((storage_flags & GL_MAP_PERSISTENT_BIT) && !(storage_flags & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT)))
-    {
-        ERROR_RETURN(GL_INVALID_VALUE);
-        return;
-    }
-    if ((storage_flags & GL_MAP_COHERENT_BIT) && !(storage_flags & GL_MAP_PERSISTENT_BIT))
-    {
-        ERROR_RETURN(GL_INVALID_VALUE);
-        return;
-    }
 
     bufferStorage(ctx, ptr, 0, 0, size, data, storage_flags, 0);
 }
@@ -3951,4 +3965,33 @@ void mglGetNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GL
     mglRendererReadBackBuffer(ctx, ptr, (size_t)offset, (size_t)size);
 
     memcpy(data, (const uint8_t *)((uintptr_t)ptr->data.buffer_data) + (uintptr_t)offset, (size_t)size);
+}
+
+void mglBufferPageCommitmentARB(GLMContext ctx, GLenum target, GLintptr offset,
+                                GLsizeiptr size, GLboolean commit)
+{
+    GLuint index;
+    Buffer *ptr;
+    GLint page;
+
+    /* The buffer is fully resident and zero-filled.  Commitment only has to
+     * accept a page-aligned range; reads of untouched bytes are already 0. */
+    (void)commit;
+    ERROR_CHECK_RETURN(checkTarget(ctx, target), GL_INVALID_ENUM);
+    index = bufferIndexFromTarget(ctx, target);
+    ptr = STATE(buffers[index]);
+    ERROR_CHECK_RETURN(ptr != NULL, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(ptr->immutable_storage &&
+                       (ptr->storage_flags & GL_SPARSE_STORAGE_BIT_ARB),
+                       GL_INVALID_OPERATION);
+    if (offset < 0 || size < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    page = mglSparseBufferPageSize();
+    if (page <= 0 || (offset % page) != 0 || (size % page) != 0 ||
+        offset > ptr->size || (GLsizeiptr)(ptr->size - offset) < size) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
 }

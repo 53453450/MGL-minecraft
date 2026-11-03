@@ -29,6 +29,7 @@ extern "C" {
 #include "mgl_types_sync.h"
 #include "glm_context.h"
 #include "mgl_render_internal.h"
+#include "mgl_render_values.h"
 #include "mgl_capability.h"
 #include "mgl_sync.h"
 #include "glm_limits.h"
@@ -1339,17 +1340,46 @@ extern "C" int mglRenderCreateSparseTextureFromState(
         mgl::newTextureDescriptor(texture_descriptor);
     if (!descriptor) return -1;
 
-    /* One page is 64x64 texels; reserve the whole texture up front so any
-     * commitment the client asks for can be satisfied without leaking heaps. */
-    const uint64_t page = 64;
-    const uint64_t pages_x = (texture_descriptor->width + page - 1) / page;
-    const uint64_t pages_y = (texture_descriptor->height + page - 1) / page;
-    const uint64_t pages_z = texture_descriptor->depth ? texture_descriptor->depth : 1;
-    const uint64_t slices =
-        texture_descriptor->array_length ? texture_descriptor->array_length : 1;
-    const uint64_t page_bytes = page * page * 4; /* widest texel MGL maps */
-    const NS::UInteger heap_size = static_cast<NS::UInteger>(
-        pages_x * pages_y * pages_z * slices * page_bytes);
+    /* Reserve physical storage for every texel of every mip and face.  The
+     * previous estimate assumed a 4-byte texel and a single cube face, and
+     * ignored the mip chain, so anything wider or a cube came back as
+     * GL_OUT_OF_MEMORY. */
+    const uint64_t tex_type = texture_descriptor->texture_type;
+    /* Cube-array arrayLength is the cube count; each cube is six faces. */
+    const uint64_t faces =
+        (tex_type == MGLTextureTypeCube || tex_type == MGLTextureTypeCubeArray)
+            ? 6u
+            : 1u;
+    const uint64_t layers =
+        texture_descriptor->array_length ? texture_descriptor->array_length : 1u;
+    uint64_t mip_w = texture_descriptor->width;
+    uint64_t mip_h = texture_descriptor->height ? texture_descriptor->height : 1u;
+    uint64_t mip_d = texture_descriptor->depth ? texture_descriptor->depth : 1u;
+    const uint32_t mip_count = texture_descriptor->mipmap_level_count
+                                   ? (uint32_t)texture_descriptor->mipmap_level_count
+                                   : 1u;
+    uint32_t bpp = mglRenderMetalPixelFormatBytesPerPixel(
+        texture_descriptor->pixel_format);
+    if (bpp == 0)
+        bpp = 16;
+    const uint64_t samples = texture_descriptor->sample_count
+                                 ? texture_descriptor->sample_count
+                                 : 1u;
+    uint64_t heap_bytes = 0;
+    for (uint32_t mip = 0; mip < mip_count; mip++) {
+        uint64_t row = (mip_w * bpp + 255ull) & ~255ull;
+        heap_bytes += row * mip_h * mip_d * layers * faces * samples;
+        mip_w = mip_w > 1u ? mip_w / 2u : 1u;
+        mip_h = mip_h > 1u ? mip_h / 2u : 1u;
+        if (tex_type == MGLTextureType3D)
+            mip_d = mip_d > 1u ? mip_d / 2u : 1u;
+    }
+    /* newTexture rejected a heap that was exactly the texel bytes. */
+    heap_bytes *= 2ull;
+    heap_bytes = (heap_bytes + 16383ull) & ~16383ull;
+    if (heap_bytes < 16384ull)
+        heap_bytes = 16384ull;
+    const NS::UInteger heap_size = static_cast<NS::UInteger>(heap_bytes);
 
     MTL::HeapDescriptor* heap_descriptor = MTL::HeapDescriptor::alloc()->init();
     heap_descriptor->setType(MTL::HeapTypePlacement);

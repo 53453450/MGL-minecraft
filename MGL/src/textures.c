@@ -1083,6 +1083,8 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
                 mglRenderReleaseMetalObject(tex->sparse_heap);
                 tex->sparse_heap = NULL;
             }
+            free(tex->sparse_commits);
+            tex->sparse_commits = NULL;
             mglTextureBackendRelease(ctx, tex);
             free(tex);
         }
@@ -2010,6 +2012,14 @@ static GLuint mglPromoteMultisampleCount(GLMContext ctx, GLsizei samples)
     return max_samples;
 }
 
+static bool mglSparseTexStorageAllowed(GLMContext ctx, Texture *tex,
+                                      GLenum internalformat,
+                                      GLsizei levels, GLsizei width,
+                                      GLsizei height, GLsizei depth);
+static void mglSparseZeroUncommitted(Texture *tex, GLuint face, GLint level,
+                                     GLint xoffset, GLint yoffset, GLint zoffset,
+                                     GLsizei width, GLsizei height, GLsizei depth);
+
 static bool mglTextureStorageMultisampleMetadata(GLMContext ctx,
                                                  Texture *tex,
                                                  GLenum target,
@@ -2061,6 +2071,11 @@ static bool mglTextureStorageMultisampleMetadata(GLMContext ctx,
     {
         mglHandleProxyTexImageQuery(ctx, target, 0, internalformat, width, height, depth, 0);
         return true;
+    }
+
+    if (tex->params.sparse &&
+        !mglSparseTexStorageAllowed(ctx, tex, internalformat, 1, width, height, depth)) {
+        return false;
     }
 
     if (tex->mipmap_levels != 0u)
@@ -2115,6 +2130,11 @@ static bool mglTextureStorageMultisampleMetadata(GLMContext ctx,
     }
     tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
+
+    /* Commitment looks up the placement heap, so a sparse multisample
+     * texture has to exist before TexPageCommitment. */
+    if (tex->params.sparse)
+        mglRendererBindTexture(ctx, tex);
 
     return true;
 }
@@ -4298,6 +4318,10 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         return true;
     } while(false);
 
+    if (tex->params.sparse)
+        mglSparseZeroUncommitted(tex, face, level, xoffset, yoffset, zoffset,
+                                 width, height, depth);
+
     lvl->ever_written = GL_TRUE;
     lvl->suspicious_zero_upload = GL_FALSE;
     lvl->metal_data_authoritative = GL_FALSE;
@@ -4690,8 +4714,276 @@ void mglTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint xof
 
 #pragma mark TexStorage
 
+/* ARB_sparse_texture2 Table 8.X.  Each page is 64KB.  Returns 1 when the
+ * format is in the table.  Other formats get one implementation page. */
+int mglSparseStandardPageSize(GLenum internalformat, GLint *x, GLint *y, GLint *z)
+{
+    GLint px = 64;
+    GLint py = 64;
+    int standard = 1;
+
+    switch (internalformat) {
+        case GL_R8:
+        case GL_R8_SNORM:
+        case GL_R8I:
+        case GL_R8UI:
+            px = 256; py = 256; break;
+        case GL_R16:
+        case GL_R16_SNORM:
+        case GL_RG8:
+        case GL_RG8_SNORM:
+        case GL_RGB565:
+        case GL_R16F:
+        case GL_R16I:
+        case GL_R16UI:
+        case GL_RG8I:
+        case GL_RG8UI:
+            px = 256; py = 128; break;
+        case GL_RG16:
+        case GL_RG16_SNORM:
+        case GL_RGBA8:
+        case GL_RGBA8_SNORM:
+        case GL_RGB10_A2:
+        case GL_RGB10_A2UI:
+        case GL_RG16F:
+        case GL_R32F:
+        case GL_R11F_G11F_B10F:
+        case GL_RGB9_E5:
+        case GL_R32I:
+        case GL_R32UI:
+        case GL_RG16I:
+        case GL_RG16UI:
+        case GL_RGBA8I:
+        case GL_RGBA8UI:
+            px = 128; py = 128; break;
+        case GL_RGBA16:
+        case GL_RGBA16_SNORM:
+        case GL_RGBA16F:
+        case GL_RG32F:
+        case GL_RG32I:
+        case GL_RG32UI:
+        case GL_RGBA16I:
+        case GL_RGBA16UI:
+            px = 128; py = 64; break;
+        case GL_RGBA32F:
+        case GL_RGBA32I:
+        case GL_RGBA32UI:
+            px = 64; py = 64; break;
+        default:
+            standard = 0;
+            break;
+    }
+    if (x) *x = px;
+    if (y) *y = py;
+    if (z) *z = 1;
+    return standard;
+}
+
+static void mglSparseCommitReset(Texture *tex)
+{
+    free(tex->sparse_commits);
+    tex->sparse_commits = NULL;
+    tex->sparse_commit_count = 0;
+    tex->sparse_commit_cap = 0;
+}
+
+static int mglSparseCommitAppend(Texture *tex, GLint level,
+                                 GLint x, GLint y, GLint z,
+                                 GLint w, GLint h, GLint d)
+{
+    MGLSparseCommit *grown;
+
+    if (w <= 0 || h <= 0 || d <= 0)
+        return 1;
+    if (tex->sparse_commit_count == tex->sparse_commit_cap) {
+        GLuint cap = tex->sparse_commit_cap ? tex->sparse_commit_cap * 2u : 8u;
+        grown = realloc(tex->sparse_commits, (size_t)cap * sizeof *grown);
+        if (!grown)
+            return 0;
+        tex->sparse_commits = grown;
+        tex->sparse_commit_cap = cap;
+    }
+    tex->sparse_commits[tex->sparse_commit_count++] = (MGLSparseCommit){
+        level, x, y, z, w, h, d
+    };
+    return 1;
+}
+
+/* A texel is resident when any committed box on this level covers it.
+ * Nothing committed means the whole level reads as zero. */
+static int mglSparseTexelCommitted(const Texture *tex, GLint level,
+                                   GLint x, GLint y, GLint z)
+{
+    GLuint i;
+
+    if (!tex->params.sparse)
+        return 1;
+    for (i = 0; i < tex->sparse_commit_count; i++) {
+        const MGLSparseCommit *c = &tex->sparse_commits[i];
+        if (c->level == level &&
+            x >= c->x && x < c->x + c->w &&
+            y >= c->y && y < c->y + c->h &&
+            z >= c->z && z < c->z + c->d)
+            return 1;
+    }
+    return 0;
+}
+
+/* ARB_sparse_texture2: a write that covers an uncommitted texel is discarded.
+ * The CPU shadow is what GetTexImage and the following Metal upload read. */
+static void mglSparseZeroUncommitted(Texture *tex, GLuint face, GLint level,
+                                     GLint xoffset, GLint yoffset, GLint zoffset,
+                                     GLsizei width, GLsizei height, GLsizei depth)
+{
+    TextureLevel *lvl;
+    size_t bpp;
+    int zbase;
+    GLsizei x, y, z;
+
+    if (!tex || !tex->params.sparse || face >= 6u)
+        return;
+    if (!tex->faces[face].levels || level < 0 || (GLuint)level >= tex->num_levels)
+        return;
+    lvl = &tex->faces[face].levels[level];
+    if (!lvl->data || lvl->width == 0 || lvl->pitch == 0)
+        return;
+    bpp = lvl->pitch / (size_t)lvl->width;
+    if (bpp == 0)
+        return;
+    zbase = (tex->target == GL_TEXTURE_CUBE_MAP) ? (int)face : zoffset;
+    for (z = 0; z < depth; z++) {
+        for (y = 0; y < height; y++) {
+            uint8_t *row = (uint8_t *)lvl->data +
+                           (size_t)(zoffset + z) * lvl->pitch * (size_t)MAX(lvl->height, 1) +
+                           (size_t)(yoffset + y) * lvl->pitch +
+                           (size_t)xoffset * bpp;
+            for (x = 0; x < width; x++) {
+                if (!mglSparseTexelCommitted(tex, level,
+                                             xoffset + x, yoffset + y, zbase + z))
+                    memset(row + (size_t)x * bpp, 0, bpp);
+            }
+        }
+    }
+}
+
+/* Drop the decommitted box out of every committed box. */
+static int mglSparseCommitSubtract(Texture *tex, GLint level,
+                                   GLint x, GLint y, GLint z,
+                                   GLint w, GLint h, GLint d)
+{
+    MGLSparseCommit *old = tex->sparse_commits;
+    GLuint n = tex->sparse_commit_count;
+    GLuint i;
+
+    tex->sparse_commits = NULL;
+    tex->sparse_commit_count = 0;
+    tex->sparse_commit_cap = 0;
+    for (i = 0; i < n; i++) {
+        MGLSparseCommit a = old[i];
+        GLint ix0, ix1, iy0, iy1, iz0, iz1;
+
+        if (a.level != level) {
+            if (!mglSparseCommitAppend(tex, a.level, a.x, a.y, a.z, a.w, a.h, a.d))
+                goto oom;
+            continue;
+        }
+        ix0 = a.x > x ? a.x : x;
+        iy0 = a.y > y ? a.y : y;
+        iz0 = a.z > z ? a.z : z;
+        ix1 = (a.x + a.w) < (x + w) ? (a.x + a.w) : (x + w);
+        iy1 = (a.y + a.h) < (y + h) ? (a.y + a.h) : (y + h);
+        iz1 = (a.z + a.d) < (z + d) ? (a.z + a.d) : (z + d);
+        if (ix0 >= ix1 || iy0 >= iy1 || iz0 >= iz1) {
+            if (!mglSparseCommitAppend(tex, a.level, a.x, a.y, a.z, a.w, a.h, a.d))
+                goto oom;
+            continue;
+        }
+        if (!mglSparseCommitAppend(tex, level, a.x, a.y, a.z, ix0 - a.x, a.h, a.d) ||
+            !mglSparseCommitAppend(tex, level, ix1, a.y, a.z, a.x + a.w - ix1, a.h, a.d) ||
+            !mglSparseCommitAppend(tex, level, ix0, a.y, a.z, ix1 - ix0, iy0 - a.y, a.d) ||
+            !mglSparseCommitAppend(tex, level, ix0, iy1, a.z, ix1 - ix0, a.y + a.h - iy1, a.d) ||
+            !mglSparseCommitAppend(tex, level, ix0, iy0, a.z, ix1 - ix0, iy1 - iy0, iz0 - a.z) ||
+            !mglSparseCommitAppend(tex, level, ix0, iy0, iz1, ix1 - ix0, iy1 - iy0, a.z + a.d - iz1))
+            goto oom;
+    }
+    free(old);
+    return 1;
+oom:
+    free(old);
+    mglSparseCommitReset(tex);
+    return 0;
+}
+
+/* Reject a sparse TexStorage that violates ARB_sparse_texture2, and record
+ * how many levels can be committed a page at a time.  Returns false with the
+ * GL error already set.  texture2 drops the "base size must be a whole number
+ * of pages" error. */
+static bool mglSparseTexStorageAllowed(GLMContext ctx, Texture *tex,
+                                      GLenum internalformat,
+                                      GLsizei levels, GLsizei width,
+                                      GLsizei height, GLsizei depth)
+{
+    GLuint max_side = STATE(var).max_texture_size;
+    GLuint max_3d = STATE(var).max_3d_texture_size;
+    GLuint max_layers = STATE(var).max_array_texture_layers;
+    GLuint w;
+    GLuint h;
+    GLint page_x, page_y, page_z;
+    int level;
+
+    /* Only index 0 is advertised (NUM_VIRTUAL_PAGE_SIZES is 1). */
+    if (tex->params.virtual_page_size_index != 0) {
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        return false;
+    }
+
+    if (tex->target == GL_TEXTURE_3D) {
+        if ((GLuint)width > max_3d || (GLuint)height > max_3d ||
+            (GLuint)depth > max_3d) {
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+            return false;
+        }
+    } else if ((GLuint)width > max_side || (GLuint)height > max_side) {
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+        return false;
+    }
+
+    if ((tex->target == GL_TEXTURE_2D_ARRAY ||
+         tex->target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+         tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) &&
+        (GLuint)depth > max_layers) {
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+        return false;
+    }
+
+    mglSparseStandardPageSize(internalformat, &page_x, &page_y, &page_z);
+    tex->sparse_page_x = page_x;
+    tex->sparse_page_y = page_y;
+    tex->sparse_page_z = page_z;
+    mglSparseCommitReset(tex);
+
+    /* A level can be partially committed while every dimension is at least
+     * one page.  The first smaller level starts the mipmap tail. */
+    tex->params.num_sparse_levels = 0;
+    w = (GLuint)width;
+    h = (GLuint)height;
+    for (level = 0; level < levels; level++) {
+        if (w < (GLuint)page_x || h < (GLuint)page_y)
+            break;
+        tex->params.num_sparse_levels++;
+        if (w > 1u) w /= 2u;
+        if (h > 1u) h /= 2u;
+    }
+    return true;
+}
+
 void texStorage(GLMContext ctx, Texture *tex, GLuint faces, GLsizei levels, GLboolean is_array, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLboolean proxy)
 {
+    if (!proxy && tex->params.sparse &&
+        !mglSparseTexStorageAllowed(ctx, tex, internalformat, levels, width, height, depth)) {
+        return;
+    }
+
     tex->access = GL_READ_ONLY;
 
     for(int face=0; face<faces; face++)
@@ -4891,25 +5183,77 @@ void mglTexStorage2D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
 /* ARB_sparse_texture: commit or decommit pages of a sparse texture.  GL states
  * the region in texels and requires page alignment; the renderer converts to the
  * tile-space region Metal takes. */
-void mglTexPageCommitmentARB(GLMContext ctx, GLenum target, GLint level,
-                             GLint xoffset, GLint yoffset, GLint zoffset,
-                             GLsizei width, GLsizei height, GLsizei depth,
-                             GLboolean commit)
+static void mglCommitSparsePages(GLMContext ctx, Texture *tex, GLint level,
+                                 GLint xoffset, GLint yoffset, GLint zoffset,
+                                 GLsizei width, GLsizei height, GLsizei depth,
+                                 GLboolean commit)
 {
-    Texture *tex;
-
-    ERROR_CHECK_RETURN(level >= 0, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(xoffset >= 0 && yoffset >= 0 && zoffset >= 0, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(width > 0 && height > 0 && depth > 0, GL_INVALID_VALUE);
-
-    tex = getTex(ctx, 0, target);
     ERROR_CHECK_RETURN(tex != NULL, GL_INVALID_OPERATION);
     ERROR_CHECK_RETURN(tex->params.sparse, GL_INVALID_OPERATION);
     ERROR_CHECK_RETURN(tex->immutable_storage, GL_INVALID_OPERATION);
     ERROR_CHECK_RETURN(tex->sparse_heap != NULL, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN((GLuint)level < tex->num_levels, GL_INVALID_OPERATION);
 
-    /* Page granularity is GL_VIRTUAL_PAGE_SIZE_{X,Y} = 64. */
-    ERROR_CHECK_RETURN((xoffset % 64) == 0 && (yoffset % 64) == 0, GL_INVALID_VALUE);
+    /* Page granularity is GL_VIRTUAL_PAGE_SIZE_{X,Y} = 64, Z = 1.
+     * Offsets must be page-aligned (INVALID_VALUE).  Sizes must be page
+     * multiples unless they end exactly on the level edge, and the region
+     * must lie inside the level (INVALID_OPERATION).  A cube map is a
+     * six-layer array for commitment. */
+    ERROR_CHECK_RETURN(tex->sparse_page_x > 0 && tex->sparse_page_y > 0, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN((xoffset % tex->sparse_page_x) == 0 &&
+                       (yoffset % tex->sparse_page_y) == 0, GL_INVALID_VALUE);
+
+    {
+        GLuint level_w = tex->width;
+        GLuint level_h = tex->height;
+        GLuint level_d = tex->depth ? tex->depth : 1u;
+        GLuint z_extent;
+        TextureLevel *lvl = NULL;
+
+        if (tex->faces[0].levels && (GLuint)level < tex->num_levels)
+            lvl = &tex->faces[0].levels[level];
+        if (lvl && lvl->width)
+            level_w = lvl->width;
+        if (lvl && lvl->height)
+            level_h = lvl->height;
+        if (lvl && lvl->depth)
+            level_d = lvl->depth;
+
+        if (tex->target == GL_TEXTURE_CUBE_MAP)
+            z_extent = 6u;
+        else if (tex->target == GL_TEXTURE_3D ||
+                 tex->target == GL_TEXTURE_2D_ARRAY ||
+                 tex->target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+                 tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)
+            z_extent = level_d ? level_d : 1u;
+        else
+            z_extent = 1u;
+
+        if (((GLuint)width % (GLuint)tex->sparse_page_x) != 0u &&
+            (GLuint)xoffset + (GLuint)width != level_w) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+        }
+        if (((GLuint)height % (GLuint)tex->sparse_page_y) != 0u &&
+            (GLuint)yoffset + (GLuint)height != level_h) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+        }
+        /* Page Z is 1, so depth is always a multiple. */
+        if ((uint64_t)xoffset + (uint64_t)width > (uint64_t)level_w ||
+            (uint64_t)yoffset + (uint64_t)height > (uint64_t)level_h ||
+            (uint64_t)zoffset + (uint64_t)depth > (uint64_t)z_extent) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+        }
+    }
+
+    if (commit) {
+        if (!mglSparseCommitAppend(tex, level, xoffset, yoffset, zoffset,
+                                   width, height, depth)) {
+            ERROR_RETURN(GL_OUT_OF_MEMORY);
+        }
+    } else if (!mglSparseCommitSubtract(tex, level, xoffset, yoffset, zoffset,
+                                        width, height, depth)) {
+        ERROR_RETURN(GL_OUT_OF_MEMORY);
+    }
 
     (void)mglRenderSparseTextureCommit(tex->sparse_heap,
                                        mglTextureBackendEnsure(tex)->mtl_data,
@@ -4917,6 +5261,34 @@ void mglTexPageCommitmentARB(GLMContext ctx, GLenum target, GLint level,
                                        (uint32_t)zoffset, (uint32_t)width,
                                        (uint32_t)height, (uint32_t)depth,
                                        commit ? 1 : 0);
+}
+
+void mglTexPageCommitmentARB(GLMContext ctx, GLenum target, GLint level,
+                             GLint xoffset, GLint yoffset, GLint zoffset,
+                             GLsizei width, GLsizei height, GLsizei depth,
+                             GLboolean commit)
+{
+    ERROR_CHECK_RETURN(level >= 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(xoffset >= 0 && yoffset >= 0 && zoffset >= 0, GL_INVALID_VALUE);
+    /* depth may be 0 for targets whose minDepth is 0 (2D multisample).
+     * A too-large width must still report INVALID_OPERATION, not VALUE. */
+    ERROR_CHECK_RETURN(width > 0 && height > 0 && depth >= 0, GL_INVALID_VALUE);
+
+    mglCommitSparsePages(ctx, getTex(ctx, 0, target), level, xoffset, yoffset,
+                         zoffset, width, height, depth, commit);
+}
+
+void mglTexturePageCommitmentEXT(GLMContext ctx, GLuint texture, GLint level,
+                                 GLint xoffset, GLint yoffset, GLint zoffset,
+                                 GLsizei width, GLsizei height, GLsizei depth,
+                                 GLboolean commit)
+{
+    ERROR_CHECK_RETURN(level >= 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(xoffset >= 0 && yoffset >= 0 && zoffset >= 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(width > 0 && height > 0 && depth >= 0, GL_INVALID_VALUE);
+
+    mglCommitSparsePages(ctx, findTexture(ctx, texture), level, xoffset, yoffset,
+                         zoffset, width, height, depth, commit);
 }
 
 void mglTextureStorage2D(GLMContext ctx, GLuint texture, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height)

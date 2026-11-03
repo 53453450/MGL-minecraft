@@ -6332,6 +6332,32 @@ void glTexPageCommitmentARB(GLenum target, GLint level, GLint xoffset,
                                       zoffset, width, height, depth, commit);
 }
 
+extern void mglTexturePageCommitmentEXT(GLMContext ctx, GLuint texture, GLint level,
+                                        GLint xoffset, GLint yoffset, GLint zoffset,
+                                        GLsizei width, GLsizei height, GLsizei depth,
+                                        GLboolean commit);
+
+extern void mglBufferPageCommitmentARB(GLMContext ctx, GLenum target, GLintptr offset,
+                                       GLsizeiptr size, GLboolean commit);
+
+void glBufferPageCommitmentARB(GLenum target, GLintptr offset, GLsizeiptr size,
+                               GLboolean commit)
+{
+    GLMContext ctx = GET_CONTEXT();
+
+    mglBufferPageCommitmentARB(ctx, target, offset, size, commit);
+}
+
+void glTexturePageCommitmentEXT(GLuint texture, GLint level, GLint xoffset,
+                                GLint yoffset, GLint zoffset, GLsizei width,
+                                GLsizei height, GLsizei depth, GLboolean commit)
+{
+    GLMContext ctx = GET_CONTEXT();
+
+    mglTexturePageCommitmentEXT(ctx, texture, level, xoffset, yoffset, zoffset,
+                                width, height, depth, commit);
+}
+
 void glTexStorage2DMultisample(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLboolean fixedsamplelocations)
 {
     GLMContext ctx = GET_CONTEXT();

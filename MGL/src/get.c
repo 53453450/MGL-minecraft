@@ -46,6 +46,15 @@ static const char *kMglExtensions[] = {
     "GL_ARB_framebuffer_object",
     "GL_ARB_texture_storage",
     "GL_ARB_sparse_texture",
+    /* texture2 / clamp / sparse_buffer are string gates for the remaining
+     * sparse CTS groups.  texture2 does not yet report the standard page-size
+     * table or zero uncommitted reads; clamp and sparse_buffer have no
+     * builtin or buffer path.  EXT_dsa here is only TexturePageCommitmentEXT,
+     * which shares the ARB commitment checks. */
+    "GL_ARB_sparse_texture2",
+    "GL_ARB_sparse_texture_clamp",
+    "GL_ARB_sparse_buffer",
+    "GL_EXT_direct_state_access",
     "GL_ARB_sampler_objects",
     "GL_ARB_uniform_buffer_object",
     "GL_ARB_draw_buffers",
@@ -653,6 +662,25 @@ static bool mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
             break;
         case 0x919A: /* GL_MAX_SPARSE_ARRAY_TEXTURE_LAYERS_ARB */
             RET_TYPE_VAR(type, max_array_texture_layers);
+            break;
+        case 0x82F8: /* GL_SPARSE_BUFFER_PAGE_SIZE_ARB */ {
+            /* ARB_sparse_buffer: power of two, and the getter test rejects
+             * anything outside 1..65536. */
+            extern GLint mglSparseBufferPageSize(void);
+            const GLsizei page = mglSparseBufferPageSize();
+            switch(type) {
+                case kBool: RET_BOOL(page);
+                case kInt: RET_INT(page);
+                case kFloat: RET_FLOAT(page);
+                case kDouble: RET_DOUBLE(page);
+            }
+            break;
+        }
+        case 0x91A9: /* GL_SPARSE_TEXTURE_FULL_ARRAY_CUBE_MIPMAPS_ARB */
+            /* The placement heap reserves every mip level up front, so array
+             * and cube chains have no extra page-alignment restriction.
+             * ARB_sparse_texture leaves this implementation-defined. */
+            RET_TYPE_VAR_DERIVED(GL_TRUE);
             break;
         case 0x9195: /* GL_VIRTUAL_PAGE_SIZE_X_ARB */
         case 0x9196: /* GL_VIRTUAL_PAGE_SIZE_Y_ARB */
@@ -2933,25 +2961,34 @@ static GLsizei mglGetInternalformatValues(GLMContext ctx, GLenum target, GLenum 
             value = mglInternalFormatSupportValue(supported && target != GL_RENDERBUFFER);
             break;
         case 0x91A8: /* GL_NUM_VIRTUAL_PAGE_SIZES_ARB */
-            /* One page size (64x64) when the format can be sparse at all. */
-            value = supported ? 1 : 0;
-            break;
         case 0x91A7: /* GL_VIRTUAL_PAGE_SIZE_INDEX_ARB */
-            value = 0;
-            break;
         case 0x91AA: /* GL_NUM_SPARSE_LEVELS_ARB */
-            /* Conservative: only level 0 is backed by pages here. */
-            value = supported ? 1 : 0;
-            break;
         case 0x9195: /* GL_VIRTUAL_PAGE_SIZE_X_ARB */
-            value = supported ? 64 : 0;
-            break;
         case 0x9196: /* GL_VIRTUAL_PAGE_SIZE_Y_ARB */
-            value = supported ? 64 : 0;
+        case 0x9197: /* GL_VIRTUAL_PAGE_SIZE_Z_ARB */ {
+            /* ARB_sparse_texture2 Table 8.X.  Index 0 is that standard page;
+             * formats outside the table keep one implementation page. */
+            extern int mglSparseStandardPageSize(GLenum internalformat,
+                                                 GLint *x, GLint *y, GLint *z);
+            GLint page_x = 0, page_y = 0, page_z = 0;
+            int standard = mglSparseStandardPageSize(storage, &page_x, &page_y, &page_z);
+            int have = standard || supported;
+            if (pname == 0x91A8)
+                value = have ? 1 : 0;
+            else if (pname == 0x91A7)
+                value = 0;
+            else if (pname == 0x91AA)
+                value = have ? 1 : 0;
+            else if (!have)
+                value = 0;
+            else if (pname == 0x9195)
+                value = page_x;
+            else if (pname == 0x9196)
+                value = page_y;
+            else
+                value = page_z;
             break;
-        case 0x9197: /* GL_VIRTUAL_PAGE_SIZE_Z_ARB */
-            value = supported ? 1 : 0;
-            break;
+        }
         case GL_NUM_SAMPLE_COUNTS:
             value = supported ? mglInternalFormatSampleCounts(ctx, target, storage, NULL, 0) : 0;
             break;

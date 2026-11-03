@@ -88,8 +88,13 @@ typedef struct TextureParameter_t {
      * is treated as "unset → DECODE" by the getter/helper. */
     GLenum  srgb_decode_ext;
     /* ARB_sparse_texture: the client asked for sparse storage.  Lives here
-     * because glTexParameteri only has the parameter block, not the texture. */
+     * because glTexParameteri only has the parameter block, not the texture.
+     * virtual_page_size_index selects the page layout at TexStorage time
+     * (only index 0 is advertised).  num_sparse_levels is 0 until storage
+     * exists, then the count of levels that can be committed per page. */
     GLboolean sparse;
+    GLint virtual_page_size_index;
+    GLint num_sparse_levels;
 } TextureParameter;
 
 /* GL_EXT_texture_filter_anisotropic: advertised upper bound for
@@ -176,6 +181,14 @@ typedef struct Sampler_t {
     char *debug_label;  /* ObjectLabel, GL 4.6 §20.7; NULL = empty */
 } Sampler;
 
+/* One committed texel box.  ARB_sparse_texture2 reads outside every box
+ * return zero, and writes there are discarded. */
+typedef struct MGLSparseCommit_t {
+    GLint level;
+    GLint x, y, z;
+    GLint w, h, d;
+} MGLSparseCommit;
+
 typedef struct Texture_t {
     GLuint dirty_bits;
     GLboolean is_render_target;
@@ -184,6 +197,11 @@ typedef struct Texture_t {
      * texture was carved out of.  Commitment needs that heap again, so it
      * travels with the texture and is released with it. */
     void *sparse_heap;
+    /* Page size selected at TexStorage (standard table, index 0). */
+    GLint sparse_page_x, sparse_page_y, sparse_page_z;
+    MGLSparseCommit *sparse_commits;
+    GLuint sparse_commit_count;
+    GLuint sparse_commit_cap;
     GLenum access;
     GLboolean immutable_storage;
     GLuint name;

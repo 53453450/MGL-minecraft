@@ -260,13 +260,47 @@ static bool mglTextureParameterValuesEqual(const TextureParameter *a,
            memcmp(a, b, sizeof(TextureParameter)) == 0;
 }
 
+static bool mglSparseTextureTarget(GLenum target)
+{
+    switch (target) {
+        case GL_TEXTURE_2D:
+        case GL_TEXTURE_2D_ARRAY:
+        case GL_TEXTURE_3D:
+        case GL_TEXTURE_CUBE_MAP:
+        case GL_TEXTURE_CUBE_MAP_ARRAY:
+        case GL_TEXTURE_RECTANGLE:
+        case GL_TEXTURE_2D_MULTISAMPLE:
+        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static void mglCommitTextureParameter(GLMContext ctx,
                                       Texture *tex,
                                       GLenum pname,
                                       const TextureParameter *candidate)
 {
-    if (!tex || !candidate ||
-        mglTextureParameterValuesEqual(&tex->params, candidate)) {
+    if (!tex || !candidate) {
+        return;
+    }
+
+    /* ARB_sparse_texture: these two pnames freeze once storage is immutable,
+     * and TEXTURE_SPARSE TRUE is only legal on the six sparse targets. */
+    if (pname == 0x91A6 || pname == 0x91A7) {
+        if (tex->immutable_storage) {
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            return;
+        }
+        if (pname == 0x91A6 && candidate->sparse &&
+            !mglSparseTextureTarget(tex->target)) {
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+            return;
+        }
+    }
+
+    if (mglTextureParameterValuesEqual(&tex->params, candidate)) {
         return;
     }
 
@@ -761,9 +795,17 @@ bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, con
             break;
 
         case 0x91A6: /* GL_TEXTURE_SPARSE_ARB */
-            /* Only meaningful before immutable storage exists; the storage path
-             * refuses sparse when the texture is already immutable. */
+            /* Stored now; TexStorage is what allocates from it.  Immutable
+             * textures and unsupported targets are rejected at commit. */
             tex_params->sparse = (*param != 0) ? GL_TRUE : GL_FALSE;
+            break;
+
+        case 0x91A7: /* GL_VIRTUAL_PAGE_SIZE_INDEX_ARB */
+            /* Any non-negative index is stored.  TexStorage rejects an index
+             * past NUM_VIRTUAL_PAGE_SIZES. */
+            if (*param < 0)
+                return mglTexParameterError(ctx, GL_INVALID_VALUE);
+            tex_params->virtual_page_size_index = *param;
             break;
 
         case GL_TEXTURE_BASE_LEVEL:
@@ -1153,6 +1195,18 @@ static bool getTexParmi(GLMContext ctx, TextureParameter *tex_params, const GLen
             *ret = tex_params->srgb_decode_ext
                 ? tex_params->srgb_decode_ext
                 : GL_DECODE_EXT;
+            break;
+
+        case 0x91A6: /* GL_TEXTURE_SPARSE_ARB */
+            *ret = tex_params->sparse ? GL_TRUE : GL_FALSE;
+            break;
+
+        case 0x91A7: /* GL_VIRTUAL_PAGE_SIZE_INDEX_ARB */
+            *ret = tex_params->virtual_page_size_index;
+            break;
+
+        case 0x91AA: /* GL_NUM_SPARSE_LEVELS_ARB */
+            *ret = tex_params->num_sparse_levels;
             break;
 
         default:

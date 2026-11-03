@@ -1110,6 +1110,10 @@ void mglTexPageCommitmentARB(GLMContext ctx, GLenum target, GLint level,
                              GLint xoffset, GLint yoffset, GLint zoffset,
                              GLsizei width, GLsizei height, GLsizei depth,
                              GLboolean commit);
+void mglTexturePageCommitmentEXT(GLMContext ctx, GLuint texture, GLint level,
+                                 GLint xoffset, GLint yoffset, GLint zoffset,
+                                 GLsizei width, GLsizei height, GLsizei depth,
+                                 GLboolean commit);
 
 void  mglBlendBarrier(GLMContext ctx);
 void mglPrimitiveBoundingBox(GLMContext ctx, GLfloat minX, GLfloat minY, GLfloat minZ, GLfloat minW, GLfloat maxX, GLfloat maxY, GLfloat maxZ, GLfloat maxW);
