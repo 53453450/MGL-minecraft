@@ -339,13 +339,31 @@ static bool mglIssueUsesShaderDrawParams(GLMContext ctx)
     return vs && vs->uses_shader_draw_params;
 }
 
+/* VS-only XFB writes via mglDrawHostHandleXFB on the immediate DrawArrays /
+ * DrawElements path. Native Metal indirect encodes never run that capture, so
+ * active VS-only TF must expand to one IssueDraw* per command. */
+static bool mglIssueNeedsVsOnlyXfbCapture(GLMContext ctx)
+{
+    if (!ctx || !ctx->active_state || !ctx->active_state->transform_feedback) {
+        return false;
+    }
+    TransformFeedback *xfb = ctx->active_state->transform_feedback;
+    if (!xfb->active || xfb->paused) {
+        return false;
+    }
+    return mglXfbVsOnlyEligible(
+        mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER));
+}
+
 static bool mglIssueIndirectNeedsCPUExpand(GLMContext ctx, GLenum mode)
 {
-    /* Native multi-draw cannot refresh gl_DrawID between sub-draws. */
+    /* Native multi-draw cannot refresh gl_DrawID between sub-draws.
+     * VS-only XFB also cannot run on the native indirect encode path. */
     return mode == GL_PATCHES || mode == GL_QUADS || mode == GL_LINE_LOOP ||
            mode == GL_TRIANGLE_FAN || mglRenderEmulateAdjacency((uint32_t)mode) ||
            mglDrawHostHasGeometry(ctx) || mglDrawHostUsesCullDistance(ctx) ||
-           mglIssueUsesShaderDrawParams(ctx);
+           mglIssueUsesShaderDrawParams(ctx) ||
+           mglIssueNeedsVsOnlyXfbCapture(ctx);
 }
 
 static bool mglIssueIndirectElementsNeedCPUExpand(GLMContext ctx, GLenum mode,

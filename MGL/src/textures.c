@@ -1082,6 +1082,7 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
             if (tex->sparse_heap) {
                 mglRenderReleaseMetalObject(tex->sparse_heap);
                 tex->sparse_heap = NULL;
+                tex->sparse_heap_next_tile = 0;
             }
             free(tex->sparse_commits);
             tex->sparse_commits = NULL;
@@ -2019,6 +2020,7 @@ static bool mglSparseTexStorageAllowed(GLMContext ctx, Texture *tex,
 static void mglSparseZeroUncommitted(Texture *tex, GLuint face, GLint level,
                                      GLint xoffset, GLint yoffset, GLint zoffset,
                                      GLsizei width, GLsizei height, GLsizei depth);
+static void mglSparseScrubTextureLevel(Texture *tex, GLint level);
 
 static bool mglTextureStorageMultisampleMetadata(GLMContext ctx,
                                                  Texture *tex,
@@ -5255,12 +5257,157 @@ static void mglCommitSparsePages(GLMContext ctx, Texture *tex, GLint level,
         ERROR_RETURN(GL_OUT_OF_MEMORY);
     }
 
-    (void)mglRenderSparseTextureCommit(tex->sparse_heap,
-                                       mglTextureBackendEnsure(tex)->mtl_data,
-                                       (uint32_t)xoffset, (uint32_t)yoffset,
-                                       (uint32_t)zoffset, (uint32_t)width,
-                                       (uint32_t)height, (uint32_t)depth,
-                                       commit ? 1 : 0);
+    {
+        /* Match mglRenderSparseTextureCommit tile walk: ceil(w/64)*ceil(h/64)
+         * per slice (2D/array/cube) or *depth (3D).  MS is emulated as a
+         * 2D array of sample planes (stride 8); GL commitment applies to
+         * every sample, so expand depth to cover those Metal slices. */
+        const uint32_t tile = 64u;
+        const uint32_t ms_stride = 8u; /* MGL_TEXTURE_MS_PLANE_STRIDE */
+        uint64_t tiles_x = ((uint64_t)width + tile - 1u) / tile;
+        uint64_t tiles_y = ((uint64_t)height + tile - 1u) / tile;
+        uint64_t slices;
+        uint64_t heap_off = 0;
+        uint32_t commit_z = (uint32_t)zoffset;
+        uint32_t commit_d = (uint32_t)(depth > 0 ? depth : 1);
+        if (tex->target == GL_TEXTURE_3D)
+            slices = commit_d;
+        else if (tex->target == GL_TEXTURE_2D_MULTISAMPLE) {
+            commit_z = 0u;
+            commit_d = ms_stride;
+            slices = commit_d;
+        } else if (tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+            commit_z = (uint32_t)zoffset * ms_stride;
+            commit_d = (uint32_t)(depth > 0 ? depth : 1) * ms_stride;
+            slices = commit_d;
+        } else
+            slices = commit_d;
+        if (commit) {
+            heap_off = tex->sparse_heap_next_tile;
+            tex->sparse_heap_next_tile += tiles_x * tiles_y * slices;
+        }
+        (void)mglRenderSparseTextureCommit(
+            tex->sparse_heap, mglTextureBackendEnsure(tex)->mtl_data,
+            (uint32_t)xoffset, (uint32_t)yoffset, commit_z,
+            (uint32_t)width, (uint32_t)height, commit_d,
+            (uint32_t)level, commit ? 1 : 0, heap_off);
+        /* Drain the renderer's CB so later compute imageStore / sample on
+         * this texture cannot race the mapping update. */
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+    }
+}
+
+/* Drop stray mappings on pages that are not in the CPU commit list.  Metal
+ * may keep tiles mapped after a write to an uncommitted region; Unmap makes
+ * subsequent reads return zero and matches ARB_sparse_texture2. */
+static int mglSparsePageIntersectsCommit(const Texture *tex, GLint level,
+                                         GLint x, GLint y, GLint z,
+                                         GLint w, GLint h, GLint d)
+{
+    GLuint i;
+    const int ms = tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                   tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+    for (i = 0; i < tex->sparse_commit_count; i++) {
+        const MGLSparseCommit *c = &tex->sparse_commits[i];
+        GLint cz = c->z, cd = c->d;
+        if (c->level != level)
+            continue;
+        /* MS commitment is recorded in GL layer space; scrub walks Metal
+         * sample-plane slices.  Map plane → layer for the Z test. */
+        if (ms) {
+            const GLint stride = 8;
+            if (tex->target == GL_TEXTURE_2D_MULTISAMPLE) {
+                cz = 0;
+                cd = stride;
+            } else {
+                cz = c->z * stride;
+                cd = c->d * stride;
+            }
+        }
+        if (x < c->x + c->w && x + w > c->x &&
+            y < c->y + c->h && y + h > c->y &&
+            z < cz + cd && z + d > cz)
+            return 1;
+    }
+    return 0;
+}
+
+static void mglSparseScrubTextureLevel(Texture *tex, GLint level)
+{
+    TextureLevel *lvl;
+    GLint page_x, page_y, page_z;
+    GLint width, height, depth;
+    GLint x, y, z;
+
+    if (!tex || !tex->params.sparse || !tex->sparse_heap || !mglTextureMtl(tex))
+        return;
+    if (level < 0 || (GLuint)level >= tex->num_levels || !tex->faces[0].levels)
+        return;
+    lvl = &tex->faces[0].levels[level];
+    if (!lvl || lvl->width == 0)
+        return;
+
+    page_x = tex->sparse_page_x > 0 ? tex->sparse_page_x : 64;
+    page_y = tex->sparse_page_y > 0 ? tex->sparse_page_y : 64;
+    page_z = tex->sparse_page_z > 0 ? tex->sparse_page_z : 1;
+    width = (GLint)lvl->width;
+    height = (GLint)MAX(lvl->height, 1u);
+    if (tex->target == GL_TEXTURE_CUBE_MAP)
+        depth = 6;
+    else if (tex->target == GL_TEXTURE_2D_MULTISAMPLE)
+        depth = 8; /* MGL_TEXTURE_MS_PLANE_STRIDE sample planes */
+    else if (tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)
+        depth = (GLint)MAX(lvl->depth, 1u) * 8;
+    else
+        depth = (GLint)MAX(lvl->depth, 1u);
+
+    for (z = 0; z < depth; z += page_z) {
+        GLint pd = page_z;
+        if (z + pd > depth)
+            pd = depth - z;
+        for (y = 0; y < height; y += page_y) {
+            GLint ph = page_y;
+            if (y + ph > height)
+                ph = height - y;
+            for (x = 0; x < width; x += page_x) {
+                GLint pw = page_x;
+                if (x + pw > width)
+                    pw = width - x;
+                if (mglSparsePageIntersectsCommit(tex, level, x, y, z, pw, ph, pd))
+                    continue;
+                {
+                    void *mtl = mglTextureBackendEnsure(tex)->mtl_data;
+                    if (!mtl)
+                        return;
+                    /* Unmap ignores heap_offset. */
+                    (void)mglRenderSparseTextureCommit(
+                        tex->sparse_heap, mtl,
+                        (uint32_t)x, (uint32_t)y, (uint32_t)z,
+                        (uint32_t)pw, (uint32_t)ph, (uint32_t)pd,
+                        (uint32_t)level, 0, 0u);
+                }
+            }
+        }
+    }
+}
+
+void mglSparseScrubBoundImages(GLMContext ctx)
+{
+    GLuint i, n;
+
+    if (!ctx)
+        return;
+    n = STATE(var).max_image_units;
+    if (n > (GLuint)TEXTURE_UNITS)
+        n = (GLuint)TEXTURE_UNITS;
+    for (i = 0; i < n; i++) {
+        ImageUnit *iu = &STATE(image_units)[i];
+        Texture *tex = iu->tex;
+        if (!tex || !tex->params.sparse)
+            continue;
+        mglSparseScrubTextureLevel(tex, (GLint)iu->level);
+    }
 }
 
 void mglTexPageCommitmentARB(GLMContext ctx, GLenum target, GLint level,

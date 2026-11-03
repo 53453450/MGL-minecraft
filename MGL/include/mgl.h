@@ -1114,6 +1114,9 @@ void mglTexturePageCommitmentEXT(GLMContext ctx, GLuint texture, GLint level,
                                  GLint xoffset, GLint yoffset, GLint zoffset,
                                  GLsizei width, GLsizei height, GLsizei depth,
                                  GLboolean commit);
+/* After compute/image writes: Unmap sparse pages that are not in the
+ * CPU commit list so uncommitted reads return zero. */
+void mglSparseScrubBoundImages(GLMContext ctx);
 
 void  mglBlendBarrier(GLMContext ctx);
 void mglPrimitiveBoundingBox(GLMContext ctx, GLfloat minX, GLfloat minY, GLfloat minZ, GLfloat minW, GLfloat maxX, GLfloat maxY, GLfloat maxZ, GLfloat maxW);

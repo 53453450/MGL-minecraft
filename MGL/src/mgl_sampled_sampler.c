@@ -1017,8 +1017,17 @@ static uint32_t mglSsImageBindPixelFormat(const ImageUnit *iu,
         return native_format;
     }
     const uint32_t bind_format = mtlFormatForGLInternalFormat(iu->internalformat);
-    return mglRenderImageBindPixelFormat(iu->internalformat, native_format,
-                                         bind_format);
+    const uint32_t mapped = mglRenderImageBindPixelFormat(
+        iu->internalformat, native_format, bind_format);
+    /* Metal cannot view depth/stencil as color (CTS sparse Lookup fills
+     * DEPTH_COMPONENT16 via BindImageTexture(GL_R16)).  Keep the native
+     * depth format so imageStore writes the depth plane directly. */
+    if (mapped != native_format &&
+        mglMetalPixelFormatIsDepthOrStencil(native_format) !=
+            mglMetalPixelFormatIsDepthOrStencil(mapped)) {
+        return native_format;
+    }
+    return mapped;
 }
 
 static int mglSsHasActiveEncoder(const MGLEncodeContext *enc_ctx)

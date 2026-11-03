@@ -22,6 +22,7 @@
 #include "mgl_render.h"
 #include "mgl_render_pixel.h"
 #include "mgl_pixel_format.h"
+extern "C" int mglRenderMetalPixelFormatIsDepthOrStencil(uint32_t pixel_format);
 extern "C" {
 #include "pixel_utils.h"
 }
@@ -281,6 +282,15 @@ int mglRenderCreateTextureViewRange(
     if (!source || !texture_view_out || level_length == 0 ||
         slice_length == 0) {
         return -1;
+    }
+    /* Metal aborts on depth/stencil ↔ color casts (CTS BindImage
+     * DEPTH_COMPONENT16 as GL_R16).  Refuse before newTextureView. */
+    const uint32_t src_pf = static_cast<uint32_t>(source->pixelFormat());
+    if (src_pf != pixel_format) {
+        const int src_ds = mglRenderMetalPixelFormatIsDepthOrStencil(src_pf);
+        const int dst_ds = mglRenderMetalPixelFormatIsDepthOrStencil(pixel_format);
+        if (src_ds != dst_ds)
+            return -1;
     }
     const NS::Range levels(level_location, level_length);
     const NS::Range slices(slice_location, slice_length);

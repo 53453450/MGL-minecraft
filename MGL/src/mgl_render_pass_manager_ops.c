@@ -1759,8 +1759,9 @@ int mglRenderPassGeneratePipelineDescriptorState(
         (tessVertexCapture || cullDistanceCapture ||
          glState->caps.rasterizer_discard) ? 1 : 0;
 
-    /* A missing fragment stage is legal (and leaves rasterization off, see
-     * mglRenderRasterizationEnabled); only the vertex stage is mandatory. */
+    /* A missing fragment stage is legal; only the vertex stage is mandatory.
+     * AGX still needs a stub FS so Metal rasterization stays on — otherwise
+     * vertex device-buffer stores (atomics / imageStore) are dropped. */
     if (!vertexProgram) {
         fprintf(stderr,
                 "MGL PIPELINE DESC fail: missing stage program key=%u vs=%p fs=%p current=%u pipeline=%u\n",
@@ -1844,10 +1845,12 @@ int mglRenderPassGeneratePipelineDescriptorState(
         fragmentProgram
             ? mglProgramModuleView(fragmentProgram, _FRAGMENT_SHADER)->mtl_function
             : NULL;
-    /* Tess/cull VS capture also needs a real FS: AGX drops vertex device-
-     * buffer stores when Metal rasterization is off (same as
-     * GL_RASTERIZER_DISCARD). Stub FS + cleared color masks below. */
-    if (!fragmentFunction && rasterizerDiscard) {
+    /* AGX drops vertex device-buffer stores when Metal rasterization is off
+     * (RASTERIZER_DISCARD, tess/cull VS capture, and VS-only programs such as
+     * sparse_buffer case_e). Always attach a stub FS so rasterization stays
+     * on; color write masks are cleared below when there is no real FS. */
+    int used_fs_stub = 0;
+    if (!fragmentFunction) {
         /* Metal validates the stub FS output against color attachment 0's
          * format: float4 stubs are rejected by integer-format targets.
          * Resolve the format early (read-only; the FBO walk below re-binds
@@ -1882,6 +1885,7 @@ int mglRenderPassGeneratePipelineDescriptorState(
         }
         fragmentFunction = mglRenderPassDiscardStubFragmentFunction(
             mglPdStubFSValueClass(stubColor0));
+        used_fs_stub = fragmentFunction ? 1 : 0;
     }
     if (kMglPdVerbosePipelineLogs) {
         fprintf(stderr, "MGL PIPELINE DESC vs=%p fs=%p\n", vertexFunction,
@@ -2199,9 +2203,9 @@ int mglRenderPassGeneratePipelineDescriptorState(
         desc->alpha_blend_operation[i] = blend.alpha_operation;
     }
 
-    if (mglRenderClearColorWriteMasks(glState->caps.rasterizer_discard ? 1 : 0,
-                                      tessVertexCapture ? 1 : 0,
-                                      cullDistanceCapture ? 1 : 0)) {
+    if (mglRenderClearColorWriteMasks(
+            (glState->caps.rasterizer_discard || used_fs_stub) ? 1 : 0,
+            tessVertexCapture ? 1 : 0, cullDistanceCapture ? 1 : 0)) {
         for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
             desc->color_write_mask[i] = 0u;
         }

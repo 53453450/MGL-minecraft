@@ -398,11 +398,14 @@ int mglRenderCreateSparseTextureFromState(
     void **texture_out);
 
 /* Commit (commit != 0) or decommit a texel-space region.  The region must be
- * page aligned; the page is GL_VIRTUAL_PAGE_SIZE_{X,Y,Z} = 64. */
+ * page aligned; the page is GL_VIRTUAL_PAGE_SIZE_{X,Y,Z} = 64.
+ * heap_offset is the starting placement-heap tile index for Map (ignored on
+ * Unmap).  Callers must give each Map a non-overlapping range. */
 int mglRenderSparseTextureCommit(void *heap, void *texture,
                                  uint32_t x, uint32_t y, uint32_t z,
                                  uint32_t width, uint32_t height, uint32_t depth,
-                                 int commit);
+                                 uint32_t level, int commit,
+                                 uint64_t heap_offset);
 
 int mglRenderCreateBufferTextureFromState(
     void *buffer,

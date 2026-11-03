@@ -197,6 +197,10 @@ typedef struct Texture_t {
      * texture was carved out of.  Commitment needs that heap again, so it
      * travels with the texture and is released with it. */
     void *sparse_heap;
+    /* Next free placement-heap tile index for Map.  Each Map must start at a
+     * unique offset — reusing 0 aliases every mip/region onto the same
+     * physical tiles (Clamp LookupColor rgba8 L0 flake). */
+    uint64_t sparse_heap_next_tile;
     /* Page size selected at TexStorage (standard table, index 0). */
     GLint sparse_page_x, sparse_page_y, sparse_page_z;
     MGLSparseCommit *sparse_commits;

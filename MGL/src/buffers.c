@@ -2514,6 +2514,17 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
         mglRendererFlush(ctx, true);
     }
 
+    /* Atomic / SSBO / XFB writes land in the Metal store; the CPU shadow still
+     * holds ClearBufferData zeros.  Pull the GPU range before memcpy so
+     * sparse_buffer case_e (and similar) see the increments. */
+    if (src_buf->gpu_write_target && mglBufferMtl(src_buf) &&
+        src_buf->data.buffer_data && !src_buf->cpu_shadow_pending) {
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+        mglRendererReadBackBuffer(ctx, src_buf, (size_t)readOffset,
+                                  (size_t)size);
+    }
+
     src_data = (uint8_t *)mglRendererMapUnmapBuffer(ctx, src_buf, readOffset, size, GL_READ_ONLY, true);
     dst_data = (uint8_t *)mglRendererMapUnmapBuffer(ctx, dst_buf, writeOffset, size, GL_WRITE_ONLY, true);
 
@@ -3534,16 +3545,35 @@ void mglNamedBufferStorage(GLMContext ctx, GLuint buffer, GLsizeiptr size, const
 
 void mglInvalidateBufferData(GLMContext ctx, GLuint buffer)
 {
-    (void)buffer;
-    ERROR_RETURN(GL_INVALID_OPERATION);
+    Buffer *ptr;
+
+    /* ARB_invalidate_subdata / ARB_sparse_buffer: no GPU content to drop in
+     * MGL's buffer path; accept the call so CTS case_d can proceed. */
+    if (!ctx)
+        return;
+    if (buffer == 0)
+        return;
+    ptr = findBuffer(ctx, buffer);
+    if (!ptr)
+        ERROR_RETURN(GL_INVALID_VALUE);
 }
 
-void mglInvalidateBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsizeiptr length)
+void mglInvalidateBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset,
+                                GLsizeiptr length)
 {
-    (void)buffer;
-    (void)offset;
-    (void)length;
-    ERROR_RETURN(GL_INVALID_OPERATION);
+    Buffer *ptr;
+
+    if (!ctx)
+        return;
+    if (buffer == 0)
+        return;
+    ptr = findBuffer(ctx, buffer);
+    if (!ptr)
+        ERROR_RETURN(GL_INVALID_VALUE);
+    if (offset < 0 || length < 0)
+        ERROR_RETURN(GL_INVALID_VALUE);
+    if ((GLsizeiptr)offset + length > ptr->size)
+        ERROR_RETURN(GL_INVALID_VALUE);
 }
 
 #pragma mark GL Buffer Get Functions

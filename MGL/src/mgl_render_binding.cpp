@@ -651,8 +651,15 @@ int mglRenderBindBufferStorage(Buffer* buffer,
         return MGL_RENDER_BUFFER_ERROR;
     }
 
+    const bool sparseStorage =
+        (buffer->storage_flags & GL_SPARSE_STORAGE_BIT_ARB) != 0;
     uint64_t options = static_cast<uint64_t>(MTL::ResourceStorageModeShared);
-    if (!mglBufferStorageIsMapped(buffer->storage_flags)) {
+    /* WriteCombined forbids coherent CPU reads of GPU stores.  Sparse BOs are
+     * the CTS atomic-counter / SSBO readback path (case_e), and any buffer
+     * already flagged as a GPU-write target needs the same default cache
+     * mode so Metal atomics stay visible to the CPU shadow. */
+    if (!mglBufferStorageIsMapped(buffer->storage_flags) &&
+        !sparseStorage && !buffer->gpu_write_target) {
         options |= static_cast<uint64_t>(
             MTL::ResourceCPUCacheModeWriteCombined);
     }
@@ -684,7 +691,12 @@ int mglRenderBindBufferStorage(Buffer* buffer,
         bytes &&
         (buffer->immutable_storage & BUFFER_IMMUTABLE_STORAGE_FLAG) != 0 &&
         mglBufferStorageIsPersistent(buffer->storage_flags);
-    const bool noCopy = clientStorage || persistentNoCopy;
+    /* Sparse BufferStorage is ~1GB in CTS: alias the vm_allocate shadow as
+     * the Metal store (same as CLIENT_STORAGE) so atomicCounter / SSBO RMW
+     * lands in the bytes CopyBufferSubData already reads, and so we avoid
+     * a second 1GB Shared allocation that can fail or stay WriteCombined. */
+    const bool noCopy =
+        clientStorage || persistentNoCopy || (sparseStorage && bytes);
     if (noCopy && !bytes) {
         if (err && errcap) {
             snprintf(err, errcap,
@@ -697,6 +709,8 @@ int mglRenderBindBufferStorage(Buffer* buffer,
     if (clientStorage) {
         allocationSize = static_cast<size_t>(buffer->size);
     }
+    /* Sparse no-copy must cover the whole vm_allocate region (page-aligned
+     * buffer_size), not the GL size — Metal's deallocator frees that length. */
 
     void* metalBuffer = nullptr;
     mglMetalCountCreate(mgl::kMetalKindBuffer);

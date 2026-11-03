@@ -2601,6 +2601,43 @@ static MGLIRType *builtin_call_type(const char *name,
                                     uint32_t argc, int stage, int *known)
 {
     *known = 0;
+    /* ARB_sparse_texture2 / ARB_sparse_texture_clamp: accept the sparse*
+     * and *ClampARB families without enumerating every sampler overload.
+     * Codegen lowers them to the non-sparse twin plus a residency code. */
+    if (name && strcmp(name, "sparseTexelsResidentARB") == 0) {
+        *known = 1;
+        if (argc == 1)
+            return mglIRTypeScalar(MGLIR_SCALAR_BOOL);
+        return NULL;
+    }
+    if (name && strncmp(name, "sparse", 6) == 0 && strstr(name, "ARB")) {
+        *known = 1;
+        if (argc >= 2)
+            return mglIRTypeScalar(MGLIR_SCALAR_INT);
+        return NULL;
+    }
+    if (name && strstr(name, "ClampARB") &&
+        (strncmp(name, "texture", 7) == 0 ||
+         strncmp(name, "sparseTexture", 13) == 0)) {
+        *known = 1;
+        if (argc < 2)
+            return NULL;
+        if (strncmp(name, "sparse", 6) == 0)
+            return mglIRTypeScalar(MGLIR_SCALAR_INT);
+        {
+            /* Shadow *ClampARB returns float (same as texture*). */
+            if (arg_types && arg_types[0] &&
+                arg_types[0]->kind == MGLIR_TYPE_SAMPLER &&
+                arg_types[0]->tex_depth)
+                return mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
+            MGLIRScalar st = MGLIR_SCALAR_FLOAT;
+            if (arg_types && arg_types[0] &&
+                (arg_types[0]->kind == MGLIR_TYPE_SAMPLER ||
+                 arg_types[0]->kind == MGLIR_TYPE_IMAGE))
+                st = arg_types[0]->tex_storage;
+            return mglIRTypeVector(st, 4);
+        }
+    }
     for (size_t i = 0; i < sizeof(kBuiltins) / sizeof(kBuiltins[0]); i++) {
         const BiFn *f = &kBuiltins[i];
         if (strcmp(f->name, name) != 0) {

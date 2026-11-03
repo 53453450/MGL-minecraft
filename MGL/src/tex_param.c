@@ -798,6 +798,25 @@ bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, con
             /* Stored now; TexStorage is what allocates from it.  Immutable
              * textures and unsupported targets are rejected at commit. */
             tex_params->sparse = (*param != 0) ? GL_TRUE : GL_FALSE;
+            /* LINEAR footprints that straddle a commit boundary mix resident
+             * and zero taps.  Keep mipmap selection (Clamp LookupColor needs
+             * NEAREST_MIPMAP_*) but drop cross-texel / cross-level LINEAR. */
+            if (tex_params->sparse) {
+                switch (tex_params->min_filter) {
+                case GL_LINEAR:
+                    tex_params->min_filter = GL_NEAREST;
+                    break;
+                case GL_LINEAR_MIPMAP_NEAREST:
+                case GL_LINEAR_MIPMAP_LINEAR:
+                case GL_NEAREST_MIPMAP_LINEAR:
+                    tex_params->min_filter = GL_NEAREST_MIPMAP_NEAREST;
+                    break;
+                default:
+                    break;
+                }
+                if (tex_params->mag_filter == GL_LINEAR)
+                    tex_params->mag_filter = GL_NEAREST;
+            }
             break;
 
         case 0x91A7: /* GL_VIRTUAL_PAGE_SIZE_INDEX_ARB */
@@ -867,7 +886,24 @@ bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, con
                                                 (unsigned long long)hit);
                         }
                     }
-                    tex_params->min_filter = *param;
+                    if (!tex_params->sparse) {
+                        tex_params->min_filter = (GLenum)*param;
+                    } else {
+                        switch ((GLenum)*param) {
+                        case GL_LINEAR:
+                            tex_params->min_filter = GL_NEAREST;
+                            break;
+                        case GL_LINEAR_MIPMAP_NEAREST:
+                        case GL_LINEAR_MIPMAP_LINEAR:
+                        case GL_NEAREST_MIPMAP_LINEAR:
+                            tex_params->min_filter =
+                                GL_NEAREST_MIPMAP_NEAREST;
+                            break;
+                        default:
+                            tex_params->min_filter = (GLenum)*param;
+                            break;
+                        }
+                    }
                     break;
 
                 default:
@@ -880,7 +916,9 @@ bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, con
             {
                 case GL_NEAREST:
                 case GL_LINEAR:
-                    tex_params->mag_filter = *param;
+                    tex_params->mag_filter = tex_params->sparse
+                        ? GL_NEAREST
+                        : (GLenum)*param;
                     break;
 
                 default:

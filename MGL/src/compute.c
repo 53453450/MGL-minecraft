@@ -31,7 +31,10 @@
 #include "glm_context.h"
 #include "draw_command.h"
 #include "mgl_safety.h"
+#include "mgl_renderer_backend.h"
 #include <string.h>
+
+void mglSparseScrubBoundImages(GLMContext ctx);
 
 static GLboolean mglReadDispatchIndirectGroups(Buffer *buf,
                                                GLintptr indirect,
@@ -73,6 +76,13 @@ void mglDispatchCompute(GLMContext ctx, GLuint num_groups_x, GLuint num_groups_y
 
     mglFlushCommandBuffer(ctx);
     mglRendererDispatchCompute(ctx, num_groups_x, num_groups_y, num_groups_z);
+    /* Wait for imageStore to finish before Unmap; otherwise the in-flight
+     * write can remap tiles after scrub (MS UncommittedReads flake). */
+    mglFlushCommandBuffer(ctx);
+    mglRendererFlush(ctx, true);
+    /* ARB_sparse_texture2: imageStore/atomic on uncommitted pages must not
+     * stick.  Metal can leave those tiles mapped; scrub Unmaps them. */
+    mglSparseScrubBoundImages(ctx);
 }
 
 void mglDispatchComputeIndirect(GLMContext ctx, GLintptr indirect)
@@ -135,4 +145,7 @@ void mglDispatchComputeIndirect(GLMContext ctx, GLintptr indirect)
 
     mglFlushCommandBuffer(ctx);
     mglRendererDispatchComputeIndirect(ctx, indirect);
+    mglFlushCommandBuffer(ctx);
+    mglRendererFlush(ctx, true);
+    mglSparseScrubBoundImages(ctx);
 }

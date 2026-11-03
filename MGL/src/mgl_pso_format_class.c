@@ -235,7 +235,20 @@ int mglRenderVertexBufferIndexValid(int index, uint32_t max) {
 
 void mglRenderAttribStepFromDivisor(int uses_current, uint32_t divisor,
                                     uint32_t *step_fn, uint32_t *step_rate) {
-    if (!uses_current && divisor) {
+    /* GL current generic attributes (disabled array + glVertexAttrib*) are
+     * constant across the draw.  PerVertex + a finite packed pool (4096
+     * repeats) silently fed black past that limit — sparse_buffer Quads
+     * draws 60k vertices with vertexAttrib4f white. */
+    if (uses_current) {
+        if (step_fn) {
+            *step_fn = 0u; /* MTLVertexStepFunctionConstant */
+        }
+        if (step_rate) {
+            *step_rate = 0u;
+        }
+        return;
+    }
+    if (divisor) {
         if (step_fn) {
             *step_fn = 2u; /* MTLVertexStepFunctionPerInstance */
         }

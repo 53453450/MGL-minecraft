@@ -2350,6 +2350,20 @@ void mglDrawElementsInstancedBaseVertexBaseInstance(GLMContext ctx, GLenum mode,
     mglDrawDispatch(ctx, &cmd);
 }
 
+/* MultiDraw's defer path records sub-draws into a batch whose replay skips
+ * VS-only XFB capture (same gate as mglDrawDispatch's xfbImmediate). */
+static bool mglMultiDrawNeedsXfbImmediate(GLMContext ctx)
+{
+    if (!STATE(transform_feedback) || !STATE(transform_feedback)->active ||
+        STATE(transform_feedback)->paused) {
+        return false;
+    }
+    Program *vs_prog = STATE(program_pipeline)
+                           ? STATE(program_pipeline)->stage_programs[_VERTEX_SHADER]
+                           : (STATE(program_name) != 0u ? STATE(program) : NULL);
+    return mglXfbVsOnlyEligible(vs_prog);
+}
+
 void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const GLsizei *count, GLsizei drawcount)
 {
     ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
@@ -2383,7 +2397,8 @@ void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const G
     }
 
     if (ctx->draw_defer_enabled && mode != GL_PATCHES &&
-        !mglCurrentProgramUsesShaderDrawParams(ctx)) {
+        !mglCurrentProgramUsesShaderDrawParams(ctx) &&
+        !mglMultiDrawNeedsXfbImmediate(ctx)) {
         for (GLsizei i = 0; i < drawcount; i++) {
             if (count[i] == 0) {
                 continue;
@@ -2444,7 +2459,8 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
     }
 
     if (ctx->draw_defer_enabled && mode != GL_PATCHES &&
-        !mglCurrentProgramUsesShaderDrawParams(ctx)) {
+        !mglCurrentProgramUsesShaderDrawParams(ctx) &&
+        !mglMultiDrawNeedsXfbImmediate(ctx)) {
         Buffer *elementBuffer = mglCurrentElementBuffer(ctx, __func__);
         for (GLsizei i = 0; i < drawcount; i++) {
             if (count[i] == 0) {
@@ -2509,7 +2525,8 @@ void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *
         return;
     }
 
-    if (ctx->draw_defer_enabled && mode != GL_PATCHES) {
+    if (ctx->draw_defer_enabled && mode != GL_PATCHES &&
+        !mglMultiDrawNeedsXfbImmediate(ctx)) {
         Buffer *elementBuffer = mglCurrentElementBuffer(ctx, __func__);
         for (GLsizei i = 0; i < drawcount; i++) {
             if (count[i] == 0) {

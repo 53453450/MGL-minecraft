@@ -3118,8 +3118,10 @@ void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex)
      * publish it even though the caller owns the result. */
     /* A sparse texture asks the descriptor for its page size; everything else
      * in the create path then picks the sparse primitive on its own. */
+    /* MTLSparsePageSize64 == 102 (not the texel count).  Non-zero also
+     * gates the sparse create path in mglUpCreateTexture. */
     if (tex->params.sparse)
-        tex_desc.placement_sparse_page_size = 64;
+        tex_desc.placement_sparse_page_size = 102; /* SparsePageSize64 */
     MglUpCreateTextureCtx createCtx = { &tex_desc, NULL, NULL };
     char createFailure[256] = {0};
     if (!mglPlatformShellGuardedCallCtxReason(
@@ -3133,8 +3135,10 @@ void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex)
     texture = createCtx.out_texture;
     /* The heap outlives this call: page commitment needs it and the texture's
      * destroy path releases it. */
-    if (texture && createCtx.out_heap)
+    if (texture && createCtx.out_heap) {
         tex->sparse_heap = createCtx.out_heap;
+        tex->sparse_heap_next_tile = 0;
+    }
 
     // CRITICAL FIX: Validate texture creation result instead of asserting
     if (!texture) {

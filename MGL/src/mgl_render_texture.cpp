@@ -93,6 +93,13 @@ int mglRenderCreateTextureView(void* texture,
     if (texture_view_out) *texture_view_out = nullptr;
     MTL::Texture* source = static_cast<MTL::Texture*>(texture);
     if (!source || !texture_view_out) return -1;
+    const uint32_t src_pf = static_cast<uint32_t>(source->pixelFormat());
+    if (src_pf != pixel_format) {
+        const int src_ds = mglRenderMetalPixelFormatIsDepthOrStencil(src_pf);
+        const int dst_ds = mglRenderMetalPixelFormatIsDepthOrStencil(pixel_format);
+        if (src_ds != dst_ds)
+            return -1;
+    }
     MTL::Texture* view = source->newTextureView(
         static_cast<MTL::PixelFormat>(pixel_format));
     if (!view) return -1;
@@ -1321,9 +1328,10 @@ int mglRenderCreateTextureFromState(
     return 0;
 }
 
-/* Sparse textures: a placement heap plus a placement-sparse texture.  The
- * descriptor already carries placement_sparse_page_size (64 texels), which is
- * the granularity GL exposes as GL_VIRTUAL_PAGE_SIZE_*. */
+/* Sparse textures: a placement heap plus a placement-sparse texture.
+ * GL_VIRTUAL_PAGE_SIZE_* = 64 texels → MTLSparsePageSize64.  Each Map must
+ * use a unique heap_offset (caller tracks sparse_heap_next_tile); reusing 0
+ * aliases every mip onto the same physical tiles. */
 extern "C" int mglRenderCreateSparseTextureFromState(
     const MGLRenderTextureDescriptorState* texture_descriptor,
     const char* label,
@@ -1339,13 +1347,10 @@ extern "C" int mglRenderCreateSparseTextureFromState(
     MTL::TextureDescriptor* descriptor =
         mgl::newTextureDescriptor(texture_descriptor);
     if (!descriptor) return -1;
+    /* Force the Metal enum; callers may pass the texel count (64) by mistake. */
+    descriptor->setPlacementSparsePageSize(MTL::SparsePageSize64);
 
-    /* Reserve physical storage for every texel of every mip and face.  The
-     * previous estimate assumed a 4-byte texel and a single cube face, and
-     * ignored the mip chain, so anything wider or a cube came back as
-     * GL_OUT_OF_MEMORY. */
     const uint64_t tex_type = texture_descriptor->texture_type;
-    /* Cube-array arrayLength is the cube count; each cube is six faces. */
     const uint64_t faces =
         (tex_type == MGLTextureTypeCube || tex_type == MGLTextureTypeCubeArray)
             ? 6u
@@ -1374,7 +1379,6 @@ extern "C" int mglRenderCreateSparseTextureFromState(
         if (tex_type == MGLTextureType3D)
             mip_d = mip_d > 1u ? mip_d / 2u : 1u;
     }
-    /* newTexture rejected a heap that was exactly the texel bytes. */
     heap_bytes *= 2ull;
     heap_bytes = (heap_bytes + 16383ull) & ~16383ull;
     if (heap_bytes < 16384ull)
@@ -1383,10 +1387,9 @@ extern "C" int mglRenderCreateSparseTextureFromState(
 
     MTL::HeapDescriptor* heap_descriptor = MTL::HeapDescriptor::alloc()->init();
     heap_descriptor->setType(MTL::HeapTypePlacement);
+    heap_descriptor->setMaxCompatiblePlacementSparsePageSize(
+        MTL::SparsePageSize64);
     heap_descriptor->setSize(heap_size);
-    /* The heap has to agree with the texture on storage and CPU cache mode;
-     * MGL asks for write-combined textures, so copying the descriptor's modes
-     * here is what keeps newSubResourceAtOffset from asserting. */
     heap_descriptor->setStorageMode(descriptor->storageMode());
     heap_descriptor->setCpuCacheMode(descriptor->cpuCacheMode());
     MTL::Heap* heap = renderer.device->newHeap(heap_descriptor);
@@ -1410,12 +1413,13 @@ extern "C" int mglRenderCreateSparseTextureFromState(
     return 0;
 }
 
-/* Commit or decommit a texel-space region.  GL states these in texels and
- * requires page alignment; Metal takes the same region counted in tiles. */
+/* Commit or decommit a texel-space region.  heap_offset is the starting
+ * placement-heap tile index for Map (ignored on Unmap). */
 extern "C" int mglRenderSparseTextureCommit(void* heap, void* texture,
                                             uint32_t x, uint32_t y, uint32_t z,
                                             uint32_t width, uint32_t height,
-                                            uint32_t depth, int commit) {
+                                            uint32_t depth, uint32_t level,
+                                            int commit, uint64_t heap_offset) {
     MTL::Heap* source_heap = static_cast<MTL::Heap*>(heap);
     MTL::Texture* target = static_cast<MTL::Texture*>(texture);
     if (!source_heap || !target || width == 0 || height == 0) return -1;
@@ -1423,22 +1427,63 @@ extern "C" int mglRenderSparseTextureCommit(void* heap, void* texture,
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
 
-    MTL4::UpdateSparseTextureMappingOperation op = {};
-    op.mode = commit ? MTL::SparseTextureMappingModeMap
-                     : MTL::SparseTextureMappingModeUnmap;
-    op.textureRegion = MTL::Region::Make3D(
-        static_cast<NS::UInteger>(x / 64), static_cast<NS::UInteger>(y / 64),
-        static_cast<NS::UInteger>(z),
-        static_cast<NS::UInteger>((width + 63) / 64),
-        static_cast<NS::UInteger>((height + 63) / 64),
-        static_cast<NS::UInteger>(depth ? depth : 1));
-    op.textureLevel = 0;
-    op.textureSlice = 0;
-    op.heapOffset = 0;
+    const uint32_t tile_x = 64u;
+    const uint32_t tile_y = 64u;
+    const bool is_3d = target->textureType() == MTL::TextureType3D;
+    const NS::UInteger tiles_x =
+        static_cast<NS::UInteger>((width + tile_x - 1) / tile_x);
+    const NS::UInteger tiles_y =
+        static_cast<NS::UInteger>((height + tile_y - 1) / tile_y);
 
     MTL4::CommandQueue* queue = renderer.device->newMTL4CommandQueue();
     if (!queue) return -1;
-    queue->updateTextureMappings(target, source_heap, &op, 1);
+
+    auto submit = [&](MTL4::UpdateSparseTextureMappingOperation& op) {
+        queue->updateTextureMappings(target, source_heap, &op, 1);
+    };
+
+    MTL4::UpdateSparseTextureMappingOperation op = {};
+    op.mode = commit ? MTL::SparseTextureMappingModeMap
+                     : MTL::SparseTextureMappingModeUnmap;
+
+    if (is_3d) {
+        op.textureRegion = MTL::Region::Make3D(
+            static_cast<NS::UInteger>(x / tile_x),
+            static_cast<NS::UInteger>(y / tile_y),
+            static_cast<NS::UInteger>(z), tiles_x, tiles_y,
+            static_cast<NS::UInteger>(depth ? depth : 1));
+        op.textureSlice = 0;
+        op.textureLevel = level;
+        op.heapOffset = static_cast<NS::UInteger>(heap_offset);
+        submit(op);
+    } else {
+        const uint32_t slices = depth > 0u ? depth : 1u;
+        uint64_t slice_off = heap_offset;
+        const uint64_t tiles_per_slice =
+            (uint64_t)tiles_x * (uint64_t)tiles_y;
+        for (uint32_t s = 0; s < slices; s++) {
+            op.textureRegion = MTL::Region::Make3D(
+                static_cast<NS::UInteger>(x / tile_x),
+                static_cast<NS::UInteger>(y / tile_y),
+                static_cast<NS::UInteger>(0), tiles_x, tiles_y,
+                static_cast<NS::UInteger>(1));
+            op.textureSlice = z + s;
+            op.textureLevel = level;
+            op.heapOffset = static_cast<NS::UInteger>(slice_off);
+            submit(op);
+            if (commit)
+                slice_off += tiles_per_slice;
+        }
+    }
+
+    /* Mapping is GPU-side; wait so the next compute/draw sees the tiles.
+     * Without this, Clamp LookupColor rgba8 flakes on L0. */
+    MTL::SharedEvent* ev = renderer.device->newSharedEvent();
+    if (ev) {
+        queue->signalEvent(ev, 1);
+        (void)ev->waitUntilSignaledValue(1, /*milliseconds*/ 5000ull);
+        ev->release();
+    }
     queue->release();
     return 0;
 }
