@@ -56,6 +56,12 @@
 
 #ifdef __OBJC__
 #include <objc/runtime.h>
+/* CFBridgingRelease lives in Foundation, and an Objective-C++ TU that only
+ * includes this header (a backend .cpp compiled as Objective-C++) otherwise
+ * fails with "use of undeclared identifier 'CFBridgingRelease'". */
+#if __has_include(<Foundation/Foundation.h>)
+#import <Foundation/Foundation.h>
+#endif
 #endif
 
 #ifdef __cplusplus

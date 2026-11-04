@@ -130,6 +130,11 @@ typedef struct MGLXfbVsField {
     uint32_t component_count;
     uint32_t gl_type;
     uint8_t has_source;
+    /* Matrix varyings: the record keeps one 16-byte slot per column, so the
+     * capture has to walk columns instead of copying component_count floats
+     * contiguously.  Zero means "not a matrix". */
+    uint8_t matrix_columns;
+    uint8_t matrix_rows;
 } MGLXfbVsField;
 
 typedef struct MGLXfbVsPlan {
@@ -261,10 +266,12 @@ int mglTessPlanEvalAfterCompute(int has_gs, int rasterizer_discard,
 /* isolines / point_mode prefer TES-vertex raster, but RASTERIZER_DISCARD
  * still has to run TES (imageStore / SSBO). Use the compute kernel then.
  * needs_partner_cull: isolines (non-point) with gl_CullDistance need the
- * compute→record passthrough path so both endpoints are visible (GL §13.6.1). */
+ * compute→record passthrough path so both endpoints are visible (GL §13.6.1).
+ * has_gs: a following geometry stage (including SSO GS-only POs) must take
+ * the compute→GS handoff; TES-vertex rasterizes directly and skips GS. */
 int mglTessSelectAirExec(int tes_vertex, int tes_compute, int indexed,
                          int vertex_gate_on, int rasterizer_discard,
-                         int needs_partner_cull);
+                         int needs_partner_cull, int has_gs);
 int mglTessPassthroughRasterReady(int state_ready, int has_encoder,
                                   int raster_empty);
 int mglTessNativePipelineReady(int state_ready, int has_encoder);
@@ -583,7 +590,11 @@ void mglTessEncodeCaptureIndexed(void *encoder_owner, void *index_buffer,
                                  uint32_t count, int32_t base_vertex,
                                  uint32_t instance_count,
                                  uint32_t base_instance);
-int mglTessGenModeIsIsolines(uint32_t tess_gen_mode);
+/* GL_ISOLINES is the one-parameter tessellation mode. */
+static inline int mglTessGenModeIsIsolines(uint32_t tess_gen_mode)
+{
+    return tess_gen_mode == GL_ISOLINES ? 1 : 0;
+}
 int mglTessWritePointSize(uint32_t tess_gen_point_mode);
 
 /* O1.2: pure capture-host planning (ObjC keeps processGLState / MTLBuffer). */

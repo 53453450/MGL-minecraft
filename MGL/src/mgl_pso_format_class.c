@@ -71,11 +71,23 @@ uint32_t mglRenderTessControlPointIndexType(int indexed_draw) {
 }
 
 int mglRenderRasterizationEnabled(int rasterizer_discard, int has_fragment) {
-    return rasterizer_discard ? (has_fragment ? 1 : 0) : 1;
+    (void)rasterizer_discard;
+    /* Metal requires rasterization to be disabled when the pipeline carries no
+     * fragment function, and GL allows exactly that: a program without a
+     * fragment shader is complete, the fragment stage simply writes nothing
+     * (CTS shader_subroutine's transform-feedback programs are vertex-only and
+     * never touch GL_RASTERIZER_DISCARD). */
+    return has_fragment ? 1 : 0;
 }
 
 int mglRenderPipelineFunctionsReady(int has_vs, int has_fs, int rasterizer_discard) {
-    return has_vs && (has_fs || rasterizer_discard) ? 1 : 0;
+    (void)has_fs;
+    (void)rasterizer_discard;
+    /* Only the vertex stage is mandatory.  A program with no fragment shader is
+     * complete in GL -- the fragment stage writes nothing -- and the pipeline
+     * then turns rasterization off (mglRenderRasterizationEnabled), which is
+     * exactly the case Metal allows a nil fragment function. */
+    return has_vs ? 1 : 0;
 }
 
 int mglRenderVSWritesLayer(const Program *vertex_program) {
@@ -123,21 +135,6 @@ uint32_t mglRenderColorFormatOrBGRA(uint32_t format) {
 
 int mglRenderPipelineFormatCompatible(uint32_t cached, uint32_t built) {
     return cached == 0u || built == 0u || cached == built ? 1 : 0;
-}
-
-int mglRenderPipelinePassColorMismatch(uint32_t pipeline, uint32_t pass) {
-    return !mglRenderPixelFormatIsInvalid(pipeline) &&
-                   !mglRenderPixelFormatIsInvalid(pass) && pipeline != pass
-               ? 1
-               : 0;
-}
-
-int mglRenderPipelinePassAttachmentMismatch(uint32_t pipeline, uint32_t pass) {
-    if (mglRenderPixelFormatIsInvalid(pipeline) &&
-        mglRenderPixelFormatIsInvalid(pass)) {
-        return 0;
-    }
-    return pipeline != pass ? 1 : 0;
 }
 
 int mglRenderSkipInvalidColorAttachment(uint32_t format) {
@@ -216,14 +213,6 @@ int mglRenderColorAttachmentBitSet(uint32_t bitfield, uint32_t index) {
     return ((bitfield >> index) & 1u) != 0u ? 1 : 0;
 }
 
-int mglRenderSampledRTNeedsCopy(int is_rt, uint32_t write_version) {
-    return is_rt && write_version != 0u ? 1 : 0;
-}
-
-int mglRenderSampledRTCopyStale(uint32_t sampled_version, uint32_t rt_version) {
-    return sampled_version != rt_version ? 1 : 0;
-}
-
 int mglRenderNativeAttribIndexValid(uint32_t index) {
     return index < 32u ? 1 : 0;
 }
@@ -246,7 +235,20 @@ int mglRenderVertexBufferIndexValid(int index, uint32_t max) {
 
 void mglRenderAttribStepFromDivisor(int uses_current, uint32_t divisor,
                                     uint32_t *step_fn, uint32_t *step_rate) {
-    if (!uses_current && divisor) {
+    /* GL current generic attributes (disabled array + glVertexAttrib*) are
+     * constant across the draw.  PerVertex + a finite packed pool (4096
+     * repeats) silently fed black past that limit — sparse_buffer Quads
+     * draws 60k vertices with vertexAttrib4f white. */
+    if (uses_current) {
+        if (step_fn) {
+            *step_fn = 0u; /* MTLVertexStepFunctionConstant */
+        }
+        if (step_rate) {
+            *step_rate = 0u;
+        }
+        return;
+    }
+    if (divisor) {
         if (step_fn) {
             *step_fn = 2u; /* MTLVertexStepFunctionPerInstance */
         }

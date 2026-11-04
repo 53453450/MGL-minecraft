@@ -12,7 +12,8 @@
 
 #include "mgl_vertex_format.h"
 #include <stddef.h>
-#include "mgl_render.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_query.h"
 
 #include "mgl_air_loader.h"   /* MGLRenderPipelineDescriptorState */
 

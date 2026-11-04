@@ -35,9 +35,10 @@
 
 #include "draw_command.h"
 #include "glm_context.h"
-#include "MGLRenderer.h"
+#include "mgl_platform_shell_result.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_api_texture.h"
+#include "mgl_buffer_backend.h"
 
 /* Legacy GL 1.1 clip-plane surface: glClipPlane/glGetClipPlane are not
  * declared by glcorearb.h, and GL_CLIP_PLANE0..5 share the GL_CLIP_DISTANCE
@@ -61,7 +62,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 224
+#define MAX_TESTS 232
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -6789,21 +6790,21 @@ static int test_persistent_map_rss_soak(unsigned char *pixels,
 
     GLMContext ctx = MGLgetCurrentContext();
     internal = ctx ? ctx->active_state->buffers[_ARRAY_BUFFER] : NULL;
-    if (!internal || !internal->data.mtl_data ||
-        !internal->data.mtl_owns_buffer_data ||
+    if (!internal || !mglBufferMtl(internal) ||
+        !mglBufferBackendOwnsCPUStorage(internal) ||
         internal->mapped_ptr != mapped) {
         fprintf(stderr,
                 "persistent_map_rss_soak: no-copy backing not established "
                 "(buffer=%p mtl=%p owns=%u mapped=%p expected=%p)\n",
                 (void *)internal,
-                internal ? internal->data.mtl_data : NULL,
-                internal ? (unsigned)internal->data.mtl_owns_buffer_data : 0u,
+                internal ? mglBufferMtl(internal) : NULL,
+                internal ? (unsigned)mglBufferBackendOwnsCPUStorage(internal) : 0u,
                 internal ? internal->mapped_ptr : NULL,
                 mapped);
         rc = 4;
         goto cleanup;
     }
-    stable_mtl_data = internal->data.mtl_data;
+    stable_mtl_data = mglBufferMtl(internal);
     if (glGetError() != GL_NO_ERROR || sample_process_memory(&baseline) != 0) {
         fprintf(stderr, "persistent_map_rss_soak: warmup or memory sample failed\n");
         rc = 5;
@@ -6823,13 +6824,13 @@ static int test_persistent_map_rss_soak(unsigned char *pixels,
         glBindVertexBuffer(0, buffer_name, (GLintptr)offset,
                            2 * sizeof(float));
         glDrawArrays(GL_TRIANGLES, 0, 3);
-        if (internal->data.mtl_data != stable_mtl_data ||
-            !internal->data.mtl_owns_buffer_data) {
+        if (mglBufferMtl(internal) != stable_mtl_data ||
+            !mglBufferBackendOwnsCPUStorage(internal)) {
             fprintf(stderr,
                     "persistent_map_rss_soak: Metal backing changed at %u "
                     "(%p -> %p owns=%u)\n",
-                    i + 1u, stable_mtl_data, internal->data.mtl_data,
-                    (unsigned)internal->data.mtl_owns_buffer_data);
+                    i + 1u, stable_mtl_data, mglBufferMtl(internal),
+                    (unsigned)mglBufferBackendOwnsCPUStorage(internal));
             rc = 6;
             goto cleanup;
         }
@@ -18158,9 +18159,10 @@ static int test_attrib_location_matrix_array_span(unsigned char *pixels,
  * buffer landing there used to link and then silently overwrite (or be
  * overwritten by) the internal pack; the gate now fails the link.
  *
- * The Metal slot of a user buffer is allocated, not chosen: a VS user buffer
- * sits at hasPlain+attrCount+index, an FS one at hasPlain+index, so the cases
- * reach the gated slots by sizing the attribute / block counts. */
+ * Slot layout is [plain][SSBOs][UBOs][atomics].  VS stage inputs are
+ * [[stage_in]] — they do not consume buffer(N) slots — so cases reach the
+ * gated indices by sizing the UBO block count (plain + n → UBO i at
+ * plain+i). */
 static int link_expect(const char *label, const char *vs, const char *fs,
                        int expect_ok)
 {
@@ -18191,39 +18193,35 @@ static int link_expect(const char *label, const char *vs, const char *fs,
     return result;
 }
 
-/* Emit a VS with `n` vec4 attributes, optionally the plain uniform pack, a
- * sampler, and one UBO -- every resource used so none is optimised away. */
-static void build_vs_gate_source(char *buf, size_t cap, int nattrs,
-                                 int with_plain, int with_sampler,
-                                 int with_ubo)
+/* Emit a VS with a few live attributes, optional plain pack / sampler, and
+ * `n_ubos` std140 blocks (UBO i → Metal slot plain_base+i). */
+static void build_vs_gate_source(char *buf, size_t cap, int n_ubos,
+                                 int with_plain, int with_sampler)
 {
     size_t off = 0;
-    off += (size_t)snprintf(buf + off, cap - off, "#version 460 core\n");
-    for (int i = 0; i < nattrs; i++)
-        off += (size_t)snprintf(buf + off, cap - off, "in vec4 a%d;\n", i);
+    off += (size_t)snprintf(buf + off, cap - off, "#version 460 core\n"
+                                                  "in vec4 a0;\n");
     if (with_plain)
         off += (size_t)snprintf(buf + off, cap - off,
                                 "uniform float u_shift;\n");
     if (with_sampler)
         off += (size_t)snprintf(buf + off, cap - off,
                                 "layout(binding=0) uniform sampler2D tex;\n");
-    if (with_ubo)
+    for (int i = 0; i < n_ubos; i++)
         off += (size_t)snprintf(buf + off, cap - off,
-                                "layout(std140) uniform Data { float x; } blk;\n");
+                                "layout(std140) uniform B%d { float x%d; } b%d;\n",
+                                i, i, i);
     off += (size_t)snprintf(buf + off, cap - off,
                             "out vec4 v_color;\n"
-                            "void main() {\n  vec4 s = ");
-    for (int i = 0; i < nattrs; i++)
-        off += (size_t)snprintf(buf + off, cap - off, "%sa%d",
-                                i ? " + " : "", i);
-    off += (size_t)snprintf(buf + off, cap - off, ";\n");
+                            "void main() {\n  vec4 s = a0;\n");
     if (with_plain)
         off += (size_t)snprintf(buf + off, cap - off, "  s += vec4(u_shift);\n");
     if (with_sampler)
         off += (size_t)snprintf(buf + off, cap - off,
                                 "  s += texture(tex, vec2(0.5));\n");
-    if (with_ubo)
-        off += (size_t)snprintf(buf + off, cap - off, "  s += vec4(blk.x);\n");
+    for (int i = 0; i < n_ubos; i++)
+        off += (size_t)snprintf(buf + off, cap - off,
+                                "  s += vec4(b%d.x%d);\n", i, i);
     snprintf(buf + off, cap - off,
              "  v_color = s;\n  gl_Position = s;\n}\n");
 }
@@ -18233,34 +18231,37 @@ static int test_buffer_slot_conflict_gate(unsigned char *pixels,
 {
     (void)pixels;
     (void)out_path;
+    static const char *vs_trivial =
+        "#version 460 core\n"
+        "void main() { gl_Position = vec4(0.0); }\n";
     static const char *fs_trivial =
         "#version 460 core\n"
         "layout(location=0) out vec4 o;\n"
         "void main() { o = vec4(0.0, 1.0, 0.0, 1.0); }\n";
     int result = 0;
-    char vs[4096];
-    char fs[4096];
+    char vs[8192];
+    char fs[8192];
 
-    /* (a) VS UBO at Metal slot 14 with a VS sampler: the LOD-bias pack owns
-     * 14 while the stage has samplers -> reject. */
-    build_vs_gate_source(vs, sizeof(vs), 13, 1, 1, 1);
+    /* (a) plain@0 + UBOs@1..14 → last block on LOD-bias slot; with a VS
+     * sampler the pack owns 14 → reject. */
+    build_vs_gate_source(vs, sizeof(vs), 14, 1, 1);
     result |= link_expect("buffer_slot_gate vs14+sampler", vs, fs_trivial, 0);
 
-    /* (b) same layout without the sampler: 14 is not bound -> link. */
-    build_vs_gate_source(vs, sizeof(vs), 13, 1, 0, 1);
+    /* (b) same layout without the sampler: 14 is not bound → link. */
+    build_vs_gate_source(vs, sizeof(vs), 14, 1, 0);
     result |= link_expect("buffer_slot_gate vs14-nosampler", vs, fs_trivial, 1);
 
-    /* (c) VS UBO at slot 16 (16 attributes, no plain pack: the user base is
-     * attrCount): the VAO attribute-stream region -> reject. */
-    build_vs_gate_source(vs, sizeof(vs), 16, 0, 0, 1);
+    /* (c) no plain pack: UBOs@0..16 → last block in the VAO attribute-stream
+     * region (16+) → reject. */
+    build_vs_gate_source(vs, sizeof(vs), 17, 0, 0);
     result |= link_expect("buffer_slot_gate vs16-attrstream", vs, fs_trivial, 0);
 
     /* (f) control: a low VS UBO slot stays legal. */
-    build_vs_gate_source(vs, sizeof(vs), 2, 1, 0, 1);
+    build_vs_gate_source(vs, sizeof(vs), 1, 1, 0);
     result |= link_expect("buffer_slot_gate vs3-control", vs, fs_trivial, 1);
 
     /* (d) FS with 14 UBOs and a sampler: the pack is at 0, the UBOs at 1..14,
-     * so the last block lands on the gated 14 -> reject. */
+     * so the last block lands on the gated 14 → reject. */
     {
         size_t off = (size_t)snprintf(fs, sizeof(fs), "#version 460 core\n"
                                       "uniform float u_bias;\n"
@@ -18277,10 +18278,10 @@ static int test_buffer_slot_conflict_gate(unsigned char *pixels,
                                     "  s += b%d.x%d;\n", i, i);
         snprintf(fs + off, sizeof(fs) - off,
                  "  s += texture(tex, vec2(0.5)).x;\n  o = vec4(s);\n}\n");
-        result |= link_expect("buffer_slot_gate fs14+sampler", fs, fs_trivial, 0);
+        result |= link_expect("buffer_slot_gate fs14+sampler", vs_trivial, fs, 0);
     }
 
-    /* (e) same blocks without the sampler: 14 is not bound -> link. */
+    /* (e) same blocks without the sampler: 14 is not bound → link. */
     {
         size_t off = (size_t)snprintf(fs, sizeof(fs), "#version 460 core\n"
                                       "uniform float u_bias;\n");
@@ -18295,7 +18296,7 @@ static int test_buffer_slot_conflict_gate(unsigned char *pixels,
             off += (size_t)snprintf(fs + off, sizeof(fs) - off,
                                     "  s += b%d.x%d;\n", i, i);
         snprintf(fs + off, sizeof(fs) - off, "  o = vec4(s);\n}\n");
-        result |= link_expect("buffer_slot_gate fs14-nosampler", fs, fs_trivial, 1);
+        result |= link_expect("buffer_slot_gate fs14-nosampler", vs_trivial, fs, 1);
     }
 
     return result;
@@ -21679,8 +21680,12 @@ static int test_texture_gather_incomplete(unsigned char *pixels,
         return 1;
     }
 
-    float texels[16];
-    for (int i = 0; i < 16; i++) texels[i] = 0.25f * (float)(i + 1);
+    /* 4x4 RGBA32F requires 4*4*4 floats; the old 16-float buffer made the
+     * driver's (correct) row reads overrun the stack (ASan:
+     * mgl_texture_transfer.c:598). */
+    float texels[4 * 4 * 4];
+    for (int i = 0; i < (int)(sizeof(texels) / sizeof(texels[0])); i++)
+        texels[i] = 0.25f * (float)(i + 1);
     GLuint tex = 0, color = 0, fbo = 0, vao = 0;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -24431,7 +24436,8 @@ static int test_image_size_tess_discard(unsigned char *pixels, const char *out_p
     glDrawArrays(GL_PATCHES, 0, 1);
     glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
     glFinish();
-    GLint tes_got[8] = {0};
+    /* result is a 1x7 RGBA32I texture: glGetTexImage writes 28 ints. */
+    GLint tes_got[28] = {0};
     glBindTexture(GL_TEXTURE_2D, result);
     glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA_INTEGER, GL_INT, tes_got);
     /* mip 1 of 32x16 is 16x8 */
@@ -24456,7 +24462,7 @@ static int test_image_size_tess_discard(unsigned char *pixels, const char *out_p
     glDrawArrays(GL_PATCHES, 0, 1);
     glMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT);
     glFinish();
-    GLint tcs_got[8] = {0};
+    GLint tcs_got[28] = {0};
     glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA_INTEGER, GL_INT, tcs_got);
     if (tcs_got[0] != 16 || tcs_got[1] != 8) {
         fprintf(stderr, "image_size_tess_discard: TCS 2D %d %d want 16 8\n",
@@ -25096,8 +25102,9 @@ static int test_large_uniform_array(unsigned char *pixels, const char *out_path)
                 fail |= 4;
             }
         }
-        GLuint zero = 0;
-        glClearBufferuiv(GL_COLOR, 0, &zero);
+        /* GL_COLOR takes four unsigned ints, not one. */
+        GLuint zero[4] = {0u, 0u, 0u, 0u};
+        glClearBufferuiv(GL_COLOR, 0, zero);
         glDrawArrays(GL_POINTS, 0, 1);
         GLuint got = 0;
         glReadPixels(0, 0, 1, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, &got);
@@ -27589,23 +27596,33 @@ static int test_air_geometry_lines_expand(unsigned char *pixels,
     glFinish();
     glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 
-    /* Three horizontal 1px lines across the middle half of the FBO. */
+    /* Three horizontal 1px lines across the middle half of the FBO, one pixel
+     * apart.  Each lies exactly on a pixel boundary (window y 95, 96, 97), a
+     * tie GL leaves to the implementation, so the block may sit one row lower
+     * depending on the storage row order: require three adjacent rows within
+     * 94..97 (readback rows are bottom-origin). */
     {
-        int rows[3] = { 95, 96, 97 };  /* readback rows are bottom-origin */
-        for (int r = 0; r < 3; r++) {
-            int y = rows[r];
+        int lit_rows[8] = {0};
+        for (int y = 93; y <= 98; y++) {
             int lit = 0;
             for (int x = 0; x < REG_W; x++) {
                 const unsigned char *q = &pixels[(y * REG_W + x) * 4];
                 if (q[0] || q[1] || q[2]) lit++;
             }
-            if (lit < 32) {
-                fprintf(stderr,
-                        "air_geometry_lines_expand: row %d has %d lit "
-                        "pixels, expected >= 32\n", y, lit);
-
-                goto cleanup;
-            }
+            lit_rows[y - 93] = lit >= 32;
+        }
+        int first = -1;
+        for (int y = 93; y <= 98; y++) {
+            if (lit_rows[y - 93]) { first = y; break; }
+        }
+        int count = 0;
+        for (int y = 93; y <= 98; y++) count += lit_rows[y - 93];
+        if (first < 94 || first > 95 || count != 3 ||
+            !lit_rows[first - 93 + 1] || !lit_rows[first - 93 + 2]) {
+            fprintf(stderr,
+                    "air_geometry_lines_expand: expected 3 adjacent lit rows "
+                    "starting at 94 or 95, first=%d count=%d\n", first, count);
+            goto cleanup;
         }
     }
 
@@ -30009,6 +30026,547 @@ static int test_pixel_format_bpp_table(unsigned char *pixels, const char *out_pa
  *
  * The check is behavioural: compute the state key twice with only that field
  * changed and require the two keys to differ. */
+/* glDrawBuffer used to mark the selected attachment as a draw buffer through
+ * the renderbuffer view of the attachment union, whether or not the attachment
+ * was a renderbuffer.  For a texture attachment that stored into the Texture
+ * (its access field), after which texture creation failed with an invalid
+ * access and nothing could be drawn to the texture. */
+static int test_draw_buffer_texture_attachment(unsigned char *pixels,
+                                               const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLMContext ctx = MGLgetCurrentContext();
+    if (!ctx || !ctx->active_state) {
+        fprintf(stderr, "draw_buffer_texture_attachment: no current GLM context\n");
+        return 1;
+    }
+
+    GLuint tex = 0, fbo = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 2, GL_RGBA8, 4, 4);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           tex, 0);
+
+    Texture *internal = (Texture *)searchHashTable(
+        &ctx->active_state->texture_table, tex);
+    if (!internal) {
+        fprintf(stderr, "draw_buffer_texture_attachment: texture lookup failed\n");
+        return 1;
+    }
+    const GLenum access_before = internal->access;
+    const GLboolean render_target_before = internal->is_render_target;
+    const GLuint dirty_before = internal->dirty_bits;
+
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+    int failures = 0;
+    if (internal->access != access_before) {
+        fprintf(stderr,
+                "draw_buffer_texture_attachment: access 0x%x became 0x%x\n",
+                access_before, internal->access);
+        failures++;
+    }
+    if (internal->is_render_target != render_target_before ||
+        internal->dirty_bits != dirty_before) {
+        fprintf(stderr,
+                "draw_buffer_texture_attachment: texture state changed by "
+                "glDrawBuffer\n");
+        failures++;
+    }
+
+    glClearColor(0.25f, 0.5f, 0.75f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    GLfloat px[4] = {0.f, 0.f, 0.f, 0.f};
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glReadPixels(0, 0, 1, 1, GL_RGBA, GL_FLOAT, px);
+    if (px[0] < 0.19f || px[0] > 0.31f || px[1] < 0.44f || px[1] > 0.56f ||
+        px[2] < 0.69f || px[2] > 0.81f) {
+        fprintf(stderr,
+                "draw_buffer_texture_attachment: cleared texture reads "
+                "[%g %g %g %g], expected [0.25 0.5 0.75 1]\n",
+                px[0], px[1], px[2], px[3]);
+        failures++;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    return failures ? 1 : 0;
+}
+
+/* Orientation probes for the fragment built-ins that follow window-space Y
+ * (docs/TODO_FBO_GL_ROW_ORDER_2026-10-18.md, Phase 0).  GL defines window Y as
+ * increasing upward, so dFdy(gl_FragCoord.y) is +1 and a +y interpolation
+ * offset moves toward larger NDC y, for every render target.  The probes
+ * render one full-screen triangle and read the center pixel. */
+static GLuint orientation_probe_program(const char *fs_body)
+{
+    static const char *vs =
+        "#version 450\n"
+        "layout(location = 0) out vec2 ndc;\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+        "  ndc = p * 2.0 - 1.0;\n"
+        "  gl_Position = vec4(ndc, 0.0, 1.0);\n"
+        "}\n";
+    return link_program(vs, fs_body);
+}
+
+static int run_orientation_probe(const char *label, GLuint prog, int to_fbo,
+                                 unsigned char *pixels, unsigned char out[4])
+{
+    GLuint color = 0, fbo = 0, vao = 0;
+    if (to_fbo) {
+        fbo = make_fbo(REG_W, REG_H, &color);
+        if (!fbo) return 1;
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    } else {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glUseProgram(prog);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    const unsigned char *px = &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+    memcpy(out, px, 4);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteVertexArrays(1, &vao);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "%s: GL error\n", label);
+        return 1;
+    }
+    return 0;
+}
+
+/* glGenerateTextureMipmap / glGenerateMipmap on a texture that has been
+ * rendered into keeps level 0 and builds the lower levels from it (Iris
+ * regenerates the mips of colortex0/colortex3 after drawing into them). */
+static int test_generate_mipmap_render_target(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "out vec2 uv;\n"
+        "void main() { vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }\n";
+    GLuint pfill = link_program(vs,
+        "#version 330 core\nin vec2 uv;\nout vec4 c;\nvoid main() { c = vec4(0.25, 0.5, 0.75, 1.0); }\n");
+    GLuint plod = link_program(vs,
+        "#version 330 core\nuniform sampler2D s;\nin vec2 uv;\nout vec4 c;\n"
+        "void main() { c = textureLod(s, uv, 2.0); }\n");
+    if (!pfill || !plod) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    int fail = 0;
+    const GLenum formats[2] = {GL_RGBA16F, GL_RGBA8};
+    for (int f = 0; f < 2; f++) {
+        for (int dsa = 0; dsa < 2; dsa++) {
+            GLuint tex = 0, fbo = 0;
+            glGenTextures(1, &tex);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, formats[f], 64, 64, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, NULL);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glCreateFramebuffers(1, &fbo);
+            glNamedFramebufferTexture(fbo, GL_COLOR_ATTACHMENT0, tex, 0);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glViewport(0, 0, 64, 64);
+            glUseProgram(pfill);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            if (dsa) glGenerateTextureMipmap(tex);
+            else glGenerateMipmap(GL_TEXTURE_2D);
+            unsigned char px[4] = {0};
+            glReadPixels(10, 10, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            if (px[0] != 64 || px[1] < 127 || px[1] > 129 || px[2] != 191) {
+                fprintf(stderr, "generate_mipmap_render_target: fmt 0x%x dsa=%d level 0 became %u,%u,%u\n",
+                        formats[f], dsa, px[0], px[1], px[2]);
+                fail |= 1 << (f * 2 + dsa);
+            }
+            /* a lower level, sampled into the window, carries the same color */
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glViewport(0, 0, 64, 64);
+            glClearColor(0.f, 0.f, 0.f, 1.f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glUseProgram(plod);
+            glUniform1i(glGetUniformLocation(plod, "s"), 0);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glReadPixels(10, 10, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            if (px[0] < 62 || px[0] > 66 || px[2] < 189 || px[2] > 193) {
+                fprintf(stderr, "generate_mipmap_render_target: fmt 0x%x dsa=%d level 2 sampled %u,%u,%u\n",
+                        formats[f], dsa, px[0], px[1], px[2]);
+                fail |= 1 << (8 + f * 2 + dsa);
+            }
+            glDeleteFramebuffers(1, &fbo);
+            glDeleteTextures(1, &tex);
+        }
+    }
+    glDeleteVertexArrays(1, &vao);
+    return fail ? 1 : 0;
+}
+
+/* One frame of the call pattern a shader-pack renderer (Iris) uses on its
+ * render targets: DSA-created framebuffers over textures allocated with
+ * glTexImage2D, a multi-attachment gbuffer pass with a shared depth texture,
+ * a depth copy, composite passes that ping-pong between a main and an alt
+ * texture, a mipmap regeneration of a rendered target, a final pass into the
+ * main color texture through a bare framebuffer, a swap copy, and a draw of
+ * the result to the window.  Two frames run back to back. */
+static int test_iris_like_frame(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "out vec2 uv;\n"
+        "void main() { vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }\n";
+    GLuint pg = link_program(vs,
+        "#version 330 core\nin vec2 uv;\n"
+        "layout(location = 0) out vec4 o0;\nlayout(location = 1) out vec4 o1;\nlayout(location = 2) out vec4 o2;\n"
+        "void main() { o0 = vec4(0.2, 0.4, 0.6, 1.0); o1 = vec4(-0.5, 0.5, 0.0, 1.0);\n"
+        "  o2 = vec4(0.8, 0.1, 0.3, 1.0); gl_FragDepth = 0.5; }\n");
+    GLuint pc1 = link_program(vs,
+        "#version 330 core\nuniform sampler2D c0;\nuniform sampler2D c3;\nin vec2 uv;\nout vec4 o;\n"
+        "void main() { o = vec4(texture(c0, uv).rgb * 0.5 + texture(c3, uv).rgb * 0.5, 1.0); }\n");
+    GLuint pc2 = link_program(vs,
+        "#version 330 core\nuniform sampler2D c0;\nuniform sampler2D c3;\nuniform sampler2D dt;\nin vec2 uv;\nout vec4 o;\n"
+        "void main() { float d = texelFetch(dt, ivec2(gl_FragCoord.xy), 0).r;\n"
+        "  o = vec4(texture(c0, uv).rgb * 0.5 + textureLod(c3, uv, 2.0).rgb * 0.5 + (d > 0.49 ? 0.1 : 0.0), 1.0); }\n");
+    GLuint pfin = link_program(vs,
+        "#version 330 core\nuniform sampler2D c0;\nin vec2 uv;\nout vec4 o;\n"
+        "void main() { o = vec4(texture(c0, uv).rgb, 1.0); }\n");
+    GLuint pwin = link_program(vs,
+        "#version 330 core\nuniform sampler2D s;\nin vec2 uv;\nout vec4 o;\n"
+        "void main() { o = texture(s, uv); }\n");
+    if (!pg || !pc1 || !pc2 || !pfin || !pwin) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    const int W = 64, H = 64;
+    GLuint tex[8] = {0};  /* c0 main, c0 alt, c1, c3, main color, mc depth, depthtex1, spare */
+    glGenTextures(8, tex);
+    const GLenum ifmt[5] = {GL_R11F_G11F_B10F, GL_R11F_G11F_B10F, GL_RGB8_SNORM, GL_RGBA8, GL_RGBA8};
+    const GLenum fmt[5] = {GL_RGB, GL_RGB, GL_RGB, GL_RGBA, GL_RGBA};
+    for (int i = 0; i < 5; i++) {
+        glBindTexture(GL_TEXTURE_2D, tex[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, ifmt[i], W, H, 0, fmt[i], GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    glBindTexture(GL_TEXTURE_2D, tex[5]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, W, H, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, tex[6]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, W, H, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    GLuint fbg = 0, fbc1 = 0, fbc2 = 0, fbfin = 0, fbalt = 0;
+    glCreateFramebuffers(1, &fbg);
+    glNamedFramebufferTexture(fbg, GL_COLOR_ATTACHMENT0, tex[0], 0);
+    glNamedFramebufferTexture(fbg, GL_COLOR_ATTACHMENT1, tex[2], 0);
+    glNamedFramebufferTexture(fbg, GL_COLOR_ATTACHMENT2, tex[3], 0);
+    glNamedFramebufferTexture(fbg, GL_DEPTH_ATTACHMENT, tex[5], 0);
+    GLenum db3[3] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2};
+    glNamedFramebufferDrawBuffers(fbg, 3, db3);
+    glCreateFramebuffers(1, &fbc1);
+    glNamedFramebufferTexture(fbc1, GL_COLOR_ATTACHMENT0, tex[1], 0);
+    GLenum db1 = GL_COLOR_ATTACHMENT0;
+    glNamedFramebufferDrawBuffers(fbc1, 1, &db1);
+    glNamedFramebufferReadBuffer(fbc1, GL_COLOR_ATTACHMENT0);
+    fbalt = fbc1;
+    glCreateFramebuffers(1, &fbc2);
+    glNamedFramebufferTexture(fbc2, GL_COLOR_ATTACHMENT0, tex[0], 0);
+    glNamedFramebufferDrawBuffers(fbc2, 1, &db1);
+    glCreateFramebuffers(1, &fbfin);
+    glNamedFramebufferTexture(fbfin, GL_COLOR_ATTACHMENT0, tex[4], 0);   /* bare: no draw buffers call */
+
+    int fail = 0;
+    for (int frame = 0; frame < 2; frame++) {
+        /* clear the gbuffer targets */
+        glBindFramebuffer(GL_FRAMEBUFFER, fbg);
+        glViewport(0, 0, W, H);
+        glClearColor(0.f, 0.f, 0.f, 0.f);
+        glClearDepth(1.0);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        /* gbuffer pass */
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glUseProgram(pg);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDisable(GL_DEPTH_TEST);
+        /* depth copy: glCopyImageSubData main depth -> depthtex1 */
+        glCopyImageSubData(tex[5], GL_TEXTURE_2D, 0, 0, 0, 0, tex[6], GL_TEXTURE_2D, 0, 0, 0, 0, W, H, 1);
+        /* composite 1: read c0 main + c3, write c0 alt */
+        glBindFramebuffer(GL_FRAMEBUFFER, fbc1);
+        glViewport(0, 0, W, H);
+        glUseProgram(pc1);
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, tex[0]);
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, tex[3]);
+        glUniform1i(glGetUniformLocation(pc1, "c0"), 0);
+        glUniform1i(glGetUniformLocation(pc1, "c3"), 1);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        /* mipmaps of c3 */
+        glGenerateTextureMipmap(tex[3]);
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, tex[3]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        /* composite 2: read c0 alt, c3 (mip), depthtex1; write c0 main */
+        glBindFramebuffer(GL_FRAMEBUFFER, fbc2);
+        glViewport(0, 0, W, H);
+        glUseProgram(pc2);
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, tex[1]);
+        glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, tex[6]);
+        glUniform1i(glGetUniformLocation(pc2, "c0"), 0);
+        glUniform1i(glGetUniformLocation(pc2, "c3"), 1);
+        glUniform1i(glGetUniformLocation(pc2, "dt"), 2);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, tex[3]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        /* final: bare framebuffer over the main color texture */
+        glBindFramebuffer(GL_FRAMEBUFFER, fbfin);
+        glViewport(0, 0, W, H);
+        glUseProgram(pfin);
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, tex[0]);
+        glUniform1i(glGetUniformLocation(pfin, "c0"), 0);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        /* swap copy: alt framebuffer -> c0 main texture */
+        glBindFramebuffer(GL_FRAMEBUFFER, fbalt);
+        glBindTexture(GL_TEXTURE_2D, tex[0]);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, W, H);
+        /* present: draw the main color texture to the window */
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, W, H);
+        glClearColor(0.f, 0.f, 0.f, 1.f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glUseProgram(pwin);
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, tex[4]);
+        glUniform1i(glGetUniformLocation(pwin, "s"), 0);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        unsigned char px[4] = {0};
+        glReadPixels(10, 10, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        /* expected (0.75, 0.275, 0.475) */
+        if (abs((int)px[0] - 191) > 5 || abs((int)px[1] - 70) > 5 || abs((int)px[2] - 121) > 5) {
+            fprintf(stderr, "iris_like_frame: frame %d window pixel %u,%u,%u (want ~191,70,121)\n",
+                    frame, px[0], px[1], px[2]);
+            fail |= 1 << frame;
+        }
+    }
+    glActiveTexture(GL_TEXTURE0);
+    return fail ? 1 : 0;
+}
+
+/* A texture that was specified with client data and is then attached to a
+ * framebuffer keeps that data when the framebuffer is first used (here by a
+ * draw that discards every fragment) and when it is read back, blitted or
+ * copied from. */
+static int test_rt_keeps_uploaded_data(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() { vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0); }\n";
+    GLuint pdiscard = link_program(vs,
+        "#version 330 core\nout vec4 c;\nvoid main() { discard; c = vec4(0.0); }\n");
+    if (!pdiscard) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    static unsigned char data[16 * 16 * 4];
+    for (int y = 0; y < 16; y++)
+        for (int x = 0; x < 16; x++) {
+            data[(y * 16 + x) * 4 + 0] = (unsigned char)(10 + y);
+            data[(y * 16 + x) * 4 + 1] = (unsigned char)(100 + x);
+            data[(y * 16 + x) * 4 + 2] = 50;
+            data[(y * 16 + x) * 4 + 3] = 255;
+        }
+    int fail = 0;
+    for (int variant = 0; variant < 3; variant++) {
+        GLuint ta = 0, tb = 0, fa = 0, fb = 0;
+        glGenTextures(1, &ta); glBindTexture(GL_TEXTURE_2D, ta);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glGenTextures(1, &tb); glBindTexture(GL_TEXTURE_2D, tb);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glGenFramebuffers(1, &fa); glBindFramebuffer(GL_FRAMEBUFFER, fa);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ta, 0);
+        glGenFramebuffers(1, &fb); glBindFramebuffer(GL_FRAMEBUFFER, fb);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tb, 0);
+        /* first use of A's framebuffer: a pass in which nothing is written */
+        glBindFramebuffer(GL_FRAMEBUFFER, fa);
+        glViewport(0, 0, 16, 16);
+        glUseProgram(pdiscard);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        unsigned char px[4] = {0};
+        if (variant == 0) {           /* read back through the framebuffer */
+            glReadPixels(3, 5, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        } else if (variant == 1) {    /* blit A -> B, read B */
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, fa);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fb);
+            glBlitFramebuffer(0, 0, 16, 16, 0, 0, 16, 16, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+            glReadPixels(3, 5, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        } else {                      /* glCopyTexSubImage2D A -> B, read B */
+            glBindFramebuffer(GL_FRAMEBUFFER, fa);
+            glBindTexture(GL_TEXTURE_2D, tb);
+            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, 16, 16);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+            glReadPixels(3, 5, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        }
+        if (px[0] != 15 || px[1] != 103 || px[2] != 50) {
+            fprintf(stderr, "rt_keeps_uploaded_data: variant %d read %u,%u,%u (want 15,103,50)\n",
+                    variant, px[0], px[1], px[2]);
+            fail |= 1 << variant;
+        }
+        /* and GetTexImage of the attached texture */
+        static unsigned char img[16 * 16 * 4];
+        glBindTexture(GL_TEXTURE_2D, ta);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, img);
+        if (img[(5 * 16 + 3) * 4] != 15) {
+            fprintf(stderr, "rt_keeps_uploaded_data: variant %d GetTexImage %u (want 15)\n", variant, img[(5 * 16 + 3) * 4]);
+            fail |= 8 << variant;
+        }
+    }
+    return fail ? 1 : 0;
+}
+
+/* `T a = x, b = y;` at global scope initializes every declarator, in the
+ * vertex and in the fragment stage.  Complementary's sky shader declares
+ * `vec3 nmscRainM = vec3(0.0), ndscRainM = vec3(0.0);`; the second one was
+ * never initialized and fed NaN into the whole sky. */
+static int test_global_multi_declarator_init(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "float va = 0.25, vb = 0.5;\n"
+        "vec3 vc = vec3(0.1), vd = vec3(0.2, 0.4, 0.6);\n"
+        "flat out vec2 vcol;\n"
+        "void main() { vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  vcol = vec2(vb, vd.y); gl_Position = vec4(p, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 330 core\n"
+        "flat in vec2 vcol;\n"
+        "float ga = 0.25, gb = 0.5, gc = 0.75;\n"
+        "vec3 gv = vec3(0.1), gw = vec3(0.2, 0.4, 0.6);\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(gb + vcol.x * 0.0, gc, gw.z, vcol.y); }\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) return 2;
+    GLuint vao = 0, tex = 0, fbo = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    fbo = make_fbo(16, 16, &tex);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, 16, 16);
+    glClearColor(0.f, 0.f, 0.f, 0.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(prog);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    unsigned char px[4] = {0};
+    glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    /* gb = 0.5, gc = 0.75, gw.z = 0.6, vd.y = 0.4 */
+    int fail = 0;
+    if (abs((int)px[0] - 128) > 2 || abs((int)px[1] - 191) > 2 ||
+        abs((int)px[2] - 153) > 2 || abs((int)px[3] - 102) > 2) {
+        fprintf(stderr, "global_multi_declarator_init: got %u,%u,%u,%u (want ~128,191,153,102)\n",
+                px[0], px[1], px[2], px[3]);
+        fail = 1;
+    }
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    return fail;
+}
+
+static int test_dfdy_orientation(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint prog = orientation_probe_program(
+        "#version 450\n"
+        "layout(location = 0) in vec2 ndc;\n"
+        "out vec4 c;\n"
+        "void main() {\n"
+        "  c = vec4(dFdy(gl_FragCoord.y) > 0.0 ? 1.0 : 0.0,\n"
+        "           dFdx(gl_FragCoord.x) > 0.0 ? 1.0 : 0.0,\n"
+        "           dFdy(ndc.y) > 0.0 ? 1.0 : 0.0, 1.0);\n"
+        "}\n");
+    if (!prog) return 1;
+    int fail = 0;
+    for (int to_fbo = 1; to_fbo >= 0; to_fbo--) {
+        unsigned char px[4];
+        if (run_orientation_probe("dfdy_orientation", prog, to_fbo, pixels, px)) {
+            fail = 1;
+            continue;
+        }
+        if (px[0] < 200 || px[1] < 200 || px[2] < 200) {
+            fprintf(stderr,
+                    "dfdy_orientation: %s dFdy(fragY)>0=%u dFdx(fragX)>0=%u "
+                    "dFdy(ndc.y)>0=%u (all must be 255)\n",
+                    to_fbo ? "fbo" : "default", px[0], px[1], px[2]);
+            fail = 1;
+        }
+    }
+    glDeleteProgram(prog);
+    return fail;
+}
+
+static int test_interpolate_at_offset_orientation(unsigned char *pixels,
+                                                  const char *out_path)
+{
+    (void)out_path;
+    GLuint prog = orientation_probe_program(
+        "#version 450\n"
+        "layout(location = 0) in vec2 ndc;\n"
+        "out vec4 c;\n"
+        "void main() {\n"
+        "  vec2 up = interpolateAtOffset(ndc, vec2(0.0, 0.5));\n"
+        "  vec2 right = interpolateAtOffset(ndc, vec2(0.5, 0.0));\n"
+        "  c = vec4(up.y > ndc.y ? 1.0 : 0.0, right.x > ndc.x ? 1.0 : 0.0,\n"
+        "           0.0, 1.0);\n"
+        "}\n");
+    if (!prog) return 1;
+    int fail = 0;
+    for (int to_fbo = 1; to_fbo >= 0; to_fbo--) {
+        unsigned char px[4];
+        if (run_orientation_probe("interpolate_at_offset_orientation", prog,
+                                  to_fbo, pixels, px)) {
+            fail = 1;
+            continue;
+        }
+        if (px[0] < 200 || px[1] < 200) {
+            fprintf(stderr,
+                    "interpolate_at_offset_orientation: %s +y offset moves "
+                    "toward +ndc.y=%u, +x offset toward +ndc.x=%u (both must "
+                    "be 255)\n",
+                    to_fbo ? "fbo" : "default", px[0], px[1]);
+            fail = 1;
+        }
+    }
+    glDeleteProgram(prog);
+    return fail;
+}
+
 static int test_sample_mask_state_key(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -30091,9 +30649,245 @@ static int test_unreliable_on_paravirt(const char *name)
     return 0;
 }
 
+/* ---- GLSL 4.0 subroutines ----
+ * Self-check: link one program with two subroutine types (and a void type
+ * whose implementations write the stage output), switch implementations with
+ * glUniformSubroutinesuiv, and read the pixel back.  A backend that ignores the
+ * selector (the bb9a7c21 regression) renders the same colour for both
+ * selections, which no compile-only check would catch. */
+static int test_subroutine_dispatch(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint tex = 0;
+    GLuint fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    const char *vs =
+        "#version 430 core\n"
+        "layout(location = 0) in vec2 a_pos;\n"
+        "void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
+    /* Two types: `T` returns the colour, `U` picks between two thresholds.
+     * Implementations of `T` are void-shaped in spirit but return a value, so
+     * the value path and the merge-phi path are both exercised. */
+    const char *fs =
+        "#version 430 core\n"
+        "out vec4 frag;\n"
+        "subroutine vec4 T();\n"
+        "subroutine bool U();\n"
+        "subroutine uniform T g;\n"
+        "subroutine uniform U h;\n"
+        "subroutine(U) bool u_low()  { return false; }\n"
+        "subroutine(U) bool u_high() { return true; }\n"
+        "subroutine(T) vec4 red()   { frag = vec4(1.0, 0.0, 0.0, 1.0);"
+        "                              return vec4(1.0, 0.0, 0.0, 1.0); }\n"
+        "subroutine(T) vec4 green() { frag = vec4(0.0, 1.0, 0.0, 1.0);"
+        "                              return vec4(0.0, 1.0, 0.0, 1.0); }\n"
+        "void main() { vec4 c = g(); frag = h() ? c : vec4(c.g, c.r, 0.0, 1.0); }\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) return 2;
+
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    glUseProgram(prog);
+
+    /* Program-wide index space sanity (GL 4.6 §7.10). */
+    GLuint i_red = glGetSubroutineIndex(prog, GL_FRAGMENT_SHADER, "red");
+    GLuint i_green = glGetSubroutineIndex(prog, GL_FRAGMENT_SHADER, "green");
+    GLuint i_low = glGetSubroutineIndex(prog, GL_FRAGMENT_SHADER, "u_low");
+    GLuint i_high = glGetSubroutineIndex(prog, GL_FRAGMENT_SHADER, "u_high");
+    if (i_red == GL_INVALID_INDEX || i_green == GL_INVALID_INDEX ||
+        i_low == GL_INVALID_INDEX || i_high == GL_INVALID_INDEX)
+        return 3;
+    if (i_red == i_green || i_red == i_low || i_low == i_high)
+        return 4;                         /* indices must be unique per stage */
+    if (glGetSubroutineIndex(prog, GL_FRAGMENT_SHADER, "nope") !=
+        GL_INVALID_INDEX)
+        return 5;
+
+    GLint loc_g = glGetSubroutineUniformLocation(prog, GL_FRAGMENT_SHADER, "g");
+    GLint loc_h = glGetSubroutineUniformLocation(prog, GL_FRAGMENT_SHADER, "h");
+    if (loc_g < 0 || loc_h < 0 || loc_g == loc_h) return 6;
+
+    GLint active = -1, locations = -1;
+    glGetProgramStageiv(prog, GL_FRAGMENT_SHADER, GL_ACTIVE_SUBROUTINES, &active);
+    glGetProgramStageiv(prog, GL_FRAGMENT_SHADER,
+                        GL_ACTIVE_SUBROUTINE_UNIFORM_LOCATIONS, &locations);
+    if (active != 4 || locations != 2) return 7;
+
+    /* query-back round trip */
+    GLuint sel[2];
+    sel[(size_t)loc_g] = i_red;
+    sel[(size_t)loc_h] = i_high;
+    glUniformSubroutinesuiv(GL_FRAGMENT_SHADER, 2, sel);
+    if (glGetError() != GL_NO_ERROR) return 8;
+    GLuint back = 0xFFFFFFFFu;
+    glGetUniformSubroutineuiv(GL_FRAGMENT_SHADER, loc_g, &back);
+    if (glGetError() != GL_NO_ERROR) return 9;
+    if (back != i_red) return 10;
+
+    /* Draw both selections and require the pixels to differ. */
+    unsigned char px[4];
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(REG_W / 2, REG_H / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    unsigned char first[4] = {px[0], px[1], px[2], px[3]};
+
+    sel[(size_t)loc_g] = i_green;
+    glUniformSubroutinesuiv(GL_FRAGMENT_SHADER, 2, sel);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(REG_W / 2, REG_H / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+
+    int changed = (first[0] != px[0] || first[1] != px[1] || first[2] != px[2]);
+
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    /* ---- ARB_shader_subroutine conformance ---- */
+
+    /* UseProgram resets the selections: they are context state, reset to
+     * default functions on every bind, so the green selection above must
+     * not survive the rebind (readback reports the never-set value 0). */
+    glUseProgram(prog);
+    GLuint back_reset = 0xFFFFFFFFu;
+    glGetUniformSubroutineuiv(GL_FRAGMENT_SHADER, loc_g, &back_reset);
+    if (glGetError() != GL_NO_ERROR) return 12;
+    if (back_reset != 0u) return 13;
+
+    /* A count != ACTIVE_SUBROUTINE_UNIFORM_LOCATIONS is INVALID_VALUE and
+     * must leave the selections untouched (failed GL commands change
+     * nothing). */
+    while (glGetError() != GL_NO_ERROR) {}
+    GLuint good[2];
+    good[(size_t)loc_g] = i_red;
+    good[(size_t)loc_h] = i_high;
+    glUniformSubroutinesuiv(GL_FRAGMENT_SHADER, 2, good);
+    if (glGetError() != GL_NO_ERROR) return 14;
+    GLuint wrong_count = i_red;
+    glUniformSubroutinesuiv(GL_FRAGMENT_SHADER, 1, &wrong_count);
+    if (glGetError() != GL_INVALID_VALUE) return 15;
+    GLuint back_after_fail = 0xFFFFFFFFu;
+    glGetUniformSubroutineuiv(GL_FRAGMENT_SHADER, loc_g, &back_after_fail);
+    if (back_after_fail != i_red) return 16;
+    while (glGetError() != GL_NO_ERROR) {}
+
+    /* A subroutine uniform whose type has no implementations must fail to
+     * link ("A program will fail to link if any stage has one or more
+     * subroutine uniforms that has no subroutine associated with the
+     * subroutine type of the uniform"). */
+    {
+        const char *bad_fs =
+            "#version 430 core\n"
+            "out vec4 frag;\n"
+            "subroutine vec4 Z();\n"
+            "subroutine uniform Z q;\n"
+            "void main() { frag = vec4(1.0, 0.0, 1.0, 1.0); }\n";
+        GLuint bad = glCreateProgram();
+        GLuint vs2 = compile_shader(GL_VERTEX_SHADER, vs);
+        GLuint fs2 = compile_shader(GL_FRAGMENT_SHADER, bad_fs);
+        glAttachShader(bad, vs2);
+        glAttachShader(bad, fs2);
+        glLinkProgram(bad);
+        GLint bad_ok = 1;
+        glGetProgramiv(bad, GL_LINK_STATUS, &bad_ok);
+        glDeleteShader(vs2);
+        glDeleteShader(fs2);
+        glDeleteProgram(bad);
+        while (glGetError() != GL_NO_ERROR) {}
+        if (bad_ok) return 17;
+    }
+
+    /* Arrayed uniforms: ONE subroutine uniform under the base name, one
+     * location per element; every implementation carrying an explicit
+     * layout(index) that skips 0 still dispatches the default function
+     * when the selection was never set (spec: an arbitrarily chosen
+     * compatible function). */
+    {
+        const char *arr_fs =
+            "#version 430 core\n"
+            "out vec4 frag;\n"
+            "subroutine vec4 T();\n"
+            "subroutine uniform T g;\n"
+            "subroutine uniform T arr[2];\n"
+            "layout(index = 3) subroutine(T) vec4 blue()  { return vec4(0.0, 0.0, 1.0, 1.0); }\n"
+            "layout(index = 5) subroutine(T) vec4 cyan()  { return vec4(0.0, 1.0, 1.0, 1.0); }\n"
+            "void main() { frag = g(); }\n";
+        GLuint p2 = link_program(vs, arr_fs);
+        if (!p2) return 18;
+        glUseProgram(p2);
+
+        GLint active_uni = -1, locations2 = -1;
+        glGetProgramStageiv(p2, GL_FRAGMENT_SHADER,
+                            GL_ACTIVE_SUBROUTINE_UNIFORMS, &active_uni);
+        glGetProgramStageiv(p2, GL_FRAGMENT_SHADER,
+                            GL_ACTIVE_SUBROUTINE_UNIFORM_LOCATIONS, &locations2);
+        if (active_uni != 2 || locations2 != 3) return 19;
+
+        /* Arrayed uniforms enumerate as ONE subroutine uniform under the
+         * element-0 name (the uniform-resource naming convention). */
+        char uname[64] = {0};
+        GLsizei ulen = 0;
+        glGetActiveSubroutineUniformName(p2, GL_FRAGMENT_SHADER, 1,
+                                         sizeof(uname), &ulen, uname);
+        if (strcmp(uname, "arr[0]") != 0) return 20;
+        GLint usize = 0;
+        glGetActiveSubroutineUniformiv(p2, GL_FRAGMENT_SHADER, 1,
+                                       GL_UNIFORM_SIZE, &usize);
+        if (usize != 2) return 21;
+
+        GLint loc_arr = glGetSubroutineUniformLocation(p2, GL_FRAGMENT_SHADER, "arr");
+        GLint loc_arr1 = glGetSubroutineUniformLocation(p2, GL_FRAGMENT_SHADER, "arr[1]");
+        GLint loc_g2 = glGetSubroutineUniformLocation(p2, GL_FRAGMENT_SHADER, "g");
+        if (loc_g2 < 0 || loc_arr < 0 || loc_arr1 != loc_arr + 1) return 22;
+
+        GLuint i_blue2 = glGetSubroutineIndex(p2, GL_FRAGMENT_SHADER, "blue");
+        if (i_blue2 != 3u) return 23;
+
+        /* Never set: value 0 matches no implementation slot (3 and 5), so
+         * the dispatch default must still run blue. */
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        unsigned char px2[4] = {0, 0, 0, 0};
+        glReadPixels(REG_W / 2, REG_H / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px2);
+        if (px2[2] != 255 || px2[0] != 0) return 24;
+
+        /* Arrayed elements select and read back through their own
+         * locations. */
+        GLuint sel3[3];
+        sel3[(size_t)loc_g2] = 5u;             /* g -> cyan */
+        sel3[(size_t)loc_arr] = 3u;            /* arr[0] -> blue */
+        sel3[(size_t)loc_arr1] = 3u;           /* arr[1] -> blue */
+        glUniformSubroutinesuiv(GL_FRAGMENT_SHADER, 3, sel3);
+        if (glGetError() != GL_NO_ERROR) return 25;
+        GLuint back_elem = 0xFFFFFFFFu;
+        glGetUniformSubroutineuiv(GL_FRAGMENT_SHADER, loc_arr1, &back_elem);
+        if (back_elem != 3u) return 26;
+
+        glDeleteProgram(p2);
+        while (glGetError() != GL_NO_ERROR) {}
+    }
+
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &vbo);
+    glDeleteProgram(prog);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    return changed ? 0 : 11;
+}
+
 static const TestCase TESTS[] = {
     SELF_CHECK_TEST("gl_clip_planes",     test_gl_clip_planes),
     SELF_CHECK_TEST("legacy_clip_vertex", test_legacy_clip_vertex),
+    SELF_CHECK_TEST("subroutine_dispatch", test_subroutine_dispatch),
     GOLDEN_TEST("draw_arrays",            test_draw_arrays),
     GOLDEN_TEST("draw_elements",          test_draw_elements),
     GOLDEN_TEST("draw_arrays_instanced",  test_draw_arrays_instanced),
@@ -30396,6 +31190,15 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("pixel_format_bpp_table",
                     test_pixel_format_bpp_table),
     SELF_CHECK_TEST("sample_mask_state_key", test_sample_mask_state_key),
+    SELF_CHECK_TEST("dfdy_orientation", test_dfdy_orientation),
+    SELF_CHECK_TEST("global_multi_declarator_init", test_global_multi_declarator_init),
+    SELF_CHECK_TEST("rt_keeps_uploaded_data", test_rt_keeps_uploaded_data),
+    SELF_CHECK_TEST("iris_like_frame", test_iris_like_frame),
+    SELF_CHECK_TEST("generate_mipmap_render_target", test_generate_mipmap_render_target),
+    SELF_CHECK_TEST("interpolate_at_offset_orientation",
+                    test_interpolate_at_offset_orientation),
+    SELF_CHECK_TEST("draw_buffer_texture_attachment",
+                    test_draw_buffer_texture_attachment),
     /* depth_test/stencil use probe-style fns (test_depth_probe /
      * test_stencil_probe): hardcoded per-program values.
      * uniform_alias gates the cross-stage uniform-location fix (program.c

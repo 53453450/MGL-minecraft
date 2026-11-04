@@ -13,7 +13,7 @@
 #ifndef MGL_VERTEX_LAYOUT_H
 #define MGL_VERTEX_LAYOUT_H
 
-#include "mgl_render.h"
+#include "mgl_render_api_query.h"
 
 #ifdef __cplusplus
 extern "C" {

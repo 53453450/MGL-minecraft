@@ -37,12 +37,16 @@ VERBOSE = "--verbose" in sys.argv
 
 # Hash / key builders that define "covered by draw identity".
 _HASH_BUILDER_PATTERNS = (
-    r"^void mglComputeStateKey",
-    r"^static uint64_t mglComputeTextureHash",
-    r"^static uint64_t mglComputeRenderStateHash",
-    r"^static uint64_t mglComputeVertexArrayStateHash",
-    r"^static uint64_t mglComputeUniformBufferBindingHash",
-    r"^static uint64_t mglComputeDrawBufferBindingHash",
+    r"^void mglComputeStateKey\b",
+    r"^static uint64_t mglComputeTextureHash\b",
+    r"^static uint64_t mglComputeRenderStateHash\b",
+    # Word-boundary on the short names: without \b, …Hash matched …HashVAO /
+    # …HashScan and skipped the wrappers that read active_state fields.
+    r"^static uint64_t mglComputeVertexArrayStateHash\b",
+    r"^static uint64_t mglComputeVertexArrayStateHashVAO\b",
+    r"^static uint64_t mglComputeUniformBufferBindingHash\b",
+    r"^static uint64_t mglComputeDrawBufferBindingHash\b",
+    r"^static uint64_t mglComputeDrawBufferBindingHashScan\b",
 )
 
 # CHECK 3 baseline: fields currently outside key/hash builders.  Every entry

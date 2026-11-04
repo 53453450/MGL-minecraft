@@ -15,7 +15,12 @@
 #include "glm_limits.h"
 #include "mgl_draw_encode.h"
 #include "mgl_program_resource.h"
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_draw.h"
+#include "mgl_render_api_query.h"
+#include "mgl_render_api_lifecycle.h"
 #include "mgl_renderer_backend.h"
 #include "mgl_shader_abi.h"
 #include "mgl_shader_resource.h"
@@ -23,11 +28,14 @@
 #include "mgl_env_flag.h"
 
 #include <cstdint>
+#include <vector>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <cstddef>
 #include <CoreFoundation/CoreFoundation.h>
+#include "mgl_program_backend.h"
+#include "mgl_buffer_backend.h"
 
 extern "C" Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
 
@@ -156,13 +164,13 @@ extern "C" bool mglTessNativeInterfaceSupported(Program *tcs, Program *tes)
         return false;
     }
     return mglRenderNativeTESInterfaceSupported(
-               tes->modules[_TESS_EVALUATION_SHADER].mtl_function,
-               (uint64_t)tes->modules[_TESS_EVALUATION_SHADER].metallib_bytes,
+               mglProgramModuleView(tes, _TESS_EVALUATION_SHADER)->mtl_function,
+               (uint64_t)mglProgramModuleView(tes, _TESS_EVALUATION_SHADER)->metallib_bytes,
                (uint32_t)tes->tess_gen_point_mode,
                (uint32_t)tes->transform_feedback_varying_count,
                (uint32_t)tes->tess_gen_mode,
-               tcs ? tcs->modules[_TESS_CONTROL_SHADER].mtl_function : NULL,
-               tcs ? (uint64_t)tcs->modules[_TESS_CONTROL_SHADER].metallib_bytes
+               tcs ? mglProgramModuleView(tcs, _TESS_CONTROL_SHADER)->mtl_function : NULL,
+               tcs ? (uint64_t)mglProgramModuleView(tcs, _TESS_CONTROL_SHADER)->metallib_bytes
                    : 0u,
                tcs ? (uint32_t)tcs->tess_control_output_vertices : 0u) != 0;
 }
@@ -215,7 +223,7 @@ extern "C" bool mglTessPlanDrawPath(GLMContext ctx, GLenum mode, GLsizei count,
     out->has_tcs = tcs ? 1u : 0u;
     out->has_tes = tes ? 1u : 0u;
     out->air_tes =
-        tes && tes->modules[_TESS_EVALUATION_SHADER].metallib_bytes ? 1u : 0u;
+        tes && mglProgramModuleView(tes, _TESS_EVALUATION_SHADER)->metallib_bytes ? 1u : 0u;
     out->indexed = indexType != 0u ? 1u : 0u;
     out->native_ok =
         (mglTessNativeInterfaceSupported(tcs, tes) &&
@@ -256,7 +264,8 @@ extern "C" bool mglTessPlanDrawPath(GLMContext ctx, GLenum mode, GLsizei count,
             mglTessEvalUsesRenderVertex(tes),
             tes && tes->tess_eval_compute ? 1 : 0, out->indexed ? 1 : 0,
             mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER") ? 1 : 0,
-            rasterizer_discard, needs_partner_cull);
+            rasterizer_discard, needs_partner_cull,
+            mglTessNativeBlockedByGeometry(gs) ? 1 : 0);
     }
     return true;
 }
@@ -403,11 +412,15 @@ extern "C" bool mglTessComputeTCSCoreLayout(
         return false;
     }
     const uint32_t patchVertices = MAX(1u, contract->patch_vertices);
-    uint32_t patchCountTC = contract->vertex_count / patchVertices;
-    if (patchCountTC == 0u) {
-        patchCountTC = 1u;
+    /* AUDIT-054: one patch-count for output/patch/factor sizes. Prefer the
+     * contract's patch_count (draw/gather), fall back to vertex_count/pv. */
+    uint32_t patchCount = contract->patch_count;
+    if (patchCount == 0u) {
+        patchCount = contract->vertex_count / patchVertices;
     }
-    const uint32_t patchCount = MAX(1u, contract->patch_count);
+    if (patchCount == 0u) {
+        patchCount = 1u;
+    }
     const uint32_t instanceCount = MAX(1u, contract->instance_count);
     uint32_t tcsOutVertices = tcs->tess_control_output_vertices;
     if (tcsOutVertices == 0u) {
@@ -420,10 +433,21 @@ extern "C" bool mglTessComputeTCSCoreLayout(
     if (outputStride == 0u || patchStride == 0u) {
         return false;
     }
-    if ((uint64_t)patchCountTC > UINT64_MAX / tcsOutVertices ||
-        (uint64_t)patchCountTC * tcsOutVertices > UINT64_MAX / outputStride ||
+    if ((uint64_t)patchCount > UINT64_MAX / tcsOutVertices ||
+        (uint64_t)patchCount * tcsOutVertices > UINT64_MAX / outputStride ||
         (uint64_t)patchCount > UINT64_MAX / patchStride ||
         (uint64_t)patchCount > UINT64_MAX / MGL_AIR_TESS_FACTOR_RECORD_BYTES) {
+        return false;
+    }
+    const uint64_t per_inst_output =
+        (uint64_t)patchCount * tcsOutVertices * outputStride;
+    const uint64_t per_inst_patch = (uint64_t)patchCount * patchStride;
+    const uint64_t per_inst_factor =
+        (uint64_t)patchCount * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+    /* AUDIT-050: multi-instance TCS must size stores by instance_count. */
+    if (per_inst_output > UINT64_MAX / instanceCount ||
+        per_inst_patch > UINT64_MAX / instanceCount ||
+        per_inst_factor > UINT64_MAX / instanceCount) {
         return false;
     }
     *out = {};
@@ -433,11 +457,9 @@ extern "C" bool mglTessComputeTCSCoreLayout(
     out->tcs_out_vertices = tcsOutVertices;
     out->output_stride = outputStride;
     out->patch_stride = patchStride;
-    out->output_bytes =
-        (uint64_t)patchCountTC * tcsOutVertices * outputStride;
-    out->patch_out_bytes = (uint64_t)patchCountTC * patchStride;
-    out->factor_bytes =
-        (uint64_t)patchCount * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+    out->output_bytes = per_inst_output * instanceCount;
+    out->patch_out_bytes = per_inst_patch * instanceCount;
+    out->factor_bytes = per_inst_factor * instanceCount;
     return true;
 }
 
@@ -766,14 +788,16 @@ extern "C" void mglTessPlanRasterQuery(const Program *tes,
 
 extern "C" int mglTessSelectAirExec(int tes_vertex, int tes_compute, int indexed,
                                     int vertex_gate_on, int rasterizer_discard,
-                                    int needs_partner_cull)
+                                    int needs_partner_cull, int has_gs)
 {
     /* TES-vertex only sees its own gl_CullDistance. Isolines need both
      * endpoints (partner = vertexId^1) before discarding a segment, so
      * force the compute expansion + passthrough VS that already implements
-     * that rule. point_mode keeps TES-vertex (per-vertex own < 0). */
-    if (tes_vertex && vertex_gate_on && !indexed && !needs_partner_cull &&
-        !(rasterizer_discard && tes_compute)) {
+     * that rule. point_mode keeps TES-vertex (per-vertex own < 0) unless a
+     * following GS needs the compute→record handoff (SSO GS is a separate
+     * PO, so link-time tess_eval_render_vertex stays set). */
+    if (!has_gs && tes_vertex && vertex_gate_on && !indexed &&
+        !needs_partner_cull && !(rasterizer_discard && tes_compute)) {
         return MGL_TESS_EXEC_TES_VERTEX;
     }
     if (tes_compute) {
@@ -978,10 +1002,20 @@ extern "C" void mglTessPackXFBFieldFromCarrier(uint32_t gl_type, const void *src
     }
     if (gl_type == GL_UNSIGNED_INT || gl_type == GL_UNSIGNED_INT_VEC2 ||
         gl_type == GL_UNSIGNED_INT_VEC3 || gl_type == GL_UNSIGNED_INT_VEC4) {
+        /* uvecN rides a float carrier via bitcast (encodeFloatCarrier);
+         * reinterpret the bits.  Casting (uint32_t)f would round values
+         * above 2^24 (CTS structure_parameters_program_binary).  Scalar
+         * uint still uses UIToFP when the split-lane path is unavailable,
+         * so only vector types bitcast here. */
+        const int bitcast = (gl_type != GL_UNSIGNED_INT);
         for (uint32_t c = 0u; c < comps && c < 4u; c++) {
             float f = 0.f;
             memcpy(&f, in + c * 4u, sizeof(f));
-            const uint32_t uv = (uint32_t)f;
+            uint32_t uv;
+            if (bitcast)
+                memcpy(&uv, &f, sizeof(uv));
+            else
+                uv = (uint32_t)f;
             memcpy(out + c * 4u, &uv, sizeof(uv));
         }
         return;
@@ -1415,14 +1449,12 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
         return false;
     }
 
-    uint32_t *patchBases =
-        (uint32_t *)malloc((size_t)(spec->patch_count + 1u) * sizeof(uint32_t));
-    if (!patchBases) {
-        return false;
-    }
+    /* PERF-028: reuse TLS scratch for per-patch base table (hot tess path). */
+    static thread_local std::vector<uint32_t> s_tessPatchBasesScratch;
+    s_tessPatchBasesScratch.resize((size_t)spec->patch_count + 1u);
+    uint32_t *patchBases = s_tessPatchBasesScratch.data();
     if (!mglTessFillEvalPatchItemBases(tes, factor_bytes, spec->patch_count,
                                        patchBases)) {
-        free(patchBases);
         return false;
     }
     if (patchBases[spec->patch_count] > spec->items_per_instance) {
@@ -1436,12 +1468,10 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
         (uint64_t)spec->instance_count *
         (32u + (uint64_t)spec->patch_count * 16u);
     if (cap64 == 0u || cap64 > SIZE_MAX) {
-        free(patchBases);
         return false;
     }
     uint8_t *keep = (uint8_t *)malloc((size_t)cap64);
     if (!keep) {
-        free(patchBases);
         return false;
     }
     size_t used = 0u;
@@ -1455,7 +1485,6 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
                       (uint64_t)inst * spec->gl_in_instance_stride;
         if (!mglTessPlanAppendBuffer(plan, spec->gl_in_buffer, instGlInOffset,
                                      MGL_AIR_TESS_SLOT_TCS_STAGE_IN)) {
-            free(patchBases);
             free(keep);
             return false;
         }
@@ -1464,7 +1493,6 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
                                      spec->gather_buffer ? spec->gather_buffer
                                                          : spec->gl_in_buffer,
                                      0u, MGL_AIR_TESS_SLOT_GATHER_INDEX)) {
-            free(patchBases);
             free(keep);
             return false;
         }
@@ -1475,7 +1503,6 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
         if (!mglTessPlanAppendBytes(plan, keep, &used, (size_t)cap64,
                                     gatherParams, sizeof(gatherParams),
                                     MGL_AIR_TESS_SLOT_GATHER_PARAMS)) {
-            free(patchBases);
             free(keep);
             return false;
         }
@@ -1497,13 +1524,11 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
                                         MGL_AIR_TESS_SLOT_INDIRECT) ||
                 !mglTessPlanAppendDirectDispatch(plan, (items + 63u) / 64u,
                                                  64u)) {
-                free(patchBases);
                 free(keep);
                 return false;
             }
         }
     }
-    free(patchBases);
     *out_keep_alive = keep;
     return true;
 }
@@ -1875,10 +1900,6 @@ extern "C" void mglTessEncodeCaptureIndexed(
     plan.base_instance = base_instance;
     (void)mglRenderEncodeDrawForRenderEncoderOwner(reinterpret_cast<MGLRenderEncoderOwner*>(encoder_owner), &plan, NULL,
                                                    0);
-}
-
-extern "C" int mglTessGenModeIsIsolines(uint32_t tess_gen_mode) {
-    return tess_gen_mode == GL_ISOLINES ? 1 : 0;
 }
 
 extern "C" int mglTessWritePointSize(uint32_t tess_gen_point_mode) {
@@ -2264,8 +2285,16 @@ extern "C" int mglTessMultiInstanceTCSReuseWarn(int from_tcs,
 extern "C" int mglTessMultiInstanceTCSReuseIsError(int from_tcs,
                                                    int32_t instance_count)
 {
-    return mglTessMultiInstanceTCSReuseWarn(from_tcs, instance_count) &&
-           mgl_env_flag_enabled("MGL_TESS_MULTI_INSTANCE_ERROR");
+    /* AUDIT-050: default hard-fail. Opt out with MGL_TESS_MULTI_INSTANCE_ERROR=0
+     * only for experiments that intentionally reuse instance-0 TCS outs. */
+    if (!mglTessMultiInstanceTCSReuseWarn(from_tcs, instance_count)) {
+        return 0;
+    }
+    const char *v = getenv("MGL_TESS_MULTI_INSTANCE_ERROR");
+    if (v && v[0] == '0' && v[1] == '\0') {
+        return 0;
+    }
+    return 1;
 }
 
 extern "C" int mglTessEvalIndexedGatherReady(int indexed, int has_gather,
@@ -2414,6 +2443,35 @@ extern "C" bool mglXfbVsOnlyEligible(const Program *program)
            program->transform_feedback_varying_count > 0;
 }
 
+/* GLSL matrix typing: mat<C>x<R> is C columns of R rows; the square and
+ * vec-matrix spellings are the same enum family.  Returns false for anything
+ * that is not a matrix, which keeps the caller on the contiguous path. */
+static bool mglXfbMatrixShape(uint32_t gl_type, uint32_t *columns,
+                              uint32_t *rows)
+{
+    switch (gl_type) {
+    case GL_FLOAT_MAT2: *columns = 2; *rows = 2; return true;
+    case GL_FLOAT_MAT3: *columns = 3; *rows = 3; return true;
+    case GL_FLOAT_MAT4: *columns = 4; *rows = 4; return true;
+    case GL_FLOAT_MAT2x3: *columns = 2; *rows = 3; return true;
+    case GL_FLOAT_MAT2x4: *columns = 2; *rows = 4; return true;
+    case GL_FLOAT_MAT3x2: *columns = 3; *rows = 2; return true;
+    case GL_FLOAT_MAT3x4: *columns = 3; *rows = 4; return true;
+    case GL_FLOAT_MAT4x2: *columns = 4; *rows = 2; return true;
+    case GL_FLOAT_MAT4x3: *columns = 4; *rows = 3; return true;
+    case GL_DOUBLE_MAT2: *columns = 2; *rows = 2; return true;
+    case GL_DOUBLE_MAT3: *columns = 3; *rows = 3; return true;
+    case GL_DOUBLE_MAT4: *columns = 4; *rows = 4; return true;
+    case GL_DOUBLE_MAT2x3: *columns = 2; *rows = 3; return true;
+    case GL_DOUBLE_MAT2x4: *columns = 2; *rows = 4; return true;
+    case GL_DOUBLE_MAT3x2: *columns = 3; *rows = 2; return true;
+    case GL_DOUBLE_MAT3x4: *columns = 3; *rows = 4; return true;
+    case GL_DOUBLE_MAT4x2: *columns = 4; *rows = 2; return true;
+    case GL_DOUBLE_MAT4x3: *columns = 4; *rows = 3; return true;
+    default: return false;
+    }
+}
+
 extern "C" bool mglXfbPlanVsCapture(const Program *program, MGLXfbVsPlan *out)
 {
     if (!out || !mglXfbVsOnlyEligible(program)) {
@@ -2441,8 +2499,7 @@ extern "C" bool mglXfbPlanVsCapture(const Program *program, MGLXfbVsPlan *out)
         field->buffer_index = layout->buffer_index;
         field->component_offset = layout->component_offset;
         field->component_count = layout->component_count;
-        if (layout->buffer_index >= buffer_count || layout->stream > 0 ||
-            layout->component_count > 4u) {
+        if (layout->buffer_index >= buffer_count || layout->stream > 0) {
             return false;
         }
         const char *name = program->transform_feedback_varying_names[varying];
@@ -2493,6 +2550,31 @@ extern "C" bool mglXfbPlanVsCapture(const Program *program, MGLXfbVsPlan *out)
                 MGL_AIR_PER_VERTEX_STRIDE + record_slot * 16u;
             field->gl_type = (uint32_t)output->gl_type;
             field->has_source = 1u;
+        }
+        {
+            /* A matrix varying is several locations wide: one 16-byte record
+             * slot per column.  component_count still reports the total the
+             * buffer must reserve, but the copy walks columns. */
+            uint32_t cols = 0u, rows = 0u;
+            if (mglXfbMatrixShape(field->gl_type, &cols, &rows)) {
+                if (cols == 0u || rows == 0u ||
+                    cols * rows != layout->component_count) {
+                    return false;
+                }
+                field->matrix_columns = (uint8_t)cols;
+                field->matrix_rows = (uint8_t)rows;
+            } else if (layout->component_count > 4u) {
+                return false;
+            }
+        }
+        if (getenv("MGL_TRACE_XFB")) {
+            fprintf(stderr,
+                    "MGL XFB FIELD '%s' type=0x%x comps=%u srcOff=%u cols=%u rows=%u\n",
+                    name ? name : "?", (unsigned)field->gl_type,
+                    (unsigned)field->component_count,
+                    (unsigned)field->source_offset,
+                    (unsigned)field->matrix_columns,
+                    (unsigned)field->matrix_rows);
         }
         const uint32_t comp_bytes =
             (field->gl_type == GL_DOUBLE || field->gl_type == GL_DOUBLE_VEC2 ||
@@ -2597,10 +2679,34 @@ extern "C" uint32_t mglXfbPackVsRecords(const MGLXfbVsPlan *plan, uint32_t buffe
                  field->gl_type == GL_DOUBLE_VEC4)
                     ? (uint32_t)sizeof(double)
                     : (uint32_t)sizeof(uint32_t);
+            if (field->matrix_columns > 1u) {
+                /* Column-major record: rows floats per 16-byte slot. */
+                const uint32_t row_bytes =
+                    (uint32_t)field->matrix_rows * dst_elem;
+                for (uint32_t c = 0u; c < field->matrix_columns; c++) {
+                    const uint32_t dst_off =
+                        (field->component_offset +
+                         c * (uint32_t)field->matrix_rows) *
+                        dst_elem;
+                    /* AUDIT-041: do not write past the destination record. */
+                    if (dst_off >= dst_stride ||
+                        row_bytes > dst_stride - dst_off) {
+                        continue;
+                    }
+                    memcpy(dst_record + dst_off,
+                           src_record + field->source_offset + c * 16u,
+                           row_bytes);
+                }
+                continue;
+            }
             const uint32_t field_bytes = field->component_count * dst_elem;
+            const uint32_t dst_off = field->component_offset * dst_elem;
+            if (dst_off >= dst_stride || field_bytes > dst_stride - dst_off) {
+                continue;
+            }
             mglTessPackXFBFieldFromCarrier(
                 field->gl_type, src_record + field->source_offset,
-                dst_record + field->component_offset * dst_elem, field_bytes);
+                dst_record + dst_off, field_bytes);
         }
     }
     return record_count;
@@ -2671,7 +2777,7 @@ extern "C" void *mglTessRunVertexCaptureArray(
     }
     Program *vertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     if (!vertexProgram || !ops->bind_mtl_program(ops->renderer, vertexProgram) ||
-        !vertexProgram->modules[_VERTEX_SHADER].mtl_tess_capture_function) {
+        !mglProgramModuleView(vertexProgram, _VERTEX_SHADER)->mtl_tess_capture_function) {
         return nullptr;
     }
     MGLTessVertexCapturePlan plan = {};
@@ -2726,7 +2832,7 @@ extern "C" void *mglTessRunVertexCaptureIndexed(
     }
     Program *vertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     if (!vertexProgram || !ops->bind_mtl_program(ops->renderer, vertexProgram) ||
-        !vertexProgram->modules[_VERTEX_SHADER].mtl_tess_capture_function) {
+        !mglProgramModuleView(vertexProgram, _VERTEX_SHADER)->mtl_tess_capture_function) {
         return nullptr;
     }
     MGLTessVertexCapturePlan plan = {};
@@ -2839,10 +2945,15 @@ extern "C" bool mglGeometryGatherIndices(const uint8_t *indexBytes,
         return false;
     }
     const uint32_t elemBytes = mglRenderGLIndexElementSize((uint64_t)indexType);
+    if (elemBytes == 0u || count <= 0 ||
+        (uint64_t)elemBytes > UINT64_MAX / (uint64_t)(uint32_t)count) {
+        return false;
+    }
+    const uint64_t bytesLen = (uint64_t)elemBytes * (uint64_t)(uint32_t)count;
     MGLRenderGeometryGatherResult result = {0};
     if (mglRenderGeometryGatherIndices(
-            indexBytes, elemBytes, (uint32_t)count, restartEnabled ? 1 : 0,
-            restartIndex, inputVertices, &result) != 0) {
+            indexBytes, elemBytes, (uint32_t)count, bytesLen,
+            restartEnabled ? 1 : 0, restartIndex, inputVertices, &result) != 0) {
         return false;
     }
     /* DrawElements*BaseVertex: Metal [[vertex_id]] / capture slots are
@@ -2992,12 +3103,12 @@ static int mglXfbFinishVsOnlyCapture(GLMContext ctx, GLenum mode, GLsizei count,
             MGLRenderBufferInfo existingInfo = {0};
             const bool shadowNewer = slot->buf->cpu_shadow_pending ||
                 (slot->buf->data.dirty_bits & DIRTY_BUFFER_DATA);
-            if (!shadowNewer && slot->buf->data.mtl_data &&
-                mglRenderGetBufferInfo(slot->buf->data.mtl_data,
+            if (!shadowNewer && mglBufferMtl(slot->buf) &&
+                mglRenderGetBufferInfo(mglBufferMtl(slot->buf),
                                        &existingInfo) == 0 &&
                 destinationOffset + writtenBytes <= existingInfo.length) {
                 existing = (const uint8_t *)buffer_contents(
-                    slot->buf->data.mtl_data);
+                    mglBufferMtl(slot->buf));
             }
             if (existing) {
                 memcpy(packed, existing + destinationOffset, writtenBytes);
@@ -3015,13 +3126,13 @@ static int mglXfbFinishVsOnlyCapture(GLMContext ctx, GLenum mode, GLsizei count,
                             plan->buffer_stride[buffer]);
         mglRendererBufferSubData(ctx, slot->buf, destinationOffset, writtenBytes,
                                  packed);
-        if (slot->buf->data.mtl_data) {
+        if (mglBufferMtl(slot->buf)) {
             MGLRenderBufferInfo liveInfo = {0};
-            if (mglRenderGetBufferInfo(slot->buf->data.mtl_data, &liveInfo) ==
+            if (mglRenderGetBufferInfo(mglBufferMtl(slot->buf), &liveInfo) ==
                     0 &&
                 destinationOffset + writtenBytes <= liveInfo.length) {
                 uint8_t *liveBase =
-                    (uint8_t *)buffer_contents(slot->buf->data.mtl_data);
+                    (uint8_t *)buffer_contents(mglBufferMtl(slot->buf));
                 if (liveBase) {
                     memcpy(liveBase + destinationOffset, packed, writtenBytes);
                 }
@@ -3307,8 +3418,8 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
         int sparseCompactOk = 0;
         Buffer *ebo = getElementBuffer(ctx);
         if (ebo && ops->process_buffer(ops->renderer, ebo) &&
-            ebo->data.mtl_data) {
-            void *eboMetal = ebo->data.mtl_data;
+            mglBufferMtl(ebo)) {
+            void *eboMetal = mglBufferMtl(ebo);
             const uint64_t indexOffsetBytes = (uint64_t)(uintptr_t)indices;
             const uint8_t *indexBytes = mglElementIndexSourceForDraw(
                 ebo, eboMetal, indexType, indexOffsetBytes, count);
@@ -3388,10 +3499,10 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
     } else if (path.capture == MGL_TESS_CAPTURE_INDEXED_GATHER) {
         Buffer *ebo = getElementBuffer(ctx);
         if (!ebo || !ops->process_buffer(ops->renderer, ebo) ||
-            !ebo->data.mtl_data) {
+            !mglBufferMtl(ebo)) {
             nativeTES = 0;
         } else {
-            void *eboMetal = ebo->data.mtl_data;
+            void *eboMetal = mglBufferMtl(ebo);
             const uint64_t indexOffsetBytes = (uint64_t)(uintptr_t)indices;
             const uint8_t *indexBytes = mglElementIndexSourceForDraw(
                 ebo, eboMetal, indexType, indexOffsetBytes, count);
@@ -3605,7 +3716,8 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
             tesProgram && tesProgram->tess_eval_compute ? 1 : 0,
             path.indexed ? 1 : 0,
             mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER") ? 1 : 0,
-            rasterizer_discard, needs_partner_cull);
+            rasterizer_discard, needs_partner_cull,
+            mglTessNativeBlockedByGeometry(gsProgram) ? 1 : 0);
         if (air_exec == MGL_TESS_EXEC_TES_VERTEX) {
             const int dispatched = ops->dispatch_air_tes_vertex(
                 ops->renderer, ctx, tesProgram, &contract, patchCount,

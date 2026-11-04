@@ -16,17 +16,10 @@
 #define MGL_RENDERER_PORTS_H
 
 #include "glm_context.h"           /* GLMContext */
-#include "mgl_types_framebuffer.h" /* FBOAttachment */
-#include "mgl_types_texture.h"     /* Texture */
-#include "mgl_types_buffer.h"      /* Buffer */
-#include "mgl_trace_strategy.h"    /* MGLFragmentTextureTraceBinding */
-#include "mgl_batching_state.h"     /* MGLBatchingState */
-#include "mgl_renderer_core_state.h" /* MGLRendererCoreState */
-#include "mgl_command_state.h"      /* MGLCommandState */
-#include "mgl_pipeline_cache_state.h" /* MGLPipelineCacheState */
-#include "mgl_gpu_recovery_state.h"   /* MGLGPURecoveryState */
-#include "mgl_tessellation_state.h"   /* MGLTessellationState, MGLGeometryState */
 #include "mgl_region_value.h"       /* MGLRegionValue / MGLSizeValue / MGLOriginValue (log 149) */
+#include "mgl_renderer_attachment.h" /* AttachmentTextureFor (narrow) */
+#include "mgl_ports_batch_flush.h"   /* flush / buffer / MDI (narrow) */
+#include "mgl_ports_present.h"       /* drawable / shell / temporaries (narrow) */
 
 /* Forward declaration: the blend record lives in mgl_render.h, which this
  * header does not need to pull in. */
@@ -39,71 +32,8 @@ struct MGLRenderPipelineDescriptorState;
 extern "C" {
 #endif
 
-/* Texture an attachment renders into: the renderbuffer's texture, or the
- * texture object (looked up and cached on first use).  NULL when the
- * attachment carries none -- the C port of
- * -[MGLRenderer framebufferAttachmentTexture:]. */
-Texture *mglRendererAttachmentTextureFor(GLMContext ctx, FBOAttachment *att);
-
 /* ---- batch / draw ports ------------------------------------------------
- * Thin wrappers over the renderer entry points the batch replay path drives.
- * They live in one shim TU (MGLPlatformRendererShell.m) so the Objective-C
- * surface C talks to stays in a single place, and each one moves into its
- * implementation file as that file is converted. */
-
-/* MDI argument scratch buffer; *offset_out receives the write offset.
- * C, not a port: the render pass manager's scratch owner lives in the command
- * state (areas.command->mdiArgsScratchOwner) and the allocator itself was
- * already C++ (mglRenderAllocateMDIScratch), so the whole body moved to
- * mgl_renderer_ports.c. */
-void *mglRendererMdiScratchBuffer(void *renderer, uint64_t length,
-                                  uint64_t *offset_out);
-
-/* The render pass manager's command state (render encoder owner, render-pass
- * state owner, trace identity, FBO-match cache).  C, not a port: it is one
- * field of the state areas. */
-const MGLCommandState *mglRendererCommandStateFor(void *renderer);
-
-/* C helper defined in MGLRenderer.m (the Objective-C side keeps its own
- * declaration in MGLRenderer+Draw_Private.h): the batch drivers upload a dirty
- * base-buffer list straight through it. */
-/* single source: mglRenderUpdateDirtyBaseBufferList (C TUs and the ObjC private headers both
- * resolve it from here; the private copies were duplicates) */
-bool mglRenderUpdateDirtyBaseBufferList(GLMContext ctx,
-                                        BufferMapList *buffer_map_list,
-                                        const char *where);
-
-/* Element (index) buffer for a command; fills the GL buffer and, when it has
- * one, the Metal buffer.  0 when the command cannot be resolved.  C, not a
- * port: the bodies only ever needed C helpers, so all three moved here. */
-int mglRendererResolveElementBufferForDraw(void *renderer, const char *label,
-                                           GLMContext ctx, Buffer **gl_out,
-                                           void **mtl_out);
-int mglRendererResolveElementBufferForCommand(void *renderer,
-                                              const void *command,
-                                              const char *label, GLMContext ctx,
-                                              Buffer **gl_out, void **mtl_out);
-int mglRendererResolveElementBuffer(void *renderer, Buffer *gl_element_buffer,
-                                    const char *label, GLMContext ctx,
-                                    Buffer **gl_out, void **mtl_out);
-
-/* Renderer state processing (1 = a draw command). */
-
-/* Vertex / element / indirect buffer upload for a draw's buffer object: bind
- * the Metal storage when it is missing, then push dirty data.  C, not a port
- * (only the lock-taking bind stays one). */
-int mglRendererProcessBuffer(void *renderer, Buffer *buffer);
-
-/* Create an indirect command buffer (indexed when `indexed`), returned with a
- * +1 reference the caller owns and releases.  *failed_out is 1 when Metal
- * raised; the caller then traces its own fallback reason. */
-void *mglRendererCreateIndirectCommandBuffer(void *renderer, int indexed,
-                                                 uint64_t count,
-                                                 int *failed_out);
-
-/* The @try/@finally frame around one flush (shim): it must tear the replay
- * workspace down even when a draw raises, which C cannot express. */
-void mglRendererFlushDrawBufferLocked(void *renderer, GLMContext ctx);
+ * Declarations live in mgl_ports_batch_flush.h (Phase 5 split). */
 
 /* ---- batch flush / replay-workspace ports ---------------------------------
  * Renderer state the C flush driver reads or writes: the replay-workspace
@@ -150,11 +80,8 @@ void mglRendererFlushDrawBufferLocked(void *renderer, GLMContext ctx);
 /* The binding-state owner (the object the dyn-bind plans write bindings
  * through) is reached as `areas.binding_state_owner`, not through a port. */
 
-/* Buffer staging for the dyn-vertex path.  Both halves are C now: the dirty
- * base-buffer list goes to mglRenderUpdateDirtyBaseBufferList(ctx, list, where)
- * and the Metal allocation bind to mglRendererBindMTLBuffer (METAL_LOCK() is
- * only MGL_ASSERT_GL_THREAD(), so there is no lock to keep in Objective-C). */
-void mglRendererBindMTLBuffer(void *renderer, Buffer *buffer);
+/* Buffer / sampler / MDI: mgl_ports_batch_flush.h.
+ * Present / shell / temporaries: mgl_ports_present.h. */
 
 /* Binding-state push for the mapper fallback path. */
 /* mglRendererMapBuffersToMTLPort is gone: the buffer mapping is the C function
@@ -165,254 +92,14 @@ void mglRendererBindMTLBuffer(void *renderer, Buffer *buffer);
  * -restoreRenderEncoderAfterTextureUploadForDraw: is C now
  * (mglRenderPassRestoreRenderEncoderAfterTextureUpload). */
 
-/* Sampled-resource lookup for the dyn-texture plan. */
+#include "mgl_renderer_state_areas.h"
 
-/* Sampler state for a snapshot key (unretained; the backend cache owns it).
- * C, not a port: the body moved here once the backend handle came from the
- * state areas. */
-void *mglRendererSamplerStateForSnapshotKey(void *renderer, const void *key);
+/* StateAreas / StateView / PipelineCachePort / setters: see mgl_renderer_state_areas.h (Phase 5). */
 
-/* === Renderer state areas (the "one struct, one port" pattern) ===
- * States whose records are plain C structs are handed out as pointers, so C
- * drivers read and write their fields directly instead of going through one
- * port per field.  Fetched explicitly (caller-provided storage, no hidden
- * static), and cheap enough to take once per driver call.
- *
- * `binding_state_owner` is the ADDRESS of the owner slot: the value can change
- * while a driver runs, so dereference it at the point of use. */
-typedef struct MGLRendererStateAreas {
-    MGLRendererCoreState *core;
-    /* The backend handle and the owning context: blit/texture code needs both
-     * (cache lookups and error dispatch) and they are plain C pointers. */
-    void *backend;
-    /* The render pass manager object itself (the .m's `_renderPassManager`); the
-     * copy-back flush needs it whole for the pass-manager entry points, not just
-     * its `state` (log 159). */
-    void *render_pass_manager;
-    GLMContext ctx;
-    MGLBatchingState *batching;
-    /* Mutable: the trace-replay identity is written by the flush driver. */
-    MGLCommandState *command;
-    const MGLPipelineCacheState *pipeline_cache;
-    void **binding_state_owner;
-    MGLFragmentTextureTraceBinding *fragment_trace_bindings;
-    /* Pipeline-cache object (the Objective-C cache instance) and the pieces of
-     * the tessellation state the vertex-descriptor plan needs.  Both are plain
-     * values C can hold, so they travel in the areas instead of costing a port
-     * per field; the shell fills them. */
-    void *pipeline_cache_object;
-    /* ADDRESS of the renderer's command-recovery owner slot (it can be swapped
-     * while a recovery runs, so dereference it at the point of use, like
-     * binding_state_owner). */
-    void **gpu_recovery_command_owner;
-    /* Sets one attachment's blend factors through the cache's own setter.
-     * Returns 1 on success. */
-    int (*pipeline_cache_set_blend)(
-        void *pipeline_cache_object, uint32_t index,
-        const struct MGLRenderPipelineBlendState_t *blend);
-    /* Reads one attachment's blend state back out of the cache's C++ owner
-     * (the setter's counterpart).  Returns 1 on success. */
-    int (*pipeline_cache_blend_state)(
-        void *pipeline_cache_object, uint32_t index,
-        struct MGLRenderPipelineBlendState_t *blend);
-    /* Drops the cache's active pipeline state (the Objective-C method also
-     * logs; the shell keeps that in the forwarder). */
-    void (*pipeline_cache_invalidate)(void *pipeline_cache_object);
-    /* The renderer's live GPU-recovery record (the PSO build path writes the
-     * interface-mismatch and quarantine fields). */
-    MGLGPURecoveryState *gpu_recovery;
-    /* Pipeline-cache value-state bridges used by the PSO build path. */
-    int (*pipeline_cache_descriptor_state_for_words)(
-        void *pipeline_cache_object, const uint64_t *words,
-        MGLRenderPipelineDescriptorState *state_out);
-    int (*pipeline_cache_create_pso)(
-        void *pipeline_cache_object,
-        const MGLRenderPipelineDescriptorState *state, void *vertex_function,
-        void *fragment_function, void **pipeline_out, char *error_message,
-        size_t error_capacity);
-    void (*pipeline_cache_store_pipeline)(void *pipeline_cache_object,
-                                          void *pipeline, void *vertex_function,
-                                          void *fragment_function,
-                                          const uint64_t *words);
-    void (*pipeline_cache_store_descriptor_state)(
-        void *pipeline_cache_object,
-        const MGLRenderPipelineDescriptorState *state, const uint64_t *words);
-    /* Two-level cache lookup (the .m's
-     * -lookupPipelineForWords:pipeline:vertexFunction:fragmentFunction:): fills
-     * the three borrowed handles and returns 1 when the PSO cache had an entry.
-     * The handles stay owned by the cache, exactly like the store/activate
-     * bridges above. */
-    int (*pipeline_cache_lookup_pipeline)(
-        void *pipeline_cache_object, const uint64_t *words,
-        void **pipeline_out, void **vertex_function_out,
-        void **fragment_function_out);
-    /* Reads (or builds) one depth-stencil state from value state, the setter's
-     * counterpart for the encoder-state block.  `out` receives a borrowed
-     * handle; NULL when the cache has no state for it. */
-    void (*pipeline_cache_depth_stencil_state_for_value_state)(
-        void *pipeline_cache_object,
-        const struct MGLRenderDepthStencilDescriptorState_t *state,
-        void **out);
-    void (*pipeline_cache_activate)(void *pipeline_cache_object, void *pipeline,
-                                    uint32_t color0_format,
-                                    uint32_t depth_format,
-                                    uint32_t stencil_format,
-                                    uint32_t program_name,
-                                    void *vertex_function,
-                                    void *fragment_function);
-    int32_t tess_native_tes_active;
-    void *tess_native_tes_program;
-    /* The tessellation and geometry records themselves (the C draw host port
-     * reads and writes their fields; the two scalars above are the older
-     * single-field shortcut and stay for the callers that only need those). */
-    MGLTessellationState *tessellation;
-    MGLGeometryState *geometry;
-    uint32_t tess_tcs_output_stride;
-    uint32_t tess_cull_capture_first_instance;
-    /* The current drawable (trace logging only) and the query-state owner
-     * pointer the render encoder attaches visibility results from. */
-    void *drawable;
-    void *query_state_owner;
-    /* Snapshots of fields that live in Objective-C-only records: the GPU
-     * recovery quarantine gate and the emulated-MS forced sample id.  Both are
-     * read-only at the point of use. */
-    uint32_t gpu_interface_mismatch_blocked_program;
-    double gpu_interface_mismatch_blocked_until;
-    int32_t mssample_forced_id;
-    /* The CAMetalLayer (trace/present checks) and the swap interval: both are
-     * stable for the duration of a call, so a snapshot is enough. */
-    void *layer;
-    int32_t swap_interval;
-    uint32_t tess_cull_capture_instance_stride;
-} MGLRendererStateAreas;
-
-void mglRendererFillStateAreas(void *renderer, MGLRendererStateAreas *areas_out);
-
-/* The Metal layer facts the encoder-state block needs, in one call: whether
- * there is a layer, the drawable size it reports, and its frame size.  Both
- * sizes come back as plain C values so the caller never sees CGSize/NSRect
- * (log 192). */
-typedef struct MGLRendererLayerMetricsValue_t {
-    double drawable_width;
-    double drawable_height;
-    double frame_width;
-    double frame_height;
-} MGLRendererLayerMetricsValue;
-
-/* Fills `metrics_out`; returns 1 when the renderer has a Metal layer. */
-int mglRendererLayerMetrics(void *renderer,
-                                MGLRendererLayerMetricsValue *metrics_out);
-
-/* Make sure the current command buffer is writable (rotating it when it was
- * already committed).  A port: the rotation runs -newCommandBufferLocked /
- * -endRenderEncodingLocked, which are Objective-C render-pass methods. */
-/* mglRendererEnsureWritableCommandBufferPort is gone (log 191):
- * -ensureWritableCommandBuffer: was METAL_LOCK +
- * mglRenderPassEnsureWritableCommandBufferLocked, so all fifteen callers link
- * to that C entry directly. */
-
-/* ---- compute / tessellation host entries ---------------------------------
- * The C compute and tessellation binders need the renderer's program, encoder
- * and stage copy-back plumbing.  Those bodies still live in MGLRenderer.m and
- * MGLRenderer+RenderPass.m, so they arrive through these entries until those
- * two files are converted; they are thin forwards, no state of their own.
- *
- * OWNERSHIP: mglRendererIsolatedStageBindingBufferPort returns a +1 buffer the
- * caller releases with mglSafeReleaseMetalObj; the sampler entry returns a
- * BORROWED sampler (the renderer or the backend cache owns it). */
-/* Assign the renderer's context ivar (the Objective-C compute entry points did
- * `ctx = glm_ctx;` before dispatching; the port-wrapped methods downstream read
- * that ivar through the state areas). */
-void mglPlatformShellSetContext(void *renderer, GLMContext glm_ctx);
-
-/* Fresh writing command buffer of the shell (the C entry mgl_ms_sample_loop.c
- * declared locally until now). */
-int mglPlatformShellNewCommandBuffer(void *renderer);
-
-/* mglRendererBindMTLProgramPort is gone (log 193): -bindMTLProgram: is C now
- * (mglRenderPassBindMTLProgram). */
-/* mglRendererEndRenderEncodingPort is gone (log 191): -endRenderEncoding was
- * METAL_LOCK + mglRendererEndRenderEncodingLocked, so every C caller links to
- * that C entry directly. */
-
-/* the Clear*CopyBack port(s) are gone: those methods are C now
- * (mgl_stage_copy_back.h, log 158). */
-/* the Clear*CopyBack port(s) are gone: those methods are C now
- * (mgl_stage_copy_back.h, log 158). */
-/* The stage copy-back Record and Flush ports are gone: those methods are C
- * now (mgl_stage_copy_back.h, log 159). */
-/* The stage copy-back Record and Flush ports are gone: those methods are C
- * now (mgl_stage_copy_back.h, log 159). */
-/* mglRendererIsolatedStageBindingBufferPort is gone (log 201):
- * -isolatedStageBindingBufferForMap:… is C now (mglBufferIsolatedStageBinding
- * in mgl_buffer_map.h). */
-/* mglRendererMaterializeSampledSamplerPort is gone: the sampler materialize
- * leaf is C now (mglSampledSamplerMaterialize, mgl_sampled_sampler.h) and its
- * callers link straight to it (P0-1, log 151). */
-
-/* === draw / tessellation host entries (phase 2) ==========================
- * The remaining calls mgl_draw_metal_port.m makes into renderer methods, so
- * that file can finish converting.  Thin forwards; retirement follows their
- * targets in MGLRenderer+RenderPass.m / +Tessellation.m / +BindingState.m. */
-/* mglRendererFlushCommandBufferPort is gone (log 193): -flushCommandBuffer: is C
- * now (mglRenderPassFlushCommandBuffer). */
-/* The two render-pass close/readback ports are gone (log 191): the leaves are C
- * now (mglRenderPassSynchronizeForTextureReadback /
- * mglRenderPassEndIfFramebufferChangedForNonDraw, mgl_render_pass_sync_ops.h). */
-/* Drawable access for the blitFramebuffer attachment resolve (P0-1, log 146).
- * `_drawable` is the `self.drawable` property: next_drawable runs
- * -mglNextDrawable (which assigns the property itself), and drawable_texture
- * is its `.texture` — NULL when there is no drawable, so one NULL check covers
- * both `!_drawable` and `![self mglDrawableTexture]`. */
-void mglRendererNextDrawable(void *renderer);
-void *mglRendererDrawableTexture(void *renderer);
-int mglRendererEnsureLayerDrawableSizeAtLeastWidth(void *renderer,
-                                                       size_t required_width,
-                                                       size_t required_height,
-                                                       const char *reason);
-/* copyTexSubImage read-back / upload bridges (P0-1, log 149). */
-/* mglRendererUpdateCurrentRenderEncoderPort is gone (log 192): both encoder
- * state blocks are C now (mglRenderPassUpdateCurrentRenderEncoder /
- * mglRenderPassUpdateViewportAndScissorLocked, mgl_render_pass_sync_ops.h). */
-/* mglRendererSyncRenderPassStateForContextPort is gone (log 191): the sync unit
- * is C now (mglRenderPassSyncRenderPassStateForContext). */
-/* mglRendererSyncPipelineStateWithDeferredBufferMapPort is gone (log 189): the
- * Pipeline Sync domain is C now (mglRenderPassSyncPipelineState in
- * mgl_pso_build_ops.h), so its only caller links straight to that entry.  One
- * fewer port. */
-
-/* Sampled-texture readback trace.  The target method takes two NSStrings, so
- * the port takes C strings and the shell makes the NSStrings (P0-1, log 155). */
-/* mglRendererTraceSampledTextureReadbackPort is gone (log 199): the method is C
- * now (mglTextureTraceSampledReadback) and takes the C strings directly. */
-
-/* mglRendererCurrentRenderPassUsesTexturePort is gone (log 191): the predicate
- * is C now (mglRenderPassCurrentRenderPassUsesTexture). */
-
-/* mglRendererCopyTextureUploadWithDedicatedCommandBufferPort is gone (log 191):
- * its Objective-C target was already C
- * (mglTextureCopyUploadWithDedicatedCommandBuffer, mgl_texture_upload_ops.h),
- * but the port and its single caller had been left behind -- an
- * unrecognized-selector landmine.  The caller links to the C entry now. */
-/* mglRendererEnsureRasterEncoderForDrawPort is gone: its target is C now
- * (mglRenderPassEnsureRasterEncoderForDraw, log 169). */
-/* mglRendererPrepareEmulatedIndirectCPUReadPort is gone (log 193): the method is
- * C now (mglRenderPassPrepareEmulatedIndirectCPURead). */
-/* The TES-vertex passthrough function is still an Objective-C method in
- * MGLRenderer+RenderPass.m; this port retires with it.  Added by log 128. */
-
-
-/* GPU capture (the MGLPlatformRendererShell class owns the Metal capture
- * session): start reads MGL_GPU_CAPTURE, stop is unconditional. */
-void mglPlatformShellGpuCaptureStart(void *renderer);
-void mglPlatformShellGpuCaptureStop(void *renderer);
-
-/* Keep-alive set for the temporaries a binding plan borrows (the Objective-C
- * side used an NSMutableArray).  Create returns +1; add retains the object for
- * the set's lifetime; release drops the whole set. */
-void *mglRendererTemporariesCreate(void);
-void mglRendererTemporariesAdd(void *temporaries, void *object);
-void mglRendererTemporariesRelease(void *temporaries);
+/* mglRendererEnsureWritableCommandBufferPort is gone (log 191). */
+/* mglRendererBindMTLProgramPort / EndRenderEncodingPort gone (log 193/191). */
+/* stage copy-back / isolated buffer / sampled sampler ports gone (log 158–201). */
+/* flush / readback / drawable sync ports gone (log 189–193); see pass_public. */
 
 /* The pipeline cache's state record (active pipeline handle, pipeline program
  * name, formats).  C readers use the fields directly. */

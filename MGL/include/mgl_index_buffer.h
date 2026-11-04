@@ -92,6 +92,18 @@ int mglRenderComputeIndexByteOffset(uint64_t base_byte_offset,
 /* Scans `count` indices of `indexBytes` (type `indexType`), skipping entries
  * equal to `restartIndex` when `primitiveRestartEnabled` is true, and returns
  * the min/max index values via out params.  Returns false on invalid args. */
+/* Element width of an index type (unsigned byte / short / int), 0 when the
+ * type is not an index type -- callers rely on 0 to reject bad input. */
+static inline uint32_t mglIndexTypeElementBytes(uint32_t index_type)
+{
+    switch (mglVertexFetchKindForGLType(index_type)) {
+        case MGL_VFETCH_KIND_U8: return 1u;
+        case MGL_VFETCH_KIND_U16: return 2u;
+        case MGL_VFETCH_KIND_U32: return 4u;
+        default: return 0u;
+    }
+}
+
 static inline bool mglScanIndexRangeIgnoringRestart(const uint8_t *indexBytes,
                                                     GLenum indexType,
                                                     GLsizei count,
@@ -235,40 +247,68 @@ MGLIndexMetalHandle mglNewAdjacencyArrayIndexBuffer(MGLIndexMetalHandle device,
                                                      size_t vertexCount,
                                                      size_t *outIndexCount);
 
-/* Element (indexed) variants — read source indices and expand. */
+/* Element emulation cache kind (PERF-024). */
+enum {
+    MGL_ELEMENT_EXPAND_TRIANGLE_FAN = 1u,
+    MGL_ELEMENT_EXPAND_TRIANGLE_STRIP = 2u,
+    MGL_ELEMENT_EXPAND_LINE_LOOP = 3u,
+    MGL_ELEMENT_EXPAND_QUAD = 4u,
+    MGL_ELEMENT_EXPAND_ADJACENCY = 5u,
+    MGL_ELEMENT_EXPAND_QUAD_LINE = 6u,
+};
+
+/* Element (indexed) variants — read source indices and expand.
+ * When glElementBuffer is non-NULL and CPU-shadow eligible, expanded MTLBuffers
+ * are cached on the buffer backend (invalidated via content_version). */
 MGLIndexMetalHandle mglNewTriangleFanElementIndexBuffer(MGLIndexMetalHandle device,
                                                          const uint8_t *sourceIndexBytes,
                                                          GLenum sourceIndexType,
                                                          size_t sourceIndexCount,
-                                                         size_t *outIndexCount);
+                                                         size_t *outIndexCount,
+                                                         Buffer *glElementBuffer,
+                                                         size_t indexByteOffset,
+                                                         uint32_t restartIndex);
 
 MGLIndexMetalHandle mglNewTriangleStripElementIndexBuffer(MGLIndexMetalHandle device,
                                                            const uint8_t *sourceIndexBytes,
                                                            GLenum sourceIndexType,
                                                            size_t sourceIndexCount,
-                                                           size_t *outIndexCount);
+                                                           size_t *outIndexCount,
+                                                           Buffer *glElementBuffer,
+                                                           size_t indexByteOffset,
+                                                           uint32_t restartIndex);
 
 MGLIndexMetalHandle mglNewLineLoopElementIndexBuffer(MGLIndexMetalHandle device,
                                                       const uint8_t *sourceIndexBytes,
                                                       GLenum sourceIndexType,
                                                       size_t sourceIndexCount,
-                                                      size_t *outIndexCount);
+                                                      size_t *outIndexCount,
+                                                      Buffer *glElementBuffer,
+                                                      size_t indexByteOffset,
+                                                      uint32_t restartIndex);
 
 MGLIndexMetalHandle mglNewQuadElementIndexBuffer(MGLIndexMetalHandle device,
                                                   const uint8_t *sourceIndexBytes,
                                                   GLenum sourceIndexType,
                                                   size_t sourceIndexCount,
-                                                  size_t *outIndexCount);
+                                                  size_t *outIndexCount,
+                                                  Buffer *glElementBuffer,
+                                                  size_t indexByteOffset,
+                                                  uint32_t restartIndex);
 
 MGLIndexMetalHandle mglNewQuadElementLineIndexBuffer(MGLIndexMetalHandle device,
                                                       const uint8_t *sourceIndexBytes,
                                                       GLenum sourceIndexType,
                                                       size_t sourceIndexCount,
-                                                      size_t *outIndexCount);
+                                                      size_t *outIndexCount,
+                                                      Buffer *glElementBuffer,
+                                                      size_t indexByteOffset,
+                                                      uint32_t restartIndex);
 
 MGLIndexMetalHandle mglNewAdjacencyElementIndexBuffer(
     MGLIndexMetalHandle device, GLenum mode, const uint8_t *sourceIndexBytes,
-    GLenum sourceIndexType, size_t sourceIndexCount, size_t *outIndexCount);
+    GLenum sourceIndexType, size_t sourceIndexCount, size_t *outIndexCount,
+    Buffer *glElementBuffer, size_t indexByteOffset, uint32_t restartIndex);
 
 /* Expands GL_UNSIGNED_BYTE indices to Metal-compatible UInt16. */
 MGLIndexMetalHandle mglNewUInt16IndexBufferFromUInt8(MGLIndexMetalHandle device,

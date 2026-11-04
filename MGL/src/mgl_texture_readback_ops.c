@@ -29,9 +29,20 @@
 #include "mgl_renderer_ports.h"
 #include "mgl_sync.h"
 #include "mgl_texture_compat.h"
+#include "mgl_texture_backend.h"
 #include "mgl_trace_log.h"
 
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+
+#include "mgl_render_api_texture.h"
+
+#include "mgl_render_api_buffer.h"
+
+#include "mgl_render_api_pixel.h"
+
+#include "mgl_render_api_readback.h"
+
+#include "mgl_render_api_query.h"
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_render_encoder_ops.h" /* mglRenderPass* C entries */
 #include "mgl_thread_affinity.h"        /* MGL_ASSERT_GL_THREAD */
@@ -45,6 +56,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "mgl_texture_backend.h"
 
 /* The .m's file-local constants this TU needs (values copied verbatim). */
 enum {
@@ -182,8 +194,8 @@ void *mglTextureReadbackStageAndWait(void *renderer, void *sourceTexture,
                                      uint64_t stagingSize, const char *reason,
                                      const char *logKind, int *outSuccess)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLRenderPassManager *manager = areas.render_pass_manager;
     MGLCommandState *commandState = areas.command;
@@ -278,8 +290,8 @@ int mglTextureReadColorAsBGRA8(void *renderer, void *sourceTexture,
                                MGLRegionValue region, int flipY,
                                const char *reason)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *commandState = areas.command;
     int result = 0;
@@ -450,10 +462,11 @@ int mglTextureReadDepthAsFloat(void *renderer, void *sourceTexture,
                                uint64_t sourceLevel, uint64_t sourceSlice,
                                uint64_t sourceDepthPlane, void *pixelBytes,
                                uint64_t bytesPerRow, uint64_t bytesPerImage,
-                               MGLRegionValue region, const char *reason)
+                               MGLRegionValue region, int storageGLRows,
+                               const char *reason)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     int result = 0;
     void *ownedResolved = NULL;
@@ -559,7 +572,9 @@ int mglTextureReadDepthAsFloat(void *renderer, void *sourceTexture,
     const int64_t dstX = (int64_t)clip.dst_x;
     const int64_t dstY = (int64_t)clip.dst_y;
     const int64_t metalSrcX = (int64_t)clip.metal_src_x;
-    const int64_t metalSrcY = (int64_t)clip.metal_src_y;
+    const int64_t metalSrcY = storageGLRows
+                                  ? (int64_t)region.origin.y + dstY
+                                  : (int64_t)clip.metal_src_y;
     if (clip.empty) {
         result = 1;
         goto done;
@@ -621,12 +636,12 @@ int mglTextureReadDepthAsFloat(void *renderer, void *sourceTexture,
             mglRenderCopyDepthTextureBytesToFloat(
                 mglPdTextureBufferContents(readBuffer), stagingBytesPerRow, dst,
                 bytesPerRow, (uint64_t)copyW, (uint64_t)copyH,
-                sourceDepthBytes, sourceIsDepth16 ? 1 : 0, 1);
+                sourceDepthBytes, sourceIsDepth16 ? 1 : 0, storageGLRows ? 0 : 1);
         } else {
             mglMetalCopyRows(
                 (const uint8_t *)mglPdTextureBufferContents(readBuffer),
                 stagingBytesPerRow, dst, bytesPerRow, stagingBytesPerRow,
-                (uint64_t)copyH, 1);
+                (uint64_t)copyH, storageGLRows ? 0 : 1);
         }
     }
     result = readbackSuccess;
@@ -647,8 +662,8 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
                                   uint64_t mipmapLevel, uint64_t mtlSlice,
                                   int flipRows)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLRenderPassManager *manager = areas.render_pass_manager;
     MGLCommandState *commandState = areas.command;
@@ -725,8 +740,8 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
         goto done;
     }
 
-    /* Match float GetTexImage: map the GL rect onto flipped Metal storage
-     * before the blit (full-height reads keep origin 0). */
+    /* Window-system targets store Metal rows, so remap the GL rect onto them
+     * before the blit; FBO attachments already store GL rows (origin 0). */
     int64_t metalY = minY;
     if (flipRows) {
         uint64_t levelHeight = mglPdTextureInfo(sourceTexture).height;
@@ -763,9 +778,8 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
         goto done;
     }
 
-    /* Rendered integer RT storage is Y-flipped like float RTs once
-     * mglBlitFlipRenderTargetStorageForFirstWrite has run; convert unflips
-     * to GL bottom-up. */
+    /* flipRows is set only for the window-system framebuffer; an FBO
+     * attachment is addressed in GL rows, which is what the convert expects. */
     mglPdTextureCopyTextureToBuffer(
         blit, sourceTexture, mtlSlice, mipmapLevel,
         mglTextureOrigin((uint64_t)minX, (uint64_t)metalY, 0u),
@@ -842,8 +856,8 @@ void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
 {
     MGL_ASSERT_GL_THREAD();
     mglPlatformShellSetContext(renderer, glm_ctx);
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     uint64_t readSize = bytesPerImage;
     if (readSize == 0u && bytesPerRow > 0u) {
@@ -869,7 +883,7 @@ void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
 
         readTextureObject->is_render_target = 1;
         if (!mglRendererBindMTLTexture(renderer, readTextureObject) ||
-            !readTextureObject->mtl_data) {
+            !mglTextureMtl(readTextureObject)) {
             fprintf(stderr,
                     "MGL WARNING: readPixels could not bind FBO depth texture fbo=%u tex=%u\n",
                     fbo ? (unsigned)fbo->name : 0u,
@@ -879,7 +893,7 @@ void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
             return;
         }
 
-        void *texture = readTextureObject->mtl_data;
+        void *texture = mglTextureMtl(readTextureObject);
         const MGLMetalAttachmentSubresource subresource =
             mglMetalAttachmentSubresourceForAttachment(attachment);
 
@@ -896,7 +910,7 @@ void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
         (void)mglTextureReadDepthAsFloat(
             renderer, texture, subresource.level, subresource.slice,
             subresource.depthPlane, pixelBytes, bytesPerRow, bytesPerImage,
-            region, "FBO depth readback");
+            region, 1, "FBO depth readback");
         return;
     }
 
@@ -927,7 +941,7 @@ void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
     }
     mglTextureApplyPendingDefaultDepthClear(renderer, texture);
     (void)mglTextureReadDepthAsFloat(renderer, texture, 0u, 0u, 0u, pixelBytes,
-                                     bytesPerRow, bytesPerImage, region,
+                                     bytesPerRow, bytesPerImage, region, 0,
                                      "default framebuffer depth readback");
 }
 
@@ -954,13 +968,13 @@ void mglTextureReadIntegerPixels(void *renderer, GLMContext glm_ctx,
     FBOAttachment *attachment = &fbo->color_attachments[att];
     Texture *textureObj = mglRendererAttachmentTextureFor(glm_ctx, attachment);
     if (!textureObj || !mglRendererBindMTLTexture(renderer, textureObj) ||
-        !textureObj->mtl_data) {
+        !mglTextureMtl(textureObj)) {
         mglDispatchError(glm_ctx, __func__,
                          (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
-    void *texture = textureObj->mtl_data;
+    void *texture = mglTextureMtl(textureObj);
     const MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
 
@@ -987,10 +1001,7 @@ void mglTextureReadIntegerPixels(void *renderer, GLMContext glm_ctx,
     (void)mglTextureReadIntegerAsRGBA32(
         renderer, texture, pixelBytes, bytesPerRow, bytesPerImage, region,
         outputComponents, outputComponentBytes, componentMap, type,
-        subresource.level, subresource.slice,
-        mglRenderTargetStorageYFlipped(
-            textureObj->is_render_target ? 1 : 0,
-            textureObj->mtl_render_target_write_version));
+        subresource.level, subresource.slice, 0);
 }
 
 /* -mtlReadDrawable:pixelBytes:bytesPerRow:bytesPerImage:fromRegion: */
@@ -999,8 +1010,8 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
                             uint64_t bytesPerImage, MGLRegionValue region)
 {
     mglPlatformShellSetContext(renderer, glm_ctx);
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     uint64_t readSize = bytesPerImage;
     if (readSize == 0 && bytesPerRow > 0) {
@@ -1065,7 +1076,7 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
 
         readTextureObject->is_render_target = 1;
         if (!mglRendererBindMTLTexture(renderer, readTextureObject) ||
-            !readTextureObject->mtl_data) {
+            !mglTextureMtl(readTextureObject)) {
             fprintf(stderr,
                     "MGL WARNING: readPixels could not bind FBO read texture fbo=%u attachment=0x%x tex=%u\n",
                     (unsigned)fbo->name, (unsigned)readBuffer,
@@ -1075,7 +1086,7 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
             return;
         }
 
-        void *texture = readTextureObject->mtl_data;
+        void *texture = mglTextureMtl(readTextureObject);
         const MGLMetalAttachmentSubresource subresource =
             mglMetalAttachmentSubresourceForAttachment(attachment);
         mglRendererEndRenderEncodingLocked(renderer);
@@ -1087,15 +1098,10 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
         }
         mglTextureApplyPendingFBOColorClearForReadback(
             renderer, fbo, attachment, readTextureObject, texture, readBuffer);
-        /* Multisample sources are resolved from render-pass storage. */
-        const int flipY =
-            readTextureObject->samples > 1u ||
-            mglRenderTargetStorageYFlipped(
-                1, readTextureObject->mtl_render_target_write_version);
         (void)mglTextureReadColorAsBGRA8(
             renderer, texture, subresource.level, subresource.slice,
             subresource.depthPlane, pixelBytes, bytesPerRow, bytesPerImage,
-            region, flipY, "FBO color readback");
+            region, 0, "FBO color readback");
         return;
     }
 
@@ -1155,6 +1161,7 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
 typedef struct MglPdPreReadbackCtx_t {
     void *renderer;
     void *command_buffer;
+    int wait_until_completed;
 } MglPdPreReadbackCtx;
 
 /* @try of the pre-readback flush: the catch only logs a warning. */
@@ -1162,21 +1169,25 @@ static int mglPdPreReadbackTryBody(void *renderer, void *rawCtx)
 {
     MglPdPreReadbackCtx *ctx = (MglPdPreReadbackCtx *)rawCtx;
     mglRendererCommitCommandBufferWithAGXRecovery(renderer, ctx->command_buffer);
-    (void)mglRenderWaitCommandBuffer(ctx->command_buffer);
+    if (ctx->wait_until_completed) {
+        (void)mglRenderWaitCommandBuffer(ctx->command_buffer);
+    }
     return 1;
 }
 
 /* Commits and waits for the current command buffer so readbacks on a separate
  * command buffer observe every encoded upload and draw. */
 static void mglPdCommitPendingForReadback(void *renderer,
-                                          MGLRendererStateAreas *areas)
+                                          MGLRendererStateView *areas,
+                                          int wait_until_completed)
 {
     mglRendererEndRenderEncodingLocked(renderer);
     if (mglRenderCommandBufferOwnerHasCurrent(
             areas->command->currentCommandBufferOwner) == 1) {
         void *pendingCB = mglPassManagerDetachCurrentCommandBufferForSubmission(
             areas->render_pass_manager);
-        MglPdPreReadbackCtx preCtx = {renderer, pendingCB};
+        MglPdPreReadbackCtx preCtx = {renderer, pendingCB,
+                                      wait_until_completed};
         (void)mglPlatformShellGuardedCallCtx(renderer, "pre-readback flush",
                                              mglPdPreReadbackTryBody, &preCtx,
                                              NULL);
@@ -1195,7 +1206,7 @@ static void mglPdCommitPendingForReadback(void *renderer,
  * getBytes and plain buffer copies, so each aspect gets its own) and then
  * converted to the requested type (§8.11.4, §18.2.8). */
 static void mglPdGetDepthStencilImage(
-    MGLRendererStateAreas *areas, GLMContext glm_ctx, Texture *tex,
+    MGLRendererStateView *areas, GLMContext glm_ctx, Texture *tex,
     void *texture, void *pixelBytes, uint64_t bytesPerRow,
     MGLRegionValue region, GLenum format, GLenum type, uint64_t level,
     uint64_t slice, int flipRows)
@@ -1338,23 +1349,23 @@ int mglTextureReadStencilPixels(void *renderer, GLMContext glm_ctx,
 {
     MGL_ASSERT_GL_THREAD();
     mglPlatformShellSetContext(renderer, glm_ctx);
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     Framebuffer *fbo = glm_ctx->active_state->readbuffer;
     FBOAttachment *attachment = fbo ? &fbo->stencil : NULL;
     Texture *tex = mglRendererAttachmentTextureFor(glm_ctx, attachment);
     if (!tex || tex->samples > 1u || !mglRendererBindMTLTexture(renderer, tex) ||
-        !tex->mtl_data) {
+        !mglTextureMtl(tex)) {
         return 0;
     }
     const uint32_t pixelFormat =
-        (uint32_t)mglPdTextureInfo(tex->mtl_data).pixel_format;
+        (uint32_t)mglPdTextureInfo(mglTextureMtl(tex)).pixel_format;
     if (!mglMetalPixelFormatIsPackedDepthStencil(pixelFormat) &&
         pixelFormat != 253u /* Stencil8 */) {
         return 0;
     }
-    void *texture = tex->mtl_data;
+    void *texture = mglTextureMtl(tex);
     const MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
     const uint64_t levelWidth = mglPdMaxU64(
@@ -1374,20 +1385,18 @@ int mglTextureReadStencilPixels(void *renderer, GLMContext glm_ctx,
             renderer, texture, "mtlReadStencilPixels")) {
         return 0;
     }
-    mglPdCommitPendingForReadback(renderer, &areas);
+    mglPdCommitPendingForReadback(renderer, &areas, 1);
 
+    /* GL-order storage addresses the rows as GL gives them. */
+    const uint64_t srcRow = (uint64_t)region.origin.y + (uint64_t)clip.dst_y;
     MGLRegionValue metalRegion = {
-        mglTextureOrigin((uint64_t)clip.metal_src_x, (uint64_t)clip.metal_src_y, 0u),
+        mglTextureOrigin((uint64_t)clip.metal_src_x, srcRow, 0u),
         mglTextureSize((uint64_t)clip.copy_w, (uint64_t)clip.copy_h, 1u)};
     mglPdGetDepthStencilImage(
         &areas, glm_ctx, tex, texture,
         pixelBytes + (uint64_t)clip.dst_y * bytesPerRow + (uint64_t)clip.dst_x,
         bytesPerRow, metalRegion, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE,
-        subresource.level, subresource.slice,
-        mglRenderTargetStorageYFlipped(tex->is_render_target ? 1 : 0,
-                                       tex->mtl_render_target_write_version)
-            ? 1
-            : 0);
+        subresource.level, subresource.slice, 0);
     return 1;
 }
 
@@ -1397,8 +1406,8 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
                            GLenum format, GLenum type, uint64_t level,
                            uint64_t slice)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *texture = NULL;
 
     mglPlatformShellSetContext(renderer, glm_ctx);
@@ -1417,7 +1426,7 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         return;
     }
 
-    if ((!tex->mtl_data || (tex->dirty_bits & DIRTY_TEXTURE_DATA)) &&
+    if ((!mglTextureMtl(tex) || (tex->dirty_bits & DIRTY_TEXTURE_DATA)) &&
         !mglRendererBindMTLTexture(renderer, tex)) {
         fprintf(stderr,
                 "MGL ERROR: mtlGetTexImage failed to bind texture %u\n",
@@ -1427,7 +1436,7 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         return;
     }
 
-    texture = tex->mtl_data;
+    texture = mglTextureMtl(tex);
     if (!texture) {
         fprintf(stderr,
                 "MGL ERROR: mtlGetTexImage texture %u has no Metal texture\n",
@@ -1456,7 +1465,14 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
     /* Ensure any pending texture upload blit commands are committed before
      * reading back. Without this, getBytes may return stale/zero data because
      * the blit encoding the upload is still in the uncommitted command buffer. */
-    mglPdCommitPendingForReadback(renderer, &areas);
+    const int gpu_authoritative = mglRenderTargetHasGPUContent(
+        tex->is_render_target ? 1 : 0, mglTextureWriteVersion(tex));
+    const int wait_for_gpu =
+        gpu_authoritative || (tex->dirty_bits & DIRTY_TEXTURE_DATA);
+    /* PERF-037 (partial): skip waitUntilCompleted when CPU texels are still
+     * authoritative (no recorded RT write version). FBO glReadPixels color
+     * still waits via mglRendererReadDrawable (GPU attachment readback). */
+    mglPdCommitPendingForReadback(renderer, &areas, wait_for_gpu);
 
     MGLRegionValue readRegion = region;
     uint64_t readSlice = slice;
@@ -1470,16 +1486,11 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         }
         readSlice = 0u;
     }
-    /* Multisample RTs already land in GL row order after resolve. */
-    int flipRenderTargetRows =
-        tex->samples <= 1u &&
-        mglRenderTargetStorageYFlipped(tex->is_render_target ? 1 : 0,
-                                       tex->mtl_render_target_write_version);
     if (mglRenderPixelFormatIsDepthOrStencil(
             (uint32_t)mglPdTextureInfo(texture).pixel_format)) {
         mglPdGetDepthStencilImage(&areas, glm_ctx, tex, texture, pixelBytes,
                                   bytesPerRow, readRegion, format, type, level,
-                                  readSlice, flipRenderTargetRows);
+                                  readSlice, 0);
         return;
     }
 
@@ -1492,31 +1503,12 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         (uint32_t)type, &classify);
 
     if (classify.source_is_integer_texture && classify.output_is_integer_format) {
-        /* Pass the original (non-Y-flipped) region.  Integer readback remaps
-         * blit origin.y itself; a pre-flipped readRegion would double-flip. */
         (void)mglTextureReadIntegerAsRGBA32(
             renderer, texture, pixelBytes, bytesPerRow, bytesPerImage,
             readRegion, (uint64_t)classify.output_components,
             (uint64_t)classify.output_component_bytes, classify.component_map,
-            type, level, readSlice, flipRenderTargetRows);
+            type, level, readSlice, 0);
         return;
-    }
-
-    /* Y-flipped RT storage: sub-rect reads (ReadPixels → GetTexImage) must
-     * start at the Metal origin matching the GL rect — same formula as
-     * mglRenderReadTextureRegionClip / FBO ReadDrawable.  Flipping output
-     * rows alone is only correct for a full-height read; a 1×1 probe at
-     * GL (0,H-1) otherwise samples Metal row H-1. */
-    if (flipRenderTargetRows && readRegion.size.depth == 1u) {
-        uint64_t level_height = mglPdTextureInfo(texture).height;
-        if (level > 0u) {
-            level_height = mglPdMaxU64(1u, level_height >> level);
-        }
-        const uint64_t gl_y = (uint64_t)readRegion.origin.y;
-        const uint64_t gl_h = readRegion.size.height;
-        if (gl_h <= level_height && gl_y <= level_height - gl_h) {
-            readRegion.origin.y = (int64_t)(level_height - (gl_y + gl_h));
-        }
     }
 
     const uint64_t dstPixelBytes = (uint64_t)sizeForFormatType(format, type);
@@ -1618,18 +1610,13 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
                     rowBytes, (uint8_t *)pixelBytes, bytesPerRow,
                     readRegion.size.width, readRegion.size.height,
                     mglPdTextureInfo(texture).pixel_format, format, type,
-                    flipRenderTargetRows)) {
+                    0)) {
                 fprintf(stderr,
                         "MGL ERROR: mtlGetTexImage unsupported BGRA8 conversion texture=%u format=0x%x type=0x%x\n",
                         tex->name, (unsigned)format, (unsigned)type);
                 mglDispatchError(glm_ctx, __func__,
                                  (GLenum)mglRenderErrorInvalidOperation());
             }
-        } else if (flipRenderTargetRows && readRegion.size.depth == 1u) {
-            mglMetalCopyRows(
-                (const uint8_t *)mglPdTextureBufferContents(stagingBuffer),
-                rowBytes, (uint8_t *)pixelBytes, bytesPerRow, rowBytes,
-                readRegion.size.height, 1);
         } else {
             memcpy(pixelBytes, mglPdTextureBufferContents(stagingBuffer),
                    totalBytes);
@@ -1663,8 +1650,7 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
      * are getBytes and the row copy, and their C twins report failure instead
      * (see mglPdTextureGetBytes), so each failure maps to the same log +
      * dispatch error the catch produced. */
-    if (useBGRA8Conversion ||
-        (flipRenderTargetRows && readRegion.size.depth == 1u)) {
+    if (useBGRA8Conversion) {
         MGLRenderGetTexImagePlan plan = {0};
         mglRenderGetTexImagePlan(
             (uint32_t)mglPdTextureInfo(texture).pixel_format, (uint32_t)format,
@@ -1696,22 +1682,15 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
             free(readback);
             return;
         }
-        if (useBGRA8Conversion) {
-            if (!mglMetalCopyBGRA8CompatibleTextureBytesToGL(
-                    (const uint8_t *)readback, rowBytes, (uint8_t *)pixelBytes,
-                    bytesPerRow, readRegion.size.width, readRegion.size.height,
-                    mglPdTextureInfo(texture).pixel_format, format, type,
-                    flipRenderTargetRows)) {
-                fprintf(stderr,
-                        "MGL ERROR: mtlGetTexImage unsupported BGRA8 conversion texture=%u format=0x%x type=0x%x\n",
-                        tex->name, (unsigned)format, (unsigned)type);
-                mglDispatchError(glm_ctx, __func__,
-                                 (GLenum)mglRenderErrorInvalidOperation());
-            }
-        } else {
-            mglMetalCopyRows((const uint8_t *)readback, rowBytes,
-                             (uint8_t *)pixelBytes, bytesPerRow, rowBytes,
-                             readRegion.size.height, 1);
+        if (!mglMetalCopyBGRA8CompatibleTextureBytesToGL(
+                (const uint8_t *)readback, rowBytes, (uint8_t *)pixelBytes,
+                bytesPerRow, readRegion.size.width, readRegion.size.height,
+                mglPdTextureInfo(texture).pixel_format, format, type, 0)) {
+            fprintf(stderr,
+                    "MGL ERROR: mtlGetTexImage unsupported BGRA8 conversion texture=%u format=0x%x type=0x%x\n",
+                    tex->name, (unsigned)format, (unsigned)type);
+            mglDispatchError(glm_ctx, __func__,
+                             (GLenum)mglRenderErrorInvalidOperation());
         }
         free(readback);
     } else {

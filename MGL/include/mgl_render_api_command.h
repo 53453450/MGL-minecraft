@@ -3,16 +3,550 @@
 #define MGL_RENDER_API_COMMAND_H
 
 /* Declarations for the command slice of the renderer facade.
- * Value layouts live in mgl_render.h. Standalone include pulls
- * mgl_render_fwd.h (incomplete types) instead of the full facade. */
+ * Value layouts are defined here; types of other subsystems that are only
+ * passed by pointer are incomplete (mgl_render_fwd.h). */
 
-#ifndef MGL_RENDER_H
 #include "mgl_render_fwd.h"
-#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+const char *mglRenderStoreActionName(uint32_t action);
+
+void mglRenderWaitForSync(GLMContext glm_ctx, Sync *sync);
+
+void mglRenderFlush(GLMContext glm_ctx, bool finish);
+
+int mglRenderStopColorAttachmentScan(uint32_t next_index, uint32_t max,
+                                     int next_is_none, int has_next_color);
+
+typedef struct MGLRenderThreadgroupSize_t {
+    uint32_t x;   /* local workgroup size with 0 resolved to 1 */
+    uint32_t y;
+    uint32_t z;
+} MGLRenderThreadgroupSize;
+
+/* compute dispatch threadgroup size — resolves a
+ * zero local workgroup component to 1 (the `x ? x : 1` default used by the
+ * ObjC dispatch fallback).  Pure computation shared by both gates. */
+int mglRenderThreadgroupSize(
+    uint32_t local_x, uint32_t local_y, uint32_t local_z,
+    MGLRenderThreadgroupSize *out);
+
+typedef struct MGLRenderScaledBlitUVs_t {
+    float uv_left;
+    float uv_top;
+    float uv_right;
+    float uv_bottom;
+} MGLRenderScaledBlitUVs;
+
+typedef struct MGLRenderBlitScissorRect_t {
+    int64_t x0;
+    int64_t x1;
+    int64_t y0;
+    int64_t y1;
+} MGLRenderBlitScissorRect;
+
+typedef struct MGLRenderBlitFramebufferPlan_t {
+    int src_x_forward;
+    int src_y_forward;
+    int dst_x_forward;
+    int dst_y_forward;
+    int blit_needs_flip;
+    int needs_scaled_blit;
+    double src_min_x;
+    double src_max_x;
+    double src_min_y;
+    double src_max_y;
+    double dst_min_x;
+    double dst_max_x;
+    double dst_min_y;
+    double dst_max_y;
+    double src_w;
+    double src_h;
+    double dst_w;
+    double dst_h;
+    int64_t copy_src_x;
+    int64_t copy_src_y;
+    int64_t copy_dst_x;
+    int64_t copy_dst_y;
+    int64_t copy_w;
+    int64_t copy_h;
+    int64_t src_metal_y;
+    int64_t dst_metal_y;
+    double scaled_dst_metal_y;
+    /* Per-side storage row order, set by mglRenderBlitPlanApplyStorageOrder:
+     * 1 when the texture stores GL rows (row 0 = bottom), 0 for Metal rows. */
+    int src_gl_order;
+    int dst_gl_order;
+} MGLRenderBlitFramebufferPlan;
+
+int mglRenderSetComputeBytes(void *compute_encoder,
+                                const void *bytes,
+                                size_t length,
+                                uint32_t index);
+
+int mglRenderSetComputeThreadgroupMemoryLength(void *compute_encoder,
+                                                  uint64_t length,
+                                                  uint32_t index);
+
+/* Compute binding snapshot, structurally equivalent to the render snapshot.
+ * Kinds select buffer, inline bytes, texture, or sampler operations. The
+ * caller validates inputs; malformed operations return -1. Temporary bridged
+ * objects must be flushed immediately and must not enter deferred replay. */
+#define MGL_RENDER_COMPUTE_BINDING_SNAPSHOT_MAX_OPS 32u
+
+typedef struct MGLRenderComputeBindingOp_t {
+    uint32_t kind;      /* 0 = buffer, 1 = bytes, 2 = texture, 3 = sampler */
+    uint32_t index;     /* Metal slot */
+    uint64_t offset;    /* kind 0: byte offset */
+    void *buffer;       /* kind 0/2/3: borrowed MTL object (NULL = clear) */
+    const void *bytes;  /* kind 1: borrowed byte pointer */
+    uint32_t length;    /* kind 1: byte length */
+} MGLRenderComputeBindingOp;
+
+typedef struct MGLRenderComputeBindingSnapshot_t {
+    uint32_t op_count;
+    MGLRenderComputeBindingOp
+        ops[MGL_RENDER_COMPUTE_BINDING_SNAPSHOT_MAX_OPS];
+} MGLRenderComputeBindingSnapshot;
+
+/* Value-state compute dispatch plan. A zero local dimension resolves to one.
+ * The C++ backend encodes direct or indirect dispatch from this plan. */
+#define MGL_RENDER_COMPUTE_DISPATCH_DIRECT   0
+
+#define MGL_RENDER_COMPUTE_DISPATCH_INDIRECT 1
+
+typedef struct MGLRenderComputePlan_t {
+    uint32_t dispatch_kind;   /* DIRECT / INDIRECT */
+    uint32_t groups_x;
+    uint32_t groups_y;
+    uint32_t groups_z;
+    uint32_t local_x;         /* Zero resolves to one. */
+    uint32_t local_y;
+    uint32_t local_z;
+    void *indirect_buffer;    /* INDIRECT: borrowed MTL::Buffer* */
+    uint64_t indirect_offset; /* Byte offset of the indirect argument block. */
+} MGLRenderComputePlan;
+
+/*  compute execution plan: ObjC collects the ordered binding operations
+ * and keeps temporary Metal objects alive until this call returns. C++ owns
+ * encoder creation, pipeline/binding replay, dispatch, and endEncoding. */
+/* Per-patch TES compute expansion emits one dispatch (+ contract bytes
+ * binding) per input patch. Cull-distance isoline grids reach ~144 patches;
+ * barrier CTS uses 1024 patches (2048 result verts). Keep headroom above
+ * the old 128/512 caps that returned GL_INVALID_OPERATION once patchCount
+ * exceeded them. */
+#define MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS 4096u
+
+#define MGL_RENDER_COMPUTE_EXECUTION_MAX_DISPATCHES 2048u
+
+typedef struct MGLRenderComputeDispatchEntry_t {
+    /* Replay this dispatch after exactly binding_op_count binding operations. */
+    uint32_t binding_op_count;
+    MGLRenderComputePlan dispatch;
+} MGLRenderComputeDispatchEntry;
+
+typedef struct MGLRenderComputeExecutionPlan_t {
+    void *pipeline; /* +0 borrowed MTL::ComputePipelineState* */
+    uint32_t binding_op_count;
+    MGLRenderComputeBindingOp
+        binding_ops[MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS];
+    uint32_t dispatch_op_count;
+    MGLRenderComputeDispatchEntry
+        dispatch_ops[MGL_RENDER_COMPUTE_EXECUTION_MAX_DISPATCHES];
+    /* Backward-compatible single-dispatch form used when dispatch_op_count=0. */
+    MGLRenderComputePlan dispatch;
+    /* Barrier emitted after the final dispatch, before endEncoding. */
+    uint32_t barrier_scope;
+    /* Barrier emitted *between* consecutive dispatches of this encoder.
+     *
+     * Metal only guarantees that dispatches inside one encoder execute in
+     * submission order; memory written by dispatch N is not visible to
+     * dispatch N+1 unless a memoryBarrier separates them.  Leaving this NONE
+     * therefore asserts that the dispatches are memory-independent: each
+     * writes a range disjoint from the others and reads only data produced on
+     * the host or by an earlier encoder (an encoder boundary orders memory).
+     * The per-patch TES expansion (mglTessAppendEvalPerPatchDispatches) is
+     * such a plan and documents the invariant there.
+     *
+     * A plan whose later dispatches consume earlier dispatches' writes must
+     * set this to the touched resource classes;
+     * mglRenderEncodeComputeExecutionPlanForCommandBufferOwner then fences
+     * every dispatch boundary instead of silently racing. */
+    uint32_t dispatch_barrier_scope;
+    /* GLSL shared[] → Metal threadgroup(0). 0 means no threadgroup arg. */
+    uint64_t threadgroup_memory_length;
+} MGLRenderComputeExecutionPlan;
+
+/* Value-state barrier request. These values intentionally mirror Metal's
+ * BarrierScope bit values without exposing MTL::* through the C ABI. */
+enum {
+    MGL_RENDER_COMPUTE_BARRIER_NONE = 0u,
+    MGL_RENDER_COMPUTE_BARRIER_BUFFERS = 1u,
+    MGL_RENDER_COMPUTE_BARRIER_TEXTURES = 2u,
+    MGL_RENDER_COMPUTE_BARRIER_RENDER_TARGETS = 4u,
+};
+
+/* Fixed GS/TES compute-dispatch setup. The backend creates the encoder and
+ * binds pipeline ABI slots; GL stage resources are bound through the C++
+ * facade between begin and end. */
+#define MGL_RENDER_COMPUTE_DISPATCH_MAX_BUFFERS 16u
+
+#define MGL_RENDER_COMPUTE_DISPATCH_MAX_BYTES 4u
+
+typedef struct MGLRenderComputeBufferEntry_t {
+    void *buffer;   /* +0 borrowed MTL::Buffer* */
+    uint64_t offset;
+    uint32_t index;
+} MGLRenderComputeBufferEntry;
+
+typedef struct MGLRenderComputeBytesEntry_t {
+    const void *bytes;
+    uint32_t length;
+    uint32_t index;
+} MGLRenderComputeBytesEntry;
+
+typedef struct MGLRenderComputeDispatchSetup_t {
+    void *pipeline;             /* +0 borrowed MTL::ComputePipelineState* */
+    uint32_t buffer_count;
+    MGLRenderComputeBufferEntry
+        buffers[MGL_RENDER_COMPUTE_DISPATCH_MAX_BUFFERS];
+    uint32_t bytes_count;
+    MGLRenderComputeBytesEntry
+        bytes[MGL_RENDER_COMPUTE_DISPATCH_MAX_BYTES];
+} MGLRenderComputeDispatchSetup;
+
+enum {
+    MGL_RENDER_ERROR_DOMAIN_CAPACITY = 128,
+    MGL_RENDER_ERROR_DESCRIPTION_CAPACITY = 512,
+};
+
+typedef struct MGLRenderCommandBufferState_t {
+    uint32_t status;
+    uint32_t has_error;
+    int64_t error_code;
+    char error_domain[MGL_RENDER_ERROR_DOMAIN_CAPACITY];
+    char error_description[MGL_RENDER_ERROR_DESCRIPTION_CAPACITY];
+} MGLRenderCommandBufferState;
+
+typedef enum MGLRenderCommandBufferCommitAction_t {
+    MGL_RENDER_COMMAND_BUFFER_COMMIT_PROCEED = 0,
+    MGL_RENDER_COMMAND_BUFFER_COMMIT_SKIP_ALREADY_COMMITTED = 1,
+} MGLRenderCommandBufferCommitAction;
+
+typedef struct MGLRenderCommandBufferCommitDecision_t {
+    uint32_t action;
+} MGLRenderCommandBufferCommitDecision;
+
+typedef enum MGLRenderCommandBufferTransactionResult_t {
+    MGL_RENDER_COMMAND_BUFFER_TRANSACTION_COMMITTED = 0,
+    MGL_RENDER_COMMAND_BUFFER_TRANSACTION_SKIPPED = 1,
+    MGL_RENDER_COMMAND_BUFFER_TRANSACTION_NESTED = 2,
+    MGL_RENDER_COMMAND_BUFFER_TRANSACTION_ERROR = 3,
+} MGLRenderCommandBufferTransactionResult;
+
+typedef struct MGLRenderCommandRecoverySnapshot_t {
+    uint64_t consecutive_errors;
+    uint64_t consecutive_successes;
+    double last_error_time;
+    uint32_t recovery_mode;
+} MGLRenderCommandRecoverySnapshot;
+
+/* Result of one owner-aware submit transaction.  State snapshots are value
+ * copies; no command-buffer pointer is retained by the result. */
+typedef struct MGLRenderCommandBufferTransaction_t {
+    MGLRenderCommandBufferState before;
+    MGLRenderCommandBufferState after;
+    MGLRenderCommandBufferState completion;
+    uint32_t result;
+    uint32_t used_submission;
+    uint32_t completion_registered;
+    uint32_t waited;
+    uint32_t has_error;
+    uint32_t is_driver_rejection;
+    uint32_t device_reset_requested;
+    uint32_t recovery_error_recorded;
+    MGLRenderCommandRecoverySnapshot recovery;
+    uint32_t needs_new_command_buffer;
+    /* Set when the C++ owner created the next current command buffer as part
+     * of this transaction.  A zero value means the caller must retain its
+     * legacy queue/reset adapter (for example an adopted ObjC buffer). */
+    uint32_t current_command_buffer_created;
+} MGLRenderCommandBufferTransaction;
+
+/* Result of one owner-contained compute execution.  No submission or Metal
+ * object pointer escapes the transaction.  When submitted is zero, the
+ * encoded compute work remains in CommandBufferOwner.current for the normal
+ * renderer flush. */
+typedef struct MGLRenderComputeExecutionResult_t {
+    MGLRenderCommandBufferTransaction transaction;
+    uint32_t submitted;
+    uint32_t cpu_prefix_synchronized;
+    uint32_t failed_copy_back_index;
+} MGLRenderComputeExecutionResult;
+
+typedef struct MGLRenderCommandBufferCompletionDecision_t {
+    uint32_t has_error;
+    uint32_t is_driver_rejection;
+} MGLRenderCommandBufferCompletionDecision;
+
+typedef struct MGLRenderCommandRecoverySuccess_t {
+    MGLRenderCommandRecoverySnapshot state;
+    uint32_t sustained_recovery;
+    uint64_t recovered_successes;
+    uint64_t previous_errors;
+} MGLRenderCommandRecoverySuccess;
+
+typedef struct MGLRenderCommandRecoverySkipDecision_t {
+    MGLRenderCommandRecoverySnapshot state;
+    uint32_t should_skip;
+    uint32_t entered_recovery_mode;
+    uint32_t recovery_timed_out;
+    uint64_t previous_errors;
+} MGLRenderCommandRecoverySkipDecision;
+
+typedef struct MGLRenderCommandBufferCompletionResult_t {
+    MGLRenderCommandBufferCompletionDecision decision;
+    MGLRenderCommandRecoverySnapshot state;
+    uint32_t sustained_recovery;
+    uint32_t cleared_recovery_mode;
+    uint64_t recovered_successes;
+    uint64_t previous_errors;
+} MGLRenderCommandBufferCompletionResult;
+
+typedef void (*MGLRenderCommandBufferCompletion)(
+    void *context,
+    const MGLRenderCommandBufferState *state);
+
+typedef void (*MGLRenderDestroyContext)(void *context);
+
+#include "mgl_render_pass_plan.h"
+
+/* Replays a simple draw batch in C++. Eligible batches contain no dynamic
+ * bindings, sampler snapshots, cull-distance state, polygon emulation, or
+ * primitive restart. The command array remains a read-only arena snapshot. */
+#define MGL_RENDER_REPLAY_BATCH_MAX_COMMANDS 128u
+
+typedef struct MGLRenderReplayBatchCommand_t {
+    uint32_t cmd_type;          /* MGLDrawCommandType value. */
+    int32_t first;
+    uint32_t count;
+    uint32_t instance_count;
+    int32_t base_vertex;
+    uint32_t base_instance;
+    uint32_t index_type;        /* Converted MTLIndexType value. */
+    uint32_t index_buffer_offset;
+    void *index_buffer;         /* Borrowed prepared MTL::Buffer*. */
+} MGLRenderReplayBatchCommand;
+
+typedef struct MGLRenderReplayBatch_t {
+    uint32_t primitive_type;    /* MTLPrimitiveType（batch key） */
+    uint32_t command_count;
+    const MGLRenderReplayBatchCommand *commands;
+} MGLRenderReplayBatch;
+
+enum {
+    MGL_RENDER_REPLAY_BATCH_OK = 0,
+    MGL_RENDER_REPLAY_BATCH_NEEDS_OBJC = 1,
+    MGL_RENDER_REPLAY_BATCH_ERROR = -1,
+};
+
+/* The caller validates command kinds, index buffers, index types, and limits.
+ * A non-success result requires replaying the entire batch through the caller;
+ * partial fallback is not allowed. */
+int mglRenderReplayBatchDraws(void *render_encoder,
+                                 const MGLRenderReplayBatch *batch,
+                                 char *err,
+                                 size_t errcap);
+
+enum {
+    MGL_RENDER_MAX_COLOR_ATTACHMENTS = 8,
+    MGL_RENDER_MAX_SAMPLE_POSITIONS = 32,
+};
+
+typedef struct MGLRenderPassAttachmentState_t {
+    void *texture;
+    void *resolve_texture;
+    uint64_t level;
+    uint64_t slice;
+    uint64_t depth_plane;
+    uint64_t resolve_level;
+    uint64_t resolve_slice;
+    uint64_t resolve_depth_plane;
+    uint32_t load_action;
+    uint32_t store_action;
+    uint32_t layered;
+    uint32_t _padding;
+    uint64_t store_action_options;
+} MGLRenderPassAttachmentState;
+
+typedef struct MGLRenderPassColorState_t {
+    MGLRenderPassAttachmentState attachment;
+    double clear_red;
+    double clear_green;
+    double clear_blue;
+    double clear_alpha;
+} MGLRenderPassColorState;
+
+typedef struct MGLRenderPassDepthState_t {
+    MGLRenderPassAttachmentState attachment;
+    double clear_depth;
+    uint32_t resolve_filter;
+} MGLRenderPassDepthState;
+
+typedef struct MGLRenderPassStencilState_t {
+    MGLRenderPassAttachmentState attachment;
+    uint32_t clear_stencil;
+    uint32_t resolve_filter;
+} MGLRenderPassStencilState;
+
+typedef struct MGLRenderSamplePosition_t {
+    float x;
+    float y;
+} MGLRenderSamplePosition;
+
+typedef struct MGLRenderPassState_t {
+    MGLRenderPassColorState
+        color[MGL_RENDER_MAX_COLOR_ATTACHMENTS];
+    MGLRenderPassDepthState depth;
+    MGLRenderPassStencilState stencil;
+    void *visibility_result_buffer;
+    void *rasterization_rate_map;
+    uint64_t render_target_array_length;
+    uint64_t render_target_width;
+    uint64_t render_target_height;
+    uint64_t default_raster_sample_count;
+    uint64_t imageblock_sample_length;
+    uint64_t threadgroup_memory_length;
+    uint64_t tile_width;
+    uint64_t tile_height;
+    uint32_t visibility_result_type;
+    uint32_t support_color_attachment_mapping;
+    uint32_t sample_position_count;
+    MGLRenderSamplePosition
+        sample_positions[MGL_RENDER_MAX_SAMPLE_POSITIONS];
+} MGLRenderPassState;
+
+typedef enum MGLRenderPassAttachmentKind_t {
+    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR = 0,
+    MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH = 1,
+    MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL = 2,
+} MGLRenderPassAttachmentKind;
+
+int mglRenderPassAttachmentClass(uint32_t kind);
+
+int mglRenderPassColorAttachmentIndexValid(uint32_t color_index,
+                                           uint32_t max_color);
+
+typedef struct MGLRenderPassIdentityState_t {
+    void *framebuffer;
+    uint32_t framebuffer_name;
+    uint32_t draw_buffer;
+    uint32_t draw_buffer_count;
+    uint32_t draw_buffers[MGL_RENDER_MAX_COLOR_ATTACHMENTS];
+} MGLRenderPassIdentityState;
+
+typedef struct MGLRenderBufferCopyEntry_t {
+    void *source_buffer;
+    uint64_t source_offset;
+    void *destination_buffer;
+    uint64_t destination_offset;
+    uint64_t length;
+} MGLRenderBufferCopyEntry;
+
+int mglRenderBlitCopyBufferToTexture(void *blit_encoder,
+                                        void *source_buffer,
+                                        uint64_t source_offset,
+                                        uint64_t source_bytes_per_row,
+                                        uint64_t source_bytes_per_image,
+                                        uint64_t source_width,
+                                        uint64_t source_height,
+                                        uint64_t source_depth,
+                                        void *destination_texture,
+                                        uint64_t destination_slice,
+                                        uint64_t destination_level,
+                                        uint64_t destination_x,
+                                        uint64_t destination_y,
+                                        uint64_t destination_z);
+
+int mglRenderBlitCopyTexture(void *blit_encoder,
+                                void *source_texture,
+                                uint64_t source_slice,
+                                uint64_t source_level,
+                                uint64_t source_x,
+                                uint64_t source_y,
+                                uint64_t source_z,
+                                uint64_t width,
+                                uint64_t height,
+                                uint64_t depth,
+                                void *destination_texture,
+                                uint64_t destination_slice,
+                                uint64_t destination_level,
+                                uint64_t destination_x,
+                                uint64_t destination_y,
+                                uint64_t destination_z);
+
+int mglRenderBlitCopyTextureToBuffer(
+    void *blit_encoder,
+    void *source_texture,
+    uint64_t source_slice,
+    uint64_t source_level,
+    uint64_t source_x,
+    uint64_t source_y,
+    uint64_t source_z,
+    uint64_t width,
+    uint64_t height,
+    uint64_t depth,
+    void *destination_buffer,
+    uint64_t destination_offset,
+    uint64_t destination_bytes_per_row,
+    uint64_t destination_bytes_per_image);
+
+/* Packed depth-stencil textures only allow per-aspect buffer copies: depth
+ * lands as 4 bytes per texel (float32, or 24-bit unorm in the low bits for
+ * Depth24Unorm_Stencil8), stencil as 1 byte. */
+int mglRenderBlitCopyDepthStencilAspectToBuffer(
+    void *blit_encoder,
+    void *source_texture,
+    uint64_t source_slice,
+    uint64_t source_level,
+    uint64_t source_x,
+    uint64_t source_y,
+    uint64_t width,
+    uint64_t height,
+    void *destination_buffer,
+    uint64_t destination_offset,
+    uint64_t destination_bytes_per_row,
+    int stencil_aspect);
+
+/* Stencil (1 byte per texel) between level 0 / slice 0 of a Stencil8 or
+ * packed depth-stencil texture and a buffer. */
+int mglRenderBlitCopyStencilToBuffer(
+    void *blit_encoder,
+    void *source_texture,
+    uint64_t source_x,
+    uint64_t source_y,
+    uint64_t width,
+    uint64_t height,
+    void *destination_buffer,
+    uint64_t destination_offset,
+    uint64_t destination_bytes_per_row,
+    int packed_depth_stencil);
+
+int mglRenderBlitCopyBufferToStencil(
+    void *blit_encoder,
+    void *source_buffer,
+    uint64_t source_offset,
+    uint64_t source_bytes_per_row,
+    uint64_t width,
+    uint64_t height,
+    void *destination_texture,
+    uint64_t destination_x,
+    uint64_t destination_y,
+    int packed_depth_stencil);
+
 
 /* Pure synchronization helpers. Metal descriptor inspection is confined to
  * the Metal-cpp implementation TU; the C ABI carries only opaque handles and
@@ -85,6 +619,14 @@ int mglRenderBlitFramebufferPlan(
     int needs_render_target_sync_blit,
     int scissor_test_enabled,
     MGLRenderBlitFramebufferPlan *out);
+
+/* Re-expresses a plan built for Metal-row storage on both sides in each
+ * side's own row order: the *_metal_y fields become physical rows, and a
+ * side that differs in order from the other adds a vertical flip. */
+void mglRenderBlitPlanApplyStorageOrder(
+    MGLRenderBlitFramebufferPlan *plan,
+    int src_gl_order,
+    int dst_gl_order);
 
 int mglRenderDispatchCompute(void *compute_encoder,
                                 uint32_t groups_x,
@@ -272,6 +814,9 @@ int mglRenderCommandBufferOwnerHasState(
  * glFinish/readback synchronization in the lifecycle owner without exposing
  * a borrowed command-buffer pointer to Objective-C. */
 int mglRenderCommandBufferOwnerHasLastSubmitted(MGLCommandBufferOwner *owner);
+
+/* Borrowed pointer to the owner's last accepted submission (may be NULL). */
+void *mglRenderCommandBufferOwnerGetLastSubmitted(MGLCommandBufferOwner *owner);
 
 /* Wait for one submitted command buffer and return a value-state snapshot.
  * Returns 0 on completed success, 1 when the buffer is still NotEnqueued,

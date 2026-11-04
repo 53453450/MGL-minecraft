@@ -47,6 +47,44 @@ extern "C" {
 
 /* Forward decls: the draw-mode classification logic lives in
  * mgl_render.cpp (both gates); the inlines below delegate to it. */
+/* Primitive topology without the GL enum: one kind per distinct pipeline
+ * shape the backend switches on. */
+typedef enum MGLPrimitiveMode {
+    MGL_PRIMITIVE_INVALID = 0,
+    MGL_PRIMITIVE_POINTS,
+    MGL_PRIMITIVE_LINES,
+    MGL_PRIMITIVE_LINE_STRIP,
+    MGL_PRIMITIVE_LINE_LOOP,
+    MGL_PRIMITIVE_TRIANGLES,
+    MGL_PRIMITIVE_TRIANGLE_STRIP,
+    MGL_PRIMITIVE_TRIANGLE_FAN,
+    MGL_PRIMITIVE_LINES_ADJACENCY,
+    MGL_PRIMITIVE_LINE_STRIP_ADJACENCY,
+    MGL_PRIMITIVE_TRIANGLES_ADJACENCY,
+    MGL_PRIMITIVE_TRIANGLE_STRIP_ADJACENCY,
+    MGL_PRIMITIVE_PATCHES
+} MGLPrimitiveMode;
+
+static inline MGLPrimitiveMode mglPrimitiveModeOf(uint32_t mode)
+{
+    switch (mode) {
+        case GL_POINTS: return MGL_PRIMITIVE_POINTS;
+        case GL_LINES: return MGL_PRIMITIVE_LINES;
+        case GL_LINE_STRIP: return MGL_PRIMITIVE_LINE_STRIP;
+        case GL_LINE_LOOP: return MGL_PRIMITIVE_LINE_LOOP;
+        case GL_TRIANGLES: return MGL_PRIMITIVE_TRIANGLES;
+        case GL_TRIANGLE_STRIP: return MGL_PRIMITIVE_TRIANGLE_STRIP;
+        case GL_TRIANGLE_FAN: return MGL_PRIMITIVE_TRIANGLE_FAN;
+        case GL_LINES_ADJACENCY: return MGL_PRIMITIVE_LINES_ADJACENCY;
+        case GL_LINE_STRIP_ADJACENCY: return MGL_PRIMITIVE_LINE_STRIP_ADJACENCY;
+        case GL_TRIANGLES_ADJACENCY: return MGL_PRIMITIVE_TRIANGLES_ADJACENCY;
+        case GL_TRIANGLE_STRIP_ADJACENCY:
+            return MGL_PRIMITIVE_TRIANGLE_STRIP_ADJACENCY;
+        case GL_PATCHES: return MGL_PRIMITIVE_PATCHES;
+        default: return MGL_PRIMITIVE_INVALID;
+    }
+}
+
 int mglRenderDrawModeProducesPolygons(uint64_t gl_mode);
 int mglRenderPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
                                                 uint64_t index_count);

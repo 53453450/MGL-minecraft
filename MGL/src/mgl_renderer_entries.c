@@ -32,10 +32,11 @@
 
 #include <mach/mach_vm.h>
 #include "mgl_render_pass_manager_ops.h"
+#include "mgl_readback_policy.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
 #include "mgl_gpu_recovery.h"
 #include "mgl_attachment_binding.h"  /* FBO attachment bind */
-#include <mach/mach_init.h>
-#include <mach/vm_map.h>
 #include <string.h>
 #include <strings.h>
 #include <stdlib.h>
@@ -90,16 +91,13 @@
 #include "mgl_trace_log.h"
 #include "mgl_byte_hash.h"
 #include "mgl_compute_pipeline_cache.h"
+#include "mgl_program_backend.h"
+#include "mgl_buffer_backend.h"
 
 
 /* Restated from the Objective-C headers a .c file cannot include, the way the
  * other C hosts in this tree do it. */
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
-static int mglMexObjectPointerLikelyValid(const void *pointer)
-{
-    return pointer && (uintptr_t)pointer >= 0x1000u &&
-           mglPointerRangeIsReadable(pointer, 1u);
-}
 static int mglMexShouldTraceCall(uint64_t count)
 {
     return (count <= 80ull) || ((count % 500ull) == 0ull);
@@ -114,7 +112,6 @@ static const int kMGLVerbosePipelineLogs = 0;
 
 /* C-safe headers the moved code needs. */
 #include "mgl_buffer_query.h"
-#include "mgl_coordinate.h"
 #include "mgl_draw_buffer.h"
 #include "mgl_focus_program.h"
 #include "mgl_program_resource.h"
@@ -360,6 +357,11 @@ static struct {
 } s_mglEnvCache[MGL_ENV_CACHE_CAPACITY];
 
 #include "mgl_env_flag.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_query.h"
+#include "mgl_render_api_pixel.h"
+#include "mgl_render_api_draw.h"
+#include "mgl_pso_format_class.h"
 
 static int mglEnvFlagEnabledCached(const char *name, int default_on)
 {
@@ -451,7 +453,9 @@ Program *mglResolveProgramFromState(GLMContext ctx)
 
     Program *program = ctx->active_state->program;
     if (program) {
-        GLuint expectedName = ctx->active_state->program_name ? ctx->active_state->program_name : program->name;
+        /* program_name != 0 was enforced above, so it is the known name for
+         * this pointer (decision D6). */
+        GLuint expectedName = ctx->active_state->program_name;
         if (!mglProgramPointerUsableForName(ctx, program, expectedName)) {
             fprintf(stderr, "MGL PROGRAM RESOLVE invalid cached pointer=%p name=%u\n",
                   program,
@@ -480,9 +484,9 @@ Program *mglResolveProgramFromState(GLMContext ctx)
     }
 
     if (!resolved->link_success &&
-        !resolved->modules[_VERTEX_SHADER].metallib_bytes &&
-        !resolved->modules[_FRAGMENT_SHADER].metallib_bytes &&
-        !resolved->modules[_COMPUTE_SHADER].metallib_bytes) {
+        !mglProgramModuleView(resolved, _VERTEX_SHADER)->metallib_bytes &&
+        !mglProgramModuleView(resolved, _FRAGMENT_SHADER)->metallib_bytes &&
+        !mglProgramModuleView(resolved, _COMPUTE_SHADER)->metallib_bytes) {
         fprintf(stderr, "MGL PROGRAM RESOLVE pending: name=%u ptr=%p not linked\n",
               (unsigned)ctx->active_state->program_name, resolved);
         return NULL;
@@ -505,9 +509,8 @@ static ProgramPipeline *mglResolveProgramPipelineFromState(GLMContext ctx)
 
     ProgramPipeline *pipeline = ctx->active_state->program_pipeline;
     if (pipeline) {
-        if (!mglMexObjectPointerLikelyValid(pipeline) ||
-            !mglRendererPointerInHashTable(&ctx->active_state->program_pipeline_table, pipeline) ||
-            !mglPointerRangeIsReadable(pipeline, sizeof(*pipeline))) {
+        if (!mglObjectPointerLooksPlausible(pipeline) ||
+            !mglRendererPointerInHashTable(&ctx->active_state->program_pipeline_table, pipeline)) {
             fprintf(stderr, "MGL PROGRAM PIPELINE RESOLVE invalid cached pointer=%p binding=%u\n",
                   pipeline,
                   (unsigned)ctx->active_state->var.program_pipeline_binding);
@@ -530,8 +533,7 @@ static ProgramPipeline *mglResolveProgramPipelineFromState(GLMContext ctx)
     ProgramPipeline *resolved =
         (ProgramPipeline *)searchHashTable(&ctx->active_state->program_pipeline_table, pipelineName);
     if (!resolved ||
-        !mglMexObjectPointerLikelyValid(resolved) ||
-        !mglPointerRangeIsReadable(resolved, sizeof(*resolved))) {
+        !mglObjectPointerLooksPlausible(resolved)) {
         fprintf(stderr, "MGL PROGRAM PIPELINE RESOLVE fail: name=%u missing/invalid\n",
               (unsigned)pipelineName);
         ctx->active_state->program_pipeline = NULL;
@@ -585,8 +587,7 @@ static ProgramPipeline *mglRestoreProgramPipelineBinding(GLMContext ctx, GLuint 
     ProgramPipeline *pipeline =
         (ProgramPipeline *)searchHashTable(&ctx->active_state->program_pipeline_table, pipelineName);
     if (!pipeline ||
-        !mglMexObjectPointerLikelyValid(pipeline) ||
-        !mglPointerRangeIsReadable(pipeline, sizeof(*pipeline))) {
+        !mglObjectPointerLooksPlausible(pipeline)) {
         fprintf(stderr, "MGL PROGRAM PIPELINE RESTORE missing/invalid pipeline=%u\n",
               (unsigned)pipelineName);
         pipeline = NULL;
@@ -637,8 +638,7 @@ Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage)
         return NULL;
     }
 
-    if (!mglMexObjectPointerLikelyValid(stageProgram) ||
-        !mglPointerRangeIsReadable(stageProgram, sizeof(*stageProgram)) ||
+    if (!mglObjectPointerLooksPlausible(stageProgram) ||
         !mglProgramPointerUsableForName(ctx, stageProgram, stageProgram->name)) {
         fprintf(stderr, "MGL PROGRAM PIPELINE RESOLVE invalid stage program pipeline=%u stage=%s ptr=%p\n",
               (unsigned)pipeline->name,
@@ -652,12 +652,12 @@ Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage)
     }
 
     if (!stageProgram->link_success &&
-        !stageProgram->modules[_VERTEX_SHADER].metallib_bytes &&
-        !stageProgram->modules[_FRAGMENT_SHADER].metallib_bytes &&
-        !stageProgram->modules[_COMPUTE_SHADER].metallib_bytes &&
-        !stageProgram->modules[_GEOMETRY_SHADER].metallib_bytes &&
-        !stageProgram->modules[_TESS_CONTROL_SHADER].metallib_bytes &&
-        !stageProgram->modules[_TESS_EVALUATION_SHADER].metallib_bytes) {
+        !mglProgramModuleView(stageProgram, _VERTEX_SHADER)->metallib_bytes &&
+        !mglProgramModuleView(stageProgram, _FRAGMENT_SHADER)->metallib_bytes &&
+        !mglProgramModuleView(stageProgram, _COMPUTE_SHADER)->metallib_bytes &&
+        !mglProgramModuleView(stageProgram, _GEOMETRY_SHADER)->metallib_bytes &&
+        !mglProgramModuleView(stageProgram, _TESS_CONTROL_SHADER)->metallib_bytes &&
+        !mglProgramModuleView(stageProgram, _TESS_EVALUATION_SHADER)->metallib_bytes) {
         fprintf(stderr, "MGL PROGRAM PIPELINE RESOLVE pending stage program pipeline=%u stage=%s program=%u\n",
               (unsigned)pipeline->name,
               mglShaderStageName(stage),
@@ -869,18 +869,6 @@ Texture *mglTraceFramebufferAttachmentTexture(GLMContext glctx, FBOAttachment *a
     return NULL;
 }
 
-void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level)
-{
-    if (!tex || !tex->mtl_gl_sampled_data) {
-        return;
-    }
-    if (level < 32u) {
-        tex->mtl_gl_sampled_dirty_mip_mask |= (uint32_t)1u << level;
-    } else {
-        tex->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
-    }
-}
-
 
 /* mglMarkTextureLevelRenderTargetWritten macro moved to MGLRenderer_Private.h */
 
@@ -964,9 +952,8 @@ void mglLogStateSnapshot(const char *tag,
     Framebuffer *drawFBO = ctx->active_state->framebuffer;
     GLuint drawFBOName = 0;
     if (drawFBO) {
-        if (mglMexObjectPointerLikelyValid(drawFBO) &&
-            mglRendererPointerInHashTable(&ctx->active_state->framebuffer_table, drawFBO) &&
-            mglPointerRangeIsReadable(drawFBO, sizeof(*drawFBO))) {
+        if (mglObjectPointerLooksPlausible(drawFBO) &&
+            mglRendererPointerInHashTable(&ctx->active_state->framebuffer_table, drawFBO)) {
             drawFBOName = drawFBO->name;
         } else {
             mglTraceLog("MGL TRACE %s invalid drawFBO=%p", tag ? tag : "snapshot", drawFBO);
@@ -1138,9 +1125,8 @@ void mglLogRenderPassLifecycle(const char *tag,
 
     Framebuffer *fbo = ctx ? ctx->active_state->framebuffer : NULL;
     if (fbo &&
-        (!mglMexObjectPointerLikelyValid(fbo) ||
-         !mglRendererPointerInHashTable(&ctx->active_state->framebuffer_table, fbo) ||
-         !mglPointerRangeIsReadable(fbo, sizeof(*fbo)))) {
+        (!mglObjectPointerLooksPlausible(fbo) ||
+         !mglRendererPointerInHashTable(&ctx->active_state->framebuffer_table, fbo))) {
         mglTraceLog("RENDERPASS_%s invalid lifecycle fbo=%p", tag ? tag : "unknown", fbo);
         fbo = NULL;
     }
@@ -1224,8 +1210,10 @@ void mglLogRenderPassLifecycle(const char *tag,
 
 int mglRendererPointerInHashTable(HashTable *table, const void *ptr)
 {
-    return mglMexObjectPointerLikelyValid(ptr) &&
-           mglHashTableContainsData(table, ptr);
+    /* Hash-table membership alone proves liveness: entries are removed
+     * before their objects are freed, so a member pointer is always
+     * dereferenceable.  (Generation-cached, O(1) in the common case.) */
+    return mglHashTableContainsData(table, ptr);
 }
 
 
@@ -1253,7 +1241,7 @@ VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where)
         return NULL;
     }
 
-    if (!mglMexObjectPointerLikelyValid(vao)) {
+    if (!mglObjectPointerLooksPlausible(vao)) {
         fprintf(stderr, "MGL VAO INVALID in %s: vao=%p (suspicious pseudo-pointer)\n",
               where ? where : "unknown", vao);
         mglRendererDropCurrentVAO(ctx);
@@ -1261,9 +1249,9 @@ VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where)
     }
 
     /* Fast path: hashtable membership implies the table holds a live
-     * reference, so the memory is valid and we can safely read fields
-     * without the expensive vm_region_64 syscall.  The generation cache
-     * in mglHashTableContainsData makes this O(1) in the common case. */
+     * reference, so the memory is valid and its fields can be read
+     * directly.  The generation cache in mglHashTableContainsData makes
+     * this O(1) in the common case. */
     if (mglRendererPointerInHashTable(&ctx->active_state->vao_table, vao)) {
         if (vao->magic != MGL_VAO_MAGIC) {
             fprintf(stderr, "MGL VAO INVALID in %s: vao=%p magic=0x%x\n",
@@ -1274,14 +1262,9 @@ VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where)
         return vao;
     }
 
-
-    if (!mglPointerRangeIsReadable(vao, sizeof(*vao))) {
-        fprintf(stderr, "MGL VAO INVALID in %s: vao=%p (unreadable object memory)\n",
-              where ? where : "unknown", vao);
-        mglRendererDropCurrentVAO(ctx);
-        return NULL;
-    }
-
+    /* Slow path: not a table member.  Transient batch VAOs live outside
+     * the table; the pointer already passed the plausibility check, so
+     * read the object's own fields and require them to be self-consistent. */
     if (vao->magic != MGL_VAO_MAGIC) {
         fprintf(stderr, "MGL VAO INVALID in %s: vao=%p magic=0x%x\n",
               where ? where : "unknown", vao, vao->magic);
@@ -1305,25 +1288,21 @@ Buffer *mglRendererGetValidatedBuffer(GLMContext ctx, Buffer *candidate, const c
         return NULL;
     }
 
-    if (!mglMexObjectPointerLikelyValid(candidate)) {
+    if (!mglObjectPointerLooksPlausible(candidate)) {
         fprintf(stderr, "MGL BUFFER INVALID in %s: slot=%lu candidate=%p (suspicious pseudo-pointer)\n",
               where ? where : "unknown", (unsigned long)slot, candidate);
         return NULL;
     }
 
     /* Fast path: hashtable membership implies memory is valid (table holds
-     * a live reference), so we can skip the vm_region_64 syscall. */
+     * a live reference), so fields can be read directly. */
     if (ctx && mglRendererPointerInHashTable(&ctx->active_state->buffer_table, candidate)) {
         return candidate;
     }
 
-
-    if (!mglPointerRangeIsReadable(candidate, sizeof(*candidate))) {
-        fprintf(stderr, "MGL BUFFER INVALID in %s: slot=%lu candidate=%p (unreadable object memory)\n",
-              where ? where : "unknown", (unsigned long)slot, candidate);
-        return NULL;
-    }
-
+    /* Slow path: not a table member.  Transient batch buffers live outside
+     * the table; the pointer already passed the plausibility check, so read
+     * the object's own transient flag directly. */
     if (candidate->transient_batch_buffer) {
         return candidate;
     }
@@ -1401,7 +1380,7 @@ Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *wher
         return NULL;
     }
 
-    if (!mglMexObjectPointerLikelyValid(fbo)) {
+    if (!mglObjectPointerLooksPlausible(fbo)) {
         fprintf(stderr, "MGL FBO INVALID in %s: framebuffer=%p (suspicious pseudo-pointer)\n",
               where ? where : "unknown", fbo);
         if (ctx->active_state->readbuffer == fbo) {
@@ -1413,26 +1392,14 @@ Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *wher
         return NULL;
     }
 
-    /* Fast path: hashtable membership implies memory is valid, so we can
-     * skip the vm_region_64 syscall that was previously unconditionally
-     * performed on every per-draw/per-batch call to this helper. */
+    /* Fast path: hashtable membership implies memory is valid (table holds
+     * a live reference), so fields can be read directly. */
     if (mglRendererPointerInHashTable(&ctx->active_state->framebuffer_table, fbo)) {
         return fbo;
     }
 
-
-    if (!mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
-        fprintf(stderr, "MGL FBO INVALID in %s: framebuffer=%p (not found in sane framebuffer_table or unreadable)\n",
-              where ? where : "unknown", fbo);
-        if (ctx->active_state->readbuffer == fbo) {
-            ctx->active_state->readbuffer = NULL;
-        }
-        ctx->active_state->framebuffer = NULL;
-        mglRendererSyncFramebufferBindingNames(ctx);
-        mglMarkStateDirtyBits(ctx->active_state, (DIRTY_FBO | DIRTY_STATE));
-        return NULL;
-    }
-
+    /* Slow path: every bound FBO is table-backed (there are no transient
+     * batch FBOs), so a non-member pointer is stale — fail closed. */
     fprintf(stderr, "MGL FBO INVALID in %s: framebuffer=%p (not found in sane framebuffer_table)\n",
           where ? where : "unknown", fbo);
     if (ctx->active_state->readbuffer == fbo) {
@@ -1770,6 +1737,23 @@ bool mglRenderGenerateVertexDescriptorState(GLMContext ctx,
                             ? 12u
                             : 16u);
                 }
+            } else if ((conversionKind == MGL_ATTRIB_CONV_DOUBLE ||
+                        conversionKind == MGL_ATTRIB_CONV_FIXED) &&
+                       resolved.stride != 0u) {
+                /* Converted buffer keeps source relativeoffset but stores
+                 * floatN; grow the Metal stride when relativeoffset+floatN
+                 * exceeds the GL binding pitch (VAB inputL stride-16 case).
+                 * stride==0 is constant-fetch (§10.3.1) — leave it for the
+                 * Constant step remap below. */
+                uint32_t n = (uint32_t)vao->attrib[i].size;
+                if (n < 1u || n > 4u) {
+                    n = 4u;
+                }
+                uint32_t need =
+                    (uint32_t)resolved.relativeoffset + n * 4u;
+                if (need > stride) {
+                    stride = (uint32_t)mglRenderAlignVertexStrideForMetal(need);
+                }
             }
             layoutStride[mapped_buffer_index] = stride;
 
@@ -2074,8 +2058,8 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
     const uint8_t *vboBytes = NULL;
     if (vbo->data.buffer_data && ((uintptr_t)vbo->data.buffer_data >= 0x1000ull)) {
         vboBytes = (const uint8_t *)vbo->data.buffer_data;
-    } else if (vbo->data.mtl_data) {
-        void *vb = (void *)(vbo->data.mtl_data);
+    } else if (mglBufferMtl(vbo)) {
+        void *vb = (void *)(mglBufferMtl(vbo));
         vboBytes = (const uint8_t *)mglMexBufferContents(vb);
     }
 
@@ -2546,8 +2530,8 @@ void mglTraceReplayCommandVertexAttribSamples(GLMContext traceCtx,
     if (ebo->data.buffer_data && ((uintptr_t)ebo->data.buffer_data >= 0x1000ull)) {
         indexBytes = (const uint8_t *)ebo->data.buffer_data;
         indexBytesAvailable = (ebo->size > 0) ? (unsigned long)ebo->size : 0u;
-    } else if (ebo->data.mtl_data) {
-        void *indexBuffer = (void *)(ebo->data.mtl_data);
+    } else if (mglBufferMtl(ebo)) {
+        void *indexBuffer = (void *)(mglBufferMtl(ebo));
         if (indexBuffer && mglMexBufferContents(indexBuffer)) {
             indexBytes = (const uint8_t *)mglMexBufferContents(indexBuffer);
             indexBytesAvailable = mglMexBufferLength(indexBuffer);

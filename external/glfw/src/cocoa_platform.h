@@ -118,6 +118,12 @@ typedef UInt8 (*PFN_LMGetKbdType)(void);
 typedef struct _GLFWcontextMGL
 {
     GLMContext          ctx;
+    /* Which library this context came from: libmgl.dylib for a desktop context
+     * or libmgl_es.dylib for an ES one.  Both export the same entry points, so
+     * every call below goes through `fns` and every symbol lookup through
+     * `libHandle` instead of the process-wide link-time binding. */
+    const void*         fns;
+    void*               libHandle;
     // H2 (docs/GLFW_MGL_INVOCATION_PLAN.md): fetched once per context from
     // mglContextHostOps(); every renderer interaction goes through it
     // instead of objc_msgSend, so removed MGL entries fail at compile time

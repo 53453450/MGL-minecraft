@@ -26,6 +26,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <libgen.h>
 #include <stdatomic.h>
 
@@ -62,6 +63,24 @@ void mglInitTraceLogIfNeeded(void)
     dispatch_once(&onceToken, ^{
         g_mglTraceLogEnabled = mglTraceEnvFlag("MGL_TRACE_LOG");
         g_mglTraceLogMirrorStderr = mglTraceEnvFlag("MGL_TRACE_LOG_STDERR");
+
+        /* MGL_STDERR_CAPTURE=<path>: redirect fd 2 into a file at load time.
+         * Launchers that pipe the game's stderr into an in-memory console
+         * (Prism) make fprintf(stderr) diagnostics unreachable from scripts;
+         * this captures them (PERF summaries, warnings) for headless runs. */
+        const char *stderr_capture = getenv("MGL_STDERR_CAPTURE");
+        if (stderr_capture && stderr_capture[0] != '\0') {
+            int fd = open(stderr_capture, O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if (fd >= 0) {
+                dup2(fd, 2);
+                if (fd > 2) {
+                    close(fd);
+                }
+                fprintf(stderr, "MGL INFO: stderr captured to %s\n",
+                        stderr_capture);
+            }
+        }
+
         if (!g_mglTraceLogEnabled) {
             return;
         }

@@ -11,9 +11,76 @@
 
 
 #include "mgl_texture_compat.h"
-#include "mgl_render.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_pixel.h"
+#include "mgl_render_api_lifecycle.h"
+#include "mgl_binding_policy.h"
 #include "mgl_sampler_compat.h"   /* mglFindSamplerResourceForMetalBinding */
 #include "mgl_metal_ref.h"         /* mglSafeReleaseMetalObj */
+
+uint32_t mglTextureTargetOf(const Texture *tex)
+{
+    return tex ? (uint32_t)tex->target : 0u;
+}
+
+uint32_t mglTextureSamplesOf(const Texture *tex)
+{
+    return tex ? tex->samples : 0u;
+}
+
+uint32_t mglTextureDepthOf(const Texture *tex)
+{
+    return tex ? tex->depth : 0u;
+}
+
+
+uint32_t mglTextureDirtyBits(const Texture *tex)
+{
+    return tex ? tex->dirty_bits : 0u;
+}
+
+void mglTextureSetDirtyBits(Texture *tex, uint32_t bits)
+{
+    if (tex) {
+        tex->dirty_bits |= bits;
+    }
+}
+
+void mglTextureClearDirtyBits(Texture *tex, uint32_t bits)
+{
+    if (tex) {
+        tex->dirty_bits &= ~bits;
+    }
+}
+
+void mglTextureMaskDirtyBits(Texture *tex, uint32_t bits)
+{
+    if (tex) {
+        tex->dirty_bits &= bits;
+    }
+}
+
+void mglTextureResetDirtyBits(Texture *tex)
+{
+    if (tex) {
+        tex->dirty_bits = 0u;
+    }
+}
+
+uint32_t mglTextureBufferDirtyBits(const Texture *tex)
+{
+    if (!tex || !tex->texture_buffer) {
+        return 0u;
+    }
+    return tex->texture_buffer->data.dirty_bits;
+}
+
+void mglTextureSetRenderTarget(Texture *tex, bool on)
+{
+    if (tex) {
+        tex->is_render_target = on ? 1 : 0;
+    }
+}
 
 MGLTextureDataKind mglTextureDataKindForPixelFormat(uint32_t pixelFormat)
 {
@@ -404,18 +471,3 @@ GLuint mglTextureUnitForSampledResource(MGLShaderResource *sampled_resource,
     return mglRenderDefaultSamplerUnit(defaultUnit, TEXTURE_UNITS);
 }
 
-void mglTextureReleaseGLSampledCopy(Texture *tex)
-{
-    if (!tex) {
-        return;
-    }
-    if (tex->mtl_gl_sampled_data) {
-        mglSafeReleaseMetalObj((void **)&tex->mtl_gl_sampled_data);
-    }
-    tex->mtl_gl_sampled_width = 0u;
-    tex->mtl_gl_sampled_height = 0u;
-    tex->mtl_gl_sampled_format = 0u;
-    tex->mtl_gl_sampled_levels = 0u;
-    tex->mtl_gl_sampled_write_version = 0u;
-    tex->mtl_gl_sampled_dirty_mip_mask = 0u;
-}

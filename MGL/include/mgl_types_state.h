@@ -237,6 +237,20 @@ static inline void mglMarkRendererDirtyBits(GLMState *state, GLuint dirty_bits)
     state->dirty_bits |= dirty_bits;
 }
 
+/* The renderer has consumed `dirty_bits`; drop them. */
+static inline void mglClearRendererDirtyBits(GLMState *state, GLuint dirty_bits)
+{
+    if (!state) return;
+    state->dirty_bits &= ~dirty_bits;
+}
+
+/* The renderer has consumed every pending change. */
+static inline void mglClearAllRendererDirtyBits(GLMState *state)
+{
+    if (!state) return;
+    state->dirty_bits = 0;
+}
+
 /* State-key input mutations preserve the renderer's legacy dirty bits and
  * also invalidate every cache domain fed by those bits. */
 static inline void mglMarkStateDirtyBits(GLMState *state, GLuint dirty_bits)
@@ -349,6 +363,85 @@ static inline void mglCopyHotStateFields(GLMState *dst, const GLMState *src)
 #define MGL_SNAPSHOT_COPY_HOT(_t_) dst->buffer_base[_t_] = src->buffer_base[_t_];
     MGL_SNAPSHOT_HOT_BUFFER_BASE_TYPES(MGL_SNAPSHOT_COPY_HOT)
 #undef MGL_SNAPSHOT_COPY_HOT
+}
+
+/* Two-level compare-copy: 1KB blocks, refined to 64B granules inside
+ * mismatching blocks.  Compare reads are cheaper than the write traffic of
+ * an unconditional copy, and a region whose only change is a pointer or a
+ * binding value rewrites just its own granule instead of the whole region.
+ * Skipping the copy of bytes that already match is behaviorally identical
+ * to copying them, so this is a pure no-op elimination.  Returns the bytes
+ * actually written. */
+static inline size_t mglCopyRegionBlocksIfChanged(char *dst, const char *src,
+                                                  size_t len)
+{
+    size_t copied = 0;
+    size_t off = 0;
+    while (off < len) {
+        const size_t blk = (len - off < 1024) ? len - off : 1024;
+        if (memcmp(dst + off, src + off, blk) == 0) {
+            off += blk;
+            continue;
+        }
+        size_t g = 0;
+        while (g < blk) {
+            const size_t gran = (blk - g < 64) ? blk - g : 64;
+            if (memcmp(dst + off + g, src + off + g, gran) != 0) {
+                memcpy(dst + off + g, src + off + g, gran);
+                copied += gran;
+            }
+            g += gran;
+        }
+        off += blk;
+    }
+    return copied;
+}
+
+/* Block-wise copy of the hot state that skips bytes already present in dst.
+ * It exists because consecutive batches in a flush usually differ only in a
+ * handful of scattered fields (buffer pointers, UBO slice offsets, binding
+ * mirrors); region-granular compares let one changed byte pin a whole
+ * 22KB region into a permanent mismatch.  dirty_bits is copied unconditionally
+ * because the restore recomputes it right after this call.  Returns the
+ * bytes actually written (the restore-cost metric). */
+static inline size_t mglCopyHotStateFieldsIfChanged(GLMState *dst, const GLMState *src)
+{
+    if (!dst || !src || dst == src) return 0;
+
+    size_t copied = sizeof(GLuint);
+    if (dst->dirty_bits != src->dirty_bits) {
+        dst->dirty_bits = src->dirty_bits;
+    }
+
+    /* Region 1 tail: [dirty_bits, sync_table) — error queue, bindings,
+     * texture unit state. */
+    copied += mglCopyRegionBlocksIfChanged(
+        (char *)dst + sizeof(GLuint),
+        (const char *)src + sizeof(GLuint),
+        offsetof(GLMState, sync_table) - sizeof(GLuint));
+    /* Region 3: [shaders, buffer_base) — skip the 11 HashTables. */
+    copied += mglCopyRegionBlocksIfChanged(
+        (char *)dst + offsetof(GLMState, shaders),
+        (const char *)src + offsetof(GLMState, shaders),
+        offsetof(GLMState, buffer_base) - offsetof(GLMState, shaders));
+    /* Region 5: [pack, end) — map lists, caps, the volatile hash-cache
+     * block and the binding-mirror-laden var tail. */
+    copied += mglCopyRegionBlocksIfChanged(
+        (char *)dst + offsetof(GLMState, pack),
+        (const char *)src + offsetof(GLMState, pack),
+        sizeof(GLMState) - offsetof(GLMState, pack));
+
+    /* Region 4: the hot buffer_base slots carry the per-draw UBO slice
+     * offsets; a changed slice rewrites only its slot's granules. */
+#define MGL_SNAPSHOT_COPY_HOT_IF_CHANGED(_t_)                           \
+    copied += mglCopyRegionBlocksIfChanged(                             \
+        (char *)&dst->buffer_base[_t_],                                 \
+        (const char *)&src->buffer_base[_t_],                           \
+        sizeof(BufferBase));
+    MGL_SNAPSHOT_HOT_BUFFER_BASE_TYPES(MGL_SNAPSHOT_COPY_HOT_IF_CHANGED)
+#undef MGL_SNAPSHOT_COPY_HOT_IF_CHANGED
+
+    return copied;
 }
 
 #endif /* mgl_types_state_h */

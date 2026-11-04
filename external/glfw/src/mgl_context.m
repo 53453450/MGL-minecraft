@@ -24,19 +24,91 @@
 #define GL_DEPTH_COMPONENT                0x1902
 #define GL_FLOAT                          0x1406
 
+/* The desktop and ES builds of MGL export the same entry points, so a window
+ * has to remember which library it came from.  Everything below goes through
+ * this table instead of the link-time binding, which always points at
+ * libmgl.dylib. */
+typedef struct MGLContextFns
+{
+    GLMContext (*create)(GLenum, GLenum, GLenum, GLenum, GLenum, GLenum);
+    void       (*destroy)(GLMContext);
+    void       (*makeCurrent)(GLMContext);
+    void       (*swapBuffers)(GLMContext);
+    void       (*setSrgb)(GLMContext, GLboolean);
+    const MGLContextHostOps* (*hostOps)(void);
+} MGLContextFns;
+
+static const MGLContextFns kMGLDesktopFns =
+{
+    createGLMContext,
+    destroyGLMContext,
+    MGLsetCurrentContext,
+    MGLswapBuffers,
+    MGLsetDefaultFramebufferSRGBCapable,
+    mglContextHostOps
+};
+
+static MGLContextFns sMGLESFns;
+static GLFWbool      sMGLESReady = GLFW_FALSE;
+static void*         sMGLESHandle = NULL;
+
+/* One image serves both profiles now: an ES context is the same library asked
+ * for a different profile, so there is no second dylib to load. */
+static GLMContext createESContext(GLenum format, GLenum type, GLenum depth_format,
+                                  GLenum depth_type, GLenum stencil_format,
+                                  GLenum stencil_type)
+{
+    return createGLMContextProfile(1, format, type, depth_format, depth_type,
+                                   stencil_format, stencil_type);
+}
+
+static GLFWbool loadMGLESLibrary(void)
+{
+    if (sMGLESReady)
+        return GLFW_TRUE;
+
+    sMGLESFns.create      = createESContext;
+    sMGLESFns.destroy     = destroyGLMContext;
+    sMGLESFns.makeCurrent = MGLsetCurrentContext;
+    sMGLESFns.swapBuffers = MGLswapBuffers;
+    sMGLESFns.setSrgb     = MGLsetDefaultFramebufferSRGBCapable;
+    sMGLESFns.hostOps     = mglContextHostOps;
+    sMGLESHandle          = _glfw.mgl.handle;
+    sMGLESReady           = GLFW_TRUE;
+    return GLFW_TRUE;
+}
+
+static const MGLContextFns* contextFns(const _GLFWwindow* window)
+{
+    if (window && window->context.mgl.fns)
+        return (const MGLContextFns*) window->context.mgl.fns;
+    return &kMGLDesktopFns;
+}
+
+/* Symbol lookups follow the context that created the window. */
+static void* currentMGLHandle(void)
+{
+    _GLFWwindow* window = _glfwPlatformGetTls(&_glfw.contextSlot);
+    if (window && window->context.mgl.libHandle)
+        return window->context.mgl.libHandle;
+    return _glfw.mgl.handle;
+}
+
 static void makeContextCurrentMGL(_GLFWwindow* window)
 {
     @autoreleasepool {
 
     if (window)
     {
-        MGLsetCurrentContext(window->context.mgl.ctx);
+        contextFns(window)->makeCurrent(window->context.mgl.ctx);
 
         _glfwPlatformSetTls(&_glfw.contextSlot, window);
     }
     else
     {
-        MGLsetCurrentContext(NULL);
+        contextFns(NULL)->makeCurrent(NULL);
+        if (sMGLESReady)
+            sMGLESFns.makeCurrent(NULL);
         _glfwPlatformSetTls(&_glfw.contextSlot, NULL);
     }
 
@@ -45,7 +117,7 @@ static void makeContextCurrentMGL(_GLFWwindow* window)
 
 static void swapBuffersMGL(_GLFWwindow* window)
 {
-    MGLswapBuffers(window->context.mgl.ctx);
+    contextFns(window)->swapBuffers(window->context.mgl.ctx);
 }
 
 static void swapIntervalMGL(int interval)
@@ -63,16 +135,17 @@ static void swapIntervalMGL(int interval)
 
 static int extensionSupportedMGL(const char* extension)
 {
-    if (!extension || !_glfw.mgl.handle) {
+    void* libHandle = currentMGLHandle();
+    if (!extension || !libHandle) {
         return GLFW_FALSE;
     }
 
     typedef const unsigned char* (*PFNGLGETSTRINGIPROC)(unsigned int, unsigned int);
     typedef void (*PFNGLGETINTEGERVPROC)(unsigned int, int*);
     PFNGLGETSTRINGIPROC getStringi =
-        (PFNGLGETSTRINGIPROC)_glfwPlatformGetModuleSymbol(_glfw.mgl.handle, "glGetStringi");
+        (PFNGLGETSTRINGIPROC)_glfwPlatformGetModuleSymbol(libHandle, "glGetStringi");
     PFNGLGETINTEGERVPROC getIntegerv =
-        (PFNGLGETINTEGERVPROC)_glfwPlatformGetModuleSymbol(_glfw.mgl.handle, "glGetIntegerv");
+        (PFNGLGETINTEGERVPROC)_glfwPlatformGetModuleSymbol(libHandle, "glGetIntegerv");
     if (!getStringi || !getIntegerv) {
         return GLFW_FALSE;
     }
@@ -91,10 +164,11 @@ static int extensionSupportedMGL(const char* extension)
 static GLFWglproc getProcAddressMGL(const char* procname)
 {
     GLFWproc symbol;
-    if (!_glfw.mgl.handle)
+    void* libHandle = currentMGLHandle();
+    if (!libHandle)
         return NULL;
 
-    symbol = _glfwPlatformGetModuleSymbol(_glfw.mgl.handle, procname);
+    symbol = _glfwPlatformGetModuleSymbol(libHandle, procname);
     return symbol;
 }
 
@@ -106,7 +180,7 @@ static void destroyContextMGL(_GLFWwindow* window)
 
         if (window->context.mgl.ctx)
         {
-            destroyGLMContext(window->context.mgl.ctx);
+            contextFns(window)->destroy(window->context.mgl.ctx);
             window->context.mgl.ctx = NULL;
         }
 
@@ -183,12 +257,20 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
                                 const _GLFWctxconfig* ctxconfig,
                                 const _GLFWfbconfig* fbconfig)
 {
+    /* An ES context comes from libmgl_es.dylib, a desktop one from the
+     * libmgl.dylib this library is linked against.  Both are asked for the same
+     * way; only the library behind them differs. */
+    const MGLContextFns* fns = &kMGLDesktopFns;
+    void* libHandle = _glfw.mgl.handle;
     if (ctxconfig->client == GLFW_OPENGL_ES_API)
     {
-        _glfwInputError(GLFW_API_UNAVAILABLE,
-                        "MGL: OpenGL ES is not available on macOS");
-        return GLFW_FALSE;
+        if (!loadMGLESLibrary())
+            return GLFW_FALSE;
+        fns    = &sMGLESFns;
+        libHandle = sMGLESHandle;
     }
+    window->context.mgl.fns       = fns;
+    window->context.mgl.libHandle = libHandle;
 
     if (ctxconfig->share)
     {
@@ -207,9 +289,9 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
         return GLFW_FALSE;
     }
 
-    window->context.mgl.ctx = createGLMContext(GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV,
-                                               GL_DEPTH_COMPONENT, GL_FLOAT,
-                                               0, 0);
+    window->context.mgl.ctx = fns->create(GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV,
+                                          GL_DEPTH_COMPONENT, GL_FLOAT,
+                                          0, 0);
     if (!window->context.mgl.ctx)
     {
         _glfwInputError(GLFW_VERSION_UNAVAILABLE,
@@ -221,7 +303,7 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
     // When enabled, the Metal drawable will use _sRGB pixel format so that
     // fragment shader outputs are automatically encoded to sRGB on write.
     if (fbconfig && fbconfig->sRGB) {
-        MGLsetDefaultFramebufferSRGBCapable(window->context.mgl.ctx, GLFW_TRUE);
+        fns->setSrgb(window->context.mgl.ctx, GLFW_TRUE);
     }
     
     if (window->context.mgl.ctx == nil)
@@ -239,11 +321,11 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
      * references the MGLRenderer class, so a removed or renamed MGL entry is
      * a compile-time event for rebuilt consumers and a NULL check for stale
      * ones - not an unrecognized-selector crash. */
-    const MGLContextHostOps* ops = mglContextHostOps();
+    const MGLContextHostOps* ops = fns->hostOps();
     if (!ops || ops->version != MGL_CONTEXT_HOST_OPS_VERSION ||
         ops->size < sizeof(MGLContextHostOps))
     {
-        destroyGLMContext(window->context.mgl.ctx);
+        fns->destroy(window->context.mgl.ctx);
         window->context.mgl.ctx = NULL;
         _glfwInputError(GLFW_VERSION_UNAVAILABLE,
                         "MGL: context host ops missing or incompatible");
@@ -255,7 +337,7 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
                                                         window->ns.view);
     if (!window->context.mgl.renderer)
     {
-        destroyGLMContext(window->context.mgl.ctx);
+        fns->destroy(window->context.mgl.ctx);
         window->context.mgl.ctx = NULL;
         _glfwInputError(GLFW_VERSION_UNAVAILABLE,
                         "MGL: Failed to allocate renderer");
@@ -268,7 +350,7 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
          * context.  Destroy it before exposing any GLFW callbacks so a
          * failed Metal device/queue/layer setup cannot become a half-live
          * context. */
-        destroyGLMContext(window->context.mgl.ctx);
+        fns->destroy(window->context.mgl.ctx);
         window->context.mgl.ctx = NULL;
         ops->release_owner(window->context.mgl.renderer);
         window->context.mgl.renderer = nil;

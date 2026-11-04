@@ -75,7 +75,6 @@ typedef struct VertexArray_t {
     BufferBinding bindings[MGL_MAX_VERTEX_ATTRIB_BINDINGS];
     VertexAttrib attrib[MAX_ATTRIBS];
     VertexElementArray element_array;
-    void *mtl_data;
     GLboolean transient_batch_vao;
     char *debug_label;  /* ObjectLabel, GL 4.6 §20.7; NULL = empty */
 } VertexArray;

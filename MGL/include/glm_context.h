@@ -102,7 +102,7 @@ void mglDispatchError(GLMContext ctx, const char *func, GLenum error);
 #include "mgl_types_program.h"
 #include "mgl_types_framebuffer.h"
 #include "mgl_types_sync.h"
-#include "mgl_types_state.h"
+#include "glm_state.h" /* GLMState (+ mgl_types_state.h); G5 split */
 #include "mgl_renderer_backend.h"
 
 static_assert(_TEXTURE_BUFFER == _TEXTURE_BUFFER_TARGET, "_TEXTURE_BUFFER != _TEXTURE_BUFFER_TARGET");
@@ -128,14 +128,17 @@ typedef struct MGLDebugControlRule {
 
 typedef struct GLMContextRec_t {
     GLuint      context_flags;
+    /* Runtime profile flag.  Stage 1 of the single-library work: the two builds
+     * still differ at compile time, so this is a constant that mirrors the
+     * build, but every behaviour check below reads it instead of testing the
+     * macro.  Stage 2 fills it from the creation request so one image can serve
+     * both profiles. */
+    int         is_es;
 
-#ifdef MGL_GL_CORE
+    /* One table for both profiles: the ES dispatch fills its 238 entries and
+     * leaves the desktop-only slots NULL (nothing calls them from an ES
+     * context), so a single image can carry either kind of context. */
     struct GLMDispatchTable dispatch;
-#endif
-
-#ifdef MGL_GL_ES
-    struct GLM_ES_DispatchTable dispatch;
-#endif
 
     GLMState    state;
     /* Pointer to the currently active GLMState.  Defaults to &state; batch
@@ -165,6 +168,15 @@ typedef struct GLMContextRec_t {
     MGLCommandBuffer draw_command_buffer;
     bool            draw_defer_enabled;
     bool            sync_strict;
+
+    /* Recycled transient batch scratch (stream-merge vertex/index), owned by
+     * the context so it survives the per-flush command-buffer reset (see
+     * draw_command.c mglRecycleTransientBatchBuffer).  A per-draw batch
+     * stream would otherwise calloc and Metal-allocate one pair per draw;
+     * a pooled buffer only leaves the pool once the commit that last read
+     * it has completed (generation fence).  [0]=ARRAY [1]=ELEMENT_ARRAY. */
+    void           *transient_pool[2];
+    uint32_t        transient_pool_count[2];
 
     /* Sync handles may be queried/deleted from different client threads.
      * Protect the context-local sync table and lookup-to-retain/delete
@@ -250,6 +262,28 @@ static inline int mglCtxActiveIsReplayWorkspace(GLMContext ctx)
     return ctx && ctx->active_state && ctx->active_state != &ctx->state;
 }
 
+/* ARCH-003 / Phase 2: single write path for the active GLMState pointer. */
+static inline void mglContextSetActiveState(GLMContext ctx, GLMState *state)
+{
+    if (ctx) {
+        ctx->active_state = state;
+    }
+}
+
+static inline void mglContextAssertActiveState(GLMContext ctx)
+{
+    assert(ctx && ctx->active_state &&
+           "ARCH-003: ctx->active_state must be non-NULL");
+}
+
+/* Profile selector.  A build still has one default profile (the ES image
+ * defaults to ES so libmgl_es.dylib keeps working), but the caller can now ask
+ * for either one explicitly -- that is what lets a single image serve both. */
+#define MGL_PROFILE_DEFAULT (-1)
+GLMContext createGLMContextProfile(int profile_es, GLenum format, GLenum type,
+                                   GLenum depth_format, GLenum depth_type,
+                                   GLenum stencil_format, GLenum stencil_type);
+
 GLMContext createGLMContext(GLenum format, GLenum type,
                             GLenum depth_format, GLenum depth_type,
                             GLenum stencil_format, GLenum stencil_type);
@@ -267,6 +301,24 @@ void mglRecordActiveComputeShaderQueryDispatch(GLMContext ctx,
 
 void MGLsetCurrentContext(GLMContext ctx);
 void destroyGLMContext(GLMContext ctx);
+
+/* Set every GL_MAX_*_SAMPLES limit from the backend device's largest
+ * multisample count (floored at the GL 4.6 minimum).  Called once the backend
+ * has published its capability snapshot; glm_params.c cannot know it earlier
+ * because the context is created before the device. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+void mglApplyBackendSampleLimits(GLMContext ctx, uint64_t max_sample_count);
+
+/* Does the window-system framebuffer have a depth / stencil attachment?  The
+ * GL entry points ask this instead of reading the storage pixel format, which
+ * is the context's business (docs/AUDIT_LAYERING_2026-10-17.md LY-03). */
+GLboolean glmDefaultFramebufferHasDepth(GLMContext ctx);
+GLboolean glmDefaultFramebufferHasStencil(GLMContext ctx);
+#ifdef __cplusplus
+}
+#endif
 /* GL error query.  Owned here so error.h / mgl.h stop duplicating it; it is
  * part of the context surface every GL TU includes anyway. */
 GLenum  mglGetError(GLMContext ctx);

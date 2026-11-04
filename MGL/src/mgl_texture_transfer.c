@@ -243,6 +243,14 @@ bool mglComputeTexturePackLayout(GLMContext ctx,
     return true;
 }
 
+/* BC4 palette weights match Metal/D3D: float divide then round-to-nearest.
+ * Truncating integer `/7` drifts a ULP from GPU samples and fails CTS
+ * texture_view.view_classes signed↔unsigned RGTC compares (epsilon 1/127). */
+static int mglBC4PaletteLerp(int a, int b, int na, int nb, int denom)
+{
+    return (int)(((na * a + nb * b) + (denom / 2)) / denom);
+}
+
 static void mglEncodeBC4Block(const int v[16], uint8_t out[8])
 {
     int hi = v[0];
@@ -253,7 +261,7 @@ static void mglEncodeBC4Block(const int v[16], uint8_t out[8])
     }
     int palette[8] = {hi, lo};
     for (int i = 2; i < 8; i++) {
-        palette[i] = ((8 - i) * hi + (i - 1) * lo) / 7;
+        palette[i] = mglBC4PaletteLerp(hi, lo, 8 - i, i - 1, 7);
     }
     uint64_t bits = 0u;
     if (hi != lo) {
@@ -287,10 +295,10 @@ static void mglDecodeBC4Block(const uint8_t block[8], int out[16])
     palette[1] = c1;
     if (c0 > c1) {
         for (int i = 2; i < 8; i++)
-            palette[i] = ((8 - i) * c0 + (i - 1) * c1) / 7;
+            palette[i] = mglBC4PaletteLerp(c0, c1, 8 - i, i - 1, 7);
     } else {
         for (int i = 2; i < 6; i++)
-            palette[i] = ((6 - i) * c0 + (i - 1) * c1) / 5;
+            palette[i] = mglBC4PaletteLerp(c0, c1, 6 - i, i - 1, 5);
         palette[6] = 0;
         palette[7] = 255;
     }
@@ -490,6 +498,423 @@ GLenum mglEncodeRGTCRectToCPU(GLenum internalformat,
                 if (two_channels) {
                     mglEncodeBC4Block(green, dst + 8);
                 }
+            }
+        }
+    }
+    return GL_NO_ERROR;
+}
+
+/* BC6H Mode 11 (0x03) solid-color pack: explicit 10.10 endpoints, no
+ * transform, 4-bit indices.  Both endpoints store Quantize(half, 10) so
+ * index-0 and index-max both recover the same colour after Unquantize+
+ * finish_unquantize. */
+static void mglBC6HPutBits(uint8_t out[16], size_t *bit, uint32_t value, int nbits)
+{
+    for (int i = 0; i < nbits; i++) {
+        if (value & (1u << i)) {
+            out[(*bit) >> 3] |= (uint8_t)(1u << ((*bit) & 7u));
+        }
+        (*bit)++;
+    }
+}
+
+enum { MGL_BC6H_F16MAX = 0x7bff };
+
+static int mglBC6HQuantize10(int iValue, bool is_signed)
+{
+    if (is_signed) {
+        int s = 0;
+        if (iValue < 0) {
+            s = 1;
+            iValue = -iValue;
+        }
+        if (iValue > MGL_BC6H_F16MAX) {
+            iValue = MGL_BC6H_F16MAX;
+        }
+        int q = (iValue << 9) / (MGL_BC6H_F16MAX + 1);
+        return s ? -q : q;
+    }
+    if (iValue < 0) {
+        iValue = 0;
+    }
+    if (iValue > MGL_BC6H_F16MAX) {
+        iValue = MGL_BC6H_F16MAX;
+    }
+    return (iValue << 10) / (MGL_BC6H_F16MAX + 1);
+}
+
+static uint16_t mglBC6HHalfSanitize(uint16_t half_bits, bool is_signed)
+{
+    const unsigned exp = (half_bits >> 10) & 0x1Fu;
+    uint16_t mag = half_bits & 0x7FFFu;
+    if (exp == 0x1Fu) {
+        mag = (half_bits & 0x3FFu) ? 0u : 0x7BFFu;
+    } else if (mag > 0x7BFFu) {
+        mag = 0x7BFFu;
+    }
+    if (is_signed && (half_bits & 0x8000u)) {
+        return (uint16_t)(0x8000u | mag);
+    }
+    return mag;
+}
+
+static void mglEncodeBC6HSolidBlock(float r, float g, float b, bool is_signed,
+                                    uint8_t out[16])
+{
+    if (isnan(r)) {
+        r = 0.0f;
+    } else if (isinf(r)) {
+        r = (r > 0.0f) ? 65504.0f : (is_signed ? -65504.0f : 0.0f);
+    }
+    if (isnan(g)) {
+        g = 0.0f;
+    } else if (isinf(g)) {
+        g = (g > 0.0f) ? 65504.0f : (is_signed ? -65504.0f : 0.0f);
+    }
+    if (isnan(b)) {
+        b = 0.0f;
+    } else if (isinf(b)) {
+        b = (b > 0.0f) ? 65504.0f : (is_signed ? -65504.0f : 0.0f);
+    }
+    if (!is_signed) {
+        if (r < 0.0f) {
+            r = 0.0f;
+        }
+        if (g < 0.0f) {
+            g = 0.0f;
+        }
+        if (b < 0.0f) {
+            b = 0.0f;
+        }
+    }
+
+    const uint16_t hr = mglBC6HHalfSanitize(mglFloatToHalf(r), is_signed);
+    const uint16_t hg = mglBC6HHalfSanitize(mglFloatToHalf(g), is_signed);
+    const uint16_t hb = mglBC6HHalfSanitize(mglFloatToHalf(b), is_signed);
+    int ir = (hr & 0x8000u) ? -(int)(hr & 0x7FFFu) : (int)hr;
+    int ig = (hg & 0x8000u) ? -(int)(hg & 0x7FFFu) : (int)hg;
+    int ib = (hb & 0x8000u) ? -(int)(hb & 0x7FFFu) : (int)hb;
+    const int qr = mglBC6HQuantize10(ir, is_signed);
+    const int qg = mglBC6HQuantize10(ig, is_signed);
+    const int qb = mglBC6HQuantize10(ib, is_signed);
+    /* Store as 10-bit two's complement for signed. */
+    const uint32_t er = (uint32_t)qr & 0x3FFu;
+    const uint32_t eg = (uint32_t)qg & 0x3FFu;
+    const uint32_t eb = (uint32_t)qb & 0x3FFu;
+
+    memset(out, 0, 16);
+    size_t bit = 0;
+    mglBC6HPutBits(out, &bit, 0x03u, 5); /* Mode 11 */
+    mglBC6HPutBits(out, &bit, er, 10);   /* RW */
+    mglBC6HPutBits(out, &bit, eg, 10);   /* GW */
+    mglBC6HPutBits(out, &bit, eb, 10);   /* BW */
+    mglBC6HPutBits(out, &bit, er, 10);   /* RX = same endpoint */
+    mglBC6HPutBits(out, &bit, eg, 10);   /* GX */
+    mglBC6HPutBits(out, &bit, eb, 10);   /* BX */
+    /* Remaining 63 index bits stay zero. */
+}
+
+static uint16_t mglBC6HGetBits(const uint8_t block[16], size_t bit, int nbits)
+{
+    uint32_t value = 0u;
+    for (int i = 0; i < nbits; i++) {
+        if (block[(bit + (size_t)i) >> 3] & (uint8_t)(1u << ((bit + (size_t)i) & 7u))) {
+            value |= (1u << i);
+        }
+    }
+    return (uint16_t)value;
+}
+
+static int mglBC6HUnquantize10(int comp, bool is_signed)
+{
+    if (is_signed) {
+        int s = 0;
+        if (comp < 0) {
+            s = 1;
+            comp = -comp;
+        }
+        int unq;
+        if (comp == 0) {
+            unq = 0;
+        } else if (comp >= ((1 << 9) - 1)) {
+            unq = 0x7FFF;
+        } else {
+            unq = ((comp << 15) + 0x4000) >> 9;
+        }
+        return s ? -unq : unq;
+    }
+    if (comp == 0) {
+        return 0;
+    }
+    if (comp == ((1 << 10) - 1)) {
+        return 0xFFFF;
+    }
+    return ((comp << 16) + 0x8000) >> 10;
+}
+
+static void mglDecodeBC6HMode11Endpoints(const uint8_t block[16], bool is_signed,
+                                         float out_rgb[3])
+{
+    /* Mode 11: bits [5,14]=RW, [15,24]=GW, [25,34]=BW (10 each). */
+    uint16_t erw = mglBC6HGetBits(block, 5, 10);
+    uint16_t egw = mglBC6HGetBits(block, 15, 10);
+    uint16_t ebw = mglBC6HGetBits(block, 25, 10);
+
+    int rw = (int)erw;
+    int gw = (int)egw;
+    int bw = (int)ebw;
+    if (is_signed) {
+        if (rw & 0x200) {
+            rw |= ~0x3FF;
+        }
+        if (gw & 0x200) {
+            gw |= ~0x3FF;
+        }
+        if (bw & 0x200) {
+            bw |= ~0x3FF;
+        }
+    }
+
+    int ur = mglBC6HUnquantize10(rw, is_signed);
+    int ug = mglBC6HUnquantize10(gw, is_signed);
+    int ub = mglBC6HUnquantize10(bw, is_signed);
+
+    if (is_signed) {
+        int32_t vr = (ur < 0) ? -((((int32_t)(-ur)) * 31) >> 5)
+                              : (((int32_t)ur * 31) >> 5);
+        int32_t vg = (ug < 0) ? -((((int32_t)(-ug)) * 31) >> 5)
+                              : (((int32_t)ug * 31) >> 5);
+        int32_t vb = (ub < 0) ? -((((int32_t)(-ub)) * 31) >> 5)
+                              : (((int32_t)ub * 31) >> 5);
+        uint16_t hr = (uint16_t)((vr < 0) ? (0x8000u | (uint16_t)(-vr))
+                                          : (uint16_t)vr);
+        uint16_t hg = (uint16_t)((vg < 0) ? (0x8000u | (uint16_t)(-vg))
+                                          : (uint16_t)vg);
+        uint16_t hb = (uint16_t)((vb < 0) ? (0x8000u | (uint16_t)(-vb))
+                                          : (uint16_t)vb);
+        out_rgb[0] = mglHalfToFloat(hr);
+        out_rgb[1] = mglHalfToFloat(hg);
+        out_rgb[2] = mglHalfToFloat(hb);
+    } else {
+        out_rgb[0] = mglHalfToFloat((uint16_t)(((uint32_t)ur * 31u) >> 6));
+        out_rgb[1] = mglHalfToFloat((uint16_t)(((uint32_t)ug * 31u) >> 6));
+        out_rgb[2] = mglHalfToFloat((uint16_t)(((uint32_t)ub * 31u) >> 6));
+    }
+}
+
+static bool mglCopyBPTCFloatRectFromCPU(GLenum internalformat,
+                                        TextureLevel *lvl,
+                                        GLint xoffset,
+                                        GLint yoffset,
+                                        GLint zoffset,
+                                        GLsizei width,
+                                        GLsizei height,
+                                        GLsizei depth,
+                                        GLenum format,
+                                        GLenum type,
+                                        const MGLTexturePackLayout *pack_layout,
+                                        void *pixels,
+                                        bool swap_bytes)
+{
+    bool is_signed;
+    switch (internalformat) {
+        case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT:
+            is_signed = true;
+            break;
+        case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT:
+            is_signed = false;
+            break;
+        default:
+            return false;
+    }
+    if (!lvl || !pack_layout || !pixels || !lvl->data || lvl->pitch == 0u ||
+        xoffset < 0 || yoffset < 0 || zoffset < 0 ||
+        width <= 0 || height <= 0 || depth <= 0 ||
+        (GLuint)xoffset > lvl->width ||
+        (GLuint)yoffset > lvl->height ||
+        (GLuint)zoffset > lvl->depth ||
+        (GLuint)width > lvl->width - (GLuint)xoffset ||
+        (GLuint)height > lvl->height - (GLuint)yoffset ||
+        (GLuint)depth > lvl->depth - (GLuint)zoffset) {
+        return false;
+    }
+
+    const size_t block_bytes = 16u;
+    const size_t level_image_bytes =
+        (size_t)lvl->pitch * ((lvl->height + 3u) / 4u);
+    if (level_image_bytes * (size_t)(zoffset + depth) > lvl->data_size) {
+        return false;
+    }
+
+    const size_t tmp_pitch = (size_t)width * 3u * sizeof(float);
+    const size_t tmp_bytes = tmp_pitch * (size_t)height * (size_t)depth;
+    float *tmp = (float *)malloc(tmp_bytes);
+    if (!tmp) {
+        return false;
+    }
+
+    const uint8_t *src_base = (const uint8_t *)(uintptr_t)lvl->data;
+    for (GLsizei z = 0; z < depth; z++) {
+        const uint8_t *src_slice =
+            src_base + (size_t)(zoffset + z) * level_image_bytes;
+        float *dst_slice =
+            tmp + (size_t)z * (size_t)width * (size_t)height * 3u;
+        for (GLsizei y = 0; y < height; y++) {
+            const GLsizei sy = yoffset + y;
+            float *dst_row = dst_slice + (size_t)y * (size_t)width * 3u;
+            for (GLsizei x = 0; x < width; x++) {
+                const GLsizei sx = xoffset + x;
+                const GLsizei bx = sx / 4;
+                const GLsizei by = sy / 4;
+                const uint8_t *blk =
+                    src_slice + (size_t)by * lvl->pitch +
+                    (size_t)bx * block_bytes;
+                float rgb[3];
+                /* Mode 11 (0x03) solid-color blocks from our encoder. */
+                if ((mglBC6HGetBits(blk, 0, 5) & 0x1Fu) == 0x03u) {
+                    mglDecodeBC6HMode11Endpoints(blk, is_signed, rgb);
+                } else {
+                    rgb[0] = rgb[1] = rgb[2] = 0.0f;
+                }
+                dst_row[(size_t)x * 3u + 0u] = rgb[0];
+                dst_row[(size_t)x * 3u + 1u] = rgb[1];
+                dst_row[(size_t)x * 3u + 2u] = rgb[2];
+            }
+        }
+    }
+
+    TextureLevel tmp_lvl;
+    memset(&tmp_lvl, 0, sizeof(tmp_lvl));
+    tmp_lvl.width = (GLuint)width;
+    tmp_lvl.height = (GLuint)height;
+    tmp_lvl.depth = (GLuint)depth;
+    tmp_lvl.pitch = tmp_pitch;
+    tmp_lvl.data = (vm_address_t)(uintptr_t)tmp;
+    tmp_lvl.data_size = tmp_bytes;
+    tmp_lvl.complete = GL_TRUE;
+    tmp_lvl.has_initialized_data = GL_TRUE;
+
+    bool ok = mglCopyTextureRectFromCPU(GL_RGB32F, &tmp_lvl, 0, 0, 0, width,
+                                        height, depth, format, type,
+                                        pack_layout, pixels, swap_bytes);
+    free(tmp);
+    return ok;
+}
+
+GLenum mglEncodeBPTCFloatRectToCPU(GLenum internalformat,
+                                   TextureLevel *lvl,
+                                   GLint xoffset,
+                                   GLint yoffset,
+                                   GLint zoffset,
+                                   GLsizei width,
+                                   GLsizei height,
+                                   GLsizei depth,
+                                   GLenum format,
+                                   GLenum type,
+                                   const uint8_t *src_base,
+                                   size_t src_pitch,
+                                   size_t src_image_size)
+{
+    bool is_signed;
+    switch (internalformat) {
+        case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT:
+            is_signed = true;
+            break;
+        case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT:
+            is_signed = false;
+            break;
+        default:
+            return GL_INVALID_OPERATION;
+    }
+
+    int components;
+    int r_index;
+    int g_index;
+    int b_index;
+    switch (format) {
+        case GL_RGB:
+            components = 3;
+            r_index = 0;
+            g_index = 1;
+            b_index = 2;
+            break;
+        case GL_RGBA:
+            components = 4;
+            r_index = 0;
+            g_index = 1;
+            b_index = 2;
+            break;
+        case GL_BGR:
+            components = 3;
+            r_index = 2;
+            g_index = 1;
+            b_index = 0;
+            break;
+        case GL_BGRA:
+            components = 4;
+            r_index = 2;
+            g_index = 1;
+            b_index = 0;
+            break;
+        default:
+            return GL_INVALID_OPERATION;
+    }
+    if (type != GL_FLOAT) {
+        return GL_INVALID_OPERATION;
+    }
+    if (!lvl || !lvl->data || !src_base || lvl->pitch == 0u ||
+        xoffset < 0 || yoffset < 0 || zoffset < 0 ||
+        width <= 0 || height <= 0 || depth <= 0 ||
+        (GLuint)width > lvl->width - (GLuint)MIN((GLuint)xoffset, lvl->width) ||
+        (GLuint)height > lvl->height - (GLuint)MIN((GLuint)yoffset, lvl->height) ||
+        (GLuint)depth > lvl->depth - (GLuint)MIN((GLuint)zoffset, lvl->depth)) {
+        return GL_INVALID_VALUE;
+    }
+    if ((xoffset % 4) != 0 || (yoffset % 4) != 0 ||
+        ((width % 4) != 0 && (GLuint)(xoffset + width) != lvl->width) ||
+        ((height % 4) != 0 && (GLuint)(yoffset + height) != lvl->height)) {
+        return GL_INVALID_OPERATION;
+    }
+
+    const size_t block_bytes = 16u;
+    const size_t level_image_bytes =
+        (size_t)lvl->pitch * ((lvl->height + 3u) / 4u);
+    if (level_image_bytes * (size_t)(zoffset + depth) > lvl->data_size) {
+        return GL_INVALID_OPERATION;
+    }
+    if (src_image_size == 0u) {
+        src_image_size = src_pitch * (size_t)height;
+    }
+
+    uint8_t *dst_base = (uint8_t *)(uintptr_t)lvl->data;
+    const size_t src_pixel_stride = (size_t)components * sizeof(float);
+
+    for (GLsizei z = 0; z < depth; z++) {
+        const uint8_t *src_slice = src_base + (size_t)z * src_image_size;
+        for (GLsizei by = 0; by < (height + 3) / 4; by++) {
+            for (GLsizei bx = 0; bx < (width + 3) / 4; bx++) {
+                float sum_r = 0.0f;
+                float sum_g = 0.0f;
+                float sum_b = 0.0f;
+                int count = 0;
+                for (int i = 0; i < 16; i++) {
+                    GLsizei sx = MIN(bx * 4 + (i % 4), width - 1);
+                    GLsizei sy = MIN(by * 4 + (i / 4), height - 1);
+                    const float *p =
+                        (const float *)(src_slice + (size_t)sy * src_pitch +
+                                        (size_t)sx * src_pixel_stride);
+                    sum_r += p[r_index];
+                    sum_g += p[g_index];
+                    sum_b += p[b_index];
+                    count++;
+                }
+                const float inv = 1.0f / (float)count;
+                uint8_t *dst =
+                    dst_base + (size_t)(zoffset + z) * level_image_bytes +
+                    (size_t)(yoffset / 4 + by) * lvl->pitch +
+                    (size_t)(xoffset / 4 + bx) * block_bytes;
+                mglEncodeBC6HSolidBlock(sum_r * inv, sum_g * inv, sum_b * inv,
+                                        is_signed, dst);
             }
         }
     }
@@ -1160,6 +1585,12 @@ bool mglCopyTextureRectFromCPU(GLenum internalformat,
         return mglCopyRGTCRectFromCPU(internalformat, lvl, xoffset, yoffset,
                                       zoffset, width, height, depth, format,
                                       type, pack_layout, pixels, swap_bytes);
+    }
+    if (internalformat == GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT ||
+        internalformat == GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT) {
+        return mglCopyBPTCFloatRectFromCPU(internalformat, lvl, xoffset, yoffset,
+                                           zoffset, width, height, depth, format,
+                                           type, pack_layout, pixels, swap_bytes);
     }
 
     size_t storage_pixel_size = lvl->pitch / (size_t)lvl->width;
@@ -2386,7 +2817,7 @@ bool mglStoreCompressedTextureImage(GLMContext ctx,
      * MGLPixelFormat texture.  For unknown/uncompressed formats this falls
      * back to 0 (the historic behaviour). */
     lvl->pitch = mglCompressedBytesPerRowOf(internalformat, width);
-    lvl->mtl_format = 0u;
+    lvl->pixel_format = 0u;
     lvl->complete = true;
     lvl->has_initialized_data = resolved_src ? GL_TRUE : GL_FALSE;
     lvl->ever_written = resolved_src ? GL_TRUE : GL_FALSE;
@@ -2548,7 +2979,6 @@ bool mglCompressedSubImageUpdate(GLMContext ctx,
     lvl->last_src_ptr = resolved_src;
     lvl->last_src_hash = resolved_src ? mglHashBytesSampled(resolved_src, (size_t)imageSize) : 0ull;
     tex->dirty_bits |= DIRTY_TEXTURE_DATA;
-    mglReleaseGLSampledTextureCopy(ctx, tex, "compressedTexSubImage");
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
     return true;
 }

@@ -34,7 +34,7 @@
 #include "glm_context.h"         /* GLMContext, GLuint */
 #include "mgl_binding_stage.h"   /* MGLStageBindingCopyBackList */
 #include "mgl_draw_tess.h"       /* MGLTessTextureBind */
-#include "mgl_render.h"          /* MGLRenderComputeExecutionPlan */
+#include "mgl_render_api_command.h"
 #include "mgl_size_constants.h"  /* kMGLMaxBufferSlots */
 #include "mgl_types_buffer.h"    /* Buffer, BufferMapList */
 

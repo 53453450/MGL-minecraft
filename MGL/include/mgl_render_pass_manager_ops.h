@@ -15,7 +15,7 @@
 
 #include "glm_context.h"
 #include "mgl_renderer_binding_ops.h" /* MGLResourceSyncWork (log 167) */
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
 
 #ifdef __cplusplus
 extern "C" {

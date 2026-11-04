@@ -56,6 +56,8 @@ enum {
     MGL_AST_Q_NOPERSPECTIVE = 0x4000,
     MGL_AST_Q_READONLY      = 0x8000,  /* image/buffer memory qualifier */
     MGL_AST_Q_WRITEONLY     = 0x10000, /* image/buffer memory qualifier */
+    MGL_AST_Q_SUBROUTINE_UNIFORM = 0x20000, /* `subroutine uniform T g;` */
+    MGL_AST_Q_SUBROUTINE_IMPL    = 0x40000, /* `subroutine(T) ret f()` */
 };
 
 /* Block layout qualifiers (GLSL 4.60 §4.3.9). */
@@ -203,6 +205,15 @@ struct MGLExpr {
             uint32_t *array_ctor_dims;
             uint32_t array_ctor_dim_count;
             int array_ctor_flat;
+            /* `subroutine_uniform[const][const]...`(args): an element of an
+             * arrayed subroutine uniform (GLSL 4.60 §6.1.2 -- the subscripts
+             * select which element's index is read).  -1 = plain call. */
+            int subroutine_element;
+            uint32_t subroutine_subscript_count;
+            uint32_t subroutine_subscripts[8];
+            /* Non-constant subscript (e.g. Compute[gl_WorkGroupID.x]()).
+             * Owned by the call; only 1-D dynamic subscripts are modelled. */
+            MGLExpr *subroutine_index_expr;
         } call;
         struct {
             uint32_t op;     /* MGLExprOp */
@@ -358,6 +369,48 @@ struct MGLDecl {
 };
 
 /* Entire shader translation unit. */
+
+/* GLSL 4.0 subroutine types.  One record per `subroutine ret Type(args);`:
+ * the implementations that qualify with this type, and the uniforms declared
+ * with it.  The backend needs both halves to turn a call through the uniform
+ * into a dispatch over the implementations. */
+typedef struct MGLSubroutineType {
+    char *name;          /* type name (owned) */
+    struct MGLTypeSpec *ret_type; /* return type of the signature (owned) */
+    /* Array element count of the return type (`subroutine mat2[2] T(..);`),
+     * 0 = not arrayed.  CTS FunctionalTest1_2 exercises array returns. */
+    uint32_t ret_array_size;
+    /* Formal parameter types of the signature (owned), in declaration order.
+     * Sema needs them to reject calls whose arity and argument types do not
+     * match the signature (GLSL 4.60 §6.1: a compatible subroutine signature
+     * requires matching argument lists). */
+    struct MGLTypeSpec **param_types;
+    /* Parallel to param_types: array element count of each formal
+     * (`in mat2 in_value[2]`), 0 = not arrayed (single declared dimension,
+     * which is all GLSL allows for function parameters). */
+    uint32_t *param_array_sizes;
+    uint32_t param_count;
+    char **impls;        /* implementation function names (owned) */
+    uint32_t impl_count;
+    uint32_t impl_cap;
+    char **uniforms;     /* subroutine uniform names (owned) */
+    uint32_t uniform_count;
+    uint32_t uniform_cap;
+    /* Parallel to `uniforms`: element count (>1 for `T g[N];`) and the
+     * explicit layout(location=N), or MGL_SUBROUTINE_LOCATION_NONE.  A
+     * subroutine uniform occupies one location per element (GL 4.6 §7.10),
+     * and an explicit location is honoured exactly like any other uniform. */
+    uint32_t *uniform_counts;      /* element count per uniform (product of dims) */
+    uint32_t **uniform_dims;       /* per-uniform dimension list (owned) */
+    uint32_t *uniform_dim_counts;  /* how many dimensions each uniform declares */
+    int32_t *uniform_locations;
+    /* Parallel to `impls`: explicit layout(index = N) an implementation
+     * reserved (GLSL 4.60 §6.1.2), or MGL_SUBROUTINE_LOCATION_NONE.  Those
+     * indices are fixed by the shader and the remaining implementations are
+     * numbered around them. */
+    int32_t *impl_indices;
+} MGLSubroutineType;
+
 typedef struct MGLTranslationUnit {
     uint32_t version;          /* #version number, 0 if absent */
     char *version_profile;     /* "core"/"compatibility"/"es"/NULL (owned) */
@@ -367,6 +420,10 @@ typedef struct MGLTranslationUnit {
     uint32_t ext_shader_integer_mix;
     MGLDecl **decls;
     uint32_t decl_count;
+    /* GLSL 4.0 subroutine metadata, filled by the parser (see above). */
+    MGLSubroutineType *subroutine_types;
+    uint32_t subroutine_type_count;
+    uint32_t subroutine_type_cap;
     char *error;               /* first parse error message or NULL (owned) */
     uint32_t error_line;
     /* Stage-level tessellation/geometry layout (M3): set by layout-only

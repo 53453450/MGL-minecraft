@@ -32,24 +32,23 @@
 
 #include "mgl_render_pass_sync_ops.h"
 #include "mgl_storage_image_bind.h"
-#include "mgl_renderer_ports.h"   /* state areas, texture bind, restore encoder */
+#include "mgl_renderer_state_areas.h"   /* state areas, texture bind, restore encoder */
 #include "mgl_renderer_backend.h" /* program binding counts/GL bindings */
-#include "mgl_render.h"           /* resource binding snapshot + owners */
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
 #include "mgl_binding_texture.h"  /* storage-image plan */
 #include "mgl_binding_policy.h"   /* mglRenderResourceMetalSlot */
 #include "mgl_texture_bind.h"     /* mglRendererBindMTLTexture */
-#include "mgl_blit_sampled_copy.h"
 #include "mgl_types_state.h"      /* mglMarkRendererDirtyBits + DIRTY_* */
 #include "mgl_metal_ref.h"        /* shared metal reference helpers */
 #include "glm_context.h"          /* RETURN_FALSE_ON_FAILURE */
+#include "mgl_texture_backend.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C (the same twin as
  * mgl_compute_bind.c). */
-static GLMState *mglSiState(const MGLRendererStateAreas *areas)
+static GLMState *mglSiState(const MGLRendererStateView *areas)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 
@@ -152,14 +151,14 @@ static bool mglSiFlushResourceBindings(void *binding_state_owner,
 /* The render encoder owner is re-read at every use, exactly like the method
  * did: a texture upload inside the ENSURE pass restores (and therefore
  * replaces) it, and the queue/flush must target the current one. */
-static void *mglSiRenderEncoderOwner(const MGLRendererStateAreas *areas)
+static void *mglSiRenderEncoderOwner(const MGLRendererStateView *areas)
 {
     return areas->command ? areas->command->currentRenderEncoderOwner : NULL;
 }
 
 /* The method-local MGL_ABORT_TBIND_IF_ENCODER_CLOSED(): true when the draw
  * must be abandoned because the texture path closed the render encoder. */
-static bool mglSiAbortTBindIfEncoderClosed(const MGLRendererStateAreas *areas)
+static bool mglSiAbortTBindIfEncoderClosed(const MGLRendererStateView *areas)
 {
     if (mglRenderEncoderOwnerHasCurrent(mglSiRenderEncoderOwner(areas)) == 0) {
         if (areas->ctx) {
@@ -180,8 +179,8 @@ bool mglBindingStateBindStorageImagesForStage(void *renderer, int shader_stage,
         return false;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *binding_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
     const int use_resource_snapshot = 1;
@@ -234,8 +233,6 @@ bool mglBindingStateBindStorageImagesForStage(void *renderer, int shader_stage,
             if (plan.action == MGL_SI_ACTION_ENSURE_TEX) {
                 if (ptr) {
                     RETURN_FALSE_ON_FAILURE(mglRendererBindMTLTexture(renderer, ptr));
-                    RETURN_FALSE_ON_FAILURE(
-                        mglBlitUnflipRenderTargetStorageForImageAccess(renderer, ptr));
                 }
                 continue;
             }
@@ -244,7 +241,7 @@ bool mglBindingStateBindStorageImagesForStage(void *renderer, int shader_stage,
                 if (mglSiAbortTBindIfEncoderClosed(&areas)) {
                     return false;
                 }
-                texture = ptr->mtl_data;
+                texture = mglTextureMtl(ptr);
                 texture = mglSiCreateStorageImageView(
                     texture, &mglSiState(&areas)->image_units[plan.gl_unit]);
             }
@@ -282,8 +279,8 @@ bool mglBindingStateBindStorageImagesForVertexProgram(void *renderer,
         return false;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     const int vertex_stage = areas.tessellation->nativeTESActive
                                  ? _TESS_EVALUATION_SHADER

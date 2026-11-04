@@ -18,6 +18,7 @@
 #include "mgl_shader_resource.h"
 
 #include <string.h>
+#include "mgl_binding_policy.h"
 
 GLuint mglClientBufferBindingForResource(int resourceType, const MGLShaderResource *res)
 {

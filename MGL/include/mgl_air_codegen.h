@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -50,6 +51,7 @@ struct Uniform {
     MType type;
     uint32_t offset;         /* byte offset in the implicit buffer */
     uint32_t size;           /* std140 byte size */
+    uint32_t elementStride;  /* bytes between array elements, 0 if scalar */
 };
 
 struct VarSym {
@@ -95,6 +97,9 @@ struct Codegen {
     llvm::IRBuilder<> *b;
     llvm::Function *fn;
     llvm::Module *mod = nullptr;       /* current LLVM module */
+    /* AIR ABI stage of this compile; subroutine-uniform pack names are
+     * stage-qualified with the same tag map (mgl_air_backend.cpp). */
+    int stage = 0;
     bool isVS = false;
     bool isCompute = false;
     bool isTessControl = false;
@@ -172,6 +177,9 @@ struct Codegen {
     /* Slot 30: {num_samples, sample_buffers}. sample_buffers==0 means
      * non-MSAA FB; GL ignores gl_SampleMask writes in that case. */
     llvm::Value *fragSampleParams = nullptr;
+    /* +1 / -1 applied to dFdy: -1 on a window-system target whose rows count
+     * downward (see MGL_AIR_BUILTIN_DERIV_Y). Null outside fragment stages. */
+    llvm::Value *derivYSign = nullptr;
     bool usesClipDistance = false;       /* vertex writes gl_ClipDistance */
     bool emulateClipDiscard = false;     /* FS discards interpolated clip < 0 */
     uint32_t cullDistancePassthroughCount = 0; /* VS flat outs / FS ins */
@@ -227,7 +235,18 @@ struct Codegen {
     std::map<std::string, llvm::Value *> arrayMem;
     std::map<std::string, llvm::Type *> arrayMemTypes;
     std::map<std::string, uint32_t> bufferOffsets;  /* uniform name -> byte offset */
+    /* Uniform name -> byte stride between array elements in the pack.  The
+     * renderer lays the implicit uniform buffer out with the std140 element
+     * stride (16 for an array of uints, not 4), and the subroutine dispatch
+     * indexes the array with it. */
+    std::map<std::string, uint32_t> bufferStrides;
     std::map<std::string, llvm::Value *> lvalues;   /* register values */
+    /* AST copies handed to emitters that may retain the pointer. */
+    /* Owned ephemeral MGLExpr copies handed to the inliner.  The inliner is
+     * synchronous and only borrows them, but a caller that must mutate a node
+     * (subroutine dispatch retargets u.call.name) parks the copy here so it
+     * outlives the call.  Cleared by the Codegen destructor's owner. */
+    std::vector<std::unique_ptr<MGLExpr>> exprPool;
     /* Block-qualified keys of per-vertex varying arrays whose elements a
      * shader stored straight into the stage-out record (TES compute path).
      * storeTessComputeVaryings must not overwrite those slots with undef. */
@@ -247,6 +266,11 @@ struct Codegen {
     /* When true, STMT_RETURN captures into inlineRetVal instead of
      * emitting CreateRet (GS/TCS/compute helper inlining). */
     bool inliningHelper = false;
+    /* Nesting depth of emitCallUserFunction.  Recursive user functions are
+     * illegal in GLSL (GL 4.6 §12.1) but a subroutine call can reach one
+     * through a chain the sema call graph does not see, so bound the inlining
+     * to keep the compiler from overflowing the stack. */
+    uint32_t inlineDepth = 0;
     llvm::Value *inlineRetVal = nullptr;
     llvm::BasicBlock *inlineExitBB = nullptr;
     llvm::PHINode *inlineRetPhi = nullptr;

@@ -35,8 +35,13 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "mgl_buffer_map.h"
-#include "mgl_renderer_ports.h"        /* state areas */
-#include "mgl_render.h"                /* the mglRender* facade */
+#include "mgl_ports_batch_flush.h"
+#include "mgl_renderer_state_areas.h"        /* state areas */
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_pixel.h"
+#include "mgl_render_api_draw.h"
+#include "mgl_render_api_query.h"
 #include "mgl_renderer_backend.h"      /* mglRendererGetProgramBindingCount */
 #include "mgl_vertex_attrib_plan.h"    /* mglRenderPlanVertexAttribBuffers */
 #include "mgl_vertex_attrib_query.h"   /* mglRendererGetValidatedVAO */
@@ -49,6 +54,8 @@
 #include "mgl_shader_resource.h"       /* mglMGLShaderResourceTypeName */
 #include "hash_table.h"                /* searchHashTable */
 #include "mgl_trace_log.h"             /* mglTraceLog / kMGLDiagnosticStateLogs */
+#include "mgl_buffer_backend.h"
+#include "mgl_metal_ref.h"
 
 /* === C prototypes for functions defined in Objective-C translation units ===
  * Their declarations live in MGLRenderer+Draw_Private.h, which a .c file
@@ -81,11 +88,8 @@ extern int mglRenderVertexBufferIndexForAttribute(GLMContext ctx, GLMState *stat
 
 /* MGL_STATE() from MGLRenderer_Private.h, expressed in C: the core state's
  * active pointer wins, NULL means "the context's own state". */
-static GLMState *mglBufferMapState(const MGLRendererStateAreas *areas)
+static GLMState *mglBufferMapState(const MGLRendererStateView *areas)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 
@@ -213,8 +217,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
 bool mglRendererMapGLBuffersToMTLBufferMap(void *renderer,
                                            BufferMapList *buffer_map, int stage)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
 
     static uint64_t s_mapCallCountByStage[8] = {0};
@@ -283,7 +287,7 @@ bool mglRendererMapGLBuffersToMTLBufferMap(void *renderer,
                                    : NULL);
             Buffer *drawIndexBuffer = vao->element_array.buffer;
             planInput.index_buffer_metal =
-                drawIndexBuffer ? drawIndexBuffer->data.mtl_data : NULL;
+                drawIndexBuffer ? mglBufferMtl(drawIndexBuffer) : NULL;
             planInput.vao = (const void *)vao;
             planInput.resolve = mglResolveVertexAttribForPlan;
             planInput.resolve_user = (void *)&resolveCtx;
@@ -311,8 +315,8 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
     void *renderer, BufferMapList *buffer_map, int stage, Program *program,
     const MGLStageBufferPlan *stagePlan)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglBufferMapState(&areas);
 
@@ -737,8 +741,8 @@ bool mglRendererMapShaderBufferResourcesToBufferMap(void *renderer,
                                                     BufferMapList *buffer_map,
                                                     int stage)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
 
     /* The cached buffer binding plan is the only mapping path: it caches every
@@ -788,8 +792,8 @@ bool mglRendererMapShaderBufferResourcesToBufferMap(void *renderer,
 
 bool mglRendererMapBuffersToMTL(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMState *state = mglBufferMapState(&areas);
 
     const int vertexStage = areas.tess_native_tes_active
@@ -835,8 +839,8 @@ bool mglRendererUpdateDirtyBuffer(void *renderer, Buffer *ptr)
 bool mglRendererCheckForDirtyBufferData(void *renderer,
                                         BufferMapList *buffer_map_list)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     return mglRenderCheckForDirtyBufferData(areas.ctx, buffer_map_list,
                                             MGL_BUFFER_MAP_WHERE_CHECK_DIRTY);
 }
@@ -844,8 +848,8 @@ bool mglRendererCheckForDirtyBufferData(void *renderer,
 bool mglRendererUpdateDirtyBaseBufferList(void *renderer,
                                           BufferMapList *buffer_map_list)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     return mglRenderUpdateDirtyBaseBufferList(areas.ctx, buffer_map_list,
                                               MGL_BUFFER_MAP_WHERE_UPDATE_DIRTY);
 }
@@ -853,8 +857,8 @@ bool mglRendererUpdateDirtyBaseBufferList(void *renderer,
 int mglRendererGetVertexBufferIndexWithAttributeSet(void *renderer,
                                                     int attribute)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     return mglRenderVertexBufferIndexForAttribute(ctx, mglBufferMapState(&areas),
                                                   attribute,
@@ -896,23 +900,124 @@ static uint64_t mglBmBufferLength(void *buffer)
     return length;
 }
 
+enum {
+    MGL_ISOLATE_RING_SLOTS = 4,
+    MGL_ISOLATE_RING_MAX_REUSE_BYTES = 64u * 1024u,
+};
+
+typedef struct MGLIsolateRingSlot {
+    void *buffer;
+    uint64_t capacity;
+    uint64_t last_use_generation;
+} MGLIsolateRingSlot;
+
+static MGLIsolateRingSlot s_mglIsolateRing[MGL_ISOLATE_RING_SLOTS];
+
+static void *mglIsolateRingAcquire(uint64_t requiredLength)
+{
+    if (requiredLength > MGL_ISOLATE_RING_MAX_REUSE_BYTES) {
+        return NULL;
+    }
+    const uint64_t completed = mglRenderCompletedBufferGeneration();
+    size_t best = (size_t)-1;
+    uint64_t bestCapacity = UINT64_MAX;
+    for (size_t i = 0; i < MGL_ISOLATE_RING_SLOTS; ++i) {
+        MGLIsolateRingSlot *slot = &s_mglIsolateRing[i];
+        if (!slot->buffer || slot->capacity < requiredLength) {
+            continue;
+        }
+        if (completed < slot->last_use_generation) {
+            continue;
+        }
+        if (best == (size_t)-1 || slot->capacity < bestCapacity) {
+            best = i;
+            bestCapacity = slot->capacity;
+        }
+    }
+    if (best == (size_t)-1) {
+        return NULL;
+    }
+    MGLIsolateRingSlot *slot = &s_mglIsolateRing[best];
+    CFRetain((CFTypeRef)slot->buffer);
+    return slot->buffer;
+}
+
+static void mglIsolateRingInstall(void *buffer, uint64_t capacity)
+{
+    if (!buffer || capacity == 0u ||
+        capacity > MGL_ISOLATE_RING_MAX_REUSE_BYTES) {
+        return;
+    }
+    const uint64_t completed = mglRenderCompletedBufferGeneration();
+    size_t install = (size_t)-1;
+    uint64_t smallestIdleCapacity = UINT64_MAX;
+    for (size_t i = 0; i < MGL_ISOLATE_RING_SLOTS; ++i) {
+        if (!s_mglIsolateRing[i].buffer) {
+            install = i;
+            break;
+        }
+    }
+    if (install == (size_t)-1) {
+        for (size_t i = 0; i < MGL_ISOLATE_RING_SLOTS; ++i) {
+            MGLIsolateRingSlot *slot = &s_mglIsolateRing[i];
+            if (completed < slot->last_use_generation) {
+                continue;
+            }
+            if (install == (size_t)-1 ||
+                slot->capacity < smallestIdleCapacity) {
+                install = i;
+                smallestIdleCapacity = slot->capacity;
+            }
+        }
+    }
+    if (install == (size_t)-1) {
+        return;
+    }
+    MGLIsolateRingSlot *slot = &s_mglIsolateRing[install];
+    if (slot->buffer) {
+        if (completed < slot->last_use_generation) {
+            return;
+        }
+        mglReleaseMetalObjNoNull(slot->buffer);
+        slot->buffer = NULL;
+        slot->capacity = 0u;
+        slot->last_use_generation = 0u;
+    }
+    CFRetain((CFTypeRef)buffer);
+    slot->buffer = buffer;
+    slot->capacity = capacity;
+}
+
 /* -isolatedStageBindingBufferForMap:source:requiredLength: (log 201).
  * The port handed back a +1 handle (the method returned +0 and the caller took
  * its own reference), which mglBmCreateBuffer preserves. */
 void *mglBufferIsolatedStageBinding(void *renderer, const BufferMap *map,
                                     void *source, uint64_t requiredLength)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     (void)areas;
     if (!map || !map->buf || requiredLength == 0) {
         return NULL;
     }
 
-    void *isolated = mglBmCreateBuffer(requiredLength,
-                                       MGL_PD_RESOURCE_STORAGE_SHARED);
+    void *isolated = mglIsolateRingAcquire(requiredLength);
+    if (!isolated) {
+        isolated = mglBmCreateBuffer(requiredLength,
+                                     MGL_PD_RESOURCE_STORAGE_SHARED);
+        if (isolated) {
+            mglIsolateRingInstall(isolated, mglBmBufferLength(isolated));
+        }
+    }
     if (!isolated || !mglBmBufferContents(isolated)) {
         return NULL;
+    }
+    for (size_t i = 0; i < MGL_ISOLATE_RING_SLOTS; ++i) {
+        if (s_mglIsolateRing[i].buffer == isolated) {
+            s_mglIsolateRing[i].last_use_generation =
+                mglRenderCurrentBufferGeneration();
+            break;
+        }
     }
 
     memset(mglBmBufferContents(isolated), 0, requiredLength);

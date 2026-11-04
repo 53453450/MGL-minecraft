@@ -18,7 +18,8 @@
 #include "mgl_index_buffer.h"
 #include "mgl_trace_log.h"
 #include "mgl_types_buffer.h"
-#include "mgl_render.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_draw.h"
 #include "mgl_types_program.h"
 
 #include <climits>
@@ -115,12 +116,22 @@ extern "C" void mglIssueDrawArrays(GLMContext ctx, void *renderer, GLenum mode,
     ctx->shader_base_vertex = 0;
 
     /* AGX's compiler dies (XPC_ERROR_CONNECTION_INTERRUPTED) on a Point-class
-     * PSO whose VS writes textures.  VS-only + RASTERIZER_DISCARD still runs
-     * the VS for imageStore; a triangle strip of the same vertex count is a
-     * legal stand-in (CTS advanced-sync-imageAccess uses GL_POINTS, 4 verts). */
-    if (ctx->active_state && ctx->active_state->caps.rasterizer_discard &&
-        mode == GL_POINTS && count >= 3 &&
-        !mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER)) {
+     * PSO whose VS writes textures / storage images.  Remap POINTS to a
+     * triangle strip so the same VS still runs (side-effect imageStore is
+     * topology-independent).  Keep the original vertex count. */
+    Program *vs_img = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    const int vs_storage_images =
+        (vs_img &&
+         vs_img->shader_resources_list[_VERTEX_SHADER][_STORAGE_IMAGE_RES]
+                 .count > 0)
+            ? 1
+            : 0;
+    if (mode == GL_POINTS && vs_storage_images) {
+        mode = GL_TRIANGLE_STRIP;
+    } else if (ctx->active_state &&
+               ctx->active_state->caps.rasterizer_discard &&
+               mode == GL_POINTS && count >= 3 &&
+               !mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER)) {
         mode = GL_TRIANGLE_STRIP;
     }
 
@@ -158,8 +169,13 @@ extern "C" void mglIssueDrawArrays(GLMContext ctx, void *renderer, GLenum mode,
         MGL_FRAME_INC(g_mglDrawArraysSkippedSinceSwap);
         return;
     }
-    if (mglDrawHostRasterizationIsEmpty(renderer) ||
-        mglDrawHostModeFullyCulled(renderer, liveMode)) {
+    /* GL 4.6 §11.1.3 / §7.12: VS still executes for imageStore side effects
+     * even when the resulting primitives would be culled or the viewport is
+     * empty.  Skipping the draw here left cube-array image_op_vertex_sh
+     * flaky (clean write images). */
+    if (!vs_storage_images &&
+        (mglDrawHostRasterizationIsEmpty(renderer) ||
+         mglDrawHostModeFullyCulled(renderer, liveMode))) {
         return;
     }
     mglDrawHostApplyPolygonOffset(renderer, liveMode);
@@ -338,13 +354,31 @@ static bool mglIssueUsesShaderDrawParams(GLMContext ctx)
     return vs && vs->uses_shader_draw_params;
 }
 
+/* VS-only XFB writes via mglDrawHostHandleXFB on the immediate DrawArrays /
+ * DrawElements path. Native Metal indirect encodes never run that capture, so
+ * active VS-only TF must expand to one IssueDraw* per command. */
+static bool mglIssueNeedsVsOnlyXfbCapture(GLMContext ctx)
+{
+    if (!ctx || !ctx->active_state || !ctx->active_state->transform_feedback) {
+        return false;
+    }
+    TransformFeedback *xfb = ctx->active_state->transform_feedback;
+    if (!xfb->active || xfb->paused) {
+        return false;
+    }
+    return mglXfbVsOnlyEligible(
+        mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER));
+}
+
 static bool mglIssueIndirectNeedsCPUExpand(GLMContext ctx, GLenum mode)
 {
-    /* Native multi-draw cannot refresh gl_DrawID between sub-draws. */
+    /* Native multi-draw cannot refresh gl_DrawID between sub-draws.
+     * VS-only XFB also cannot run on the native indirect encode path. */
     return mode == GL_PATCHES || mode == GL_QUADS || mode == GL_LINE_LOOP ||
            mode == GL_TRIANGLE_FAN || mglRenderEmulateAdjacency((uint32_t)mode) ||
            mglDrawHostHasGeometry(ctx) || mglDrawHostUsesCullDistance(ctx) ||
-           mglIssueUsesShaderDrawParams(ctx);
+           mglIssueUsesShaderDrawParams(ctx) ||
+           mglIssueNeedsVsOnlyXfbCapture(ctx);
 }
 
 static bool mglIssueIndirectElementsNeedCPUExpand(GLMContext ctx, GLenum mode,
@@ -569,13 +603,15 @@ extern "C" void mglIssueDrawArraysIndirect(GLMContext ctx, void *renderer,
     }
     Buffer *glIndirect = NULL;
     void *metalIndirect = NULL;
-    if (!mglDrawHostResolveIndirectBuffer(renderer, ctx, tag, &glIndirect,
-                                          &metalIndirect)) {
+    const size_t cmdOffset = (size_t)(uintptr_t)indirect;
+    if (!mglDrawHostResolveIndirectBufferSpan(
+            renderer, ctx, tag, (uint64_t)cmdOffset,
+            (uint64_t)sizeof(DrawArraysIndirectCommand), &glIndirect,
+            &metalIndirect)) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
                     mglIssueProgramName(ctx));
         return;
     }
-    const size_t cmdOffset = (size_t)(uintptr_t)indirect;
     if (mglIssueIndirectNeedsCPUExpand(ctx, mode)) {
         if (!mglDrawHostPrepareIndirectCPURead(
                 renderer, ctx, mglIssueArraysIndirectPrepLabel(ctx, mode))) {
@@ -624,13 +660,15 @@ extern "C" void mglIssueDrawElementsIndirect(GLMContext ctx, void *renderer,
     }
     Buffer *glIndirect = NULL;
     void *metalIndirect = NULL;
-    if (!mglDrawHostResolveIndirectBuffer(renderer, ctx, tag, &glIndirect,
-                                          &metalIndirect)) {
+    const size_t cmdOffset = (size_t)(uintptr_t)indirect;
+    if (!mglDrawHostResolveIndirectBufferSpan(
+            renderer, ctx, tag, (uint64_t)cmdOffset,
+            (uint64_t)sizeof(DrawElementsIndirectCommand), &glIndirect,
+            &metalIndirect)) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
                     mglIssueProgramName(ctx));
         return;
     }
-    const size_t cmdOffset = (size_t)(uintptr_t)indirect;
     if (mglIssueIndirectElementsNeedCPUExpand(ctx, mode, type)) {
         if (!mglDrawHostPrepareIndirectCPURead(
                 renderer, ctx, mglIssueElementsIndirectPrepLabel(ctx, mode))) {
@@ -676,8 +714,17 @@ extern "C" void mglIssueMultiDrawArraysIndirect(GLMContext ctx, void *renderer,
     }
     Buffer *glIndirect = NULL;
     void *metalIndirect = NULL;
-    if (!mglDrawHostResolveIndirectBuffer(renderer, ctx, tag, &glIndirect,
-                                          &metalIndirect)) {
+    const size_t multiArraysBase = (size_t)(uintptr_t)indirect;
+    const uint64_t multiArraysNeed =
+        drawcount > 0
+            ? (uint64_t)sizeof(DrawArraysIndirectCommand) +
+                  (uint64_t)(drawcount - 1) *
+                      (uint64_t)mglIssueIndirectCommandStride(
+                          stride, sizeof(DrawArraysIndirectCommand))
+            : 0u;
+    if (!mglDrawHostResolveIndirectBufferSpan(
+            renderer, ctx, tag, (uint64_t)multiArraysBase, multiArraysNeed,
+            &glIndirect, &metalIndirect)) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
                     mglIssueProgramName(ctx));
         return;
@@ -765,8 +812,17 @@ extern "C" void mglIssueMultiDrawElementsIndirect(
     }
     Buffer *glIndirect = NULL;
     void *metalIndirect = NULL;
-    if (!mglDrawHostResolveIndirectBuffer(renderer, ctx, tag, &glIndirect,
-                                          &metalIndirect)) {
+    const size_t multiElemsBase = (size_t)(uintptr_t)indirect;
+    const uint64_t multiElemsNeed =
+        drawcount > 0
+            ? (uint64_t)sizeof(DrawElementsIndirectCommand) +
+                  (uint64_t)(drawcount - 1) *
+                      (uint64_t)mglIssueIndirectCommandStride(
+                          stride, sizeof(DrawElementsIndirectCommand))
+            : 0u;
+    if (!mglDrawHostResolveIndirectBufferSpan(
+            renderer, ctx, tag, (uint64_t)multiElemsBase, multiElemsNeed,
+            &glIndirect, &metalIndirect)) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
                     mglIssueProgramName(ctx));
         return;

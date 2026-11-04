@@ -17,12 +17,15 @@
  */
 
 #include "mgl_readback_policy.h"
+#include "mgl_raster_orientation_plan.h"
+#include "mgl_texture_plan.h" /* MGL_TEXTURE_MS_PLANE_STRIDE */
 
 #include "glcorearb.h"
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 int mglRenderConvertIntegerReadback(
     const MGLRenderIntegerReadbackConvertParams* p) {
@@ -33,6 +36,21 @@ int mglRenderConvertIntegerReadback(
     const uint32_t src_pixel_bytes =
         p->source_rgb10a2_uint ? 4u :
         p->source_component_count * p->source_component_bytes;
+    /* AUDIT-036: refuse when row pitches cannot hold the copy span. */
+    if (src_pixel_bytes == 0u || p->dst_pixel_bytes == 0u ||
+        p->copy_w > UINT64_MAX / src_pixel_bytes ||
+        p->copy_w > UINT64_MAX / p->dst_pixel_bytes) {
+        return -1;
+    }
+    const uint64_t src_need =
+        (uint64_t)p->copy_w * (uint64_t)src_pixel_bytes;
+    const uint64_t dst_need =
+        ((uint64_t)p->dst_x + (uint64_t)p->copy_w) *
+        (uint64_t)p->dst_pixel_bytes;
+    if (p->src_bytes_per_row < src_need ||
+        p->dst_bytes_per_row < dst_need) {
+        return -1;
+    }
     for (uint32_t y = 0; y < p->copy_h; y++) {
         const uint8_t* srcRow = p->src + (uint64_t)y * p->src_bytes_per_row;
         uint64_t outputY = p->flip_y ? (p->dst_y + (p->copy_h - 1u - y))
@@ -474,12 +492,19 @@ void mglRenderCopyRows(
     const void *src, uint64_t src_bytes_per_row,
     void *dst, uint64_t dst_bytes_per_row,
     uint64_t row_bytes, uint64_t height, int flip_y) {
-    if (!src || !dst || row_bytes == 0u || height == 0u) {
+    /* AUDIT-036: require pitches that cover row_bytes; skip on overflow. */
+    if (!src || !dst || row_bytes == 0u || height == 0u ||
+        src_bytes_per_row < row_bytes || dst_bytes_per_row < row_bytes ||
+        row_bytes > (uint64_t)SIZE_MAX) {
         return;
     }
     const uint8_t *src_bytes = (const uint8_t *)src;
     uint8_t *dst_bytes = (uint8_t *)dst;
     for (uint64_t y = 0; y < height; y++) {
+        if (y > UINT64_MAX / src_bytes_per_row ||
+            y > UINT64_MAX / dst_bytes_per_row) {
+            return;
+        }
         const uint8_t *src_row = src_bytes + (y * src_bytes_per_row);
         uint64_t dst_y = flip_y ? (height - 1u - y) : y;
         uint8_t *dst_row = dst_bytes + (dst_y * dst_bytes_per_row);
@@ -559,12 +584,14 @@ void *mglRenderTextureRepackDepthPlanes(const void *bytes,
     return packed;
 }
 
-int mglRenderTargetStorageYFlipped(int is_render_target, uint32_t write_version) {
+int mglRenderTargetHasGPUContent(int is_render_target, uint32_t write_version) {
     return is_render_target && write_version != 0u;
 }
 
 uint32_t mglRenderMSAAArrayLayerStride(int layered, uint32_t textarget) {
-    return layered && textarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ? 8u : 1u;
+    return layered && textarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY
+               ? MGL_TEXTURE_MS_PLANE_STRIDE
+               : 1u;
 }
 
 int mglRenderGetTexImagePlan(
@@ -588,22 +615,39 @@ int mglRenderGetTexImagePlan(
          pixel_format == 70u /* MGLPixelFormatRGBA8Unorm */ ||
          pixel_format == 71u /* MGLPixelFormatRGBA8Unorm_sRGB */) ? 1 : 0;
     uint64_t row_bytes;
+    const uint64_t min_bpp =
+        dst_pixel_bytes > 0u ? (uint64_t)dst_pixel_bytes : 1u;
+    if (width > 0u && min_bpp > UINT64_MAX / width) {
+        return -1;
+    }
+    const uint64_t min_row = (uint64_t)width * min_bpp;
     if (out->use_bgra8_conversion && !out->source_is_bgra8 &&
         source_bpp > 0u) {
+        if (width > 0u && (uint64_t)source_bpp > UINT64_MAX / width) {
+            return -1;
+        }
         row_bytes = (uint64_t)width * (uint64_t)source_bpp;
     } else if (out->use_bgra8_conversion) {
+        if (width > UINT64_MAX / 4u) return -1;
         row_bytes = (uint64_t)width * 4u;
+    } else if (bytes_per_row > 0u) {
+        /* AUDIT-039: do not trust a too-short caller pitch. */
+        if ((uint64_t)bytes_per_row < min_row) return -1;
+        row_bytes = (uint64_t)bytes_per_row;
     } else {
-        row_bytes = bytes_per_row > 0
-            ? (uint64_t)bytes_per_row
-            : (uint64_t)width * (dst_pixel_bytes > 0
-                                     ? (uint64_t)dst_pixel_bytes : 1u);
+        row_bytes = min_row;
+    }
+    if (height > 0u && row_bytes > UINT64_MAX / height) {
+        return -1;
     }
     out->row_bytes = row_bytes;
     out->image_bytes = row_bytes * (uint64_t)height;
     out->total_bytes = out->image_bytes;
     if (!out->use_bgra8_conversion && storage_private &&
         bytes_per_image > 0 && depth > 1) {
+        if ((uint64_t)bytes_per_image > UINT64_MAX / (uint64_t)depth) {
+            return -1;
+        }
         out->total_bytes = (uint64_t)bytes_per_image * (uint64_t)depth;
     }
     return 0;

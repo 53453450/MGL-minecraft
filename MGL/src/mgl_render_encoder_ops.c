@@ -35,10 +35,19 @@
 #include "mgl_texture_compat.h"      /* mglMarkTextureLevelRenderTargetWrittenImpl */
 #include "mgl_trace_log.h"
 
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+
+#include "mgl_render_api_binding.h"
+
+#include "mgl_render_api_texture.h"
+
+#include "mgl_render_api_buffer.h"
+
+#include "mgl_render_api_readback.h"
 
 #include <stdio.h>
 #include <string.h>
+#include "mgl_texture_backend.h"
 
 /* The .m's file-local constants this TU needs (values copied verbatim). */
 enum {
@@ -68,11 +77,8 @@ static bool mglPdShouldTraceCall(uint64_t count)
 }
 
 /* MGL_STATE(ctx) twin. */
-static GLMState *mglPdStateOf(const MGLRendererStateAreas *areas)
+static GLMState *mglPdStateOf(const MGLRendererStateView *areas)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 
@@ -391,8 +397,8 @@ static uint64_t mglPdMaxU64(uint64_t a, uint64_t b) { return a > b ? a : b; }
 /* -checkDrawBufferSize: */
 int mglRenderPassCheckDrawBufferSize(void *renderer, unsigned int index)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     const MGLSizeValue drawableSize =
         mglPlatformShellApplyPendingDrawableSize(renderer);
 
@@ -412,8 +418,8 @@ int mglRenderPassCheckDrawBufferSize(void *renderer, unsigned int index)
 /* -configureDefaultFramebufferAttachmentsLocked */
 int mglRenderPassConfigureDefaultFramebufferAttachments(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
@@ -438,8 +444,7 @@ int mglRenderPassConfigureDefaultFramebufferAttachments(void *renderer)
     if (!mglRenderPassCheckDrawBufferSize(renderer, mgl_drawbuffer)) {
         (void)mglRendererBackendClearDefaultDrawBuffer(areas.backend,
                                                       mgl_drawbuffer);
-        areas.core->drawBuffers[mgl_drawbuffer].width = 0;
-        areas.core->drawBuffers[mgl_drawbuffer].height = 0;
+        mglRendererSetDefaultDrawBufferSize(renderer, mgl_drawbuffer, 0u, 0u);
     }
 
     /* attach color buffer */
@@ -556,18 +561,17 @@ int mglRenderPassConfigureDefaultFramebufferAttachments(void *renderer)
 
     mglPdSetPersistentDimensions(commandState, mglPdTextureInfo(texture).width,
                                  mglPdTextureInfo(texture).height);
-    areas.core->drawBuffers[mgl_drawbuffer].width =
-        (GLuint)mglPdTextureInfo(texture).width;
-    areas.core->drawBuffers[mgl_drawbuffer].height =
-        (GLuint)mglPdTextureInfo(texture).height;
+    mglRendererSetDefaultDrawBufferSize(
+        renderer, mgl_drawbuffer, (GLuint)mglPdTextureInfo(texture).width,
+        (GLuint)mglPdTextureInfo(texture).height);
     return 1;
 }
 
 /* -ensureTransientDepthForDefaultFramebufferLocked */
 void mglRenderPassEnsureTransientDepthForDefaultFramebuffer(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
@@ -656,8 +660,8 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
     unsigned int *outFboColorClearMask,
     unsigned int *outFboColorAttachment0ClearMask)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
@@ -700,10 +704,9 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
         int colorFirstUseThisFrame = 0;
         if (dontCareLoadEnabled && attachmentTextureForClear) {
             colorFirstUseThisFrame =
-                (attachmentTextureForClear->mtl_rt_frame_generation !=
+                (mglTextureRtGeneration(attachmentTextureForClear) !=
                  commandState->dontCareFrameGeneration);
-            attachmentTextureForClear->mtl_rt_frame_generation =
-                commandState->dontCareFrameGeneration;
+            mglTextureSetRtGeneration(attachmentTextureForClear, commandState->dontCareFrameGeneration);
         }
         MGLRenderPassLoadStoreInput loadStore = {0};
         loadStore.attachment_kind = MGL_RP_ATTACHMENT_COLOR;
@@ -711,7 +714,7 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
         loadStore.has_clear_pending =
             mglRenderClearMaskHasColor((uint32_t)att->clear_bitmask) ? 1 : 0;
         loadStore.texture_present =
-            (attachmentTextureForClear && attachmentTextureForClear->mtl_data)
+            (attachmentTextureForClear && mglTextureMtl(attachmentTextureForClear))
                 ? 1
                 : 0;
         loadStore.dontcare_enabled = dontCareLoadEnabled ? 1 : 0;
@@ -761,24 +764,29 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
                 loadStorePlan.set_store_action ? loadStorePlan.store_action
                                                : MGLStoreActionStore);
 
-            /* MS textures are texture2d_array sample planes; LoadActionClear
-             * only hits the attached base slice. Clear the other sample planes
-             * so imageLoad(sample) sees the same clear value. */
+            /* Emulated MS stores sample planes as texture2d_array slices;
+             * LoadActionClear only hits the attached base slice.  Clear the
+             * other planes so blit-resolve / imageLoad(sample) see the same
+             * value.  Gate on samples>1 (not only TEXTURE_2D_MULTISAMPLE*):
+             * renderbuffer MS keeps target=GL_RENDERBUFFER.  Use the same
+             * sRGB/linear view as the pass attachment — clearing the native
+             * sRGB texture while plane 0 used a linear view mixed encoded and
+             * raw values (DSA MS storage SRGB failures). */
             if (attachmentTextureForClear &&
-                attachmentTextureForClear->mtl_data &&
-                mglRenderIsMultisampleTextureTarget(
-                    (uint32_t)attachmentTextureForClear->target)) {
+                mglTextureMtl(attachmentTextureForClear) &&
+                attachmentTextureForClear->samples > 1u) {
                 const MGLMetalAttachmentSubresource sub =
                     mglMetalAttachmentSubresourceForAttachment(att);
                 const uint64_t samples =
-                    mglPdMaxU64((uint64_t)attachmentTextureForClear->samples, 1u);
+                    (uint64_t)attachmentTextureForClear->samples;
+                void *clear_tex = mglApplySRGBStateToRenderTarget(
+                    mglTextureMtl(attachmentTextureForClear), ctx);
                 for (uint64_t s = 1u; s < samples; s++) {
                     (void)mglRenderEncodeColorClearForCommandBufferOwner(
-                        commandState->currentCommandBufferOwner,
-                        attachmentTextureForClear->mtl_data, sub.level,
-                        sub.slice + s, sub.depthPlane, att->clear_color[0],
-                        att->clear_color[1], att->clear_color[2],
-                        att->clear_color[3]);
+                        commandState->currentCommandBufferOwner, clear_tex,
+                        sub.level, sub.slice + s, sub.depthPlane,
+                        att->clear_color[0], att->clear_color[1],
+                        att->clear_color[2], att->clear_color[3]);
                 }
             }
 
@@ -874,8 +882,8 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
 /* -configureDefaultFramebufferLoadStoreActionsLocked */
 void mglRenderPassConfigureDefaultFramebufferLoadStoreActions(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
 
@@ -957,8 +965,8 @@ void mglRenderPassLogClearResolve(
     unsigned int fboStencilClearMaskBefore, unsigned int defaultClearMask,
     struct Framebuffer_t *fboRaw)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
@@ -1069,8 +1077,8 @@ void mglRenderPassLogClearResolve(
 /* -newRenderEncoderLockedWithReason: */
 static int mglPdNewRenderEncoderBody(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;

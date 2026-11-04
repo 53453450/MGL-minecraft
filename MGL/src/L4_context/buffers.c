@@ -1,0 +1,4144 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
+/*
+ * Copyright (C) Michael Larson on 1/6/2022
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * buffers.c
+ * MGL
+ *
+ */
+
+#include <mach/mach_vm.h>
+#include <mach/mach_init.h>
+#include <mach/vm_map.h>
+#include <inttypes.h>
+#include <limits.h>
+#include <stdint.h>
+#include <string.h>
+#include <CoreFoundation/CoreFoundation.h>
+
+#include "glm_context.h"
+#include "buffers.h"
+#include "vertex_arrays.h"
+#include "mgl_byte_hash.h"
+#include "pixel_utils.h"
+#include "mgl_safety.h"
+#include "mgl_frame_activity.h"
+#include "mgl_render_api_buffer.h"
+
+// Used to recover from a corrupted context pointer (e.g. small non-NULL values like 0x2f)
+extern void mgl_lazy_init(void);
+#include "mgl_trace_log.h"
+
+void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access);
+
+#ifndef MGL_VERBOSE_BIND_BUFFER_LOGS
+#define MGL_VERBOSE_BIND_BUFFER_LOGS 0
+#endif
+
+#ifndef MGL_VERBOSE_BUFFER_MAP_LOGS
+#define MGL_VERBOSE_BUFFER_MAP_LOGS 0
+#endif
+
+static inline bool mglIsTraceBufferTarget(GLenum target)
+{
+    return (target == GL_ARRAY_BUFFER ||
+            target == GL_ELEMENT_ARRAY_BUFFER ||
+            target == GL_UNIFORM_BUFFER);
+}
+
+static inline bool mglShouldTraceBufferMutation(uint64_t call, GLenum target, GLsizeiptr size)
+{
+    if (!mglIsTraceBufferTarget(target)) {
+        return false;
+    }
+
+    if (call <= 128ull) {
+        return true;
+    }
+
+    if (size > 0 && size <= 256 && (call % 32ull) == 0ull) {
+        return true;
+    }
+
+    return ((call % 128ull) == 0ull);
+}
+
+static bool mglTraceSampleAllZero(const void *data, size_t len)
+{
+    if (!data || len == 0) {
+        return true;
+    }
+
+    const uint8_t *bytes = (const uint8_t *)data;
+    for (size_t i = 0; i < len; i++) {
+        if (bytes[i] != 0u) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void mglBufferMarkWrite(Buffer *ptr,
+                               MGLBufferInitSource source,
+                               GLintptr offset,
+                               GLsizeiptr size,
+                               const void *src_ptr,
+                               uint64_t src_hash)
+{
+    if (!ptr) {
+        return;
+    }
+
+    ptr->ever_written = GL_TRUE;
+    ptr->content_version++;
+    if (size > 0 &&
+        offset >= 0 &&
+        offset <= ptr->size &&
+        size <= (ptr->size - offset)) {
+        GLintptr write_end = offset + size;
+        if (ptr->written_min < 0 || offset < ptr->written_min) {
+            ptr->written_min = offset;
+        }
+        if (ptr->written_max < 0 || write_end > ptr->written_max) {
+            ptr->written_max = write_end;
+        }
+        ptr->has_initialized_data = GL_TRUE;
+    }
+
+    ptr->last_init_source = source;
+    ptr->last_write_offset = offset;
+    ptr->last_write_size = size;
+    ptr->last_write_src_ptr = src_ptr;
+    ptr->last_write_src_hash = src_hash;
+}
+
+/* PERF-001: GPU wait only when Metal may be ahead of the CPU shadow. */
+static int mglBufferNeedsGpuSyncForCpuRead(Buffer *ptr)
+{
+    return ptr && ptr->gpu_write_target && !ptr->cpu_shadow_pending &&
+           mglRenderBufferHandle(ptr) && ptr->data.buffer_data;
+}
+
+static void mglSyncBufferForCpuRead(GLMContext ctx, Buffer *ptr,
+                                    GLintptr offset, GLsizeiptr size)
+{
+    if (!ctx || !ptr || size <= 0) {
+        return;
+    }
+    mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
+    if (!mglBufferNeedsGpuSyncForCpuRead(ptr)) {
+        return;
+    }
+    mglFlushCommandBuffer(ctx);
+    mglRendererFlush(ctx, true);
+    mglRendererReadBackBuffer(ctx, ptr, (size_t)offset, (size_t)size);
+}
+
+static inline bool mgl_range_ok_glsize(GLintptr offset, GLsizeiptr size, GLsizeiptr total)
+{
+    if (offset < 0 || size < 0 || total < 0)
+        return false;
+
+    uint64_t uoffset = (uint64_t)offset;
+    uint64_t usize = (uint64_t)size;
+    uint64_t utotal = (uint64_t)total;
+
+    if (uoffset > utotal)
+        return false;
+    if (usize > utotal - uoffset)
+        return false;
+
+    return true;
+}
+
+/* Merge shader-written Metal contents into the CPU shadow before a partial
+ * CPU update. PERF-021: refresh only the written range. */
+static void mglPrepareGpuWrittenBufferForCpuShadowWrite(GLMContext ctx,
+                                                        Buffer *ptr,
+                                                        GLintptr offset,
+                                                        GLsizeiptr size)
+{
+    if (!ctx || !ptr || !ptr->gpu_write_target || ptr->cpu_shadow_pending ||
+        !ptr->data.buffer_data || !mglRenderBufferHandle(ptr) || size <= 0) {
+        return;
+    }
+    if (offset < 0 || !mgl_range_ok_glsize(offset, size, ptr->size)) {
+        offset = 0;
+        size = ptr->size;
+    }
+
+    mglFlushCommandBuffer(ctx);
+    mglRendererFlush(ctx, true);
+    size_t readback_size = (size_t)size;
+    size_t readback_off = (size_t)offset;
+    if (ptr->data.buffer_size > 0 &&
+        readback_off + readback_size > ptr->data.buffer_size) {
+        if (readback_off >= ptr->data.buffer_size) {
+            return;
+        }
+        readback_size = ptr->data.buffer_size - readback_off;
+    }
+    mglRendererReadBackBuffer(ctx, ptr, readback_off, readback_size);
+}
+
+static void mglBufferMarkAllocatedUninitialized(Buffer *ptr, MGLBufferInitSource source)
+{
+    if (!ptr) {
+        return;
+    }
+
+    ptr->has_initialized_data = GL_FALSE;
+    ptr->ever_written = GL_FALSE;
+    ptr->written_min = -1;
+    ptr->written_max = -1;
+    ptr->content_version++;
+    ptr->scan_cache_valid = 0;
+    ptr->last_init_source = source;
+    ptr->last_write_offset = 0;
+    ptr->last_write_size = ptr->size;
+    ptr->last_write_src_ptr = NULL;
+    ptr->last_write_src_hash = 0ull;
+    ptr->mapped_ptr = NULL;
+}
+
+static GLenum mglBufferAccessEnumFromMapFlags(GLbitfield flags)
+{
+    GLboolean r = (flags & GL_MAP_READ_BIT) != 0;
+    GLboolean w = (flags & GL_MAP_WRITE_BIT) != 0;
+    if (r && w)
+        return GL_READ_WRITE;
+    if (r)
+        return GL_READ_ONLY;
+    return GL_WRITE_ONLY;
+}
+
+static inline bool mglBufferMapAllowsWrite(const Buffer *ptr)
+{
+    if (!ptr) {
+        return false;
+    }
+
+    if (ptr->access == GL_WRITE_ONLY || ptr->access == GL_READ_WRITE) {
+        return true;
+    }
+
+    return (ptr->access_flags & GL_MAP_WRITE_BIT) != 0;
+}
+
+static void mglBufferMarkMapWrite(Buffer *ptr)
+{
+    if (!ptr || !mglBufferMapAllowsWrite(ptr)) {
+        return;
+    }
+
+    GLintptr write_offset = ptr->mapped_offset;
+    GLsizeiptr write_size = ptr->mapped_length > 0 ? ptr->mapped_length : ptr->size;
+    const uint8_t *src = NULL;
+    uint64_t hash = 0ull;
+
+    if (ptr->mapped_ptr && write_size > 0) {
+        src = (const uint8_t *)ptr->mapped_ptr;
+        hash = mglTraceHashBytes(src, (size_t)write_size);
+    } else if (ptr->data.buffer_data && write_size > 0) {
+        size_t safe_offset = (write_offset > 0) ? (size_t)write_offset : 0u;
+        src = ((const uint8_t *)(uintptr_t)ptr->data.buffer_data) + safe_offset;
+        hash = mglTraceHashBytes(src, (size_t)write_size);
+    }
+
+    char head[64];
+    mglTraceFormatBytes(src, (write_size > 0) ? (size_t)write_size : 0u, head, sizeof(head));
+    size_t probe_len = 0u;
+    if (src && write_size > 0) {
+        size_t ws = (size_t)write_size;
+        probe_len = ws < 256u ? ws : 256u;
+    }
+    bool probe_all_zero = mglTraceSampleAllZero(src, probe_len);
+    static uint64_t s_buffer_map_write_trace_count = 0u;
+    uint64_t trace_call = ++s_buffer_map_write_trace_count;
+    if (MGL_VERBOSE_BUFFER_MAP_LOGS ||
+        mglShouldTraceBufferMutation(trace_call, ptr->target, write_size)) {
+        fprintf(stderr,
+                "MGL TRACE BufferMap.write buffer=%u target=0x%x off=%lld size=%lld src=%p mappedPtr=%p backing=%p hash=0x%016" PRIx64 " head=%s probe256AllZero=%d access=0x%x accessFlags=0x%x mapped=%u\n",
+                ptr->name,
+                ptr->target,
+                (long long)write_offset,
+                (long long)write_size,
+                src,
+                ptr->mapped_ptr,
+                (void *)(uintptr_t)ptr->data.buffer_data,
+                hash,
+                head,
+                probe_all_zero ? 1 : 0,
+                ptr->access,
+                ptr->access_flags,
+                (unsigned)ptr->mapped);
+    }
+
+    mglBufferMarkWrite(ptr,
+                       kInitMapWrite,
+                       write_offset,
+                       write_size,
+                       src,
+                       hash);
+}
+
+#pragma mark Utility Functions
+
+GLuint bufferIndexFromTarget(GLMContext ctx, GLenum target)
+{
+    (void)ctx;
+
+    switch(target)
+    {
+        case GL_ARRAY_BUFFER: return _ARRAY_BUFFER;
+        case GL_ELEMENT_ARRAY_BUFFER: return _ELEMENT_ARRAY_BUFFER;
+        case GL_UNIFORM_BUFFER: return _UNIFORM_BUFFER;
+        case GL_TEXTURE_BUFFER: return _TEXTURE_BUFFER;
+        case GL_TRANSFORM_FEEDBACK_BUFFER: return _TRANSFORM_FEEDBACK_BUFFER;
+        case GL_QUERY_BUFFER: return _QUERY_BUFFER;
+        case GL_PIXEL_PACK_BUFFER: return _PIXEL_PACK_BUFFER;
+        case GL_PIXEL_UNPACK_BUFFER: return _PIXEL_UNPACK_BUFFER;
+        case GL_ATOMIC_COUNTER_BUFFER: return _ATOMIC_COUNTER_BUFFER;
+        case GL_COPY_READ_BUFFER: return _COPY_READ_BUFFER;
+        case GL_COPY_WRITE_BUFFER: return _COPY_WRITE_BUFFER;
+        case GL_DISPATCH_INDIRECT_BUFFER: return _DISPATCH_INDIRECT_BUFFER;
+        case GL_DRAW_INDIRECT_BUFFER: return _DRAW_INDIRECT_BUFFER;
+        case GL_PARAMETER_BUFFER_ARB: return _PARAMETER_BUFFER;
+        case GL_SHADER_STORAGE_BUFFER: return _SHADER_STORAGE_BUFFER;
+
+        default:
+            fprintf(stderr, "MGL ERROR: bufferIndexFromTarget invalid target=0x%x\n", target);
+            return _MAX_BUFFER_TYPES;
+    }
+}
+
+Buffer *newBuffer(GLMContext ctx, GLenum target, GLuint name)
+{
+    Buffer *ptr;
+
+    ptr = (Buffer *)malloc(sizeof(Buffer));
+    if (!ptr) {
+        if (ctx)
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        fprintf(stderr, "MGL ERROR: failed to allocate buffer %u target=0x%x\n", name, target);
+        return NULL;
+    }
+
+    bzero(ptr, sizeof(Buffer));
+
+    ptr->name = name;
+    ptr->target = target;
+    ptr->usage = GL_STATIC_DRAW;
+    ptr->access = GL_READ_WRITE;
+    ptr->written_min = -1;
+    ptr->written_max = -1;
+
+    // initial reference owned by the caller (hash table / binding site).
+    ptr->refcount = 1;
+    ptr->delete_status = GL_FALSE;
+
+    // create buffers doesn't provide a target
+    if (target)
+    {
+        ptr->index = bufferIndexFromTarget(ctx, target);
+    }
+
+    return ptr;
+}
+
+/* Buffer reference counting (mirrors Program refcount pattern).
+ * Batch snapshots retain hot buffer_base types so glDeleteBuffers during
+ * deferred replay cannot free backing storage.  If refcount>0 after delete,
+ * the shell survives as a tombstone until the last release frees it. */
+void mglRetainBufferReference(Buffer *buf)
+{
+    if (!buf) return;
+    buf->refcount++;
+}
+
+void mglReleaseBufferStorage(Buffer *buf)
+{
+    if (!buf) return;
+
+    GLboolean metal_owns_cpu_backing = mglRenderBufferOwnsCPUStorage(buf);
+    /* The Metal buffer belongs to the backend record; it is released when
+     * mglRenderReleaseBufferBackend tears that record down below. */
+
+    if (buf->data.buffer_data && buf->data.buffer_size > 0 &&
+        !metal_owns_cpu_backing) {
+        kern_return_t kr = vm_deallocate((vm_map_t)mach_task_self(),
+                                         (vm_address_t)buf->data.buffer_data,
+                                         (vm_size_t)buf->data.buffer_size);
+        if (kr != KERN_SUCCESS) {
+            fprintf(stderr,
+                    "MGL WARNING: failed to release buffer CPU backing name=%u ptr=%p size=%zu kr=%d\n",
+                    buf->name,
+                    (void *)(uintptr_t)buf->data.buffer_data,
+                    buf->data.buffer_size,
+                    kr);
+        }
+    }
+
+    /* release the backend state: CoW snapshot pool, expanded index copy */
+    mglRenderReleaseBufferBackend(buf);
+
+    /* A no-copy MTLBuffer may remain alive in an in-flight command buffer.
+     * Its deallocator owns the old VM range after this point. */
+    buf->data.buffer_data = 0;
+    buf->data.buffer_size = 0;
+    /* The ownership bit went away with the backend record above; writing it
+     * here would allocate a fresh record just to zero a byte. */
+    free(buf->sparse_page_committed);
+    buf->sparse_page_committed = NULL;
+    buf->sparse_page_count = 0u;
+}
+
+void mglReleaseBufferReference(GLMContext ctx, Buffer *buf)
+{
+    if (!buf) return;
+    if (buf->refcount > 0) {
+        buf->refcount--;
+    }
+    if (buf->refcount == 0 && buf->delete_status) {
+        /* All references dropped and glDeleteBuffers was called: release
+         * Metal backing + CPU backing and free the shell.  Mirrors
+         * mglDestroyContextBuffer's cleanup (glm_context.c). */
+        mglReleaseBufferStorage(buf);
+        free(buf->debug_label);
+        free(buf);
+    }
+}
+
+Buffer *getBuffer(GLMContext ctx, GLenum target, GLuint buffer)
+{
+    Buffer *ptr;
+
+    if (!ctx || buffer == 0u)
+    {
+        return NULL;
+    }
+
+    ptr = (Buffer *)searchHashTable(&STATE(buffer_table), buffer);
+
+    if (!ptr)
+    {
+        ptr = newBuffer(ctx, target, buffer);
+        if (!ptr)
+        {
+            return NULL;
+        }
+
+        insertHashElement(&STATE(buffer_table), buffer, ptr);
+    }
+
+    return ptr;
+}
+
+bool isBuffer(GLMContext ctx, GLuint buffer)
+{
+    if (!ctx || buffer == 0u)
+    {
+        return false;
+    }
+
+    return ((Buffer *)searchHashTable(&STATE(buffer_table), buffer)) != NULL;
+}
+
+bool mglBufferNameWasGenerated(GLMContext ctx, GLuint buffer)   /* F23: shared with vertex_buffers.c */
+{
+    if (!ctx)
+        return false;
+    /* GLES accepts any non-zero name here without a "was it generated" check. */
+    if (ctx->is_es)
+        return buffer != 0u;
+    return buffer != 0u && buffer <= STATE(buffer_table).current_name;
+}
+
+Buffer *findBuffer(GLMContext ctx, GLuint buffer)
+{
+    if (!ctx || buffer == 0u)
+    {
+        return NULL;
+    }
+
+    return (Buffer *)searchHashTable(&STATE(buffer_table), buffer);
+}
+
+bool checkTarget(GLMContext ctx, GLenum target)
+{
+    switch(target)
+    {
+        case GL_ARRAY_BUFFER:
+        case GL_ELEMENT_ARRAY_BUFFER:
+        case GL_UNIFORM_BUFFER:
+        case GL_TEXTURE_BUFFER:
+        case GL_TRANSFORM_FEEDBACK_BUFFER:
+        case GL_QUERY_BUFFER:
+        case GL_PIXEL_PACK_BUFFER:
+        case GL_PIXEL_UNPACK_BUFFER:
+        case GL_ATOMIC_COUNTER_BUFFER:
+        case GL_COPY_READ_BUFFER:
+        case GL_COPY_WRITE_BUFFER:
+        case GL_DISPATCH_INDIRECT_BUFFER:
+        case GL_DRAW_INDIRECT_BUFFER:
+        case GL_PARAMETER_BUFFER_ARB:
+        case GL_SHADER_STORAGE_BUFFER:
+            return true;
+    }
+
+    return false;
+}
+
+bool checkUsage(GLMContext ctx, GLenum usage)
+{
+    switch(usage)
+    {
+        case GL_STREAM_DRAW:
+        case GL_STREAM_READ:
+        case GL_STREAM_COPY:
+        case GL_STATIC_DRAW:
+        case GL_STATIC_READ:
+        case GL_STATIC_COPY:
+        case GL_DYNAMIC_DRAW:
+        case GL_DYNAMIC_READ:
+        case GL_DYNAMIC_COPY:
+            return true;
+    }
+
+    return false;
+}
+
+static void mglSetGenericBufferBinding(GLMContext ctx, GLenum target, GLuint name)
+{
+    if (!ctx)
+        return;
+
+    switch(target)
+    {
+        case GL_ARRAY_BUFFER:
+            STATE_VAR(array_buffer_binding) = name;
+            break;
+        case GL_PIXEL_PACK_BUFFER:
+            STATE_VAR(pixel_pack_buffer_binding) = name;
+            break;
+        case GL_PIXEL_UNPACK_BUFFER:
+            STATE_VAR(pixel_unpack_buffer_binding) = name;
+            break;
+        case GL_UNIFORM_BUFFER:
+            STATE_VAR(uniform_buffer_binding) = name;
+            break;
+        case GL_TRANSFORM_FEEDBACK_BUFFER:
+            STATE(buffers[_TRANSFORM_FEEDBACK_BUFFER]) = name ? findBuffer(ctx, name) : NULL;
+            break;
+        case GL_DISPATCH_INDIRECT_BUFFER:
+            STATE_VAR(dispatch_indirect_buffer_binding) = name;
+            break;
+        case GL_DRAW_INDIRECT_BUFFER:
+            STATE_VAR(draw_indirect_buffer_binding) = name;
+            break;
+        case GL_SHADER_STORAGE_BUFFER:
+            STATE_VAR(shader_storage_buffer_binding) = name;
+            break;
+        default:
+            break;
+    }
+}
+
+static void mglClearGenericBufferBindingName(GLMContext ctx, GLuint name)
+{
+    if (!ctx || name == 0u)
+        return;
+
+    if (STATE_VAR(array_buffer_binding) == name)
+        STATE_VAR(array_buffer_binding) = 0u;
+    if (STATE_VAR(element_array_buffer_binding) == name)
+        STATE_VAR(element_array_buffer_binding) = 0u;
+    if (STATE_VAR(pixel_pack_buffer_binding) == name)
+        STATE_VAR(pixel_pack_buffer_binding) = 0u;
+    if (STATE_VAR(pixel_unpack_buffer_binding) == name)
+        STATE_VAR(pixel_unpack_buffer_binding) = 0u;
+    if (STATE_VAR(uniform_buffer_binding) == name)
+        STATE_VAR(uniform_buffer_binding) = 0u;
+    if (STATE_VAR(dispatch_indirect_buffer_binding) == name)
+        STATE_VAR(dispatch_indirect_buffer_binding) = 0u;
+    if (STATE_VAR(draw_indirect_buffer_binding) == name)
+        STATE_VAR(draw_indirect_buffer_binding) = 0u;
+    if (STATE_VAR(shader_storage_buffer_binding) == name)
+        STATE_VAR(shader_storage_buffer_binding) = 0u;
+}
+
+static void mglBindNullBufferForTarget(GLMContext ctx, GLenum target, GLint index)
+{
+    if (target == GL_ELEMENT_ARRAY_BUFFER)
+    {
+        VertexArray *bound_vao = STATE(vao);
+        int vao_is_valid =
+            bound_vao &&
+            mglObjectPointerLooksPlausible(bound_vao) &&
+            mglHashTableContainsData(&STATE(vao_table), bound_vao) &&
+            bound_vao->magic == MGL_VAO_MAGIC;
+
+        if (bound_vao && !vao_is_valid)
+        {
+            fprintf(stderr, "MGL WARNING: dropping invalid current VAO pointer %p during EBO unbind\n",
+                    (void *)bound_vao);
+            STATE(vao) = NULL;
+            bound_vao = NULL;
+        }
+
+        if (bound_vao)
+        {
+            /* Indexed draw commands retain their element-buffer pointer, so
+             * a pure EBO unbind cannot change already deferred draws. */
+            if (!mglBindNoFlushEnabled()) {
+                mglFlushPendingDrawsForVertexArray(ctx, bound_vao);
+            }
+            bound_vao->element_array.buffer = NULL;
+            bound_vao->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
+            mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
+        }
+        else
+        {
+            // Compatibility path: emulate VAO 0 element binding behavior.
+            STATE(default_vao_element_array_buffer) = NULL;
+        }
+
+        STATE(buffers[index]) = NULL;
+        STATE_VAR(element_array_buffer_binding) = 0;
+        return;
+    }
+
+    if (STATE(buffers[index]) != NULL)
+    {
+        STATE(buffers[index]) = NULL;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_BUFFER);
+    }
+    mglSetGenericBufferBinding(ctx, target, 0u);
+}
+
+static inline bool mgl_range_ok_size_t(GLintptr offset, GLsizeiptr size, size_t total)
+{
+    if (offset < 0 || size < 0)
+        return false;
+
+    uint64_t uoffset = (uint64_t)offset;
+    uint64_t usize = (uint64_t)size;
+    uint64_t utotal = (uint64_t)total;
+
+    if (uoffset > utotal)
+        return false;
+    if (usize > utotal - uoffset)
+        return false;
+
+    return true;
+}
+
+static inline bool mgl_ranges_overlap(GLintptr a_offset, GLsizeiptr a_size, GLintptr b_offset, GLsizeiptr b_size)
+{
+    if (a_offset < 0 || a_size <= 0 || b_offset < 0 || b_size <= 0)
+        return false;
+
+    uint64_t a0 = (uint64_t)a_offset;
+    uint64_t b0 = (uint64_t)b_offset;
+    uint64_t a1 = a0 + (uint64_t)a_size;
+    uint64_t b1 = b0 + (uint64_t)b_size;
+
+    if (a1 < a0 || b1 < b0)
+        return true;
+
+    return a0 < b1 && b0 < a1;
+}
+
+static inline bool mglBufferSubDataBlockedByMap(const Buffer *ptr, GLintptr offset, GLsizeiptr size)
+{
+    if (!ptr || !ptr->mapped)
+        return false;
+
+    if (ptr->access_flags & GL_MAP_PERSISTENT_BIT)
+        return false;
+
+    GLsizeiptr mapped_length = ptr->mapped_length > 0 ? ptr->mapped_length : ptr->size;
+    return mgl_ranges_overlap(offset, size, ptr->mapped_offset, mapped_length);
+}
+
+static inline GLMContext mgl_sanitize_ctx(GLMContext ctx, const char *func)
+{
+    // Public GL entrypoints are backed by the process-global current context.
+    // If a stale/corrupt dispatch passes some other non-small pointer, touching
+    // ctx->state can still fault; prefer the known current context.
+    GLMContext current = MGLgetCurrentContext();
+    if (current != NULL && (uintptr_t)current >= 0x10000u)
+    {
+        if (ctx == current)
+            return ctx;
+
+        if (ctx != NULL)
+        {
+            fprintf(stderr,
+                    "MGL WARNING: %s received non-current ctx=%p; using current ctx=%p\n",
+                    func,
+                    (void *)ctx,
+                    (void *)current);
+        }
+        return current;
+    }
+
+    // A valid heap pointer will never be a tiny value like 0x2f.
+    if (ctx != NULL && (uintptr_t)ctx >= 0x10000u)
+        return ctx;
+
+    fprintf(stderr, "MGL ERROR: %s received invalid ctx=%p; attempting to recover\n", func, (void *)ctx);
+
+    mgl_lazy_init();
+
+    current = MGLgetCurrentContext();
+    if (current != NULL && (uintptr_t)current >= 0x10000u)
+        return current;
+
+    fprintf(stderr, "MGL ERROR: %s recovery failed; dropping call\n", func);
+    return NULL;
+}
+
+static inline void mglClearBufferMapReferences(BufferMapList *list, Buffer *ptr, GLuint name)
+{
+    (void)name;
+
+    if (!list)
+        return;
+
+    GLuint count = list->count;
+    if (count > MAX_MAPPED_BUFFERS)
+        count = MAX_MAPPED_BUFFERS;
+
+    for (GLuint i = 0; i < count; i++)
+    {
+        Buffer *candidate = list->buffers[i].buf;
+        if (candidate == ptr)
+        {
+            bzero(&list->buffers[i], sizeof(BufferMap));
+            continue;
+        }
+
+        /*
+         * Buffer deletion can encounter stale VAO/map pointers left over from
+         * earlier incorrect eager frees. Do not dereference an arbitrary
+         * candidate here; pointer equality is the only safe test.
+         */
+        if (candidate && (uintptr_t)candidate < 0x10000u)
+        {
+            bzero(&list->buffers[i], sizeof(BufferMap));
+        }
+    }
+}
+
+static inline void mglClearVAOBufferReferences(GLMContext ctx, Buffer *ptr, GLuint name)
+{
+    HashTable *table;
+
+    (void)name;
+
+    if (!ctx)
+        return;
+
+    table = &STATE(vao_table);
+    if (!mglHashTableValidateStorage(table, "clearVAOBufferReferences") ||
+        !table->keys || !table->states || table->size == 0)
+        return;
+
+    for (size_t slot = 0; slot < table->size; slot++)
+    {
+        if (table->states[slot] != 1u || !table->keys[slot].data)
+            continue;
+
+        VertexArray *vao = (VertexArray *)table->keys[slot].data;
+        /* Table entries are live objects; only the cheap user-space magic
+         * sanity check remains (no readability probe). */
+        if (vao->magic != MGL_VAO_MAGIC)
+            continue;
+
+        if (vao->element_array.buffer == ptr ||
+            (vao->element_array.buffer && (uintptr_t)vao->element_array.buffer < 0x10000u))
+        {
+            vao->element_array.buffer = NULL;
+        }
+
+        for (GLuint i = 0; i < MAX_ATTRIBS; i++)
+        {
+            if (vao->attrib[i].buffer == ptr ||
+                (vao->attrib[i].buffer && (uintptr_t)vao->attrib[i].buffer < 0x10000u))
+            {
+                vao->attrib[i].buffer = NULL;
+            }
+        }
+    }
+}
+
+static Buffer *mglGetBoundBufferForTarget(GLMContext ctx, GLenum target)
+{
+    GLuint index;
+
+    if (!ctx || !checkTarget(ctx, target))
+        return NULL;
+
+    index = bufferIndexFromTarget(ctx, target);
+
+    if (target == GL_ELEMENT_ARRAY_BUFFER)
+    {
+        VertexArray *vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
+        if (vao)
+            return vao->element_array.buffer;
+        return STATE(default_vao_element_array_buffer);
+    }
+
+    if (index >= _MAX_BUFFER_TYPES)
+        return NULL;
+
+    return STATE(buffers[index]);
+}
+
+size_t page_size_align(size_t size)
+{
+    if (size & (4096-1))
+    {
+        size_t pad_size = 0;
+
+        pad_size = 4096 - (size & (4096-1));
+
+        size += pad_size;
+    }
+
+    return size;
+}
+
+void *getBufferData(GLMContext ctx, Buffer *ptr)
+{
+    void *buffer_data;
+
+    if (!ptr) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    ERROR_CHECK_RETURN_VALUE(ptr->mapped == false, GL_INVALID_OPERATION, NULL);
+
+    buffer_data = (void *)(uintptr_t)ptr->data.buffer_data;
+
+    ERROR_CHECK_RETURN_VALUE(buffer_data, GL_INVALID_OPERATION, NULL);
+
+    return buffer_data;
+}
+
+GLint mglSparseBufferPageSize(void)
+{
+    /* ARB_sparse_buffer.  Power of two, and the CTS getter rejects values
+     * outside 1..65536. */
+    return 65536;
+}
+
+/* Copy src to dst only over committed sparse pages; uncommitted writes are
+ * discarded (ARB_sparse_buffer).  Returns bytes actually written. */
+static GLsizeiptr mglSparseBufferCopyCommitted(Buffer *ptr, GLintptr offset,
+                                               GLsizeiptr size, const void *src,
+                                               void *dst)
+{
+    GLint page;
+    GLuint first, last, i;
+    GLsizeiptr written = 0;
+
+    if (!ptr || !src || !dst || size <= 0 || offset < 0)
+        return 0;
+    if (!ptr->sparse_page_committed || ptr->sparse_page_count == 0u)
+        return 0;
+    page = mglSparseBufferPageSize();
+    if (page <= 0)
+        return 0;
+    first = (GLuint)(offset / page);
+    last = (GLuint)((offset + size + page - 1) / page);
+    if (last > ptr->sparse_page_count)
+        last = ptr->sparse_page_count;
+    for (i = first; i < last; i++) {
+        GLintptr page_off = (GLintptr)i * page;
+        GLintptr seg0 = page_off > offset ? page_off : offset;
+        GLintptr page_end = page_off + page;
+        GLintptr range_end = offset + size;
+        GLintptr seg1 = page_end < range_end ? page_end : range_end;
+        if (seg1 <= seg0)
+            continue;
+        if (!ptr->sparse_page_committed[i])
+            continue;
+        memcpy((uint8_t *)dst + (size_t)(seg0 - offset),
+               (const uint8_t *)src + (size_t)(seg0 - offset),
+               (size_t)(seg1 - seg0));
+        written += seg1 - seg0;
+    }
+    return written;
+}
+
+static int mglSparseBufferStorageFlagsOk(GLMContext ctx, GLbitfield storage_flags, GLsizeiptr size)
+{
+    if (storage_flags & ~(GL_DYNAMIC_STORAGE_BIT | GL_MAP_READ_BIT | GL_MAP_WRITE_BIT |
+                          GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT |
+                          GL_CLIENT_STORAGE_BIT | GL_SPARSE_STORAGE_BIT_ARB)) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, 0);
+    }
+    if (storage_flags & GL_SPARSE_STORAGE_BIT_ARB) {
+        /* Mapping a sparse buffer is forbidden, so the map bits are too. */
+        if (storage_flags & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT)) {
+            ERROR_RETURN_VALUE(GL_INVALID_VALUE, 0);
+        }
+        if (size <= 0 || (size % mglSparseBufferPageSize()) != 0) {
+            ERROR_RETURN_VALUE(GL_INVALID_VALUE, 0);
+        }
+    }
+    if ((storage_flags & GL_MAP_PERSISTENT_BIT) &&
+        !(storage_flags & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT))) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, 0);
+    }
+    if ((storage_flags & GL_MAP_COHERENT_BIT) &&
+        !(storage_flags & GL_MAP_PERSISTENT_BIT)) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, 0);
+    }
+    return 1;
+}
+
+void bufferStorage(GLMContext ctx, Buffer *ptr, GLenum target, GLuint index, GLsizeiptr size, const void *data, GLbitfield storage_flags, GLenum usage)
+{
+    kern_return_t err;
+    vm_address_t buffer_data;
+    size_t buffer_size;
+
+    mglFlushPendingDrawsForBuffer(ctx, ptr);
+
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+    }
+
+    buffer_size = page_size_align(size);
+
+    // Allocate directly from VM
+    err = vm_allocate((vm_map_t) mach_task_self(),
+                      (vm_address_t*) &buffer_data,
+                      buffer_size,
+                      VM_FLAGS_ANYWHERE);
+    if (err)
+    {
+        ERROR_RETURN(GL_OUT_OF_MEMORY);
+        return;
+    }
+
+    mglReleaseBufferStorage(ptr);
+
+    // init
+    ptr->data.buffer_data = buffer_data;
+    ptr->data.buffer_size = buffer_size;
+    ptr->index = index;
+    ptr->target = target;
+    ptr->size = size;
+    if (usage == 0)
+    {
+        ptr->immutable_storage = BUFFER_IMMUTABLE_STORAGE_FLAG;
+        ptr->usage = usage;
+    }
+    else
+    {
+        ptr->immutable_storage = 0;
+        ptr->usage = usage;
+    }
+
+    ptr->mapped = GL_FALSE;
+    ptr->access = GL_READ_WRITE;
+    ptr->access_flags = 0;
+    ptr->mapped_offset = 0;
+    ptr->mapped_length = 0;
+    ptr->mapped_ptr = NULL;
+    ptr->storage_flags = storage_flags;
+    ptr->sparse_page_committed = NULL;
+    ptr->sparse_page_count = 0u;
+
+    ptr->data.dirty_bits = DIRTY_BUFFER_ADDR;
+
+    if (storage_flags & GL_SPARSE_STORAGE_BIT_ARB) {
+        /* Spec: the entire store starts uncommitted.  Track pages so
+         * BufferPageCommitmentARB decommit is not a no-op. */
+        GLint page = mglSparseBufferPageSize();
+        GLuint npages = page > 0 ? (GLuint)((size + page - 1) / page) : 0u;
+        if (npages > 0u) {
+            ptr->sparse_page_committed = (uint8_t *)calloc(npages, 1u);
+            ptr->sparse_page_count = npages;
+        }
+        /* Discard client data for sparse storage (ARB_sparse_buffer). */
+        if (ptr->data.buffer_data && ptr->size > 0)
+            memset((void *)(uintptr_t)ptr->data.buffer_data, 0, (size_t)ptr->size);
+        mglBufferMarkAllocatedUninitialized(ptr, kInitBufferDataNull);
+    } else if (data)
+    {
+        memcpy((void *)ptr->data.buffer_data, data, ptr->size);
+
+        mglBufferMarkWrite(ptr,
+                           kInitBufferDataCopy,
+                           0,
+                           ptr->size,
+                           data,
+                           mglTraceHashBytes(data, (size_t)ptr->size));
+        ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+    }
+    else
+    {
+        mglBufferMarkAllocatedUninitialized(ptr, kInitBufferDataNull);
+    }
+}
+
+bool clearBufferData(GLMContext ctx, Buffer *ptr, GLenum internalformat, GLintptr offset, GLsizeiptr size, GLenum format, GLenum type, const void *data)
+{
+    switch(internalformat)
+    {
+        case GL_R8:
+        case GL_R16:
+        case GL_R16F:
+        case GL_R32F:
+        case GL_R8I:
+        case GL_R16I:
+        case GL_R32I:
+        case GL_R8UI:
+        case GL_R16UI:
+        case GL_R32UI:
+        case GL_RG8:
+        case GL_RG16:
+        case GL_RG16F:
+        case GL_RG32F:
+        case GL_RG8I:
+        case GL_RG16I:
+        case GL_RG32I:
+        case GL_RG8UI:
+        case GL_RG16UI:
+        case GL_RG32UI:
+        case GL_RGB32F:
+        case GL_RGB32I:
+        case GL_RGB32UI:
+        case GL_RGBA8:
+        case GL_RGBA16:
+        case GL_RGBA16F:
+        case GL_RGBA32F:
+        case GL_RGBA8I:
+        case GL_RGBA16I:
+        case GL_RGBA32I:
+        case GL_RGBA8UI:
+        case GL_RGBA16UI:
+        case GL_RGBA32UI:
+            break;
+
+        default:
+            ERROR_RETURN_VALUE(GL_INVALID_ENUM, false);
+    }
+
+    switch (format)
+    {
+        case GL_RED:
+        case GL_RG:
+        case GL_RGB:
+        case GL_BGR:
+        case GL_RGBA:
+        case GL_BGRA:
+        case GL_RED_INTEGER:
+        case GL_RG_INTEGER:
+        case GL_RGB_INTEGER:
+        case GL_BGR_INTEGER:
+        case GL_RGBA_INTEGER:
+        case GL_BGRA_INTEGER:
+        case GL_STENCIL_INDEX:
+        case GL_DEPTH_COMPONENT:
+        case GL_DEPTH_STENCIL:
+            break;
+        default:
+            ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+
+    switch (type)
+    {
+        case GL_UNSIGNED_BYTE:
+        case GL_BYTE:
+        case GL_UNSIGNED_SHORT:
+        case GL_SHORT:
+        case GL_UNSIGNED_INT:
+        case GL_INT:
+        case GL_FLOAT:
+        case GL_UNSIGNED_BYTE_3_3_2:
+        case GL_UNSIGNED_BYTE_2_3_3_REV:
+        case GL_UNSIGNED_SHORT_5_6_5:
+        case GL_UNSIGNED_SHORT_5_6_5_REV:
+        case GL_UNSIGNED_SHORT_4_4_4_4:
+        case GL_UNSIGNED_SHORT_4_4_4_4_REV:
+        case GL_UNSIGNED_SHORT_5_5_5_1:
+        case GL_UNSIGNED_SHORT_1_5_5_5_REV:
+        case GL_UNSIGNED_INT_8_8_8_8:
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+        case GL_UNSIGNED_INT_10_10_10_2:
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_HALF_FLOAT:
+            break;
+        default:
+            ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+
+    if (!ptr) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+
+    if (!mgl_range_ok_glsize(offset, size, ptr->size))
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+
+    if (size == 0) {
+        return true;
+    }
+
+    mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
+
+    if (mglRenderBufferOwnsCPUStorage(ptr)) {
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+    }
+
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+    }
+
+    size_t pixel_size = sizeForInternalFormat(internalformat, format, type);
+    if (!pixel_size) {
+        ERROR_RETURN_VALUE(GL_INVALID_ENUM, false);
+    }
+
+    if (((size_t)size % pixel_size) != 0u) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+
+    if (ptr->mapped && !(ptr->access_flags & GL_MAP_PERSISTENT_BIT)) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+
+    GLubyte *base = (GLubyte *)(uintptr_t)ptr->data.buffer_data;
+    if (!base) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+
+    GLubyte *dst = base + (size_t)offset;
+    size_t pixel_count = (size_t)size / pixel_size;
+    GLubyte zero_pattern[32] = {0};
+    const void *src = data ? data : zero_pattern;
+    if (pixel_size > sizeof(zero_pattern) && !data) {
+        ERROR_RETURN_VALUE(GL_INVALID_ENUM, false);
+    }
+
+    for(size_t i=0; i<pixel_count; i++)
+    {
+        memcpy(dst + (i * pixel_size), src, pixel_size);
+    }
+
+    ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
+    mglBufferMarkWrite(ptr,
+                       kInitBufferSubData,
+                       offset,
+                       size,
+                       src,
+                       mglTraceHashBytes(src, pixel_size));
+
+    return true;
+}
+
+
+#pragma mark GL Buffer Functions
+void mglGenBuffers(GLMContext ctx, GLsizei n, GLuint *buffers)
+{
+    static uint64_t s_gen_buffers_calls = 0u;
+    uint64_t call_id = ++s_gen_buffers_calls;
+
+    if (!ctx)
+        return;
+
+    if (n < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (n == 0)
+        return;
+
+    if (!buffers) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (MGL_VERBOSE_BUFFER_MAP_LOGS) {
+        fprintf(stderr,
+                "MGL TRACE GenBuffers call=%llu ctx=%p n=%d buffers=%p\n",
+                (unsigned long long)call_id,
+                (void *)ctx,
+                (int)n,
+                (void *)buffers);
+    } else {
+        mglTraceLogExternal("GEN_BUFFERS call=%llu ctx=%p n=%d buffers=%p",
+                            (unsigned long long)call_id,
+                            (void *)ctx,
+                            (int)n,
+                            (void *)buffers);
+    }
+
+    while(n--)
+    {
+        GLuint name = getNewName(&STATE(buffer_table));
+        *buffers++ = name;
+        if (call_id <= 64u || (call_id % 512u) == 0u)
+        {
+        if (MGL_VERBOSE_BUFFER_MAP_LOGS) {
+            fprintf(stderr,
+                    "MGL TRACE GenBuffers call=%llu generated=%u currentName=%u tableCount=%zu tableCap=%zu\n",
+                    (unsigned long long)call_id,
+                    name,
+                    STATE(buffer_table).current_name,
+                    STATE(buffer_table).count,
+                    STATE(buffer_table).size);
+        } else if (call_id <= 32ull || (call_id % 4096ull) == 0ull) {
+            mglTraceLogExternal("GEN_BUFFERS call=%llu generated=%u currentName=%u tableCount=%zu tableCap=%zu",
+                                (unsigned long long)call_id,
+                                name,
+                                STATE(buffer_table).current_name,
+                                STATE(buffer_table).count,
+                                STATE(buffer_table).size);
+        }
+        }
+    }
+}
+
+void mglCreateBuffers(GLMContext ctx, GLsizei n, GLuint *buffers)
+{
+    GLuint name;
+
+    if (!ctx)
+        return;
+
+    if (n < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (n == 0)
+        return;
+
+    if (!buffers) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    while(n--)
+    {
+        name = getNewName(&STATE(buffer_table));
+
+        // create an unbound buffer
+        if (!getBuffer(ctx, 0, name))
+            return;
+
+        *buffers++ = name;
+    }
+}
+
+static void mglDetachBufferFromTransformFeedback(GLuint name, void *data, void *user)
+{
+    (void)name;
+    TransformFeedback *xfb = (TransformFeedback *)data;
+    if (!xfb)
+        return;
+    for (GLuint i = 0; i < MAX_BINDABLE_BUFFERS; i++)
+    {
+        if (xfb->buffers[i].buf == (Buffer *)user)
+            bzero(&xfb->buffers[i], sizeof(BufferBaseTarget));
+    }
+}
+
+void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
+{
+    static uint64_t s_delete_buffers_calls = 0u;
+    uint64_t call_id = ++s_delete_buffers_calls;
+    GLuint buffer;
+
+    ctx = mgl_sanitize_ctx(ctx, __FUNCTION__);
+    if (!ctx)
+        return;
+
+    if (n < 0)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (n > 0 && buffers == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    for (GLsizei i = 0; i < n; i++)
+    {
+        Buffer *pending_ptr = findBuffer(ctx, buffers[i]);
+        if (pending_ptr && mglPendingDrawsReadBufferRange(ctx, pending_ptr, 0, -1))
+        {
+            mglFlushCommandBuffer(ctx);
+            break;
+        }
+    }
+
+    while(n--)
+    {
+        buffer = *buffers++;
+
+        // OpenGL: deleting name 0 is silently ignored.
+        if (buffer == 0)
+            continue;
+
+        Buffer *ptr = findBuffer(ctx, buffer);
+        if (!ptr)
+            continue;
+
+        if (mglTraceLogIsEnabled() &&
+            (call_id <= 32u || (call_id % 128u) == 0u))
+        {
+            mglTraceLogExternal("MGL TRACE DeleteBuffers call=%llu name=%u ptr=%p tableCount=%zu tableCap=%zu",
+                                (unsigned long long)call_id,
+                                buffer,
+                                (void *)ptr,
+                                STATE(buffer_table).count,
+                                STATE(buffer_table).size);
+        }
+
+        if ((uintptr_t)ptr < 0x10000u || ptr->name != buffer)
+        {
+            fprintf(stderr,
+                    "MGL WARNING: mglDeleteBuffers dropping suspicious buffer name=%u ptr=%p ptrName=%u\n",
+                    buffer,
+                    (void *)ptr,
+                    ((uintptr_t)ptr >= 0x10000u) ? ptr->name : 0u);
+            // ptr may be garbage (< 0x10000), so we cannot safely access
+            // ptr->data.mtl_data.  Just remove the hash entry and move on.
+            // The Metal object (if any) will leak, but this path only fires
+            // on hash-table corruption where the buffer is already suspect.
+            deleteHashElement(&STATE(buffer_table), buffer);
+            continue;
+        }
+
+            // remove any dangling references from generic buffer bindings
+            for (GLuint i = 0; i < _MAX_BUFFER_TYPES; i++)
+            {
+                if (STATE(buffers[i]) == ptr ||
+                    (STATE(buffers[i]) && (uintptr_t)STATE(buffers[i]) < 0x10000u))
+                {
+                    STATE(buffers[i]) = NULL;
+                }
+            }
+            mglClearGenericBufferBindingName(ctx, buffer);
+
+            // remove dangling VAO references (attribute buffers + element buffer)
+            mglClearVAOBufferReferences(ctx, ptr, buffer);
+            if (STATE(default_vao_element_array_buffer) == ptr ||
+                (STATE(default_vao_element_array_buffer) &&
+                 (uintptr_t)STATE(default_vao_element_array_buffer) < 0x10000u))
+            {
+                STATE(default_vao_element_array_buffer) = NULL;
+            }
+
+            // remove any dangling references in indexed buffer-base bindings
+            for (GLuint idx = 0; idx < _MAX_BUFFER_TYPES; idx++)
+            {
+                GLboolean cleared = GL_FALSE;
+                for (GLuint i = 0; i < MAX_BINDABLE_BUFFERS; i++)
+                {
+                    if (STATE(buffer_base)[idx].buffers[i].buf == ptr ||
+                        STATE(buffer_base)[idx].buffers[i].buffer == buffer)
+                    {
+                        bzero(&STATE(buffer_base)[idx].buffers[i], sizeof(BufferBaseTarget));
+                        cleared = GL_TRUE;
+                    }
+                }
+                if (cleared) {
+                    mglBufferBaseRebuildActiveMask(&STATE(buffer_base)[idx]);
+                }
+            }
+            /* Unbound transform feedback objects keep their own copies of
+             * the indexed bindings; drop pointers to the freed buffer. */
+            mglHashTableForEach(&STATE(transform_feedback_table),
+                                mglDetachBufferFromTransformFeedback, ptr);
+
+            mglClearBufferMapReferences(&STATE(vertex_buffer_map_list), ptr, buffer);
+            mglClearBufferMapReferences(&STATE(fragment_buffer_map_list), ptr, buffer);
+            mglClearBufferMapReferences(&STATE(compute_buffer_map_list), ptr, buffer);
+
+            /* Name deletion, not immediate destruction: mark delete_status
+             * and release the caller's reference.  mtl_data is released only
+             * in mglReleaseBufferReference (or mglDestroyContextBuffer at
+             * context destroy).  If refcount>0, the shell survives as a
+             * tombstone until the last release frees it. */
+            ptr->delete_status = GL_TRUE;
+            deleteHashElement(&STATE(buffer_table), buffer);
+
+            // Clear GL-facing identity fields so stale references become
+            // inert tombstones regardless of whether release frees the shell.
+            ptr->name = 0;
+            ptr->target = 0;
+            ptr->index = 0;
+            ptr->ever_written = GL_FALSE;
+            ptr->has_initialized_data = GL_FALSE;
+            ptr->written_min = -1;
+            ptr->written_max = -1;
+            ptr->mapped = GL_FALSE;
+            ptr->mapped_ptr = NULL;
+
+            /* Release the caller's reference.  If refcount>0 (in-flight batch
+             * holds a reference), the shell survives as a tombstone.  If
+             * refcount==0, mtl_data + buffer_data are released and the shell
+             * is freed. */
+            mglReleaseBufferReference(ctx, ptr);
+
+            mglMarkStateDirtyBits(ctx->active_state, (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE | DIRTY_VAO));
+    } // while(--n)
+}
+
+GLboolean mglIsBuffer(GLMContext ctx, GLuint buffer)
+{
+    if (isBuffer(ctx, buffer))
+    {
+        return GL_TRUE;
+    }
+
+    return GL_FALSE;
+}
+
+void mglBindBuffer(GLMContext ctx, GLenum target, GLuint buffer)
+{
+    GLint index;
+    Buffer *ptr;
+
+    if (!ctx)
+        return;
+
+    if (MGL_VERBOSE_BIND_BUFFER_LOGS) {
+        fprintf(stderr, "MGL TRACE BindBuffer target=0x%x buffer=%u ctx=%p vao=%p\n",
+                target, buffer, (void *)ctx, ctx ? (void *)STATE(vao) : NULL);
+    }
+
+    // GL_INVALID_ENUM is generated if target is not supported.
+    if (!checkTarget(ctx, target))
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    if (buffer == 0)
+    {
+        index = bufferIndexFromTarget(ctx, target);
+        if (index < 0 || index >= _MAX_BUFFER_TYPES)
+        {
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+        }
+        mglBindNullBufferForTarget(ctx, target, index);
+        return;
+    }
+
+    if (buffer)
+    {
+        if (!mglBufferNameWasGenerated(ctx, buffer))
+        {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
+        ptr = getBuffer(ctx, target, buffer);
+        if (!ptr)
+        {
+            ERROR_RETURN(GL_OUT_OF_MEMORY);
+            return;
+        }
+    }
+    else
+    {
+        ptr = NULL;
+    }
+
+    index = bufferIndexFromTarget(ctx, target);
+    if (index < 0 || index >= _MAX_BUFFER_TYPES)
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    // GL_ELEMENT_ARRAY_BUFFER binding is part of VAO state, not global state.
+    // Keep VAO + compatibility state in sync so indexed draws can find EBO reliably.
+    if (target == GL_ELEMENT_ARRAY_BUFFER)
+    {
+        VertexArray *vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
+        if (vao)
+        {
+            if (vao->element_array.buffer != ptr)
+            {
+                /* The draw command snapshots the EBO and index offset. Keep
+                 * Minecraft's per-draw EBO switches in the deferred command
+                 * buffer; storage mutation/deletion still flushes by buffer. */
+                if (!mglBindNoFlushEnabled()) {
+                    mglFlushPendingDrawsForVertexArray(ctx, vao);
+                }
+                vao->element_array.buffer = ptr;
+                vao->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
+                mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
+            }
+        }
+        else
+        {
+            // Compatibility path: treat VAO 0 as a default VAO bucket.
+            STATE(default_vao_element_array_buffer) = ptr;
+        }
+
+        STATE(buffers[index]) = ptr;
+        STATE_VAR(element_array_buffer_binding) = ptr ? ptr->name : 0;
+        return;
+    }
+
+    if (STATE(buffers[index]) != ptr)
+    {
+        STATE(buffers[index]) = ptr;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_BUFFER);
+    }
+    mglSetGenericBufferBinding(ctx, target, ptr ? ptr->name : 0u);
+}
+
+/* Indexed bind targets a shader can write to.  Sticky per buffer: once bound
+ * this way the Metal store may hold bytes the CPU shadow never saw, so uploads
+ * must not overwrite the whole store from the shadow. */
+static void mglBufferNoteIndexedBindTarget(Buffer *ptr, GLenum target)
+{
+    if (!ptr) {
+        return;
+    }
+
+    switch (target)
+    {
+        case GL_SHADER_STORAGE_BUFFER:
+        case GL_ATOMIC_COUNTER_BUFFER:
+        case GL_TRANSFORM_FEEDBACK_BUFFER:
+            ptr->gpu_write_target = GL_TRUE;
+            break;
+
+        default:
+            break;
+    }
+}
+
+static GLuint mglMaxIndexedBindings(GLMContext ctx, GLenum target)
+{
+    GLuint max_bind = MAX_BINDABLE_BUFFERS;
+    switch (target) {
+    case GL_UNIFORM_BUFFER:
+        if (STATE_VAR(max_uniform_buffer_bindings))
+            max_bind = STATE_VAR(max_uniform_buffer_bindings);
+        break;
+    case GL_SHADER_STORAGE_BUFFER:
+        if (STATE_VAR(max_shader_storage_buffer_bindings))
+            max_bind = STATE_VAR(max_shader_storage_buffer_bindings);
+        break;
+    case GL_ATOMIC_COUNTER_BUFFER:
+        if (STATE_VAR(max_atomic_counter_buffer_bindings))
+            max_bind = STATE_VAR(max_atomic_counter_buffer_bindings);
+        break;
+    case GL_TRANSFORM_FEEDBACK_BUFFER:
+        if (STATE_VAR(max_transform_feedback_buffers))
+            max_bind = STATE_VAR(max_transform_feedback_buffers);
+        break;
+    default:
+        break;
+    }
+    if (max_bind == 0u || max_bind > MAX_BINDABLE_BUFFERS)
+        max_bind = MAX_BINDABLE_BUFFERS;
+    return max_bind;
+}
+
+void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffer)
+{
+    Buffer  *ptr;
+    GLuint buffer_index;
+    switch(target)
+    {
+        case GL_UNIFORM_BUFFER:
+        case GL_TRANSFORM_FEEDBACK_BUFFER:
+        case GL_SHADER_STORAGE_BUFFER:
+        case GL_ATOMIC_COUNTER_BUFFER:
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    /* GL 4.6 §6.7.1 / ARB_transform_feedback2: cannot rebind XFB buffers
+     * while transform feedback is active (paused still counts). */
+    if (target == GL_TRANSFORM_FEEDBACK_BUFFER &&
+        STATE(transform_feedback) && STATE(transform_feedback)->active) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    ERROR_CHECK_RETURN(index >= 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(index < mglMaxIndexedBindings(ctx, target), GL_INVALID_VALUE);
+
+    buffer_index = bufferIndexFromTarget(ctx, target);
+
+    BufferBaseTarget *base_slot = &STATE(buffer_base)[buffer_index].buffers[index];
+
+    if (buffer)
+    {
+        if (!mglBufferNameWasGenerated(ctx, buffer))
+        {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
+        ptr = getBuffer(ctx, target, buffer);
+        if (!ptr) {
+            ERROR_RETURN(GL_OUT_OF_MEMORY);
+            return;
+        }
+
+        // Bind-by-name semantics: bind succeeds even when storage is not yet initialized.
+        ERROR_CHECK_RETURN(ptr->size >= 0, GL_INVALID_VALUE);
+
+        if (base_slot->buffer != buffer ||
+            base_slot->offset != 0 ||
+            base_slot->size != 0 ||
+            base_slot->buf != ptr) {
+            if (mglBindNoFlushEnabled()) {
+                if (base_slot->buf) {
+                    MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                    mglFlushPendingDrawsForBuffer(ctx, base_slot->buf);
+                }
+                /* Also hazard-check the NEW buffer: pending draws may be
+                 * reading it through a different binding slot.  Without
+                 * this, subsequent CPU writes through the new binding
+                 * race with those unflushed draws. */
+                if (ptr != base_slot->buf) {
+                    MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                    mglFlushPendingDrawsForBuffer(ctx, ptr);
+                }
+            } else {
+                MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                mglFlushPendingDraws(ctx);
+            }
+        }
+
+        base_slot->buffer = buffer;
+        base_slot->offset = 0;
+        /* BindBufferBase follows later data-store resizes.  Zero is the GL
+         * query/state sentinel meaning "the whole buffer at time of use". */
+        base_slot->size = 0;
+        base_slot->buf = ptr;
+        mglBufferBaseSetActive(&STATE(buffer_base)[buffer_index], index);
+        /* Indexed buffer binds also update the generic binding for target.
+         * CTS allocates SSBO storage through glBindBufferBase followed by
+         * glBufferData(GL_SHADER_STORAGE_BUFFER, ...), so keep both views in
+         * sync. */
+        STATE(buffers[buffer_index]) = ptr;
+        mglSetGenericBufferBinding(ctx, target, buffer);
+
+        ptr->target = target;
+        mglBufferNoteIndexedBindTarget(ptr, target);
+    }
+    else
+    {
+        if (base_slot->buffer != 0 || base_slot->buf != NULL ||
+            base_slot->offset != 0 || base_slot->size != 0) {
+            if (mglBindNoFlushEnabled()) {
+                if (base_slot->buf) {
+                    MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                    mglFlushPendingDrawsForBuffer(ctx, base_slot->buf);
+                }
+            } else {
+                MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                mglFlushPendingDraws(ctx);
+            }
+        }
+        bzero(base_slot, sizeof(BufferBaseTarget));
+        mglBufferBaseClearActive(&STATE(buffer_base)[buffer_index], index);
+        STATE(buffers[buffer_index]) = NULL;
+        mglSetGenericBufferBinding(ctx, target, 0u);
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE));
+}
+
+
+void mglBindBuffersBase(GLMContext ctx, GLenum target, GLuint first, GLsizei count, const GLuint *buffers)
+{
+    if (count < 0)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    switch(target)
+    {
+        case GL_UNIFORM_BUFFER:
+        case GL_TRANSFORM_FEEDBACK_BUFFER:
+        case GL_SHADER_STORAGE_BUFFER:
+        case GL_ATOMIC_COUNTER_BUFFER:
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    {
+        GLuint max_bind = mglMaxIndexedBindings(ctx, target);
+        if (first >= max_bind || (GLuint)count > max_bind - first)
+        {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+    }
+
+    for (GLsizei i = 0; i < count; i++)
+    {
+        GLuint name = buffers ? buffers[i] : 0u;
+        if (name != 0u && !isBuffer(ctx, name)) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            continue;
+        }
+        mglBindBufferBase(ctx, target, first + (GLuint)i, name);
+    }
+}
+
+void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size)
+{
+    Buffer  *ptr;
+    GLuint  buffer_index;
+
+    switch(target)
+    {
+        case GL_UNIFORM_BUFFER:
+        case GL_TRANSFORM_FEEDBACK_BUFFER:
+        case GL_SHADER_STORAGE_BUFFER:
+        case GL_ATOMIC_COUNTER_BUFFER:
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    /* GL 4.6 §6.7.1: BindBufferRange on TRANSFORM_FEEDBACK_BUFFER while
+     * transform feedback is active → INVALID_OPERATION. */
+    if (target == GL_TRANSFORM_FEEDBACK_BUFFER &&
+        STATE(transform_feedback) && STATE(transform_feedback)->active) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    ERROR_CHECK_RETURN(index >= 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(index < mglMaxIndexedBindings(ctx, target), GL_INVALID_VALUE);
+
+    buffer_index = bufferIndexFromTarget(ctx, target);
+
+    BufferBaseTarget *base_slot = &STATE(buffer_base)[buffer_index].buffers[index];
+
+    /* Offset alignment is validated even for buffer=0 (unbind): CTS
+     * negative-api-bind uses BindBufferRange(buf=0, offset=align-1, size=0).
+     * size<=0 is only an error when binding a real buffer; buffer=0 ignores
+     * size so BindBufferRange(buf=0, 0, 0) remains a valid unbind. */
+    if (offset < 0) {
+        fprintf(stderr, "MGL Error: mglBindBufferRange: offset < 0 (%ld)\n", offset);
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    GLuint offset_alignment = 1u;
+    switch (target) {
+        case GL_UNIFORM_BUFFER:
+            offset_alignment = STATE_VAR(uniform_buffer_offset_alignment)
+                ? STATE_VAR(uniform_buffer_offset_alignment) : 1u;
+            break;
+        case GL_SHADER_STORAGE_BUFFER:
+            offset_alignment = STATE_VAR(shader_storage_buffer_offset_alignment)
+                ? STATE_VAR(shader_storage_buffer_offset_alignment) : 1u;
+            break;
+        case GL_ATOMIC_COUNTER_BUFFER:
+        case GL_TRANSFORM_FEEDBACK_BUFFER:
+            offset_alignment = 4u;
+            break;
+        default:
+            break;
+    }
+    if (((GLuint64)offset % offset_alignment) != 0u) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (!buffer)
+    {
+        if (base_slot->buffer != 0 || base_slot->buf != NULL ||
+            base_slot->offset != 0 || base_slot->size != 0) {
+            if (mglBindNoFlushEnabled()) {
+                if (base_slot->buf) {
+                    MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                    mglFlushPendingDrawsForBuffer(ctx, base_slot->buf);
+                }
+            } else {
+                MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                mglFlushPendingDraws(ctx);
+            }
+        }
+        bzero(base_slot, sizeof(BufferBaseTarget));
+        mglBufferBaseClearActive(&STATE(buffer_base)[buffer_index], index);
+        /* Keep indexed and generic target bindings in sync.  CTS exercises
+         * glBindBufferRange/Base followed by target-based buffer operations. */
+        STATE(buffers[buffer_index]) = NULL;
+        mglSetGenericBufferBinding(ctx, target, 0);
+        mglMarkStateDirtyBits(&ctx->state, (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE));
+        return;
+    }
+
+    if (size <= 0) {
+        fprintf(stderr, "MGL Error: mglBindBufferRange: size <= 0 (%ld)\n", size);
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (target == GL_TRANSFORM_FEEDBACK_BUFFER && ((GLuint64)size % 4u) != 0u) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    {
+        if (!mglBufferNameWasGenerated(ctx, buffer))
+        {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
+        ptr = getBuffer(ctx, target, buffer);
+        if (!ptr) {
+            ERROR_RETURN(GL_OUT_OF_MEMORY);
+            return;
+        }
+
+        /* OpenGL 4.2+ permits a range beyond the current data store.  Keep the
+         * requested range; consumers clamp it against the store at time of use. */
+
+        if (base_slot->buffer != buffer ||
+            base_slot->offset != offset ||
+            base_slot->size != size ||
+            base_slot->buf != ptr) {
+            if (mglBindNoFlushEnabled()) {
+                /* Deferred batches either snapshot BufferBaseTarget or store
+                 * a per-command range override.  A pure range rebind of the
+                 * same object is therefore immutable from older draws and is
+                 * not a buffer mutation hazard. */
+                if (base_slot->buf && ptr != base_slot->buf) {
+                    MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                    mglFlushPendingDrawsForBuffer(ctx, base_slot->buf);
+                }
+                if (target == GL_UNIFORM_BUFFER && base_slot->buf == ptr &&
+                    (base_slot->offset != offset || base_slot->size != size)) {
+                    ctx->draw_command_buffer.has_deferred_uniform_range_rebind = true;
+                }
+                /* Also hazard-check the NEW buffer: pending draws may be
+                 * reading it through a different binding slot.  Without
+                 * this, subsequent CPU writes through the new binding
+                 * race with those unflushed draws. */
+                if (ptr != base_slot->buf) {
+                    MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                    mglFlushPendingDrawsForBuffer(ctx, ptr);
+                }
+            } else {
+                MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                mglFlushPendingDraws(ctx);
+            }
+        }
+
+        base_slot->buffer = buffer;
+        base_slot->offset = offset;
+        base_slot->size = size;
+        base_slot->buf = ptr;
+        mglBufferBaseSetActive(&STATE(buffer_base)[buffer_index], index);
+        /* Keep indexed and generic target bindings in sync.  CTS exercises
+         * glBindBufferRange/Base followed by target-based buffer operations. */
+        STATE(buffers[buffer_index]) = ptr;
+
+        ptr->target = target;
+        mglBufferNoteIndexedBindTarget(ptr, target);
+    }
+
+    mglSetGenericBufferBinding(ctx, target, buffer);
+    mglMarkStateDirtyBits(&ctx->state, (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE));
+}
+
+#pragma mark GL Buffer Data Functions
+kern_return_t initBufferData(GLMContext ctx, Buffer *ptr, GLsizeiptr size, const void *data, bool isUniformConstant)
+{
+    kern_return_t err;
+    vm_address_t buffer_data;
+    size_t buffer_size;
+    bool uniform_data_unchanged = false;
+
+    if (isUniformConstant && ptr && ptr->size == size) {
+        if (size <= 0) {
+            uniform_data_unchanged = true;
+        } else if (data && ptr->data.buffer_data) {
+            uniform_data_unchanged =
+                memcmp((const void *)(uintptr_t)ptr->data.buffer_data, data, (size_t)size) == 0;
+        }
+    }
+
+    if (!uniform_data_unchanged) {
+        mglFlushPendingDrawsForBuffer(ctx, ptr);
+
+        /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
+        if (ctx->sync_strict) {
+            mglFlushCommandBuffer(ctx);
+            mglRendererFlush(ctx, true);
+        }
+    }
+
+    if (ptr->data.buffer_data)
+    {
+        if (isUniformConstant)
+        {
+            // if its a uniform constant then lets not delete and create a buffer
+            // check the old size.. then if it can fit new size then reuse.
+            if (size <= ptr->data.buffer_size)
+            {
+                ptr->size = size;
+                if (data)
+                {
+                    /* Identical contents leave the Metal side already in sync
+                     * (or with an upload still pending), so re-marking the
+                     * store dirty would only force a redundant full-store
+                     * upload — including its copy-on-write snapshot — for the
+                     * very common case of re-setting a uniform to the value it
+                     * already holds. */
+                    if (!uniform_data_unchanged)
+                    {
+                        memcpy((void *)ptr->data.buffer_data, data, size);
+
+                        ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+                    }
+                    /* Hash only feeds the element-array index cache or trace logging. */
+                    const uint64_t init_hash =
+                        (ptr->target == GL_ELEMENT_ARRAY_BUFFER || mglTraceLogIsEnabled())
+                        ? mglTraceHashBytes(data, (size_t)size) : 0ull;
+                    mglBufferMarkWrite(ptr,
+                                       kInitBufferDataCopy,
+                                       0,
+                                       size,
+                                       data,
+                                       init_hash);
+                }
+                else
+                {
+                    mglBufferMarkAllocatedUninitialized(ptr, kInitBufferDataNull);
+                }
+
+                return 0;
+            }
+        }
+
+        mglReleaseBufferStorage(ptr);
+    }
+
+    buffer_size = page_size_align(size);
+
+    // Allocate directly from VM
+    err = vm_allocate((vm_map_t) mach_task_self(),
+                      (vm_address_t*) &buffer_data,
+                      buffer_size,
+                      VM_FLAGS_ANYWHERE);
+    if (err)
+    {
+        ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, err);
+    }
+
+    ptr->size = size;
+    ptr->data.buffer_data = buffer_data;
+    ptr->data.buffer_size = buffer_size;
+
+    ptr->data.dirty_bits |= DIRTY_BUFFER_ADDR;
+
+    // copy to new buffer
+    if (data)
+    {
+        memcpy((void *)ptr->data.buffer_data, data, size);
+
+        ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+        /* Hash only feeds the element-array index cache or trace logging. */
+        const uint64_t init_hash =
+            (ptr->target == GL_ELEMENT_ARRAY_BUFFER || mglTraceLogIsEnabled())
+            ? mglTraceHashBytes(data, (size_t)size) : 0ull;
+        mglBufferMarkWrite(ptr,
+                           kInitBufferDataCopy,
+                           0,
+                           size,
+                           data,
+                           init_hash);
+    }
+    else
+    {
+        mglBufferMarkAllocatedUninitialized(ptr, kInitBufferDataNull);
+    }
+
+    return err;
+}
+
+void mglBufferData(GLMContext ctx, GLenum target, GLsizeiptr size, const void *data, GLenum usage)
+{
+    static uint64_t s_bufferDataCalls = 0;
+    uint64_t call = ++s_bufferDataCalls;
+    GLuint index;
+    Buffer *ptr;
+
+    // GL_INVALID_ENUM is generated if target is not supported.
+    if (!checkTarget(ctx, target))
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    // GL_INVALID_ENUM is generated if target is not one of the allowable values.
+    if (!checkUsage(ctx, usage))
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    if (size < 0)
+    {
+        fprintf(stderr, "MGL Error: mglBufferData: size < 0 (%ld)\n", size);
+        ERROR_RETURN(GL_INVALID_VALUE);
+    }
+
+    index = bufferIndexFromTarget(ctx, target);
+    if (index >= _MAX_BUFFER_TYPES)
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    ptr = mglGetBoundBufferForTarget(ctx, target);
+    if (ptr == NULL)
+    {
+        fprintf(stderr,
+                "MGL ERROR: BufferData with no bound buffer call=%" PRIu64 " target=0x%x size=%lld usage=0x%x\n",
+                call,
+                target,
+                (long long)size,
+                usage);
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    bool trace = mglTraceLogIsEnabled() &&
+                 mglShouldTraceBufferMutation(call, target, size);
+    char src_preview[64];
+    src_preview[0] = '\0';
+    uint64_t src_hash = 0ull;
+    if (trace && data && size > 0) {
+        mglTraceFormatBytes(data, (size_t)size, src_preview, sizeof(src_preview));
+        src_hash = mglTraceHashBytes(data, (size_t)size);
+    }
+    if (trace) {
+        mglTraceLogExternal("MGL TRACE BufferData.begin call=%" PRIu64 " target=0x%x buffer=%u size=%lld usage=0x%x data=%p srcHash=0x%016" PRIx64 " srcHead=%s oldSize=%lld dirty=0x%x",
+                            call,
+                            target,
+                            ptr->name,
+                            (long long)size,
+                            usage,
+                            data,
+                            src_hash,
+                            (data && size > 0) ? src_preview : "-",
+                            (long long)ptr->size,
+                            ptr->data.dirty_bits);
+    }
+
+    // buffer was created via buffer storage call for immutable storage
+    if (ptr->immutable_storage)
+    {
+        /* Per GL 4.6 spec, glBufferData on a buffer with immutable storage
+         * (created via glBufferStorage) generates GL_INVALID_OPERATION.
+         * The previous workaround silently allowed re-allocation. */
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    initBufferData(ctx, ptr, size, data, false);
+
+    // init fields local to buffer data
+    ptr->index = index;
+    ptr->target = target;
+    ptr->usage = usage;
+    ptr->storage_flags = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_DYNAMIC_STORAGE_BIT;
+
+    if (trace) {
+        const void *dst_data = (const void *)(uintptr_t)ptr->data.buffer_data;
+        char dst_preview[64];
+        dst_preview[0] = '\0';
+        uint64_t dst_hash = 0ull;
+        if (dst_data && size > 0) {
+            mglTraceFormatBytes(dst_data, (size_t)size, dst_preview, sizeof(dst_preview));
+            dst_hash = mglTraceHashBytes(dst_data, (size_t)size);
+        }
+
+        mglTraceLogExternal("MGL TRACE BufferData.end call=%" PRIu64 " target=0x%x buffer=%u size=%lld vmSize=%llu dataPtr=%p dirty=0x%x dstHash=0x%016" PRIx64 " dstHead=%s",
+                            call,
+                            target,
+                            ptr->name,
+                            (long long)ptr->size,
+                            (unsigned long long)ptr->data.buffer_size,
+                            (void *)(uintptr_t)ptr->data.buffer_data,
+                            ptr->data.dirty_bits,
+                            dst_hash,
+                            (dst_data && size > 0) ? dst_preview : "-");
+    }
+ }
+
+void mglNamedBufferData(GLMContext ctx, GLuint buffer, GLsizeiptr size, const void *data, GLenum usage)
+{
+    Buffer *ptr;
+
+    ptr = findBuffer(ctx, buffer);
+
+    if (ptr == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+        return;
+    }
+
+    if (size < 0)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    // GL_INVALID_ENUM is generated if target is not one of the allowable values.
+    if (!checkUsage(ctx, usage))
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+
+    // buffer was created via buffer storage call for immutable storage
+    if (ptr->storage_flags)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    initBufferData(ctx, ptr, size, data,false);
+
+    // init fields local to buffer data
+    ptr->usage = usage;
+    ptr->storage_flags = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_DYNAMIC_STORAGE_BIT;
+}
+
+void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr size, const void *data)
+{
+    static uint64_t s_bufferSubDataCalls = 0;
+    uint64_t call = ++s_bufferSubDataCalls;
+
+    // Absolute first check - validate ctx before ANY access
+    ctx = mgl_sanitize_ctx(ctx, __FUNCTION__);
+    if (!ctx)
+        return;
+
+    GLuint index;
+    Buffer * volatile ptr;  // volatile to prevent compiler optimizations
+    uint64_t src_hash_for_meta = 0ull;
+
+    // GL_INVALID_ENUM is generated if target is not supported.
+    if (!checkTarget(ctx, target)) {
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
+        return;
+    }
+
+    // Early exit for zero-size operations
+    if (size == 0)
+    {
+        return;
+    }
+
+    // Validate data pointer for non-zero size
+    if (data == NULL)
+    {
+        fprintf(stderr, "MGL Error: mglBufferSubData: data is NULL (target=0x%x off=%ld size=%ld)\n",
+                target, (long)offset, (long)size);
+        /* Per GL 4.6 spec, a NULL data pointer with non-zero size generates
+         * GL_INVALID_OPERATION (not GL_INVALID_VALUE). */
+        ERROR_RETURN(GL_INVALID_OPERATION);
+    }
+
+    /* The source hash feeds last_write_src_hash via mglBufferMarkWrite.  Only
+     * element array buffers consume it functionally (the index cache in
+     * mgl_index_buffer.m compares last_write_src_hash to detect content
+     * changes).  For other targets it's pure trace metadata, so skip the
+     * (up to 2048-byte) FNV-1a walk when trace logging is disabled. */
+    src_hash_for_meta = (target == GL_ELEMENT_ARRAY_BUFFER || mglTraceLogIsEnabled())
+        ? mglTraceHashBytes(data, (size_t)size)
+        : 0ull;
+
+    if (offset < 0 || size < 0)
+    {
+        fprintf(stderr, "MGL Error: mglBufferSubData: offset (%ld) or size (%ld) < 0\n", offset, size);
+        ERROR_RETURN(GL_INVALID_VALUE);
+    }
+
+    index = bufferIndexFromTarget(ctx, target);
+    if (index >= _MAX_BUFFER_TYPES) {
+        fprintf(stderr, "MGL Error: mglBufferSubData: invalid target index %d\n", index);
+        ERROR_RETURN(GL_INVALID_ENUM);
+    }
+
+    ptr = mglGetBoundBufferForTarget(ctx, target);
+    if (!ptr)
+    {
+        fprintf(stderr, "MGL Error: mglBufferSubData: no buffer bound to target 0x%x\n", target);
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    // COMPREHENSIVE BUFFER SAFETY: Validate buffer pointer and get size safely (void function)
+    GLsizeiptr buffer_size;
+    MGL_GET_BUFFER_SIZE_SAFE_VOID(ptr, buffer_size, "mglBufferSubData");
+
+    if (!mgl_range_ok_glsize(offset, size, buffer_size)) {
+        fprintf(stderr, "MGL Error: mglBufferSubData out of bounds: offset %ld size %ld buffer size %ld\n", offset, size, buffer_size);
+        ERROR_RETURN(GL_INVALID_VALUE);
+    }
+
+    if (mglBufferSubDataBlockedByMap(ptr, offset, size))
+    {
+        fprintf(stderr, "MGL Error: mglBufferSubData: buffer update overlaps mapped range\n");
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    // GL_INVALID_OPERATION for immutable storage without dynamic bit
+    if ((ptr->immutable_storage & BUFFER_IMMUTABLE_STORAGE_FLAG) &&
+        !(ptr->storage_flags & GL_DYNAMIC_STORAGE_BIT))
+    {
+        fprintf(stderr, "MGL Error: mglBufferSubData: immutable storage without dynamic bit\n");
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
+
+    if (mglRenderBufferOwnsCPUStorage(ptr)) {
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+    }
+
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+    }
+
+    if (ptr->storage_flags & (GL_CLIENT_STORAGE_BIT | GL_DYNAMIC_STORAGE_BIT))
+    {
+        bool trace = mglTraceLogIsEnabled() &&
+                     mglShouldTraceBufferMutation(call, target, size);
+        uint64_t src_hash = 0ull;
+        uint64_t dst_before_hash = 0ull;
+        char src_preview[64];
+        char dst_before_preview[64];
+        src_preview[0] = '\0';
+        dst_before_preview[0] = '\0';
+
+        if (trace) {
+            src_hash = src_hash_for_meta;
+            mglTraceFormatBytes(data, (size_t)size, src_preview, sizeof(src_preview));
+        }
+
+        // CRITICAL SECURITY FIX: Proper NULL pointer check with correct type handling
+        // buffer_data is vm_address_t (unsigned long), not void*
+        if (ptr->data.buffer_data == 0)  // Compare to 0 for vm_address_t
+        {
+            fprintf(stderr, "MGL Error: mglBufferSubData: buffer_data is NULL (buffer %u, target 0x%x)\n", ptr->name, target);
+            ERROR_RETURN(GL_INVALID_OPERATION);
+        }
+
+        if (!mgl_range_ok_size_t(offset, size, ptr->data.buffer_size))
+        {
+            fprintf(stderr, "MGL Error: mglBufferSubData out of backing store bounds: offset %ld size %ld backing %ld\n",
+                    offset, size, (long)ptr->data.buffer_size);
+            ERROR_RETURN(GL_INVALID_VALUE);
+        }
+
+        if (trace) {
+            const void *dst_before = (const void *)((uintptr_t)ptr->data.buffer_data + (uintptr_t)offset);
+            dst_before_hash = mglTraceHashBytes(dst_before, (size_t)size);
+            mglTraceFormatBytes(dst_before, (size_t)size, dst_before_preview, sizeof(dst_before_preview));
+            mglTraceLogExternal("MGL TRACE BufferSubData.begin call=%" PRIu64 " target=0x%x buffer=%u off=%lld size=%lld srcHash=0x%016" PRIx64 " srcHead=%s dstBeforeHash=0x%016" PRIx64 " dstBeforeHead=%s dirty=0x%x",
+                                call,
+                                target,
+                                ptr->name,
+                                (long long)offset,
+                                (long long)size,
+                                src_hash,
+                                src_preview,
+                                dst_before_hash,
+                                dst_before_preview,
+                                ptr->data.dirty_bits);
+        }
+
+        mglPrepareGpuWrittenBufferForCpuShadowWrite(ctx, ptr, offset, size);
+        if (ptr->storage_flags & GL_SPARSE_STORAGE_BIT_ARB) {
+            /* Writes into uncommitted pages are silently discarded. */
+            if (mglSparseBufferCopyCommitted(
+                    ptr, offset, size, data,
+                    (char *)ptr->data.buffer_data + offset) == 0) {
+                return;
+            }
+        } else {
+            memcpy((char *)ptr->data.buffer_data + offset, data, size);
+        }
+        ptr->cpu_shadow_pending = GL_TRUE;
+        ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
+        mglBufferMarkWrite(ptr,
+                           kInitBufferSubData,
+                           offset,
+                           size,
+                           data,
+                           src_hash_for_meta);
+
+        if (trace) {
+            const void *dst_after = (const void *)((uintptr_t)ptr->data.buffer_data + (uintptr_t)offset);
+            uint64_t dst_after_hash = mglTraceHashBytes(dst_after, (size_t)size);
+            char dst_after_preview[64];
+            dst_after_preview[0] = '\0';
+            mglTraceFormatBytes(dst_after, (size_t)size, dst_after_preview, sizeof(dst_after_preview));
+
+            mglTraceLogExternal("MGL TRACE BufferSubData.end call=%" PRIu64 " target=0x%x buffer=%u off=%lld size=%lld dstAfterHash=0x%016" PRIx64 " dstAfterHead=%s dirty=0x%x stateDirty=0x%x",
+                                call,
+                                target,
+                                ptr->name,
+                                (long long)offset,
+                                (long long)size,
+                                dst_after_hash,
+                                dst_after_preview,
+                                ptr->data.dirty_bits,
+                                STATE(dirty_bits));
+        }
+    }
+    else
+    {
+        if (mglTraceLogIsEnabled() &&
+            mglShouldTraceBufferMutation(call, target, size)) {
+            char src_preview[64];
+            src_preview[0] = '\0';
+            uint64_t src_hash = src_hash_for_meta;
+            mglTraceFormatBytes(data, (size_t)size, src_preview, sizeof(src_preview));
+            mglTraceLogExternal("MGL TRACE BufferSubData.mtl call=%" PRIu64 " target=0x%x buffer=%u off=%lld size=%lld srcHash=0x%016" PRIx64 " srcHead=%s mtl=%p",
+                                call,
+                                target,
+                                ptr->name,
+                                (long long)offset,
+                                (long long)size,
+                                src_hash,
+                                src_preview,
+                                mglRenderBufferHandle(ptr));
+        }
+        /* Mark before the Metal upload so gpu_write_target snapshots include
+         * this range in their shadow overlay. */
+        mglBufferMarkWrite(ptr,
+                           kInitBufferSubData,
+                           offset,
+                           size,
+                           data,
+                           src_hash_for_meta);
+        mglRendererBufferSubData(ctx, ptr, offset, size, data);
+    }
+}
+
+void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsizeiptr size, const void *data)
+{
+    Buffer *ptr;
+    uint64_t src_hash_for_meta = 0ull;
+
+    ptr = findBuffer(ctx, buffer);
+
+    ERROR_CHECK_RETURN((ptr != NULL), GL_INVALID_OPERATION);
+
+    if (offset < 0)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (size < 0)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (size > 0 && data == NULL)
+    {
+        fprintf(stderr, "MGL Error: mglNamedBufferSubData: data is NULL (buffer=%u off=%ld size=%ld)\n",
+                buffer, (long)offset, (long)size);
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (!mgl_range_ok_glsize(offset, size, ptr->size))
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (mglBufferSubDataBlockedByMap(ptr, offset, size))
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    // GL_INVALID_OPERATION is generated if the value of the GL_BUFFER_IMMUTABLE_STORAGE flag of the buffer object is GL_TRUE and the value of GL_BUFFER_STORAGE_FLAGS for the buffer object does not have the GL_DYNAMIC_STORAGE_BIT bit set.
+    if ((ptr->immutable_storage & BUFFER_IMMUTABLE_STORAGE_FLAG) &&
+        !(ptr->storage_flags & GL_DYNAMIC_STORAGE_BIT))
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
+
+    if (mglRenderBufferOwnsCPUStorage(ptr)) {
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+    }
+
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+    }
+
+    /* Same guard as mglBufferSubData — only element array buffers need the
+     * hash functionally (the index cache); others use it only for trace. */
+    src_hash_for_meta = (size > 0 && data &&
+                         (ptr->target == GL_ELEMENT_ARRAY_BUFFER || mglTraceLogIsEnabled()))
+        ? mglTraceHashBytes(data, (size_t)size)
+        : 0ull;
+
+    if (ptr->storage_flags & (GL_CLIENT_STORAGE_BIT | GL_DYNAMIC_STORAGE_BIT))
+    {
+        // CRITICAL SECURITY FIX: Proper NULL pointer validation for vm_address_t
+        // buffer_data is vm_address_t (unsigned long), not void*
+        if (ptr->data.buffer_data == 0)
+        {
+            fprintf(stderr, "MGL WARNING: mglNamedBufferSubData - buffer %u has NULL buffer_data\n", ptr->name);
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
+        if (!mgl_range_ok_size_t(offset, size, ptr->data.buffer_size))
+        {
+            fprintf(stderr, "MGL Error: mglNamedBufferSubData out of backing store bounds: offset %ld size %ld backing %ld\n",
+                    offset, size, (long)ptr->data.buffer_size);
+            ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        }
+
+        // copy it to the backing and use processGLState to upload new data
+        mglPrepareGpuWrittenBufferForCpuShadowWrite(ctx, ptr, offset, size);
+        memcpy((char*)ptr->data.buffer_data + offset, data, size);
+        ptr->cpu_shadow_pending = GL_TRUE;
+        mglBufferMarkWrite(ptr,
+                           kInitBufferSubData,
+                           offset,
+                           size,
+                           data,
+                           src_hash_for_meta);
+
+        if (mglRenderBufferHandle(ptr))
+        {
+            // use use metal to do the subdata call
+            mglRendererBufferSubData(ctx, ptr, offset, size, data);
+            ptr->cpu_shadow_pending = GL_FALSE;
+        }
+        else
+        {
+            ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+
+            // probably shouldn't have to do this... if its not bound its an excess
+            mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
+        }
+    }
+    else
+    {
+        mglBufferMarkWrite(ptr,
+                           kInitBufferSubData,
+                           offset,
+                           size,
+                           data,
+                           src_hash_for_meta);
+        mglRendererBufferSubData(ctx, ptr, offset, size, data);
+    }
+}
+
+void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintptr readOffset, GLintptr writeOffset, GLsizeiptr size)
+{
+    uint8_t *src_data = NULL;
+    uint8_t *dst_data = NULL;
+    bool used_map_callback = false;
+
+    /* Per GL 4.6 spec, size==0 is a valid no-op and must not generate an
+     * error.  Negative size still generates GL_INVALID_VALUE. */
+    if (size < 0)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (size == 0)
+    {
+        return;
+    }
+
+    if (!mgl_range_ok_glsize(readOffset, size, src_buf->size))
+    {
+        fprintf(stderr, "MGL Error: copyBufferSubData: read overflow (readOffset=%ld size=%ld src_size=%ld)\n", readOffset, size, src_buf->size);
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (!mgl_range_ok_glsize(writeOffset, size, dst_buf->size))
+    {
+        fprintf(stderr, "MGL Error: copyBufferSubData: write overflow (writeOffset=%ld size=%ld dst_size=%ld)\n", writeOffset, size, dst_buf->size);
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (src_buf == dst_buf)
+    {
+        /* Per GL 4.6 spec §6.6, when src and dst are the same buffer and the
+         * ranges [readOffset, readOffset+size) and [writeOffset, writeOffset+size)
+         * overlap, the error is GL_INVALID_VALUE.  Identical offsets with
+         * size > 0 means the ranges fully overlap. */
+        if (readOffset == writeOffset)
+        {
+            ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        }
+
+        uint64_t r0 = (uint64_t)readOffset;
+        uint64_t w0 = (uint64_t)writeOffset;
+        uint64_t usize = (uint64_t)size;
+
+        if (writeOffset > readOffset)
+        {
+            if (r0 + usize > w0)
+            {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+        }
+        else
+        {
+            if (w0 + usize > r0)
+            {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+        }
+    }
+
+    if (src_buf->mapped && !(src_buf->access_flags & GL_MAP_PERSISTENT_BIT))
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (dst_buf->mapped && !(dst_buf->access_flags & GL_MAP_PERSISTENT_BIT))
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    mglFlushPendingDrawsForBufferRange(ctx, dst_buf, writeOffset, size);
+    mglFlushPendingDrawsForBufferRange(ctx, src_buf, readOffset, size);
+
+    if (mglRenderBufferOwnsCPUStorage(dst_buf)) {
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+    }
+
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+    }
+
+    /* Atomic / SSBO / XFB writes land in the Metal store; the CPU shadow still
+     * holds ClearBufferData zeros.  Pull the GPU range before memcpy so
+     * sparse_buffer case_e (and similar) see the increments. */
+    if (src_buf->gpu_write_target && mglRenderBufferHandle(src_buf) &&
+        src_buf->data.buffer_data && !src_buf->cpu_shadow_pending) {
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+        mglRendererReadBackBuffer(ctx, src_buf, (size_t)readOffset,
+                                  (size_t)size);
+    }
+
+    src_data = (uint8_t *)mglRendererMapUnmapBuffer(ctx, src_buf, readOffset, size, GL_READ_ONLY, true);
+    dst_data = (uint8_t *)mglRendererMapUnmapBuffer(ctx, dst_buf, writeOffset, size, GL_WRITE_ONLY, true);
+
+    if (src_data && dst_data) {
+        used_map_callback = true;
+    } else {
+        if (src_data) {
+            mglRendererMapUnmapBuffer(ctx, src_buf, readOffset, size, GL_READ_ONLY, false);
+        }
+        if (dst_data) {
+            mglRendererMapUnmapBuffer(ctx, dst_buf, writeOffset, size, GL_WRITE_ONLY, false);
+        }
+        src_data = NULL;
+        dst_data = NULL;
+    }
+
+    if (!src_data || !dst_data)
+    {
+        if (src_buf->data.buffer_data && dst_buf->data.buffer_data)
+        {
+            src_data = (uint8_t *)(uintptr_t)src_buf->data.buffer_data + (size_t)readOffset;
+            dst_data = (uint8_t *)(uintptr_t)dst_buf->data.buffer_data + (size_t)writeOffset;
+        }
+    }
+
+    if (!src_data || !dst_data)
+    {
+        fprintf(stderr,
+                "MGL Error: copyBufferSubData: unable to resolve src/dst pointers "
+                "(src=%p dst=%p mapCb=%p srcBase=%p dstBase=%p)\n",
+                src_data,
+                dst_data,
+                (void *)mglRendererMapUnmapBuffer,
+                (void *)(uintptr_t)src_buf->data.buffer_data,
+                (void *)(uintptr_t)dst_buf->data.buffer_data);
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    memcpy(dst_data, src_data, size);
+    {
+        uint8_t *cpu_base = (dst_buf->data.buffer_data >= 0x1000u)
+            ? (uint8_t *)(uintptr_t)dst_buf->data.buffer_data
+            : NULL;
+        /* Map returns the CPU shadow when one exists and does not copy it
+         * back to Metal on unmap. Mark pending so GetBufferSubData does not
+         * clobber the copy with stale GPU bytes (GL 4.6 §6.2: CopyBufferSubData
+         * may update a store that lacks DYNAMIC_STORAGE_BIT). */
+        if (cpu_base && dst_data == cpu_base + (size_t)writeOffset) {
+            dst_buf->cpu_shadow_pending = GL_TRUE;
+        }
+    }
+    dst_buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
+    mglBufferMarkWrite(dst_buf,
+                       kInitCopyBufferSubData,
+                       writeOffset,
+                       size,
+                       src_data,
+                       mglTraceHashBytes(src_data, (size_t)size));
+
+    if (used_map_callback)
+    {
+        mglRendererMapUnmapBuffer(ctx, dst_buf, writeOffset, size, GL_WRITE_ONLY, false);
+    }
+}
+
+void mglCopyBufferSubData(GLMContext ctx, GLenum readTarget, GLenum writeTarget, GLintptr readOffset, GLintptr writeOffset, GLsizeiptr size)
+{
+    GLuint index;
+    Buffer *src_buf, *dst_buf;
+
+    // GL_INVALID_ENUM is generated if target is not supported.
+    ERROR_CHECK_RETURN(checkTarget(ctx, readTarget), GL_INVALID_ENUM);
+
+    // GL_INVALID_ENUM is generated if target is not supported.
+    ERROR_CHECK_RETURN(checkTarget(ctx, writeTarget), GL_INVALID_ENUM);
+
+    index = bufferIndexFromTarget(ctx, readTarget);
+    src_buf = STATE(buffers[index]);
+
+    if (src_buf == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    index = bufferIndexFromTarget(ctx, writeTarget);
+    dst_buf = STATE(buffers[index]);
+
+    if (dst_buf == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    copyBufferSubData(ctx, src_buf, dst_buf, readOffset, writeOffset, size);
+}
+
+void mglCopyNamedBufferSubData(GLMContext ctx, GLuint readBuffer, GLuint writeBuffer, GLintptr readOffset, GLintptr writeOffset, GLsizeiptr size)
+{
+    Buffer *src_buf, *dst_buf;
+
+    if (readBuffer == 0)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (writeBuffer == 0)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    src_buf = findBuffer(ctx, readBuffer);
+
+    if (src_buf == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    dst_buf = findBuffer(ctx, writeBuffer);
+
+    if (dst_buf == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    copyBufferSubData(ctx, src_buf, dst_buf, readOffset, writeOffset, size);
+}
+
+void mglClearBufferData(GLMContext ctx, GLenum target, GLenum internalformat, GLenum format, GLenum type, const void *data)
+{
+    GLuint index;
+    Buffer *ptr;
+    GLboolean err;
+
+    // GL_INVALID_ENUM is generated if target is not supported.
+    ERROR_CHECK_RETURN(checkTarget(ctx, target), GL_INVALID_ENUM);
+
+    index = bufferIndexFromTarget(ctx, target);
+    ptr = STATE(buffers[index]);
+
+    if (ptr == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+        return;
+    }
+
+    err = clearBufferData(ctx, ptr, internalformat, 0, ptr->size, format, type, data);
+    if (!err) return;
+}
+
+void mglClearBufferSubData(GLMContext ctx, GLenum target, GLenum internalformat, GLintptr offset, GLsizeiptr size, GLenum format, GLenum type, const void *data)
+{
+    GLuint index;
+    Buffer *ptr;
+    GLboolean err;
+
+    // GL_INVALID_ENUM is generated if target is not supported.
+    ERROR_CHECK_RETURN(checkTarget(ctx, target), GL_INVALID_ENUM);
+
+    index = bufferIndexFromTarget(ctx, target);
+    ptr = STATE(buffers[index]);
+
+    if (ptr == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    err = clearBufferData(ctx, ptr, internalformat, offset, size, format, type, data);
+    if (!err) return;
+}
+
+void mglClearNamedBufferData(GLMContext ctx, GLuint buffer, GLenum internalformat, GLenum format, GLenum type, const void *data)
+{
+    Buffer *ptr;
+    GLboolean err;
+
+    ptr = findBuffer(ctx, buffer);
+
+    if (ptr == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    err = clearBufferData(ctx, ptr, internalformat, 0, ptr->size, format, type, data);
+    if (!err) return;
+}
+
+void mglClearNamedBufferSubData(GLMContext ctx, GLuint buffer, GLenum internalformat, GLintptr offset, GLsizeiptr size, GLenum format, GLenum type, const void *data)
+{
+    Buffer *ptr;
+    GLboolean err;
+
+    ptr = findBuffer(ctx, buffer);
+
+    if (ptr == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    err = clearBufferData(ctx, ptr, internalformat, offset, size, format, type, data);
+    if (!err) return;
+}
+
+#pragma mark GL Buffer Map Functions
+void *mglMapBuffer(GLMContext ctx, GLenum target, GLenum access)
+{
+    GLuint index;
+    Buffer *ptr;
+    void *mapped_ptr = NULL;
+
+    // GL_INVALID_ENUM is generated if target is not supported.
+    ERROR_CHECK_RETURN_VALUE(checkTarget(ctx, target), GL_INVALID_ENUM, NULL);
+
+    switch(access)
+    {
+        case GL_READ_ONLY:
+        case GL_WRITE_ONLY:
+        case GL_READ_WRITE:
+            break;
+
+        default:
+            ERROR_RETURN_VALUE(GL_INVALID_ENUM, NULL);
+    }
+
+    index = bufferIndexFromTarget(ctx, target);
+    ptr = STATE(buffers[index]);
+
+    ERROR_CHECK_RETURN_VALUE((ptr != NULL), GL_INVALID_OPERATION, NULL);
+
+    if (ptr->storage_flags & GL_SPARSE_STORAGE_BIT_ARB) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    if (ptr->mapped)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    /* AUDIT-055: MapBuffer WRITE_ONLY must also wait (MapBufferRange already
+     * does). Without UNSYNCHRONIZED there is no unsync escape hatch here. */
+    if (access == GL_READ_ONLY || access == GL_WRITE_ONLY ||
+        access == GL_READ_WRITE) {
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+    }
+
+    ptr->mapped = GL_TRUE;
+    ptr->access = access;
+    if (access == GL_READ_ONLY)
+        ptr->access_flags = GL_MAP_READ_BIT;
+    else if (access == GL_WRITE_ONLY)
+        ptr->access_flags = GL_MAP_WRITE_BIT;
+    else
+        ptr->access_flags = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT;
+    ptr->mapped_offset = 0;
+    ptr->mapped_length = ptr->size;
+    mapped_ptr = mglRendererMapUnmapBuffer(ctx, ptr, 0, ptr->size, access, true);
+
+    ptr->mapped_ptr = mapped_ptr;
+
+    /* Gate the per-call MapBuffer trace fprintf behind MGL_VERBOSE_BUFFER_MAP_LOGS
+     * (same gate used by mglUnmapBuffer) to avoid per-call stderr I/O on the
+     * buffer-map hot path when tracing is disabled. */
+    if (MGL_VERBOSE_BUFFER_MAP_LOGS) {
+        char head[64];
+        mglTraceFormatBytes(mapped_ptr, (ptr->size > 0) ? (size_t)ptr->size : 0u, head, sizeof(head));
+        fprintf(stderr,
+                "MGL TRACE MapBuffer.full target=0x%x buffer=%u size=%lld access=0x%x mappedPtr=%p baseData=%p head=%s\n",
+                target,
+                ptr->name,
+                (long long)ptr->size,
+                access,
+                mapped_ptr,
+                (void *)(uintptr_t)ptr->data.buffer_data,
+                head);
+    }
+
+    return mapped_ptr;
+}
+
+void *mglMapNamedBuffer(GLMContext ctx, GLuint buffer, GLenum access)
+{
+    Buffer *ptr;
+    GLbitfield access_flags = 0;
+
+    if (!ctx || buffer == 0u)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    switch(access)
+    {
+        case GL_READ_ONLY:
+            access_flags = GL_MAP_READ_BIT;
+            break;
+        case GL_WRITE_ONLY:
+            access_flags = GL_MAP_WRITE_BIT;
+            break;
+        case GL_READ_WRITE:
+            access_flags = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT;
+            break;
+        default:
+            ERROR_RETURN_VALUE(GL_INVALID_ENUM, NULL);
+    }
+
+    ptr = findBuffer(ctx, buffer);
+    if (!ptr)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    return mglMapNamedBufferRange(ctx, buffer, 0, ptr->size, access_flags);
+}
+
+GLboolean mglUnmapBuffer(GLMContext ctx, GLenum target)
+{
+    GLuint index;
+    Buffer *ptr;
+
+    // GL_INVALID_ENUM is generated if target is not supported.
+    ERROR_CHECK_RETURN_VALUE(checkTarget(ctx, target), GL_INVALID_ENUM, GL_FALSE);
+
+    index = bufferIndexFromTarget(ctx, target);
+    ptr = STATE(buffers[index]);
+
+    ERROR_CHECK_RETURN_VALUE((ptr != NULL), GL_INVALID_OPERATION, GL_FALSE);
+
+    if (MGL_VERBOSE_BUFFER_MAP_LOGS) {
+        fprintf(stderr,
+                "MGL TRACE UnmapBuffer.begin target=0x%x buffer=%u mapped=%u access=0x%x accessFlags=0x%x mapRange=(%lld,%lld)\n",
+                target,
+                ptr->name,
+                (unsigned)ptr->mapped,
+                ptr->access,
+                ptr->access_flags,
+                (long long)ptr->mapped_offset,
+                (long long)ptr->mapped_length);
+    }
+
+    GLintptr unmap_offset = ptr->mapped_offset;
+    GLsizeiptr unmap_length = ptr->mapped_length > 0 ? ptr->mapped_length : ptr->size;
+    GLenum unmap_access = ptr->access_flags ? ptr->access_flags : ptr->access;
+    GLboolean persistent_map =
+        (ptr->storage_flags & GL_MAP_PERSISTENT_BIT) &&
+        (ptr->access_flags & GL_MAP_PERSISTENT_BIT);
+
+    if (persistent_map)
+    {
+        mglBufferMarkMapWrite(ptr);
+
+        // this will cause the buffer to be flushed on next draw command
+        ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+
+        ptr->mapped = GL_FALSE;
+        ptr->access = GL_READ_WRITE;
+        ptr->access_flags = 0;
+        ptr->mapped_offset = 0;
+        ptr->mapped_length = 0;
+        ptr->mapped_ptr = NULL;
+
+        if (MGL_VERBOSE_BUFFER_MAP_LOGS) {
+            fprintf(stderr,
+                    "MGL TRACE UnmapBuffer.end persistent target=0x%x buffer=%u dirty=0x%x\n",
+                    target,
+                    ptr->name,
+                    ptr->data.dirty_bits);
+        }
+
+        return GL_TRUE;
+    }
+
+    /* GL_MAP_FLUSH_EXPLICIT_BIT: explicit subranges were already notified. */
+    if (!(ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT)) {
+        mglRendererMapUnmapBuffer(ctx, ptr, unmap_offset, unmap_length, unmap_access, false);
+    }
+
+    mglBufferMarkMapWrite(ptr);
+    if (mglBufferMapAllowsWrite(ptr)) {
+        ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+        /* MapUnmap writes the shadow into Metal when not FLUSH_EXPLICIT.
+         * FLUSH_EXPLICIT leaves pending ranges that FlushMapped* must push. */
+        if (ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT) {
+            ptr->cpu_shadow_pending = GL_TRUE;
+        } else {
+            ptr->cpu_shadow_pending = GL_FALSE;
+        }
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
+    }
+
+    ptr->mapped = GL_FALSE;
+    ptr->access = GL_READ_WRITE;
+    ptr->access_flags = 0;
+    ptr->mapped_offset = 0;
+    ptr->mapped_length = 0;
+    ptr->mapped_ptr = NULL;
+
+    if (MGL_VERBOSE_BUFFER_MAP_LOGS) {
+        fprintf(stderr,
+                "MGL TRACE UnmapBuffer.end target=0x%x buffer=%u dirty=0x%x mapped=%u\n",
+                target,
+                ptr->name,
+                ptr->data.dirty_bits,
+                (unsigned)ptr->mapped);
+    }
+
+    return GL_TRUE;
+}
+
+GLboolean mglUnmapNamedBuffer(GLMContext ctx, GLuint buffer)
+{
+    Buffer *ptr;
+
+    if (!ctx || buffer == 0u)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, GL_FALSE);
+    }
+
+    ptr = findBuffer(ctx, buffer);
+    if (!ptr)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, GL_FALSE);
+    }
+
+    if (!ptr->mapped)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, GL_FALSE);
+    }
+
+    if (!(ptr->storage_flags & GL_MAP_PERSISTENT_BIT))
+    {
+        /* GL_MAP_FLUSH_EXPLICIT_BIT: see the comment in mglUnmapBuffer above.
+         * The app flushes via glFlushMappedBufferRange; unmap must not
+         * auto-flush the full range. */
+        if (!(ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT)) {
+            mglRendererMapUnmapBuffer(ctx,
+                                             ptr,
+                                             ptr->mapped_offset,
+                                             ptr->mapped_length > 0 ? ptr->mapped_length : ptr->size,
+                                             ptr->access_flags ? ptr->access_flags : ptr->access,
+                                             false);
+        }
+    }
+
+    mglBufferMarkMapWrite(ptr);
+    if (mglBufferMapAllowsWrite(ptr)) {
+        ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+        if (ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT) {
+            ptr->cpu_shadow_pending = GL_TRUE;
+        } else {
+            ptr->cpu_shadow_pending = GL_FALSE;
+        }
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
+    }
+
+    ptr->mapped = GL_FALSE;
+    ptr->access = GL_READ_WRITE;
+    ptr->access_flags = 0;
+    ptr->mapped_offset = 0;
+    ptr->mapped_length = 0;
+    ptr->mapped_ptr = NULL;
+
+    return GL_TRUE;
+}
+
+void *mglMapBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access_flags)
+{
+    Buffer *ptr;
+    void *mapped_ptr = NULL;
+
+    if (!ctx || length < 0)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
+    }
+    if (length == 0)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    // GL_INVALID_ENUM is generated if target is not supported.
+    ERROR_CHECK_RETURN_VALUE(checkTarget(ctx, target), GL_INVALID_ENUM, NULL);
+
+    if (offset < 0)
+    {
+        fprintf(stderr, "MGL Error: mglMapBufferRange: offset < 0 (%ld)\n", offset);
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
+    }
+
+    if (length < 0)
+    {
+        fprintf(stderr, "MGL Error: mglMapBufferRange: length < 0 (%ld)\n", length);
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
+    }
+
+    ptr = mglGetBoundBufferForTarget(ctx, target);
+
+    if (!ptr)
+    {
+        fprintf(stderr, "MGL MapBufferRange NULL bound buffer target=0x%x\n", target);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    if (ptr->storage_flags & GL_SPARSE_STORAGE_BIT_ARB) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    if (!ptr->data.buffer_data || !mgl_range_ok_glsize(offset, length, ptr->size))
+    {
+        fprintf(stderr, "MGL MapBufferRange invalid range target=0x%x off=%lld len=%lld size=%lld data=%p\n",
+                target,
+                (long long)offset,
+                (long long)length,
+                (long long)ptr->size,
+                (void *)(uintptr_t)ptr->data.buffer_data);
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
+    }
+
+    static uint64_t s_map_buffer_range_trace_count = 0u;
+    uint64_t trace_call = ++s_map_buffer_range_trace_count;
+    bool trace_map = MGL_VERBOSE_BUFFER_MAP_LOGS ||
+                     mglShouldTraceBufferMutation(trace_call, target, length);
+
+    const uint8_t *base = (const uint8_t *)(uintptr_t)ptr->data.buffer_data;
+    const uint8_t *range_ptr = base + (size_t)offset;
+    uint64_t pre_hash = 0;
+    char pre_head[64] = {0};
+    bool pre_all_zero = false;
+    if (trace_map) {
+        pre_hash = mglTraceHashBytes(range_ptr, (size_t)length);
+        mglTraceFormatBytes(range_ptr, (size_t)length, pre_head, sizeof(pre_head));
+        size_t probe_len = ((size_t)length < 256u) ? (size_t)length : 256u;
+        pre_all_zero = mglTraceSampleAllZero(range_ptr, probe_len);
+        fprintf(stderr,
+                "MGL TRACE MapBufferRange.begin target=0x%x buffer=%u off=%lld len=%lld accessFlags=0x%x data=%p rangePtr=%p preHash=0x%016" PRIx64 " preHead=%s probe256AllZero=%d\n",
+                target,
+                ptr->name,
+                (long long)offset,
+                (long long)length,
+                access_flags,
+                (void *)(uintptr_t)ptr->data.buffer_data,
+                range_ptr,
+                pre_hash,
+                pre_head,
+                pre_all_zero ? 1 : 0);
+    }
+
+    if (access_flags & ~(GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT |
+                   GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT | GL_MAP_FLUSH_EXPLICIT_BIT |
+                   GL_MAP_UNSYNCHRONIZED_BIT))
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
+    }
+    if (!(access_flags & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT)) ||
+        ((access_flags & GL_MAP_READ_BIT) &&
+         (access_flags & (GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT |
+                          GL_MAP_UNSYNCHRONIZED_BIT))) ||
+        ((access_flags & GL_MAP_FLUSH_EXPLICIT_BIT) && !(access_flags & GL_MAP_WRITE_BIT)))
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+    if (ptr->immutable_storage &&
+        (access_flags & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT) &
+         ~ptr->storage_flags))
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    if (ptr->mapped)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    if (access_flags & (GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT)) {
+        if (access_flags & GL_MAP_INVALIDATE_BUFFER_BIT) {
+            mglFlushPendingDrawsForBuffer(ctx, ptr);
+        } else {
+            mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, length);
+        }
+    }
+
+    /* PERF-001: read maps wait only when Metal may be ahead of the shadow
+     * (gpu_write_target). AUDIT-055: write maps without UNSYNCHRONIZED still
+     * full-wait so the CPU cannot race in-flight GPU readers/writers. */
+    if (access_flags & GL_MAP_READ_BIT) {
+        mglSyncBufferForCpuRead(ctx, ptr, offset, length);
+    } else if ((access_flags & GL_MAP_WRITE_BIT) &&
+               !(access_flags & GL_MAP_UNSYNCHRONIZED_BIT)) {
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+    }
+
+    ptr->access = mglBufferAccessEnumFromMapFlags(access_flags);
+    ptr->mapped_offset = offset;
+    ptr->mapped_length = length;
+
+    if (access_flags & GL_MAP_PERSISTENT_BIT)
+    {
+        if (ptr->storage_flags & GL_MAP_PERSISTENT_BIT)
+        {
+            ptr->access_flags = access_flags;
+            ptr->mapped = GL_TRUE;
+
+            ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+
+            // return a pointer to the backing data and keep mapped state for flush/unmap semantics
+            mapped_ptr = (void *)((uint8_t *)(uintptr_t)ptr->data.buffer_data + (size_t)offset);
+            if (trace_map) {
+                fprintf(stderr,
+                        "MGL TRACE MapBufferRange.return persistent target=0x%x buffer=%u mappedPtr=%p\n",
+                        target,
+                        ptr->name,
+                        mapped_ptr);
+            }
+            ptr->mapped_ptr = mapped_ptr;
+            return mapped_ptr;
+        }
+
+        // if buffer was not marked with GL_MAP_PERSISTENT_BIT in storage flags
+        // it is an error to map with persistant
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+    else if (access_flags & GL_MAP_COHERENT_BIT)
+    {
+        // GL_MAP_PERSISTENT_BIT and GL_MAP_COHERENT_BIT need to be together
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    ptr->access_flags = access_flags;
+    ptr->mapped = GL_TRUE;
+
+    mapped_ptr = mglRendererMapUnmapBuffer(ctx, ptr, offset, length, access_flags, true);
+    if (trace_map) {
+        fprintf(stderr,
+                "MGL TRACE MapBufferRange.return mtl target=0x%x buffer=%u mappedPtr=%p\n",
+                target,
+                ptr->name,
+                mapped_ptr);
+    }
+    ptr->mapped_ptr = mapped_ptr;
+    return mapped_ptr;
+}
+
+void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access)
+{
+    Buffer *ptr;
+    void *mapped_ptr = NULL;
+
+    if (!ctx)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
+    }
+
+    if (buffer == 0u)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    if (length < 0)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
+    }
+    if (length == 0)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    if (offset < 0)
+    {
+        fprintf(stderr, "MGL Error: mglMapNamedBufferRange: offset < 0 (%ld)\n", offset);
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
+    }
+
+    if (length < 0)
+    {
+        fprintf(stderr, "MGL Error: mglMapNamedBufferRange: length < 0 (%ld)\n", length);
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
+    }
+
+    ptr = findBuffer(ctx, buffer);
+    if (!ptr)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    if (!ptr->data.buffer_data || !mgl_range_ok_glsize(offset, length, ptr->size))
+    {
+        fprintf(stderr, "MGL MapNamedBufferRange invalid range buffer=%u off=%lld len=%lld size=%lld data=%p\n",
+                ptr->name,
+                (long long)offset,
+                (long long)length,
+                (long long)ptr->size,
+                (void *)(uintptr_t)ptr->data.buffer_data);
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
+    }
+
+    if (access & ~(GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT |
+                   GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT | GL_MAP_FLUSH_EXPLICIT_BIT |
+                   GL_MAP_UNSYNCHRONIZED_BIT))
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
+    }
+    if (!(access & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT)) ||
+        ((access & GL_MAP_READ_BIT) &&
+         (access & (GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT |
+                    GL_MAP_UNSYNCHRONIZED_BIT))) ||
+        ((access & GL_MAP_FLUSH_EXPLICIT_BIT) && !(access & GL_MAP_WRITE_BIT)))
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+    if (ptr->immutable_storage &&
+        (access & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT) &
+         ~ptr->storage_flags))
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    if (ptr->mapped)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    if (access & (GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT)) {
+        if (access & GL_MAP_INVALIDATE_BUFFER_BIT) {
+            mglFlushPendingDrawsForBuffer(ctx, ptr);
+        } else {
+            mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, length);
+        }
+    }
+
+    /* PERF-001 / AUDIT-055: same wait policy as MapBufferRange. */
+    if (access & GL_MAP_READ_BIT) {
+        mglSyncBufferForCpuRead(ctx, ptr, offset, length);
+    } else if ((access & GL_MAP_WRITE_BIT) &&
+               !(access & GL_MAP_UNSYNCHRONIZED_BIT)) {
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+    }
+
+    ptr->access = mglBufferAccessEnumFromMapFlags(access);
+    ptr->mapped_offset = offset;
+    ptr->mapped_length = length;
+
+    static uint64_t s_map_named_buffer_range_trace_count = 0u;
+    uint64_t trace_call = ++s_map_named_buffer_range_trace_count;
+    bool trace_map = MGL_VERBOSE_BUFFER_MAP_LOGS ||
+                     mglShouldTraceBufferMutation(trace_call, ptr->target, length);
+
+    if (access & GL_MAP_PERSISTENT_BIT)
+    {
+        if (ptr->storage_flags & GL_MAP_PERSISTENT_BIT)
+        {
+            ptr->access_flags = access;
+            ptr->mapped = GL_TRUE;
+            ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+            mapped_ptr = (void *)((uint8_t *)(uintptr_t)ptr->data.buffer_data + (size_t)offset);
+            if (trace_map) {
+                fprintf(stderr,
+                        "MGL TRACE MapNamedBufferRange.return persistent buffer=%u mappedPtr=%p\n",
+                        ptr->name,
+                        mapped_ptr);
+            }
+            ptr->mapped_ptr = mapped_ptr;
+            return mapped_ptr;
+        }
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+    else if (access & GL_MAP_COHERENT_BIT)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    ptr->access_flags = access;
+    ptr->mapped = GL_TRUE;
+
+    mapped_ptr = mglRendererMapUnmapBuffer(ctx, ptr, offset, length, access, true);
+    if (trace_map) {
+        fprintf(stderr,
+                "MGL TRACE MapNamedBufferRange.return mtl buffer=%u mappedPtr=%p\n",
+                ptr->name,
+                mapped_ptr);
+    }
+    ptr->mapped_ptr = mapped_ptr;
+    return mapped_ptr;
+}
+
+
+void mglFlushMappedBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr length)
+{
+    GLuint index;
+    Buffer *ptr;
+
+    // GL_INVALID_ENUM is generated if target is not supported.
+    ERROR_CHECK_RETURN(checkTarget(ctx, target), GL_INVALID_ENUM);
+
+    if (offset < 0)
+    {
+        fprintf(stderr, "MGL Error: mglFlushMappedBufferRange: offset < 0 (%ld)\n", offset);
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (length < 0)
+    {
+        fprintf(stderr, "MGL Error: mglFlushMappedBufferRange: length < 0 (%ld)\n", length);
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    index = bufferIndexFromTarget(ctx, target);
+    ptr = STATE(buffers[index]);
+
+    ERROR_CHECK_RETURN((ptr != NULL), GL_INVALID_OPERATION);
+
+    if (ptr->mapped == false)
+    {
+        fprintf(stderr, "MGL Error: mglFlushMappedBufferRange: buffer not mapped\n");
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (!mgl_range_ok_glsize(offset, length, ptr->mapped_length))
+    {
+        fprintf(stderr,
+                "MGL Error: mglFlushMappedBufferRange: range overflow (offset=%ld length=%ld mapped_offset=%ld mapped_length=%ld)\n",
+                offset,
+                length,
+                ptr->mapped_offset,
+                ptr->mapped_length);
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT)
+    {
+        GLintptr absolute_offset = ptr->mapped_offset + offset;
+        mglRendererFlushBufferRange(ctx, ptr, absolute_offset, length);
+        mglBufferMarkWrite(ptr, kInitMapWrite, absolute_offset, length,
+                           (const uint8_t *)(uintptr_t)ptr->data.buffer_data + absolute_offset,
+                           mglTraceHashBytes((const uint8_t *)(uintptr_t)ptr->data.buffer_data + absolute_offset, (size_t)length));
+    }
+    else
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+}
+
+void mglFlushMappedNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLsizeiptr length)
+{
+    Buffer *ptr;
+
+    if (!ctx || buffer == 0u)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (offset < 0 || length < 0)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    ptr = findBuffer(ctx, buffer);
+    if (!ptr)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (!ptr->mapped)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (!(ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT))
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (!mgl_range_ok_glsize(offset, length, ptr->mapped_length))
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    GLintptr absolute_offset = ptr->mapped_offset + offset;
+    mglRendererFlushBufferRange(ctx, ptr, absolute_offset, length);
+    mglBufferMarkWrite(ptr, kInitMapWrite, absolute_offset, length,
+                       (const uint8_t *)(uintptr_t)ptr->data.buffer_data + absolute_offset,
+                       mglTraceHashBytes((const uint8_t *)(uintptr_t)ptr->data.buffer_data + absolute_offset, (size_t)length));
+}
+
+void mglBindBuffersRange(GLMContext ctx, GLenum target, GLuint first, GLsizei count, const GLuint *buffers, const GLintptr *offsets, const GLsizeiptr *sizes)
+{
+    GLuint buffer_index;
+
+    if (!ctx) {
+        return;
+    }
+
+    if (count < 0)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (count == 0) {
+        return;
+    }
+
+    switch(target)
+    {
+        case GL_UNIFORM_BUFFER:
+        case GL_TRANSFORM_FEEDBACK_BUFFER:
+        case GL_SHADER_STORAGE_BUFFER:
+        case GL_ATOMIC_COUNTER_BUFFER:
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    {
+        GLuint max_bind = mglMaxIndexedBindings(ctx, target);
+        if (first >= max_bind || (GLuint)count > max_bind - first)
+        {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+    }
+
+    if (buffers && (!offsets || !sizes))
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    buffer_index = bufferIndexFromTarget(ctx, target);
+
+    for (GLsizei i = 0; i < count; i++)
+    {
+        GLuint index = first + (GLuint)i;
+        GLuint name = buffers ? buffers[i] : 0u;
+
+        if (name == 0u)
+        {
+            BufferBaseTarget *base_slot = &STATE(buffer_base)[buffer_index].buffers[index];
+            if (base_slot->buffer != 0 || base_slot->buf != NULL ||
+                base_slot->offset != 0 || base_slot->size != 0) {
+                mglFlushPendingDraws(ctx);
+            }
+            bzero(base_slot, sizeof(BufferBaseTarget));
+            mglBufferBaseClearActive(&STATE(buffer_base)[buffer_index], index);
+            STATE(buffers[buffer_index]) = NULL;
+            mglSetGenericBufferBinding(ctx, target, 0u);
+            mglMarkStateDirtyBits(&ctx->state, (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE));
+            continue;
+        }
+
+        if (!isBuffer(ctx, name)) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            continue;
+        }
+
+        mglBindBufferRange(ctx, target, index, name, offsets[i], sizes[i]);
+    }
+}
+
+#pragma mark GL Buffer Storage Functions
+void mglBufferStorage(GLMContext ctx, GLenum target, GLsizeiptr size, const void *data, GLbitfield storage_flags)
+{
+    Buffer *ptr;
+    GLuint index;
+
+    // GL_INVALID_ENUM is generated if target is not supported.
+    ERROR_CHECK_RETURN(checkTarget(ctx, target), GL_INVALID_ENUM);
+
+    index = bufferIndexFromTarget(ctx, target);
+    ptr = STATE(buffers[index]);
+
+    ERROR_CHECK_RETURN((ptr != NULL), GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(!ptr->immutable_storage, GL_INVALID_OPERATION);
+
+    if (size <= 0)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (!mglSparseBufferStorageFlagsOk(ctx, storage_flags, size))
+        return;
+
+    bufferStorage(ctx, ptr, target, index, size, data, storage_flags, 0);
+}
+
+void mglNamedBufferStorage(GLMContext ctx, GLuint buffer, GLsizeiptr size, const void *data, GLbitfield storage_flags)
+{
+    Buffer *ptr;
+
+    ptr = findBuffer(ctx, buffer);
+
+    ERROR_CHECK_RETURN((ptr != NULL), GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(!ptr->immutable_storage, GL_INVALID_OPERATION);
+
+    if (size <= 0)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (!mglSparseBufferStorageFlagsOk(ctx, storage_flags, size))
+        return;
+
+    bufferStorage(ctx, ptr, 0, 0, size, data, storage_flags, 0);
+}
+
+void mglInvalidateBufferData(GLMContext ctx, GLuint buffer)
+{
+    Buffer *ptr;
+
+    /* ARB_invalidate_subdata / ARB_sparse_buffer: no GPU content to drop in
+     * MGL's buffer path; accept the call so CTS case_d can proceed. */
+    if (!ctx)
+        return;
+    if (buffer == 0)
+        return;
+    ptr = findBuffer(ctx, buffer);
+    if (!ptr)
+        ERROR_RETURN(GL_INVALID_VALUE);
+}
+
+void mglInvalidateBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset,
+                                GLsizeiptr length)
+{
+    Buffer *ptr;
+
+    if (!ctx)
+        return;
+    if (buffer == 0)
+        return;
+    ptr = findBuffer(ctx, buffer);
+    if (!ptr)
+        ERROR_RETURN(GL_INVALID_VALUE);
+    if (offset < 0 || length < 0)
+        ERROR_RETURN(GL_INVALID_VALUE);
+    if ((GLsizeiptr)offset + length > ptr->size)
+        ERROR_RETURN(GL_INVALID_VALUE);
+}
+
+#pragma mark GL Buffer Get Functions
+void mglGetBufferParameteriv(GLMContext ctx, GLenum target, GLenum pname, GLint *params)
+{
+    GLuint index;
+    Buffer *ptr;
+
+    // GL_INVALID_ENUM is generated if target is not supported.
+    ERROR_CHECK_RETURN(checkTarget(ctx, target), GL_INVALID_ENUM);
+
+    ERROR_CHECK_RETURN((params != NULL), GL_INVALID_OPERATION);
+
+    index = bufferIndexFromTarget(ctx, target);
+    ptr = STATE(buffers[index]);
+
+    ERROR_CHECK_RETURN((ptr != NULL), GL_INVALID_OPERATION);
+
+    switch(pname)
+    {
+        case GL_BUFFER_ACCESS:
+            *params = ptr->access;
+            break;
+
+        case GL_BUFFER_ACCESS_FLAGS:
+            *params = ptr->access_flags;
+            break;
+
+        case GL_BUFFER_IMMUTABLE_STORAGE:
+            *params = ptr->immutable_storage ? GL_TRUE : GL_FALSE;
+            break;
+
+        case GL_BUFFER_MAPPED:
+            *params = ptr->mapped;
+            break;
+
+        case GL_BUFFER_MAP_LENGTH:
+            if (ptr->mapped_length > INT_MAX) {
+                fprintf(stderr,
+                        "MGL WARNING: GL_BUFFER_MAP_LENGTH exceeds GLint range (%lld), clamping for glGetBufferParameteriv\n",
+                        (long long)ptr->mapped_length);
+                *params = INT_MAX;
+            } else {
+                *params = (GLint)ptr->mapped_length;
+            }
+            break;
+
+        case GL_BUFFER_MAP_OFFSET:
+            if (ptr->mapped_offset > INT_MAX) {
+                fprintf(stderr,
+                        "MGL WARNING: GL_BUFFER_MAP_OFFSET exceeds GLint range (%lld), clamping for glGetBufferParameteriv\n",
+                        (long long)ptr->mapped_offset);
+                *params = INT_MAX;
+            } else {
+                *params = (GLint)ptr->mapped_offset;
+            }
+            break;
+
+        case GL_BUFFER_SIZE:
+            if (ptr->size > INT_MAX) {
+                fprintf(stderr,
+                        "MGL WARNING: GL_BUFFER_SIZE exceeds GLint range (%lld), clamping for glGetBufferParameteriv\n",
+                        (long long)ptr->size);
+                *params = INT_MAX;
+            } else {
+                *params = (GLint)ptr->size;
+            }
+            break;
+
+        case GL_BUFFER_STORAGE_FLAGS:
+            *params = ptr->storage_flags;
+            break;
+
+        case GL_BUFFER_USAGE:
+            *params = ptr->usage;
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            break;
+    }
+}
+
+void mglGetBufferPointerv(GLMContext ctx, GLenum target, GLenum pname, void **params)
+{
+    GLuint index;
+    Buffer *ptr;
+
+    // GL_INVALID_ENUM is generated if target is not supported.
+    ERROR_CHECK_RETURN(checkTarget(ctx, target), GL_INVALID_ENUM);
+
+    switch(pname)
+    {
+        case GL_BUFFER_MAP_POINTER:
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            break;
+    }
+
+    ERROR_CHECK_RETURN((params != NULL), GL_INVALID_OPERATION);
+
+    index = bufferIndexFromTarget(ctx, target);
+    ptr = STATE(buffers[index]);
+
+    ERROR_CHECK_RETURN((ptr != NULL), GL_INVALID_OPERATION);
+
+    if (ptr->mapped && ptr->mapped_ptr) {
+        *params = ptr->mapped_ptr;
+    } else if (ptr->mapped && ptr->data.buffer_data) {
+        *params = (void *)((uint8_t *)(uintptr_t)ptr->data.buffer_data + (size_t)ptr->mapped_offset);
+    } else {
+        *params = NULL;
+    }
+}
+
+void mglGetBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr size, void *data)
+{
+    GLuint index;
+    Buffer *ptr;
+
+    // GL_INVALID_ENUM is generated if target is not supported.
+    ERROR_CHECK_RETURN(checkTarget(ctx, target), GL_INVALID_ENUM);
+
+    if (offset < 0)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (size < 0)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    index = bufferIndexFromTarget(ctx, target);
+    ptr = STATE(buffers[index]);
+
+    if (ptr == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (!mgl_range_ok_glsize(offset, size, ptr->size))
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (ptr->mapped && !(ptr->access_flags & GL_MAP_PERSISTENT_BIT))
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (data == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (ptr->data.buffer_data == 0)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    /* PERF-001: drain deferred draws always; GPU wait+readback only when
+     * Metal may be ahead of the CPU shadow (SSBO/XFB gpu_write_target). */
+    mglSyncBufferForCpuRead(ctx, ptr, offset, size);
+
+    /* imageStore to a texture-buffer writes a Metal texture2d copy of the
+     * Buffer.  Pull that back before CPU readback so clients that omit an
+     * explicit BUFFER_UPDATE barrier still observe shader stores
+     * (CTS advanced-sso-atomicCounters). */
+    {
+        GLuint max_units = STATE(var).max_image_units;
+        for (GLuint i = 0; i < max_units && i < TEXTURE_UNITS; i++) {
+            Texture *tex = STATE(image_units)[i].tex;
+            if (tex &&
+                tex->target == GL_TEXTURE_BUFFER &&
+                tex->texture_buffer == ptr) {
+                mglRendererSyncTextureBufferFromImage(ctx, tex);
+            }
+        }
+    }
+
+    if (!mgl_range_ok_size_t(offset, size, ptr->data.buffer_size))
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+    }
+
+    memcpy(data, (const uint8_t *)((uintptr_t)ptr->data.buffer_data) + (uintptr_t)offset, (size_t)size);
+}
+
+void mglGetNamedBufferParameteriv(GLMContext ctx, GLuint buffer, GLenum pname, GLint *params)
+{
+    Buffer *ptr;
+
+    ptr = findBuffer(ctx, buffer);
+    if (ptr == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+
+    if (!params)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    switch(pname)
+    {
+        case GL_BUFFER_ACCESS:
+            *params = ptr->access;
+            break;
+
+        case GL_BUFFER_ACCESS_FLAGS:
+            *params = ptr->access_flags;
+            break;
+
+        case GL_BUFFER_IMMUTABLE_STORAGE:
+            *params = ptr->immutable_storage ? GL_TRUE : GL_FALSE;
+            break;
+
+        case GL_BUFFER_MAPPED:
+            *params = ptr->mapped;
+            break;
+
+        case GL_BUFFER_MAP_LENGTH:
+            *params = ptr->mapped_length > INT_MAX ? INT_MAX : (GLint)ptr->mapped_length;
+            break;
+
+        case GL_BUFFER_MAP_OFFSET:
+            *params = ptr->mapped_offset > INT_MAX ? INT_MAX : (GLint)ptr->mapped_offset;
+            break;
+
+        case GL_BUFFER_SIZE:
+            *params = ptr->size > INT_MAX ? INT_MAX : (GLint)ptr->size;
+            break;
+
+        case GL_BUFFER_STORAGE_FLAGS:
+            *params = ptr->storage_flags;
+            break;
+
+        case GL_BUFFER_USAGE:
+            *params = ptr->usage;
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+    }
+}
+
+void mglGetNamedBufferParameteri64v(GLMContext ctx, GLuint buffer, GLenum pname, GLint64 *params)
+{
+    Buffer *ptr;
+
+    ptr = findBuffer(ctx, buffer);
+    if (ptr == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+
+    if (!params)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    switch(pname)
+    {
+        case GL_BUFFER_ACCESS:
+            *params = ptr->access;
+            break;
+
+        case GL_BUFFER_ACCESS_FLAGS:
+            *params = ptr->access_flags;
+            break;
+
+        case GL_BUFFER_IMMUTABLE_STORAGE:
+            *params = ptr->immutable_storage;
+            break;
+
+        case GL_BUFFER_MAPPED:
+            *params = ptr->mapped;
+            break;
+
+        case GL_BUFFER_MAP_LENGTH:
+            *params = ptr->mapped_length;
+            break;
+
+        case GL_BUFFER_MAP_OFFSET:
+            *params = ptr->mapped_offset;
+            break;
+
+        case GL_BUFFER_SIZE:
+            *params = ptr->size;
+            break;
+
+        case GL_BUFFER_STORAGE_FLAGS:
+            *params = ptr->storage_flags;
+            break;
+
+        case GL_BUFFER_USAGE:
+            *params = ptr->usage;
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+    }
+}
+
+void mglGetNamedBufferPointerv(GLMContext ctx, GLuint buffer, GLenum pname, void **params)
+{
+    Buffer *ptr;
+
+    if (!ctx)
+    {
+        return;
+    }
+
+    if (!params)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (pname != GL_BUFFER_MAP_POINTER)
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    ptr = findBuffer(ctx, buffer);
+    if (!ptr)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (ptr->mapped && ptr->mapped_ptr)
+    {
+        *params = ptr->mapped_ptr;
+    }
+    else if (ptr->mapped && ptr->data.buffer_data)
+    {
+        *params = (void *)((uint8_t *)(uintptr_t)ptr->data.buffer_data + (size_t)ptr->mapped_offset);
+    }
+    else
+    {
+        *params = NULL;
+    }
+}
+
+void mglGetNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsizeiptr size, void *data)
+{
+    Buffer *ptr;
+
+    if (!ctx)
+    {
+        return;
+    }
+
+    ptr = findBuffer(ctx, buffer);
+    if (!ptr)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (offset < 0 || size < 0 || !data)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (!mgl_range_ok_glsize(offset, size, ptr->size))
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (ptr->mapped && !(ptr->access_flags & GL_MAP_PERSISTENT_BIT))
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (ptr->data.buffer_data == 0 || !mgl_range_ok_size_t(offset, size, ptr->data.buffer_size))
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    /* PERF-001: same gated sync as mglGetBufferSubData. */
+    mglSyncBufferForCpuRead(ctx, ptr, offset, size);
+
+    memcpy(data, (const uint8_t *)((uintptr_t)ptr->data.buffer_data) + (uintptr_t)offset, (size_t)size);
+}
+
+void mglBufferPageCommitmentARB(GLMContext ctx, GLenum target, GLintptr offset,
+                                GLsizeiptr size, GLboolean commit)
+{
+    GLuint index;
+    Buffer *ptr;
+    GLint page;
+    GLuint first, last, i;
+
+    ERROR_CHECK_RETURN(checkTarget(ctx, target), GL_INVALID_ENUM);
+    index = bufferIndexFromTarget(ctx, target);
+    ptr = STATE(buffers[index]);
+    ERROR_CHECK_RETURN(ptr != NULL, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(ptr->immutable_storage &&
+                       (ptr->storage_flags & GL_SPARSE_STORAGE_BIT_ARB),
+                       GL_INVALID_OPERATION);
+    if (offset < 0 || size < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    page = mglSparseBufferPageSize();
+    /* size may extend to the end of the store without page alignment. */
+    if (page <= 0 || (offset % page) != 0 ||
+        ((size % page) != 0 && (offset + size) != ptr->size) ||
+        offset > ptr->size || (GLsizeiptr)(ptr->size - offset) < size) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (!ptr->sparse_page_committed || ptr->sparse_page_count == 0u || size == 0)
+        return;
+
+    first = (GLuint)(offset / page);
+    last = (GLuint)((offset + size + page - 1) / page);
+    if (last > ptr->sparse_page_count)
+        last = ptr->sparse_page_count;
+
+    if (commit) {
+        /* Newly committed pages have undefined content - leave bytes as-is
+         * (including redundant commits, which must not alter content). */
+        for (i = first; i < last; i++)
+            ptr->sparse_page_committed[i] = 1u;
+        return;
+    }
+
+    /* Decommit: mark uncommitted and zero the backing so subsequent reads
+     * see zeros (a valid choice for undefined). */
+    for (i = first; i < last; i++)
+        ptr->sparse_page_committed[i] = 0u;
+    if (ptr->data.buffer_data) {
+        memset((uint8_t *)(uintptr_t)ptr->data.buffer_data + (size_t)offset, 0,
+               (size_t)size);
+        ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+        if (mglRenderBufferHandle(ptr))
+            mglRendererBufferSubData(ctx, ptr, offset, size,
+                                     (const void *)((uintptr_t)ptr->data.buffer_data +
+                                                    (uintptr_t)offset));
+    }
+}

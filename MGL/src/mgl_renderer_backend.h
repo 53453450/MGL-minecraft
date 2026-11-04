@@ -14,7 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "mgl_render.h"
+#include "mgl_render_fwd.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -25,20 +25,20 @@
 
 #include "mgl_size_constants.h"
 #include "glm_context.h"
-#include "mgl_renderer_ports.h"        /* state areas */
+#include "mgl_renderer_state_areas.h"        /* state areas */
 #include "mgl_renderer_backend.h"      /* size-constant cache + device */
-#include "mgl_render.h"                /* the mglRender* facade */
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_buffer.h"
 #include "mgl_buffer_slots.h"          /* MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX */
 #include "mgl_renderer_binding_ops.h"     /* record last bound buffer */
 #include "mgl_frame_activity.h"        /* MGL_PERF_INC */
 #include "mgl_types_buffer.h"          /* mglBufferMapVisibleSize */
+#include "mgl_program_backend.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
-static GLMState *mglSizeConstantsState(const MGLRendererStateAreas *areas)
+static GLMState *mglSizeConstantsState(const MGLRendererStateView *areas)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 
@@ -58,7 +58,7 @@ static void mglSizeConstantsReleaseCreated(void *buffer, void **slot)
 /* The size-constant buffer of one stage: the backend's cached one, else a fresh
  * shared-storage buffer stored in that cache.  Borrowed; NULL when the stage
  * needs nothing or the materialization failed. */
-static void *mglSizeConstantsBufferForStage(const MGLRendererStateAreas *areas,
+static void *mglSizeConstantsBufferForStage(const MGLRendererStateView *areas,
                                             uint32_t backend_kind,
                                             const uint32_t *size_constants,
                                             size_t constants_bytes)
@@ -109,8 +109,8 @@ static void mglSizeConstantsFillFromMapList(const BufferMapList *list,
 
 bool mglRendererBindBufferSizeConstantsForRenderEncoder(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglSizeConstantsState(&areas);
     void *renderEncoderOwner =
@@ -121,7 +121,7 @@ bool mglRendererBindBufferSizeConstantsForRenderEncoder(void *renderer)
     }
 
     Program *vertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
-    if (vertexProgram && vertexProgram->modules[_VERTEX_SHADER].needs_runtime_array_size_buffer)
+    if (vertexProgram && mglProgramModuleView(vertexProgram, _VERTEX_SHADER)->needs_runtime_array_size_buffer)
     {
         uint32_t sizeConstants[31];
         mglSizeConstantsFillFromMapList(&state->vertex_buffer_map_list, sizeConstants);
@@ -141,7 +141,7 @@ bool mglRendererBindBufferSizeConstantsForRenderEncoder(void *renderer)
     }
 
     Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
-    if (fragmentProgram && fragmentProgram->modules[_FRAGMENT_SHADER].needs_runtime_array_size_buffer)
+    if (fragmentProgram && mglProgramModuleView(fragmentProgram, _FRAGMENT_SHADER)->needs_runtime_array_size_buffer)
     {
         uint32_t sizeConstants[31];
         mglSizeConstantsFillFromMapList(&state->fragment_buffer_map_list, sizeConstants);

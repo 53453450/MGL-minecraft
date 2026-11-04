@@ -9,6 +9,7 @@ glAreTexturesResident
 glArrayElement
 glBegin
 glBitmap
+glBufferPageCommitmentARB
 glCallList
 glCallLists
 glClearAccum
@@ -52,6 +53,7 @@ glColorPointer
 glCopyPixels
 glDeleteLists
 glDisableClientState
+glDisableIndexedEXT
 glDrawArraysInstancedARB
 glDrawElementsInstancedARB
 glDrawPixels
@@ -59,6 +61,7 @@ glEdgeFlag
 glEdgeFlagPointer
 glEdgeFlagv
 glEnableClientState
+glEnableIndexedEXT
 glEnd
 glEndList
 glEvalCoord1d
@@ -85,7 +88,13 @@ glFogi
 glFogiv
 glFrustum
 glGenLists
+glGetBooleanIndexedvEXT
 glGetClipPlane
+glGetDoubleIndexedvEXT
+glGetDoublei_vEXT
+glGetFloatIndexedvEXT
+glGetFloati_vEXT
+glGetIntegerIndexedvEXT
 glGetLightfv
 glGetLightiv
 glGetMapdv
@@ -117,6 +126,7 @@ glIndexub
 glIndexubv
 glInitNames
 glInterleavedArrays
+glIsEnabledIndexedEXT
 glIsList
 glLightModelf
 glLightModelfv
@@ -318,8 +328,10 @@ glTexGenf
 glTexGenfv
 glTexGeni
 glTexGeniv
+glTexPageCommitmentARB
 glTextureBufferEXT
 glTextureBufferRangeEXT
+glTexturePageCommitmentEXT
 glTranslated
 glTranslatef
 glVertex2d

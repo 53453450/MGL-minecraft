@@ -452,8 +452,11 @@ def check_batch_boundary(root, _unused=None):
     # main()'s `cluster` holds ONLY cluster files, and passing that in made this
     # check scan nothing at all while still reporting OK.
     src_dir = os.path.join(root, "MGL/src")
-    all_files = [os.path.join(src_dir, n) for n in sorted(os.listdir(src_dir))
-                 if n.endswith((".c", ".cpp"))]
+    all_files = []
+    for dirpath, _, files in os.walk(src_dir):
+        for n in sorted(files):
+            if n.endswith((".c", ".cpp")):
+                all_files.append(os.path.join(dirpath, n))
 
     findings = []
     for p in all_files:
@@ -474,16 +477,24 @@ def main():
     state_h = os.path.join(ROOT, "MGL/include/mgl_types_state.h")
     dirty_h = os.path.join(ROOT, "MGL/include/mgl_dirty_bits.h")
     key_h = os.path.join(ROOT, "MGL/include/draw_command.h")
-    draw_c = os.path.join(ROOT, "MGL/src/draw_command.c")
+    draw_c = None
+    src_root = os.path.join(ROOT, "MGL", "src")
+    for dirpath, _, files in os.walk(src_root):
+        if "draw_command.c" in files:
+            draw_c = os.path.join(dirpath, "draw_command.c")
+            break
+    if not draw_c:
+        raise SystemExit("draw_command.c not found under MGL/src")
 
     state_src = read(state_h)
     key_src = read(key_h)
     draw_lines = read(draw_c).split("\n")
 
     cluster = [draw_c, state_h, dirty_h, key_h]
-    for name in sorted(os.listdir(os.path.join(ROOT, "MGL/src"))):
-        if name.startswith("mgl_batch_") or name == "mgl_renderer_core_state.c":
-            cluster.append(os.path.join(ROOT, "MGL/src", name))
+    for dirpath, _, files in os.walk(src_root):
+        for name in sorted(files):
+            if name.startswith("mgl_batch_") or name == "mgl_renderer_core_state.c":
+                cluster.append(os.path.join(dirpath, name))
 
     key_fields = field_names(struct_body(key_src, "MGLStateKey") or "")
 

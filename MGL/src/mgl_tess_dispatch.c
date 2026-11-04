@@ -62,6 +62,10 @@
 #include "mgl_size_constants.h"          /* kMGLMaxBufferSlots */
 #include "mgl_thread_affinity.h"         /* MGL_ASSERT_GL_THREAD */
 #include "glm_limits.h"                  /* MAX_ATTRIBS, TEXTURE_UNITS */
+#include "mgl_texture_binding_resolve.h" /* mglSamplerBackend* */
+#include "mgl_program_backend.h"
+#include "mgl_texture_backend.h"
+#include "mgl_buffer_backend.h"
 
 /* Declared next to their definitions in Objective-C headers a .c file cannot
  * include; repeated here the way mgl_renderer_ports.c repeats its prototypes.
@@ -79,22 +83,19 @@ extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx,
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C (the same twin as
  * mgl_compute_bind.c). */
-static GLMState *mglTessDispatchState(const MGLRendererStateAreas *areas)
+static GLMState *mglTessDispatchState(const MGLRendererStateAreas *areas) /* C5-EXEMPT: read helper for the write side */
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 
 static void *mglTessDispatchCommandBufferOwner(
-    const MGLRendererStateAreas *areas)
+    const MGLRendererStateAreas *areas) /* C5-EXEMPT: read helper for the write side */
 {
     return areas->command ? areas->command->currentCommandBufferOwner : NULL;
 }
 
 static void *mglTessDispatchRenderEncoderOwner(
-    const MGLRendererStateAreas *areas)
+    const MGLRendererStateAreas *areas) /* C5-EXEMPT: read helper for the write side */
 {
     return areas->command ? areas->command->currentRenderEncoderOwner : NULL;
 }
@@ -118,20 +119,6 @@ static void *mglTessDispatchCreateBuffer(size_t length, uint64_t options)
     return NULL;
 }
 
-/* +1 buffer, or NULL. */
-static void *mglTessDispatchCreateBufferWithBytes(const void *bytes,
-                                                  size_t length,
-                                                  uint64_t options)
-{
-    void *buffer = NULL;
-    if (mglRenderCreateBufferWithBytes(bytes, length, options, NULL, &buffer) ==
-            0 &&
-        buffer) {
-        return buffer;
-    }
-    return NULL;
-}
-
 static void *mglTessDispatchBufferContents(void *buffer)
 {
     void *contents = NULL;
@@ -139,6 +126,74 @@ static void *mglTessDispatchBufferContents(void *buffer)
     return buffer && mglRenderGetBufferContents(buffer, &contents, &length) == 0
                ? contents
                : NULL;
+}
+
+/* PERF-006: grow-only tess temp reuse with 2-deep ping-pong so multidraw can
+ * keep the previous CB's buffer alive while the next draw fills a sibling. */
+typedef struct MGLTessReuseSlot {
+    void *buffer[2];
+    size_t capacity[2];
+    unsigned next;
+} MGLTessReuseSlot;
+
+static MGLTessReuseSlot sTessFactorReuse;
+static MGLTessReuseSlot sTcsStageInReuse;
+static MGLTessReuseSlot sTcsOutputReuse;
+static MGLTessReuseSlot sTcsPatchOutReuse;
+static MGLTessReuseSlot sTesOutReuse;
+static MGLTessReuseSlot sIndirectReuse;
+static MGLTessReuseSlot sXfbTempReuse;
+
+static void *mglTessDispatchReuseSlotBuffer(MGLTessReuseSlot *slot,
+                                            size_t length,
+                                            void **contents_out)
+{
+    if (contents_out) {
+        *contents_out = NULL;
+    }
+    if (!slot || length == 0) {
+        return NULL;
+    }
+    const unsigned idx = slot->next & 1u;
+    slot->next = (slot->next + 1u) & 1u;
+    if (slot->buffer[idx] && slot->capacity[idx] >= length) {
+        if (contents_out) {
+            *contents_out = mglTessDispatchBufferContents(slot->buffer[idx]);
+        }
+        CFRetain((CFTypeRef)slot->buffer[idx]);
+        return slot->buffer[idx];
+    }
+    if (slot->buffer[idx]) {
+        CFRelease((CFTypeRef)slot->buffer[idx]);
+        slot->buffer[idx] = NULL;
+        slot->capacity[idx] = 0;
+    }
+    void *buffer = mglTessDispatchCreateBuffer(
+        length, MGL_TESS_DISPATCH_STORAGE_SHARED);
+    if (!buffer) {
+        return NULL;
+    }
+    slot->buffer[idx] = buffer;
+    slot->capacity[idx] = length;
+    CFRetain((CFTypeRef)slot->buffer[idx]);
+    if (contents_out) {
+        *contents_out = mglTessDispatchBufferContents(buffer);
+    }
+    return buffer;
+}
+
+static void *mglTessDispatchReuseTessFactorBuffer(size_t length,
+                                                    void **contents_out)
+{
+    return mglTessDispatchReuseSlotBuffer(&sTessFactorReuse, length,
+                                          contents_out);
+}
+
+static void *mglTessDispatchReuseTCSStageInBuffer(size_t length,
+                                                  void **contents_out)
+{
+    return mglTessDispatchReuseSlotBuffer(&sTcsStageInReuse, length,
+                                          contents_out);
 }
 
 static uint64_t mglTessDispatchBufferLength(void *buffer)
@@ -263,9 +318,9 @@ static const uint8_t *mglTessDispatchReadableBufferBytes(Buffer *buffer)
         mglRenderCPUPointerUsable((const void *)buffer->data.buffer_data)) {
         return (const uint8_t *)(uintptr_t)buffer->data.buffer_data;
     }
-    if (buffer->data.mtl_data) {
+    if (mglBufferMtl(buffer)) {
         return (const uint8_t *)mglTessDispatchBufferContents(
-            buffer->data.mtl_data);
+            mglBufferMtl(buffer));
     }
     return NULL;
 }
@@ -313,7 +368,7 @@ static void *mglTessDispatchNewTCSStageInBuffer(
         return NULL;
     }
 
-    if (!tcs_program->modules[_TESS_CONTROL_SHADER].metallib_bytes) {
+    if (!mglProgramModuleView(tcs_program, _TESS_CONTROL_SHADER)->metallib_bytes) {
         return NULL;
     }
 
@@ -361,14 +416,18 @@ static void *mglTessDispatchNewTCSStageInBuffer(
     }
 
     size_t tcs_in_size = (size_t)stage_plan.bytes;
-    void *stage_in_buffer = mglTessDispatchCreateBuffer(
-        tcs_in_size, MGL_TESS_DISPATCH_STORAGE_SHARED);
-    void *stage_in_contents = mglTessDispatchBufferContents(stage_in_buffer);
-    if (!stage_in_contents) {
+    void *stage_in_contents = NULL;
+    void *stage_in_buffer =
+        mglTessDispatchReuseTCSStageInBuffer(tcs_in_size, &stage_in_contents);
+    if (!stage_in_buffer || !stage_in_contents) {
+        if (stage_in_buffer) {
+            CFRelease((CFTypeRef)stage_in_buffer);
+        }
         return NULL;
     }
     if (!mglTessInitStageInDefaults(stage_in_contents, tcs_in_vertices,
                                     tcs_in_stride)) {
+        CFRelease((CFTypeRef)stage_in_buffer);
         return NULL;
     }
 
@@ -441,13 +500,13 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
         return false;
     }
 
-    MGLRendererStateAreas areas;
+    MGLRendererStateAreas areas; /* C5-EXEMPT: writes through the areas */
     mglRendererFillStateAreas(renderer, &areas);
 
     Shader *tcs_shader = tcs_program->shader_slots[_TESS_CONTROL_SHADER];
     if (!mglTessStageHasCompiledFunction(
             tcs_shader ? 1 : 0,
-            tcs_program->modules[_TESS_CONTROL_SHADER].mtl_function ? 1 : 0)) {
+            mglProgramModuleView(tcs_program, _TESS_CONTROL_SHADER)->mtl_function ? 1 : 0)) {
         fprintf(stderr,
                 "MGL TESS WARNING: TCS program %u has no compiled function",
                 tcs_program->name);
@@ -550,11 +609,10 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
     const GLuint instance_count = tcs_layout.instance_count;
     const GLuint patch_count = tcs_layout.patch_count;
 
-    void *tcs_output_buffer = mglTessDispatchCreateBuffer(
-        (size_t)tcs_layout.output_bytes, MGL_TESS_DISPATCH_STORAGE_SHARED);
+    void *tcs_output_contents = NULL;
+    void *tcs_output_buffer = mglTessDispatchReuseSlotBuffer(
+        &sTcsOutputReuse, (size_t)tcs_layout.output_bytes, &tcs_output_contents);
     (void)mglRendererBackendSetTcsOutputBuffer(areas.backend, tcs_output_buffer);
-    void *tcs_output_contents =
-        mglTessDispatchBufferContents(tcs_output_buffer);
     if (!tcs_output_contents) {
         goto done;
     }
@@ -562,12 +620,12 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
     areas.tessellation->tcsOutputOffset = 0u;
     mglTessDispatchAdopt(temporaries, tcs_output_buffer);
 
-    void *tcs_patch_out_buffer = mglTessDispatchCreateBuffer(
-        (size_t)tcs_layout.patch_out_bytes, MGL_TESS_DISPATCH_STORAGE_SHARED);
+    void *tcs_patch_out_contents = NULL;
+    void *tcs_patch_out_buffer = mglTessDispatchReuseSlotBuffer(
+        &sTcsPatchOutReuse, (size_t)tcs_layout.patch_out_bytes,
+        &tcs_patch_out_contents);
     (void)mglRendererBackendSetTcsPatchOutBuffer(areas.backend,
                                                  tcs_patch_out_buffer);
-    void *tcs_patch_out_contents =
-        mglTessDispatchBufferContents(tcs_patch_out_buffer);
     if (!tcs_patch_out_contents) {
         goto done;
     }
@@ -577,18 +635,18 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
     GLuint indirect_params[2] = {0u, 0u};
     mglTessFillTCSIndirectParams(patch_vertices, instance_count,
                                  indirect_params);
-    void *indirect_buffer = mglTessDispatchCreateBufferWithBytes(
-        indirect_params, sizeof(indirect_params),
-        MGL_TESS_DISPATCH_STORAGE_SHARED);
-    if (!indirect_buffer) {
+    void *indirect_contents = NULL;
+    void *indirect_buffer = mglTessDispatchReuseSlotBuffer(
+        &sIndirectReuse, sizeof(indirect_params), &indirect_contents);
+    if (!indirect_buffer || !indirect_contents) {
         goto done;
     }
+    memcpy(indirect_contents, indirect_params, sizeof(indirect_params));
     mglTessDispatchAdopt(temporaries, indirect_buffer);
 
-    void *tess_factor_buffer = mglTessDispatchCreateBuffer(
-        (size_t)tcs_layout.factor_bytes, MGL_TESS_DISPATCH_STORAGE_SHARED);
-    void *tess_factor_contents =
-        mglTessDispatchBufferContents(tess_factor_buffer);
+    void *tess_factor_contents = NULL;
+    void *tess_factor_buffer = mglTessDispatchReuseTessFactorBuffer(
+        (size_t)tcs_layout.factor_bytes, &tess_factor_contents);
     if (!tess_factor_contents) {
         goto done;
     }
@@ -656,8 +714,7 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
                 &execution_result, execution_error,
                 sizeof(execution_error)) != 0) {
             if (execution_result.transaction.device_reset_requested) {
-                atomic_store_explicit(&areas.core->deviceResetRequested, true,
-                                      memory_order_release);
+                mglRendererRequestDeviceReset(renderer);
             }
             fprintf(stderr, "MGL TESS ERROR: C++ TCS execution failed: %s",
                     execution_error[0] ? execution_error : "unknown error");
@@ -673,7 +730,9 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
 done:
     mglClearStageBindingCopyBacks(renderer, &stage_copy_backs);
     if (temporaries) {
-        mglRendererTemporariesRelease(temporaries);
+        void *cb = mglRenderCommandBufferOwnerGetCurrent(
+            mglTessDispatchCommandBufferOwner(&areas));
+        mglRendererTemporariesReleaseOnCommandBuffer(temporaries, cb);
     }
     CFRelease((CFTypeRef)tcs_pipeline);
     return ok;
@@ -703,7 +762,7 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         return false;
     }
 
-    MGLRendererStateAreas areas;
+    MGLRendererStateAreas areas; /* C5-EXEMPT: writes through the areas */
     mglRendererFillStateAreas(renderer, &areas);
 
     /* ARC kept every `id` local of this method alive to the end of the scope;
@@ -716,7 +775,7 @@ bool mglTessDispatchAIRTessEvalVertexRender(
     Shader *tes_shader = tes_program->shader_slots[_TESS_EVALUATION_SHADER];
     if (!mglTessStageHasCompiledFunction(
             tes_shader ? 1 : 0,
-            tes_program->modules[_TESS_EVALUATION_SHADER].mtl_function ? 1 : 0)) {
+            mglProgramModuleView(tes_program, _TESS_EVALUATION_SHADER)->mtl_function ? 1 : 0)) {
         fprintf(stderr,
                 "MGL TESS ERROR: TES-vertex program %u has no compiled function",
                 (unsigned)tes_program->name);
@@ -765,7 +824,8 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         if (!s_tes_vertex_multi_instance_logged) {
             fprintf(stderr,
                     "MGL TESS ERROR: multi-instance TES-vertex with TCS reuses "
-                    "instance-0 control points (program=%u instances=%d)",
+                    "instance-0 control points (program=%u instances=%d); "
+                    "set MGL_TESS_MULTI_INSTANCE_ERROR=0 to allow (AUDIT-050)",
                     (unsigned)tes_program->name, (int)instance_count);
             s_tes_vertex_multi_instance_logged = 1;
         }
@@ -797,10 +857,10 @@ bool mglTessDispatchAIRTessEvalVertexRender(
     const size_t out_stride = eval_plan.out_stride;
     const size_t out_size = (size_t)eval_plan.out_size;
 
-    void *out_buffer = mglTessDispatchCreateBuffer(
-        out_size, MGL_TESS_DISPATCH_STORAGE_SHARED);
+    void *out_contents = NULL;
+    void *out_buffer = mglTessDispatchReuseSlotBuffer(&sTesOutReuse, out_size,
+                                                      &out_contents);
     mglTessDispatchAdopt(temporaries, out_buffer);
-    void *out_contents = mglTessDispatchBufferContents(out_buffer);
     if (!out_contents) {
         fprintf(stderr,
                 "MGL TESS ERROR: failed to allocate TES-vertex domain stream "
@@ -850,7 +910,7 @@ bool mglTessDispatchAIRTessEvalVertexRender(
     mglTessPlanRasterQuery(tes_program, (uint64_t)instance_count,
                            (uint64_t)items_per_instance, 0, 0u, 0u, &query);
     if (mglTessDispatchState(&areas)->caps.rasterizer_discard) {
-        areas.batching->currentCommandBufferHasWork = 1;
+        mglRendererSetCommandBufferHasWork(renderer, 1);
         mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
         ok = true;
         goto done;
@@ -921,14 +981,14 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         if (mglTessTextureBindIsStorage(bind->kind)) {
             ptr = mglTessDispatchState(&areas)->image_units[bind->gl_unit].tex;
             if (ptr) {
-                texture = ptr->mtl_data;
+                texture = mglTextureMtl(ptr);
                 texture = mglRendererStorageImageTexture(
                     texture,
                     &mglTessDispatchState(&areas)->image_units[bind->gl_unit]);
             }
         } else {
             ptr = mglTessDispatchState(&areas)->active_textures[bind->gl_unit];
-            texture = ptr ? ptr->mtl_data : NULL;
+            texture = ptr ? mglTextureMtl(ptr) : NULL;
             /* Match VS/FS: stencil-aspect / base-level view for sampling. */
             if (ptr && texture)
                 texture = mglSampledTextureViewForBaseLevel(ptr, texture);
@@ -944,18 +1004,19 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         if (mglTessDispatchState(&areas)->texture_samplers[bind->gl_unit]) {
             Sampler *gl_sampler =
                 mglTessDispatchState(&areas)->texture_samplers[bind->gl_unit];
-            if (gl_sampler->dirty_bits && gl_sampler->mtl_data) {
-                mglSafeReleaseMetalObj((void **)&gl_sampler->mtl_data);
+            if (gl_sampler->dirty_bits) {
+                mglSamplerBackendResetState(gl_sampler);
             }
-            if (!gl_sampler->mtl_data && ptr) {
-                /* The C creation hands back +1; the field owns it. */
-                gl_sampler->mtl_data = mglTextureCreateSamplerForTexParam(
-                    &gl_sampler->params, ptr->target);
+            if (!mglSamplerBackendState(gl_sampler) && ptr) {
+                /* The C creation hands back +1; the backend state owns it. */
+                mglSamplerBackendSetState(
+                    gl_sampler, mglTextureCreateSamplerForTexParam(
+                                    &gl_sampler->params, ptr->target));
                 gl_sampler->dirty_bits = 0;
             }
-            sampler = gl_sampler->mtl_data;
-        } else if (ptr && ptr->params.mtl_data) {
-            sampler = ptr->params.mtl_data;
+            sampler = mglSamplerBackendState(gl_sampler);
+        } else if (ptr && mglTextureSamplerState(ptr)) {
+            sampler = mglTextureSamplerState(ptr);
         }
         if (!sampler) {
             sampler = mglTessDispatchCreateSampler();
@@ -1014,7 +1075,7 @@ bool mglTessDispatchAIRTessEvalVertexRender(
     }
     free(patches);
     free(contracts);
-    areas.batching->currentCommandBufferHasWork = 1;
+    mglRendererSetCommandBufferHasWork(renderer, 1);
     mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
     areas.tessellation->tessComputeActive = 0;
     areas.tessellation->tessComputeProgram = NULL;
@@ -1024,7 +1085,9 @@ done:
     /* The set releases every handle this method kept alive, plus its own
      * reference (the ARC scope-exit releases). */
     if (temporaries) {
-        mglRendererTemporariesRelease(temporaries);
+        void *cb = mglRenderCommandBufferOwnerGetCurrent(
+            mglTessDispatchCommandBufferOwner(&areas));
+        mglRendererTemporariesReleaseOnCommandBuffer(temporaries, cb);
     }
     return ok;
 }
@@ -1058,7 +1121,7 @@ bool mglTessDispatchAIRTessEvalCompute(
         return false;
     }
 
-    MGLRendererStateAreas areas;
+    MGLRendererStateAreas areas; /* C5-EXEMPT: writes through the areas */
     mglRendererFillStateAreas(renderer, &areas);
 
     /* This draw takes the compute expansion path: the TES stage needs
@@ -1069,7 +1132,7 @@ bool mglTessDispatchAIRTessEvalCompute(
     Shader *tes_shader = tes_program->shader_slots[_TESS_EVALUATION_SHADER];
     if (!mglTessStageHasCompiledFunction(
             tes_shader ? 1 : 0,
-            tes_program->modules[_TESS_EVALUATION_SHADER].mtl_function ? 1 : 0)) {
+            mglProgramModuleView(tes_program, _TESS_EVALUATION_SHADER)->mtl_function ? 1 : 0)) {
         fprintf(stderr,
                 "MGL TESS WARNING: TES program %u has no compiled function",
                 tes_program->name);
@@ -1159,7 +1222,7 @@ bool mglTessDispatchAIRTessEvalCompute(
             fprintf(stderr,
                     "MGL TESS ERROR: multi-instance TES with TCS reuses "
                     "instance-0 control points (program=%u instances=%d); "
-                    "set MGL_TESS_MULTI_INSTANCE_ERROR=1 to fail the draw",
+                    "set MGL_TESS_MULTI_INSTANCE_ERROR=0 to allow (AUDIT-050)",
                     (unsigned)tes_program->name, (int)instance_count);
             s_multi_instance_tcs_logged = 1;
         }
@@ -1194,10 +1257,10 @@ bool mglTessDispatchAIRTessEvalCompute(
     const GLuint items_per_instance = eval_plan.items_per_instance;
     size_t out_stride = eval_plan.out_stride;
     const size_t out_size = (size_t)eval_plan.out_size;
-    void *out_buffer = mglTessDispatchCreateBuffer(
-        out_size, MGL_TESS_DISPATCH_STORAGE_SHARED);
+    void *out_contents = NULL;
+    void *out_buffer = mglTessDispatchReuseSlotBuffer(&sTesOutReuse, out_size,
+                                                      &out_contents);
     mglTessDispatchAdopt(temporaries, out_buffer);
-    void *out_contents = mglTessDispatchBufferContents(out_buffer);
     if (!out_contents) {
         fprintf(stderr,
                 "MGL TESS ERROR: failed to allocate TES compute output "
@@ -1340,10 +1403,10 @@ bool mglTessDispatchAIRTessEvalCompute(
             } else if (xfb_slot->buf->size == 0) {
                 mglRenderClearEmptyBufferDirty(xfb_slot->buf);
             }
-            if (!xfb_slot->buf->data.mtl_data) {
+            if (!mglBufferMtl(xfb_slot->buf)) {
                 mglRendererBindMTLBuffer(renderer, xfb_slot->buf);
             }
-            xfb_mtl = xfb_slot->buf->data.mtl_data;
+            xfb_mtl = mglBufferMtl(xfb_slot->buf);
             mglTessDispatchKeepAlive(temporaries, xfb_mtl);
             if (xfb_mtl) {
                 BufferMap xfb_map = {0};
@@ -1373,8 +1436,8 @@ bool mglTessDispatchAIRTessEvalCompute(
              * location-based user outputs). GL XFB is a compact stream of only
              * the selected varyings, so it can never target the GL range
              * directly. Gather the selected fields after the dispatch. */
-            xfb_temporary = mglTessDispatchCreateBuffer(
-                required_bytes, MGL_TESS_DISPATCH_STORAGE_SHARED);
+            xfb_temporary = mglTessDispatchReuseSlotBuffer(
+                &sXfbTempReuse, required_bytes, NULL);
             mglTessDispatchAdopt(temporaries, xfb_temporary);
             if (!xfb_temporary) {
                 goto done;
@@ -1475,8 +1538,7 @@ bool mglTessDispatchAIRTessEvalCompute(
                 &execution_result, execution_error,
                 sizeof(execution_error)) != 0) {
             if (execution_result.transaction.device_reset_requested) {
-                atomic_store_explicit(&areas.core->deviceResetRequested, true,
-                                      memory_order_release);
+                mglRendererRequestDeviceReset(renderer);
             }
             fprintf(stderr, "MGL TESS ERROR: C++ TES execution failed: %s",
                     execution_error[0] ? execution_error : "unknown error");
@@ -1529,10 +1591,10 @@ bool mglTessDispatchAIRTessEvalCompute(
                         goto done;
                     }
                 }
-                if (!dest_buf->data.mtl_data) {
+                if (!mglBufferMtl(dest_buf)) {
                     mglRendererBindMTLBuffer(renderer, dest_buf);
                 }
-                void *dest_mtl = dest_buf->data.mtl_data;
+                void *dest_mtl = mglBufferMtl(dest_buf);
                 /* SubData below may replace the buffer's Metal backing, and
                  * the ARC local was what kept this one alive (log 128). */
                 mglTessDispatchKeepAlive(temporaries, dest_mtl);
@@ -1684,7 +1746,7 @@ bool mglTessDispatchAIRTessEvalCompute(
          * passthrough draw entirely, but the compute expansion already ran
          * and the primitive query must still count the generated
          * primitives (persistent query semantics). */
-        areas.batching->currentCommandBufferHasWork = 1;
+        mglRendererSetCommandBufferHasWork(renderer, 1);
         mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
         ok = true;
         goto done;
@@ -1747,7 +1809,7 @@ bool mglTessDispatchAIRTessEvalCompute(
                                       (size_t)items_per_instance, 1u,
                                       (size_t)base_instance + (size_t)i);
     }
-    areas.batching->currentCommandBufferHasWork = 1;
+    mglRendererSetCommandBufferHasWork(renderer, 1);
     mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
     areas.tessellation->tessComputeActive = 0;
     areas.tessellation->tessComputeProgram = NULL;
@@ -1761,7 +1823,9 @@ done:
      * block lives in the set for exactly as long as the plan does. */
     mglClearStageBindingCopyBacks(renderer, &stage_copy_backs);
     if (temporaries) {
-        mglRendererTemporariesRelease(temporaries);
+        void *cb = mglRenderCommandBufferOwnerGetCurrent(
+            mglTessDispatchCommandBufferOwner(&areas));
+        mglRendererTemporariesReleaseOnCommandBuffer(temporaries, cb);
     }
     CFRelease((CFTypeRef)tes_pipeline);
     return ok;

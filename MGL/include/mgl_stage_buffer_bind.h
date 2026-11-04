@@ -28,7 +28,7 @@
 
 #include "glm_context.h"        /* GLMContext, GLuint */
 #include "mgl_encode_context.h" /* MGLEncodeContext */
-#include "mgl_render.h"         /* MGLRenderBindingSnapshot */
+#include "mgl_render_api_binding.h"
 #include "mgl_types_buffer.h"   /* BufferMapList, MAX_BINDABLE_BUFFERS */
 
 #ifdef __cplusplus

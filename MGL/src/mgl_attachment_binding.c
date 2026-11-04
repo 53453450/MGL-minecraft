@@ -19,17 +19,19 @@
  */
 
 #include "mgl_attachment_binding.h"
-#include "mgl_renderer_ports.h"   /* state areas, attachment texture */
+#include "mgl_renderer_attachment.h"
+#include "mgl_renderer_state_areas.h"   /* state areas, attachment texture */
 #include "mgl_texture_bind.h"   /* mglRendererBindMTLTexture */
 
 #include <stdint.h>
 #include <stdio.h>
+#include "mgl_render_api_texture.h"
 
 int mglRendererBindFramebufferTexture(void *renderer, FBOAttachment *attachment,
                                       int is_draw_buffer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     Texture *tex = mglRendererAttachmentTextureFor(areas.ctx, attachment);
     if (!tex) {
@@ -50,8 +52,8 @@ int mglRendererBindFramebufferTexture(void *renderer, FBOAttachment *attachment,
 
 int mglRendererBindFramebufferAttachmentTextures(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
 
     /* MEMORY SAFETY: Validate context and framebuffer.  Only the pointer lower

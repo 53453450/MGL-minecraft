@@ -61,6 +61,7 @@ typedef struct MGLBlitColorState {
     int64_t copySrcX, copySrcY, copyDstX, copyDstY, copyW, copyH;
     int64_t srcMetalY, dstMetalY;
     double scaledDstMetalY;
+    int srcGLOrder, dstGLOrder;
 } MGLBlitColorState;
 
 /* -resolveIntegerMultisampleTexture:toTexture:srcOrigin:dstOrigin:size:reason: */

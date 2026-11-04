@@ -147,6 +147,12 @@ typedef struct MGLSamplerSnapshotKey {
     float    border_color[4];
 } MGLSamplerSnapshotKey;
 
+/* The texture target the snapshot was keyed on. */
+static inline uint32_t mglSamplerSnapshotTarget(const MGLSamplerSnapshotKey *key)
+{
+    return key ? (uint32_t)key->target : 0u;
+}
+
 typedef struct {
     uint16_t key_index;
     uint8_t  stage;
@@ -172,6 +178,11 @@ typedef struct {
     GLenum   indexType;
     GLuint   indexBufferOffset;
     GLuint   element_buffer_name;
+    /* AUDIT-034: DrawRangeElements* index span [range_start, range_end].
+     * has_index_range=0 for ordinary DrawElements (scan the index stream). */
+    GLuint   range_start;
+    GLuint   range_end;
+    uint8_t  has_index_range;
     uint8_t  dynamic_vertex_binding_count;
     MGLDynamicVertexBinding
              dynamic_vertex_bindings[MGL_MAX_DYNAMIC_VERTEX_BINDINGS];
@@ -343,6 +354,9 @@ typedef struct {
 void mglInitCommandBuffer(MGLCommandBuffer *cb);
 void mglResetCommandBuffer(MGLCommandBuffer *cb);
 void mglResetCommandBufferForContext(GLMContext ctx, MGLCommandBuffer *cb);
+/* Context teardown: destroy pooled transient scratch (see GLMContext
+ * transient_pool).  Never called by the per-flush reset. */
+void mglDrainTransientPoolForContext(GLMContext ctx);
 void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStateKey *out);
 bool mglStateKeysEqual(const MGLStateKey *a, const MGLStateKey *b);
 void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd);
@@ -371,6 +385,9 @@ bool mglSamplerSnapshotCanDeferParameter(GLMContext ctx, GLenum pname);
 
 /* Initializes an address-stable, chunked batch arena. */
 bool mglInitBatchArena(MGLBatchArena *arena, size_t initial_capacity);
+
+/* Allocate from an enabled batch arena (16-byte aligned). NULL if disabled. */
+void *mglBatchArenaAlloc(MGLBatchArena *arena, size_t size);
 
 /* Reset the batch arena (sets chunk offsets to 0, keeping all chunks).
  * Safe to call only when no worker/encoder is accessing snapshot data

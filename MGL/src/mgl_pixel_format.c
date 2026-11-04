@@ -34,7 +34,7 @@
 #include <string.h>
 
 #include "mgl_pixel_format.h"
-#include "mgl_render.h"   /* mglRenderBytesPerPixelForInternalFormat */
+#include "mgl_render_api_texture.h"
 #include <stdio.h>
 #include "pixel_utils.h"
 
@@ -464,6 +464,86 @@ bool mglInternalFormatIsUnsignedInteger(GLint internalformat)
     }
 }
 
+uint32_t mglRenderIntegerFormatComponentMap(uint32_t format, int map[4]) {
+    uint32_t components = 4u;
+    int m0 = 0, m1 = 1, m2 = 2, m3 = 3;
+    switch (format) {
+    case GL_RED_INTEGER:
+        components = 1u;
+        m0 = 0;
+        m1 = -1;
+        m2 = -1;
+        m3 = -1;
+        break;
+    case GL_RG_INTEGER:
+        components = 2u;
+        m0 = 0;
+        m1 = 1;
+        m2 = -1;
+        m3 = -1;
+        break;
+    case GL_RGB_INTEGER:
+        components = 3u;
+        m0 = 0;
+        m1 = 1;
+        m2 = 2;
+        m3 = -1;
+        break;
+    case GL_BGR_INTEGER:
+        components = 3u;
+        m0 = 2;
+        m1 = 1;
+        m2 = 0;
+        m3 = -1;
+        break;
+    case GL_RGBA_INTEGER:
+        components = 4u;
+        m0 = 0;
+        m1 = 1;
+        m2 = 2;
+        m3 = 3;
+        break;
+    case GL_BGRA_INTEGER:
+        components = 4u;
+        m0 = 2;
+        m1 = 1;
+        m2 = 0;
+        m3 = 3;
+        break;
+    case 0x8d95: /* GL_GREEN_INTEGER */
+        components = 1u;
+        m0 = 1;
+        m1 = -1;
+        m2 = -1;
+        m3 = -1;
+        break;
+    case 0x8d96: /* GL_BLUE_INTEGER */
+        components = 1u;
+        m0 = 2;
+        m1 = -1;
+        m2 = -1;
+        m3 = -1;
+        break;
+    case 0x8d97: /* GL_ALPHA_INTEGER */
+        components = 1u;
+        m0 = 3;
+        m1 = -1;
+        m2 = -1;
+        m3 = -1;
+        break;
+    default:
+        components = 4u;
+        break;
+    }
+    if (map) {
+        map[0] = m0;
+        map[1] = m1;
+        map[2] = m2;
+        map[3] = m3;
+    }
+    return components;
+}
+
 bool mglInternalFormatIsDepthStencil(GLint internalformat)
 {
     switch (internalformat) {
@@ -480,6 +560,25 @@ bool mglInternalFormatIsDepthStencil(GLint internalformat)
         case GL_STENCIL_INDEX4:
         case GL_STENCIL_INDEX8:
         case GL_STENCIL_INDEX16:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/* True when the format's storage actually carries depth samples (the
+ * depth-only formats and the two packed depth-stencil ones).  Stencil-only
+ * formats and the unsized GL_DEPTH_COMPONENT/GL_DEPTH_STENCIL aliases are not
+ * included: they have no depth pixels to shadow. */
+bool mglInternalFormatCarriesDepth(GLint internalformat)
+{
+    switch (internalformat) {
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
             return true;
         default:
             return false;

@@ -150,9 +150,6 @@ GLuint mglTextureUnitForSampledResource(MGLShaderResource *sampled_resource,
                                         Program *program, GLuint metal_binding,
                                         int stage);
 
-/* Release the GL-sampled render-target copy a texture keeps and clear its
- * bookkeeping (former -[MGLRenderer releaseGLSampledRenderTargetCopyForTexture:]). */
-void mglTextureReleaseGLSampledCopy(Texture *tex);
 /* Mark a texture level as written as a render target (the ObjC header wraps it
  * in the mglMarkTextureLevelRenderTargetWritten(tex, level) macro; C calls the
  * Impl with an explicit caller tag). */
@@ -163,6 +160,29 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex, GLuint level,
 /* TextureView (§8.18): after `writer` changed the shared store, carry its
  * Y-flipped storage state to the other textures that reference the store. */
 void mglTextureViewFamilyWritten(Texture *writer);
+/* Texture record fields the bind path asks about without reading them. */
+uint32_t mglTextureTargetOf(const Texture *tex);
+uint32_t mglTextureSamplesOf(const Texture *tex);
+uint32_t mglTextureDepthOf(const Texture *tex);
+
+/* Renderer bookkeeping the bind path needs without touching the Texture
+ * record directly: the per-level dirty mask and the render-target flag. */
+uint32_t mglTextureDirtyBits(const Texture *tex);
+void mglTextureSetDirtyBits(Texture *tex, uint32_t bits);
+void mglTextureClearDirtyBits(Texture *tex, uint32_t bits);
+/* Keep only the given bits. */
+void mglTextureMaskDirtyBits(Texture *tex, uint32_t bits);
+void mglTextureResetDirtyBits(Texture *tex);
+/* Dirty bits of the buffer backing a texture buffer (0 when none). */
+uint32_t mglTextureBufferDirtyBits(const Texture *tex);
+void mglTextureSetRenderTarget(Texture *tex, bool on);
+/* TEXTURE_2D_MULTISAMPLE(_ARRAY) — the targets Metal stores as sample planes. */
+static inline bool mglTextureTargetIsMultisample(uint32_t target)
+{
+    return target == GL_TEXTURE_2D_MULTISAMPLE ||
+           target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+}
+
 /* Table 8.22 view class of `internalformat`, or GL_NONE when not listed. */
 GLenum mglTextureViewClass(GLenum internalformat);
 /* IMMUTABLE_LEVELS and TEXTURE_VIEW_* queries; false for other pnames. */
@@ -376,6 +396,29 @@ static inline bool mglTextureHasUploadableCPUData(Texture *tex, int numFaces, GL
     }
 
     return false;
+}
+
+/* Lowest level (over all faces, below `levelCount`) with uploadable CPU data,
+ * or 0xffffffff when there is none.  mglTextureHasUploadableCPUData(tex, f, n)
+ * is exactly "this is < n". */
+static inline GLuint mglTextureFirstUploadableLevel(Texture *tex, int numFaces, GLuint levelCount)
+{
+    GLuint first = 0xffffffffu;
+    if (!tex || numFaces <= 0) {
+        return first;
+    }
+    for (int face = 0; face < numFaces; face++) {
+        if (!tex->faces[face].levels) {
+            continue;
+        }
+        for (GLuint level = 0; level < levelCount && level < first; level++) {
+            if (mglTextureLevelHasUploadableCPUData(&tex->faces[face].levels[level])) {
+                first = level;
+                break;
+            }
+        }
+    }
+    return first;
 }
 
 /* Returns tex->name, or 0 if tex is NULL. */

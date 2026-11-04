@@ -12,7 +12,8 @@
 
 #include "mgl_draw_buffer.h"
 #include <stdbool.h>
-#include "mgl_render.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_pso_format_class.h"
 
 /* Local draw-buffer slot indices (mirrors the enum in MGLRenderer.m used by
  * the default-draw-buffer lookup).  Enumerators have no linkage, so defining

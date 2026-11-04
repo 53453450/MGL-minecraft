@@ -27,19 +27,27 @@
 #include "mgl_readback_policy.h"
 #include "mgl_region_value.h"
 #include "mgl_render_pass_manager_ops.h"
-#include "mgl_renderer_ports.h"
+#include "mgl_ports_present.h"
+#include "mgl_renderer_state_areas.h"
 #include "mgl_renderer_backend.h"
 #include "mgl_texture_bind.h"          /* mglRendererBindMTLTexture */
 #include "mgl_texture_compat.h"     /* mglTextureLevelHasUploadableCPUData */
 #include "mgl_trace_log.h"
 #include "mgl_types_state.h"
 
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+
+#include "mgl_render_api_texture.h"
+
+#include "mgl_render_api_query.h"
+
+#include "mgl_render_api_lifecycle.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "mgl_texture_backend.h"
 
 /* Declared in Objective-C headers a .c file cannot include. */
 extern GLuint mglRendererSafeFramebufferName(GLMContext ctx);
@@ -215,8 +223,8 @@ static int mglTxGetBytesBody(void *renderer, void *rawCtx)
 void mglTextureGenerateMipmaps(void *renderer, GLMContext glm_ctx,
                                struct Texture_t *tex)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *commandState = areas.command;
     mglPlatformShellSetContext(renderer, glm_ctx);
 
@@ -239,7 +247,7 @@ void mglTextureGenerateMipmaps(void *renderer, GLMContext glm_ctx,
 
     void *texture;
 
-    texture = tex->mtl_data;
+    texture = mglTextureMtl(tex);
     if (!texture) {
         fprintf(stderr, "MGL ERROR: mtlGenerateMipmaps texture %u has no Metal texture after bind\n", tex->name);
         mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
@@ -295,8 +303,8 @@ void mglTextureGenerateMipmaps(void *renderer, GLMContext glm_ctx,
 void mglTextureFlushImageUnitSlice(void *renderer, GLMContext glm_ctx,
                                    uint32_t unit)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *commandState = areas.command;
     if (!glm_ctx || unit >= glm_ctx->active_state->var.max_image_units ||
         unit >= TEXTURE_UNITS) {
@@ -304,16 +312,16 @@ void mglTextureFlushImageUnitSlice(void *renderer, GLMContext glm_ctx,
     }
     ImageUnit *iu = &glm_ctx->active_state->image_units[unit];
     if (!mglRenderImageUnitSliceNeedsFlush(
-            iu->tex ? 1 : 0, iu->mtl_image_view ? 1 : 0, iu->layered ? 1 : 0,
+            iu->tex ? 1 : 0, mglImageUnitView(iu) ? 1 : 0, iu->layered ? 1 : 0,
             iu->tex ? (uint32_t)iu->tex->target : 0u,
             (uint32_t)iu->access)) {
         return;
     }
-    if (!mglRendererBindMTLTexture(renderer, iu->tex) || !iu->tex->mtl_data) {
+    if (!mglRendererBindMTLTexture(renderer, iu->tex) || !mglTextureMtl(iu->tex)) {
         return;
     }
-    void *dst3d = iu->tex->mtl_data;
-    void *staging = iu->mtl_image_view;
+    void *dst3d = mglTextureMtl(iu->tex);
+    void *staging = mglImageUnitView(iu);
     MGLRenderTextureInfo info = mglTxTextureInfo(dst3d);
     if (info.texture_type != MGLTextureType3D || info.width == 0u) {
         return;
@@ -346,8 +354,8 @@ void mglTextureFlushImageUnitSlice(void *renderer, GLMContext glm_ctx,
 void mglTexturePrepareImageUnitSlice(void *renderer, GLMContext glm_ctx,
                                      uint32_t unit)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *commandState = areas.command;
     if (!glm_ctx || unit >= glm_ctx->active_state->var.max_image_units ||
         unit >= TEXTURE_UNITS) {
@@ -358,10 +366,10 @@ void mglTexturePrepareImageUnitSlice(void *renderer, GLMContext glm_ctx,
         !mglRenderTextureTargetIs3D((uint32_t)iu->tex->target)) {
         return;
     }
-    if (!mglRendererBindMTLTexture(renderer, iu->tex) || !iu->tex->mtl_data) {
+    if (!mglRendererBindMTLTexture(renderer, iu->tex) || !mglTextureMtl(iu->tex)) {
         return;
     }
-    void *src3d = iu->tex->mtl_data;
+    void *src3d = mglTextureMtl(iu->tex);
     MGLRenderTextureInfo info = mglTxTextureInfo(src3d);
     if (info.texture_type != MGLTextureType3D || info.width == 0u) {
         return;
@@ -372,10 +380,9 @@ void mglTexturePrepareImageUnitSlice(void *renderer, GLMContext glm_ctx,
         return;
     }
 
-    if (iu->mtl_image_view) {
+    if (mglImageUnitView(iu)) {
         mglTextureFlushImageUnitSlice(renderer, glm_ctx, unit);
-        mglRenderReleaseMetalObject(iu->mtl_image_view);
-        iu->mtl_image_view = NULL;
+        mglImageUnitSetView(iu, NULL);
     }
 
     MGLRenderTextureDescriptorState desc = {
@@ -413,7 +420,7 @@ void mglTexturePrepareImageUnitSlice(void *renderer, GLMContext glm_ctx,
     (void)mglRenderEndBlitEncoder(blit);
     mglRenderPassFlushCommandBuffer(renderer, 0);
 
-    iu->mtl_image_view = staging;
+    mglImageUnitSetView(iu, staging);
 }
 
 /* -syncTextureBufferFromImage:tex: */
@@ -422,12 +429,12 @@ void mglTextureSyncBufferFromImage(void *renderer, GLMContext glm_ctx,
 {
     if (!glm_ctx || !tex ||
         !mglRenderTextureTargetIsBuffer((uint32_t)tex->target) ||
-        !tex->mtl_data || !tex->texture_buffer || tex->texture_buffer_size <= 0) {
+        !mglTextureMtl(tex) || !tex->texture_buffer || tex->texture_buffer_size <= 0) {
         return;
     }
 
     Buffer *sourceBuffer = tex->texture_buffer;
-    void *texture = tex->mtl_data;
+    void *texture = mglTextureMtl(tex);
     MGLRenderTextureInfo info = mglTxTextureInfo(texture);
     if (info.width == 0u || info.height == 0u) {
         return;

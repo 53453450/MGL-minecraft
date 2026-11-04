@@ -16,6 +16,7 @@
 #ifndef MGL_TEXTURE_UPLOAD_OPS_H
 #define MGL_TEXTURE_UPLOAD_OPS_H
 
+#include "mgl_render_fwd.h"
 #include "glm_context.h"
 #include "mgl_region_value.h"
 
@@ -31,7 +32,12 @@ int mglTextureCopyUploadWithDedicatedCommandBuffer(
     uint64_t sourceBytesPerRow, uint64_t sourceBytesPerImage,
     uint64_t sourceLayerStride, uint64_t layerCount, MGLSizeValue sourceSize,
     void *texture, uint64_t destinationSlice, uint64_t destinationLevel,
-    MGLOriginValue destinationOrigin, int flipY, const char *reason);
+    MGLOriginValue destinationOrigin, int flipY, const char *reason,
+    /* Optional.  When non-NULL the callee consumes the staging owner: the
+     * dedicated-command-buffer path hands it to that buffer's completion (the
+     * blit reads the bytes until the GPU is done), the in-frame path returns it
+     * at once and relies on the generation guard. */
+    MGLTextureStagingOwner **staging_owner_io);
 
 /* -uploadTextureSliceViaBlit:… */
 int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
@@ -116,6 +122,12 @@ void mglTextureTraceSampledReadback(void *renderer, void *texture, Texture *gl_t
                                     const char *stage, const char *reason,
                                     uint64_t hit);
 void *mglTextureCreateFallback(void *renderer, Texture *tex);
+
+/* PERF-009/017: process-local upload scratch (expand + 256B align rows). */
+uint8_t *mglUploadExpandScratchAcquire(size_t size);
+void mglUploadExpandScratchRelease(uint8_t *ptr);
+void *mglUploadAlignScratchAcquire(size_t alignment, size_t size);
+void mglUploadAlignScratchRelease(void *ptr);
 
 #ifdef __cplusplus
 }

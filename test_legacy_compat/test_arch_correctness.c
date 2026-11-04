@@ -22,8 +22,11 @@
 #include "mgl_air_gs_abi.h"
 #include "mgl_draw_gs.h"
 #include "mgl_draw_tess.h"
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_draw.h"
 #include "mgl_shader_abi.h"
+#include "mgl_program_backend.h"
 
 static volatile sig_atomic_t g_got_segv;
 static jmp_buf g_jb;
@@ -221,10 +224,10 @@ static void test_a16_failed_relink_keeps_modules(void)
     expect(linked == GL_TRUE, "A16 initial link succeeds");
 
     Program *pptr = (Program *)searchHashTable(&ctx->state.program_table, prog);
-    expect(pptr != NULL && pptr->modules[_VERTEX_SHADER].metallib_bytes != NULL,
+    expect(pptr != NULL && mglProgramModuleView(pptr, _VERTEX_SHADER)->metallib_bytes != NULL,
            "A16 initial VS metallib present");
-    size_t vs_size = pptr ? pptr->modules[_VERTEX_SHADER].metallib_size : 0;
-    unsigned char *vs_bytes = pptr ? pptr->modules[_VERTEX_SHADER].metallib_bytes : NULL;
+    size_t vs_size = pptr ? mglProgramModuleView(pptr, _VERTEX_SHADER)->metallib_size : 0;
+    unsigned char *vs_bytes = pptr ? mglProgramModuleView(pptr, _VERTEX_SHADER)->metallib_bytes : NULL;
 
     glUseProgram(prog);
     glShaderSource(fs, 1, &kBadFS, NULL);
@@ -233,8 +236,8 @@ static void test_a16_failed_relink_keeps_modules(void)
     GLint relinked = 1;
     glGetProgramiv(prog, GL_LINK_STATUS, &relinked);
     expect(relinked == GL_FALSE, "A16 failed relink reports LINK_STATUS false");
-    expect(pptr && pptr->modules[_VERTEX_SHADER].metallib_bytes == vs_bytes &&
-               pptr->modules[_VERTEX_SHADER].metallib_size == vs_size &&
+    expect(pptr && mglProgramModuleView(pptr, _VERTEX_SHADER)->metallib_bytes == vs_bytes &&
+               mglProgramModuleView(pptr, _VERTEX_SHADER)->metallib_size == vs_size &&
                vs_size > 0,
            "A16 failed relink keeps prior VS metallib bytes");
 

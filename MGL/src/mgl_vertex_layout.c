@@ -18,8 +18,10 @@
  */
 
 #include "mgl_vertex_layout.h"
-#include "mgl_renderer_ports.h"
-#include "mgl_render.h"
+#include "mgl_renderer_state_areas.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_query.h"
+#include "mgl_pso_format_class.h"
 #include "mgl_state_compat.h"   /* mglLogRenderStateRepair */
 #include "mgl_draw_tess.h"
 
@@ -35,8 +37,8 @@ extern bool mglRenderGenerateVertexDescriptorState(
 int mglRendererGenerateVertexDescriptorState(
     void *renderer, MGLRenderPipelineDescriptorState *state)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     return mglRenderGenerateVertexDescriptorState(
                areas.ctx,
                state,
@@ -51,6 +53,7 @@ void mglRendererUpdateBlendStateCache(void *renderer)
 {
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
+    const MGLPipelineCachePort cache = mglRendererPipelineCachePort(renderer);
     GLMState *st = areas.ctx ? areas.ctx->active_state : NULL;
     if (!st) {
         return;
@@ -119,9 +122,8 @@ void mglRendererUpdateBlendStateCache(void *renderer)
             .alpha_operation = alphaOp,
             .color_write_mask = colorMask_i,
         };
-        if (areas.pipeline_cache_set_blend) {
-            (void)areas.pipeline_cache_set_blend(areas.pipeline_cache_object,
-                                                 (uint32_t)i, &blend);
+        if (cache.set_blend) {
+            (void)cache.set_blend(cache.object, (uint32_t)i, &blend);
         }
     }
     if (repairedState) {

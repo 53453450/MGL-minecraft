@@ -10,8 +10,10 @@
 
 #include "mgl_draw_cull.h"
 
+#include "mgl_draw_encode.h" /* MGL_DRAW_INDEX_UINT32 */
 #include "mgl_draw_tess.h"
-#include "mgl_render.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_draw.h"
 #include "mgl_vertex_format.h"   /* mglRenderGLIndexElementSize */
 #include "mgl_index_buffer.h"     /* mglRenderPlanCullDistanceElementRange */
 #include "mgl_shader_abi.h"
@@ -21,6 +23,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include "mgl_program_backend.h"
 
 extern "C" Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
 
@@ -59,7 +62,7 @@ extern "C" int mglDrawRunCullDistanceArrayCapture(
     Program *vertexProgram = cull_vs(ctx);
     if (!vertexProgram || !vertexProgram->uses_cull_distance ||
         !ops->bind_mtl_program(ops->renderer, vertexProgram) ||
-        !vertexProgram->modules[_VERTEX_SHADER].mtl_cull_capture_function) {
+        !mglProgramModuleView(vertexProgram, _VERTEX_SHADER)->mtl_cull_capture_function) {
         return 0;
     }
 
@@ -173,7 +176,7 @@ extern "C" int mglDrawEncodeCullDistanceElement(
     }
     void *captureBuffer =
         ops->load_cull_capture ? ops->load_cull_capture(ops->renderer) : nullptr;
-    if (active->modules[_VERTEX_SHADER].mtl_cull_capture_function &&
+    if (mglProgramModuleView(active, _VERTEX_SHADER)->mtl_cull_capture_function &&
         !captureBuffer) {
         return 1; /* handled as no-op (match ObjC early YES) */
     }
@@ -222,10 +225,12 @@ extern "C" int mglDrawEncodeCullDistanceElement(
         }
         ops->bind_cull_emu(ops->renderer, mode, 0u, primitive.vertices,
                            primitive.vertex_count, enc_ctx);
+        /* Cull-distance expand always writes uint32 index buffers. */
         ops->draw_indexed_primitives(
             encoder, primitive.primitive_type, primitive.index_count,
-            indexBufferHandle, primitive.index_buffer_offset,
-            (uint64_t)instanceCount, 0, (uint64_t)baseInstance);
+            (uint32_t)MGL_DRAW_INDEX_UINT32, indexBufferHandle,
+            primitive.index_buffer_offset, (uint64_t)instanceCount, 0,
+            (uint64_t)baseInstance);
     }
     mglRenderDestroyCullDistanceIndexPlan(reinterpret_cast<MGLCullDistanceIndexPlan**>(&planOwner));
     return 1;
@@ -247,7 +252,7 @@ extern "C" int mglDrawPrepareAndEncodeCullDistanceElement(
         return 1;
     }
 
-    if (active->modules[_VERTEX_SHADER].mtl_cull_capture_function) {
+    if (mglProgramModuleView(active, _VERTEX_SHADER)->mtl_cull_capture_function) {
         if (!mglDrawRunCullDistanceElementCapture(
                 ctx, indexBytes, indexType, count, baseVertex, instanceCount,
                 baseInstance, ops) ||

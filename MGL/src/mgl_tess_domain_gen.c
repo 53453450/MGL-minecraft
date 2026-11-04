@@ -7,6 +7,7 @@
 #include "mgl_tess_domain.h"
 #include "glcorearb.h"
 #include <stddef.h>
+#include <math.h>
 #include <string.h>
 
 #define TESS_MAX_POINTS 4225u
@@ -122,6 +123,28 @@ static void generate_quads(const MGLTessFactorInput *in,
     uint32_t outer[4][65], lengths[4];
     uint32_t grid[63][63];
     const uint32_t nx = n->inner_eff[0], ny = n->inner_eff[1];
+    /* fractional_odd inner rectangle (CTS VertexSpacing): segment count is
+     * FO_round(raw_inner - 2) - 2, not simply inner_eff - 2.  That shrinks
+     * by 4 when round(inner) and round(inner-2) differ (e.g. 32→33 vs 30→31)
+     * and by 2 when they agree after the FO clamp (e.g. 64→63). */
+    uint32_t inner_segs_x = (nx > 2u) ? nx - 2u : 1u;
+    uint32_t inner_segs_y = (ny > 2u) ? ny - 2u : 1u;
+    if (in->spacing == GL_FRACTIONAL_ODD) {
+        float raw_x = in->inner[0] - 2.f;
+        float raw_y = in->inner[1] - 2.f;
+        if (!(raw_x >= 1.f)) raw_x = 1.f;
+        if (!(raw_y >= 1.f)) raw_y = 1.f;
+        uint32_t rx = mglTessRoundLevelForSpacing(
+            GL_FRACTIONAL_ODD, (uint32_t)ceilf(raw_x));
+        uint32_t ry = mglTessRoundLevelForSpacing(
+            GL_FRACTIONAL_ODD, (uint32_t)ceilf(raw_y));
+        inner_segs_x = (rx > 2u) ? rx - 2u : 1u;
+        inner_segs_y = (ry > 2u) ? ry - 2u : 1u;
+    }
+    const uint32_t inset_x = (nx > inner_segs_x) ? (nx - inner_segs_x) / 2u : 1u;
+    const uint32_t inset_y = (ny > inner_segs_y) ? (ny - inner_segs_y) / 2u : 1u;
+    const uint32_t ix = inset_x ? inset_x : 1u;
+    const uint32_t iy = inset_y ? inset_y : 1u;
     for (unsigned edge = 0; edge < 4; edge++) {
         const uint32_t length = n->outer_eff[levels[edge]];
         const float factor = n->outer_clamped[levels[edge]];
@@ -149,24 +172,30 @@ static void generate_quads(const MGLTessFactorInput *in,
         triangle(mesh, outer[0][0], outer[2][0], outer[3][0]);
         return;
     }
-    for (uint32_t y = 1; y < ny; y++) {
+    /* Grid covers indices [ix, nx-ix] × [iy, ny-iy] (inclusive). */
+    const uint32_t gx = (nx >= 2u * ix) ? (nx - 2u * ix + 1u) : 1u;
+    const uint32_t gy = (ny >= 2u * iy) ? (ny - 2u * iy + 1u) : 1u;
+    for (uint32_t y = iy; y + iy <= ny; y++) {
         const float v = edge_position(n->inner_clamped[1], ny, in->spacing, y);
-        for (uint32_t x = 1; x < nx; x++) {
+        for (uint32_t x = ix; x + ix <= nx; x++) {
             const float u = edge_position(n->inner_clamped[0], nx, in->spacing, x);
-            grid[y - 1][x - 1] = vertex(mesh, u, v, 0.f);
+            grid[y - iy][x - ix] = vertex(mesh, u, v, 0.f);
         }
     }
-    for (uint32_t y = 0; y + 2 < ny; y++)
-        for (uint32_t x = 0; x + 2 < nx; x++) {
+    for (uint32_t y = 0; y + 1u < gy; y++)
+        for (uint32_t x = 0; x + 1u < gx; x++) {
             triangle(mesh, grid[y][x], grid[y][x + 1], grid[y + 1][x + 1]);
             triangle(mesh, grid[y][x], grid[y + 1][x + 1], grid[y + 1][x]);
         }
     for (unsigned edge = 0; edge < 4; edge++) {
         uint32_t inner[65];
-        const uint32_t length = (edge & 1u) ? ny - 2u : nx - 2u;
+        const uint32_t length = (edge & 1u) ? (gy > 0u ? gy - 1u : 0u)
+                                           : (gx > 0u ? gx - 1u : 0u);
         for (uint32_t i = 0; i <= length; i++) {
-            const uint32_t x = edge == 0 ? i : edge == 1 ? nx - 2u : edge == 2 ? nx - 2u - i : 0u;
-            const uint32_t y = edge == 0 ? 0u : edge == 1 ? i : edge == 2 ? ny - 2u : ny - 2u - i;
+            const uint32_t x = edge == 0 ? i : edge == 1 ? gx - 1u
+                                   : edge == 2 ? gx - 1u - i : 0u;
+            const uint32_t y = edge == 0 ? 0u : edge == 1 ? i
+                                   : edge == 2 ? gy - 1u : gy - 1u - i;
             inner[i] = grid[y][x];
         }
         join_edges(mesh, outer[edge], lengths[edge], inner, length);

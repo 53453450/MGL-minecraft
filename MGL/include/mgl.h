@@ -804,6 +804,9 @@ void mglGetActiveSubroutineUniformiv(GLMContext ctx, GLuint program, GLenum shad
 void mglGetActiveSubroutineUniformName(GLMContext ctx, GLuint program, GLenum shadertype, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name);
 void mglGetActiveSubroutineName(GLMContext ctx, GLuint program, GLenum shadertype, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name);
 void mglUniformSubroutinesuiv(GLMContext ctx, GLenum shadertype, GLsizei count, const GLuint *indices);
+/* ARB_shader_subroutine: the selection reset UseProgram performs (the
+ * selections are context state, reset to default functions on every bind). */
+void mglUniformResetSubroutineSelections(GLMContext ctx, GLuint program);
 void mglGetUniformSubroutineuiv(GLMContext ctx, GLenum shadertype, GLint location, GLuint *params);
 void mglGetProgramStageiv(GLMContext ctx, GLuint program, GLenum shadertype, GLenum pname, GLint *values);
 void mglPatchParameteri(GLMContext ctx, GLenum pname, GLint value);
@@ -1101,10 +1104,22 @@ void mglMultiDrawElementsIndirectCount(GLMContext ctx, GLenum mode, GLenum type,
 void mglPolygonOffsetClamp(GLMContext ctx, GLfloat factor, GLfloat units, GLfloat clamp);
 void mglMaxShaderCompilerThreadsKHR(GLMContext ctx, GLuint count);
 
-#ifdef MGL_GL_ES
+/* ES 3.2 entry points, compiled for both profiles: the shared dispatch table
+ * references them from init_dispatch_es. */
+void mglTexPageCommitmentARB(GLMContext ctx, GLenum target, GLint level,
+                             GLint xoffset, GLint yoffset, GLint zoffset,
+                             GLsizei width, GLsizei height, GLsizei depth,
+                             GLboolean commit);
+void mglTexturePageCommitmentEXT(GLMContext ctx, GLuint texture, GLint level,
+                                 GLint xoffset, GLint yoffset, GLint zoffset,
+                                 GLsizei width, GLsizei height, GLsizei depth,
+                                 GLboolean commit);
+/* After compute/image writes: Unmap sparse pages that are not in the
+ * CPU commit list so uncommitted reads return zero. */
+void mglSparseScrubBoundImages(GLMContext ctx);
+
 void  mglBlendBarrier(GLMContext ctx);
 void mglPrimitiveBoundingBox(GLMContext ctx, GLfloat minX, GLfloat minY, GLfloat minZ, GLfloat minW, GLfloat maxX, GLfloat maxY, GLfloat maxZ, GLfloat maxW);
-#endif
 
 #ifdef __cplusplus
 } /* extern "C" */

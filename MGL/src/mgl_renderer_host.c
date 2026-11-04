@@ -19,20 +19,20 @@
 #include <string.h>
 
 #include "mgl_renderer_host.h"
-#include "mgl_renderer_ports.h"
-#include "mgl_render.h"
+#include "mgl_renderer_state_areas.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_texture.h"
 #include "mgl_texture_compat.h"
 #include "mgl_rt_sync.h"
 #include "mgl_trace_log.h"
 #include "mgl_types_state.h"
-#include "mgl_safety.h"       /* mglPointerRangeIsReadable */
 #include "pixel_utils.h"     /* mtlFormatForGLInternalFormat */
 #include "mgl_frame_activity.h" /* MGL_FRAME_LOAD / draw-since-swap */
 #include "mgl_index_buffer.h"    /* mglGLIndexElementSize */
 #include "mgl_sync.h"            /* mglCommandBufferStatusName */
+#include "mgl_texture_backend.h"
 
 /* Restated from the ObjC private headers (rules 7 / 26). */
-extern void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level);
 extern signed char mglEnvFlagEnabled(const char *name);
 
 /* The .m's file-local constants this TU needs (values copied verbatim). */
@@ -79,7 +79,7 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
         return;
     }
 
-    GLuint oldRenderTargetWriteVersion = tex->mtl_render_target_write_version;
+    GLuint oldRenderTargetWriteVersion = mglTextureWriteVersion(tex);
 
     mglRenderMarkTextureLevelWritten(&texLevel->ever_written,
                                      &texLevel->has_initialized_data,
@@ -89,25 +89,22 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
     texLevel->last_src_ptr = NULL;
     texLevel->last_src_hash = 0ull;
 
-    tex->mtl_render_target_write_version++;
-    mglMarkGLSampledCopyLevelDirty(tex, level);
+    mglTextureBumpWriteVersion(tex);
 
     if (tex->name == 8u && mglEnvFlagEnabled("MGL_TRACE_RT_WRITE_MARKS")) {
-        void *mtlTexture = tex->mtl_data ? (tex->mtl_data) : NULL;
-        mglTraceLog("RT_WRITE_MARK tex=%u level=%u oldRtVer=%u newRtVer=%u caller=%s:%d mtl=%p fmt=%lu size=%lux%lu dirty=0x%x sampledVer=%u copy=%p",
+        void *mtlTexture = mglTextureMtl(tex) ? (mglTextureMtl(tex)) : NULL;
+        mglTraceLog("RT_WRITE_MARK tex=%u level=%u oldRtVer=%u newRtVer=%u caller=%s:%d mtl=%p fmt=%lu size=%lux%lu dirty=0x%x",
                     (unsigned)tex->name,
                     (unsigned)level,
                     (unsigned)oldRenderTargetWriteVersion,
-                    (unsigned)tex->mtl_render_target_write_version,
+                    (unsigned)mglTextureWriteVersion(tex),
                     caller ? caller : "(unknown)",
                     line,
                     mtlTexture,
                     (unsigned long)(mtlTexture ? mglRendererTextureFieldFormat(mtlTexture) : MGL_RENDERER_PIXEL_FORMAT_INVALID),
                     (unsigned long)(mtlTexture ? mglRendererTextureFieldWidth(mtlTexture) : 0),
                     (unsigned long)(mtlTexture ? mglRendererTextureFieldHeight(mtlTexture) : 0),
-                    (unsigned)tex->dirty_bits,
-                    (unsigned)tex->mtl_gl_sampled_write_version,
-                    tex->mtl_gl_sampled_data);
+                    (unsigned)tex->dirty_bits);
     }
 
     /*

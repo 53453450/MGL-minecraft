@@ -3,21 +3,346 @@
 #define MGL_RENDER_API_BINDING_H
 
 /* Declarations for the binding slice of the renderer facade.
- * Value layouts live in mgl_render.h. Standalone include pulls
- * mgl_render_fwd.h (incomplete types) instead of the full facade. */
+ * Value layouts are defined here; types of other subsystems that are only
+ * passed by pointer are incomplete (mgl_render_fwd.h). */
 
-#ifndef MGL_RENDER_H
+#include <GL/glcorearb.h>
 #include "mgl_render_fwd.h"
-#endif
-
-#ifndef MGL_RENDER_PIPELINE_CACHE_KEY_WORDS_DEFINED
-#define MGL_RENDER_PIPELINE_CACHE_KEY_WORDS_DEFINED
-enum { MGL_RENDER_PIPELINE_CACHE_KEY_WORDS = 7 };
-#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* --- renderer-side program / framebuffer-binding helpers ------------------
+ *
+ * These three are DEFINED IN C (mgl_renderer_entries.c, mgl_draw_support.c)
+ * but their only declarations used to live in the ObjC private headers
+ * (MGLRenderer+RenderPass_Private.h, MGLRenderer+Draw_Private.h), which C
+ * translation units must not include.  C callers therefore either hand-declared
+ * them locally (mglResolveProgramForStageFromState had four such local externs)
+ * or relied on a duplicate declaration that this header used to carry.
+ *
+ * The declaration belongs here: this header is the C-facing renderer facade.
+ * The duplicates in the private headers are the ones that must go, not these. */
+
+/* Program bound to a stage by GL state: GL_CURRENT_PROGRAM when one is bound,
+ * otherwise the separable pipeline's stage program. */
+Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
+
+/* Identity of the program the current draw would use (restored/scheduled), as
+ * the trace log and pipeline-cache keys see it. */
+GLuint mglCurrentRenderProgramKey(GLMContext ctx);
+
+/* Re-sync the framebuffer binding names after a hashtable swap. */
+void mglRendererSyncFramebufferBindingNames(GLMContext ctx);
+
+/* Restore the program/pipeline pair a state key names. */
+/* single source: mglRestoreProgramPipelinePair (C TUs and the ObjC private headers both
+ * resolve it from here; the private copies were duplicates) */
+void mglRestoreProgramPipelinePair(GLMContext ctx, GLuint programName,
+                                   GLuint pipelineName);
+
+enum {
+    MGL_RENDER_AIR_PROGRAM_BOUND = 0,
+    MGL_RENDER_AIR_PROGRAM_NOT_APPLICABLE = 1,
+    MGL_RENDER_AIR_PROGRAM_ERROR = -1,
+};
+
+/* C1: TextureRepackDepthPlanes -> mgl_readback_policy.h */
+
+/* Expands legacy packed GL formats into RGBA8. Returns a malloc-owned buffer,
+ * or NULL for invalid input, unsupported formats, or size overflow. */
+/* stage-binding copy-back entry (C-ABI mirror of the
+ * ObjC MGLStageBindingCopyBack — the ObjC side bridges the buffer refs). */
+typedef struct MGLRenderCopyBackEntry_t {
+    const void *temporary;        /* MTL::Buffer* */
+    const void *destination;      /* MTL::Buffer* */
+    const void *destination_buffer; /* GL Buffer* (CPU prefix sync) */
+    uint64_t destination_offset;
+    uint64_t length;
+} MGLRenderCopyBackEntry;
+
+uint32_t mglRenderCollectCopyBackEntries(const MGLRenderCopyBackEntry *slots,
+                                         uint32_t slot_count,
+                                         MGLRenderCopyBackEntry *out,
+                                         uint32_t out_cap);
+
+/* Synchronize the written CPU prefix of each entry's GL destination buffer
+ * (guards + memmove; the Metal contents pointer is read via the
+ * destination buffer).  Returns 0, or -1 with *failed_index_out set. */
+int mglRenderCopyBackCPUPrefix(
+    const MGLRenderCopyBackEntry *entries,
+    uint32_t count,
+    uint32_t *failed_index_out);
+
+/* index-range scan ignoring primitive-restart markers
+ * — computes min/max over the byte stream (BYTE/SHORT/INT width), skipping
+ * the restart value.  Pure CPU; matches mglScanIndexRangeIgnoringRestart.
+ * Returns 0 on success (with *out_valid = 1 if at least one non-restart
+ * index was seen), -1 on bad args. */
+/* Convert a restart-aware index span into the inclusive [first, first+count)
+ * vertex range used by cull-distance capture. Returns 0 on success. */
+/* prepared (Metal-side) byte offset for a GL element
+ * buffer — GL_UNSIGNED_BYTE indices are expanded to UInt16 so the offset
+ * doubles, other types pass through.  Matches mglComputePreparedIndexByteOffset.
+ * Returns 0 on success, -1 on overflow / bad args. */
+/* baseByteOffset + firstElement * indexStride with
+ * overflow checks.  Matches mglComputeIndexByteOffset.  Returns 0 on success,
+ * -1 on bad args / overflow. */
+/* GL index element byte size (BYTE=1, SHORT=2, INT=4).
+ * Matches mglGLIndexElementSize.  Returns 0 for unknown type. */
+
+/* read a single GL index value from a byte buffer at
+ * `element_index` (elem_width 1/2/4).  Matches mglReadGLIndexValue; returns 0
+ * for NULL buffer or unknown width. */
+/* GL vertex-attribute component size in bytes (1/2/4/8).
+ * Matches mglVertexAttribComponentSize.  Returns 0 for unknown. */
+
+/* total bytes for a vertex-attribute element (type x
+ * size), with special handling for packed 10_10_10_2 formats.  Matches
+ * mglVertexAttribElementBytes.  Returns 0 for unknown / zero size. */
+
+enum {
+    MGL_ATTRIB_SPAN_OK = 0,
+    MGL_ATTRIB_SPAN_NEGATIVE_RELATIVE = -1,
+    MGL_ATTRIB_SPAN_OVERFLOW = -2,
+};
+
+enum {
+    MGL_ATTRIB_FETCH_OK = 0,
+    MGL_ATTRIB_FETCH_BAD_FORMAT = 1,
+    MGL_ATTRIB_FETCH_OVERFLOW = 2,
+    MGL_ATTRIB_FETCH_OOB = 3,
+};
+
+typedef struct MGLRenderAttribFetchPlan {
+    uint32_t status;
+    uint64_t elem_bytes;
+    uint64_t stride;
+    uint64_t rel_offset;
+    uint64_t byte_start;
+    uint64_t byte_end;
+} MGLRenderAttribFetchPlan;
+
+int mglRenderRepairBlendSrcFactor(uint32_t *value);
+
+int mglRenderRepairBlendDstFactor(uint32_t *value);
+
+int mglRenderRepairBlendEquation(uint32_t *value);
+
+uint32_t mglRenderRepairDepthFunc(uint32_t func);
+
+uint32_t mglRenderRepairStencilFunc(uint32_t func);
+
+/* does GL primitive mode produce polygonal primitives
+ * (triangles/quads) subject to glPolygonMode point/line emulation?  Matches
+ * mglDrawModeProducesPolygons.  Returns 1/0. */
+
+/* does `mode` with `indexCount` vertices produce at
+ * least one drawable segment (point/line/triangle/quad)?  Matches
+ * mglPrimitiveModeHasDrawableSegment.  Returns 1/0. */
+/* total triangle index count for `source_vertex_count`
+ * vertices arranged as quads (4/quad -> 6 indices).  Matches
+ * mglQuadTriangleIndexCount; returns 0 on overflow. */
+/* Align vertex stride to 4; matches mglAlignVertexStrideForMetal. */
+/* double-attrib size -> MTLVertexFormat value; matches mglDoubleVertexAttribFloatFormat. */
+/* Integer attrib signedness mismatch -> Int/UInt MTLVertexFormat ABI value.
+ * Returns MTLVertexFormatInvalid when no CPU conversion is required. */
+enum {
+    MGL_ATTRIB_CONV_NONE = 0,
+    MGL_ATTRIB_CONV_DOUBLE = 1,
+    MGL_ATTRIB_CONV_INT_TO_FLOAT = 2,
+    MGL_ATTRIB_CONV_FIXED = 3,
+    MGL_ATTRIB_CONV_UINT_1010102 = 4,
+    MGL_ATTRIB_CONV_UINT_10F11F11F = 5,
+    MGL_ATTRIB_CONV_INTEGER_SIGN = 6,
+    MGL_ATTRIB_CONV_REV2101010 = 7,
+};
+
+uint32_t mglRenderGLTypeSizeToVertexFormat(uint32_t type, uint32_t size,
+                                           int normalized);
+
+typedef struct MGLRenderVertexAttribResolve_t {
+    int use_binding_table;   /* bindingIndex < limit && binding has buffer */
+    int64_t binding_offset;  /* table offset, or attrib binding_offset */
+    uint32_t stride;         /* table stride, or attrib stride */
+    uint32_t divisor;
+} MGLRenderVertexAttribResolve;
+
+enum {
+    MGL_RENDER_PIPELINE_CACHE_KEY_WORDS = 7,
+    MGL_RENDER_PIPELINE_COLOR_ATTACHMENTS = 8,
+};
+
+#define MGL_RENDER_PIPELINE_CACHE_KEY_WORDS_DEFINED 1
+
+/* 1 if the default Metal device is Apple Paravirtual (hosted CI VMs). */
+
+
+typedef struct MGLRenderPipelineActiveState_t {
+    void *pipeline_state;
+    void *vertex_function;
+    void *fragment_function;
+    uint32_t color0_format;
+    uint32_t depth_format;
+    uint32_t stencil_format;
+    uint32_t program_name;
+} MGLRenderPipelineActiveState;
+
+typedef struct MGLRenderPipelineBlendState_t {
+    uint32_t source_rgb_factor;
+    uint32_t destination_rgb_factor;
+    uint32_t source_alpha_factor;
+    uint32_t destination_alpha_factor;
+    uint32_t rgb_operation;
+    uint32_t alpha_operation;
+    uint32_t color_write_mask;
+} MGLRenderPipelineBlendState;
+
+enum {
+    MGL_RENDER_BINDING_STAGE_VERTEX = 0,
+    MGL_RENDER_BINDING_STAGE_FRAGMENT = 1,
+};
+
+enum {
+    MGL_RENDER_BINDING_VERTEX_TEXTURE = 0,
+    MGL_RENDER_BINDING_FRAGMENT_TEXTURE = 1,
+    MGL_RENDER_BINDING_VERTEX_SAMPLER = 2,
+    MGL_RENDER_BINDING_FRAGMENT_SAMPLER = 3,
+    MGL_RENDER_BINDING_VIEWPORT = 4,
+    MGL_RENDER_BINDING_SCISSOR = 5,
+    MGL_RENDER_BINDING_TRIANGLE_FILL = 6,
+    MGL_RENDER_BINDING_SETTER_COUNT = 7,
+};
+
+typedef struct MGLRenderBindingStats {
+    uint64_t emitted[MGL_RENDER_BINDING_SETTER_COUNT];
+    uint64_t skipped[MGL_RENDER_BINDING_SETTER_COUNT];
+} MGLRenderBindingStats;
+
+/* Exact, program-based replacement for the retired shader-source scans: reads
+ * the per-stage builtin mask published by the frontend. */
+int mglRenderFragmentNeedsPerSampleMSValues(const Program *program);
+
+void mglRenderFillFragCoordSlot(int use_fragcoord, int use_sample,
+                                uint32_t pass_height, int lower_left,
+                                uint32_t num_samples, uint32_t sample_buffers,
+                                int ms_loop, uint32_t forced_sample_id,
+                                int point_coord_lower_left, float out[5]);
+
+void mglRenderClampLodBiasArray(float *bias, uint32_t count, float biasmax);
+
+/* Per-draw binding snapshot. GL-side deduplication and accounting determine
+ * which bindings are emitted; the backend replays the resulting operation list. */
+#define MGL_RENDER_BINDING_SNAPSHOT_MAX_OPS 32u
+
+/* One per-draw binding op: kind 0 = set buffer (buffer == NULL clears the
+ * slot, matching mglRenderSetRenderBuffer with a nil resource), kind 1 =
+ * set bytes (bytes borrowed — valid until EncodeBindingSnapshot returns).
+ * The op list keeps the exact per-stage emit order, including interleaved
+ * buffer/bytes/clear ops on the same slot. */
+typedef struct MGLRenderBindingOp_t {
+    uint32_t kind;      /* 0 = buffer, 1 = bytes */
+    uint32_t index;     /* Metal slot */
+    uint64_t offset;    /* kind 0: byte offset */
+    void *buffer;       /* kind 0: borrowed MTL::Buffer* (NULL = clear) */
+    const void *bytes;  /* kind 1: borrowed byte pointer */
+    uint32_t length;    /* kind 1: byte length */
+} MGLRenderBindingOp;
+
+typedef struct MGLRenderBindingSnapshot_t {
+    uint32_t vertex_op_count;
+    MGLRenderBindingOp
+        vertex_ops[MGL_RENDER_BINDING_SNAPSHOT_MAX_OPS];
+    uint32_t fragment_op_count;
+    MGLRenderBindingOp
+        fragment_ops[MGL_RENDER_BINDING_SNAPSHOT_MAX_OPS];
+} MGLRenderBindingSnapshot;
+
+/* Texture/sampler bindings are collected separately from buffer/bytes ops.
+ * Resource resolution may rotate the render encoder while uploading a
+ * texture, so ObjC submits this snapshot in ordered segments at those
+ * boundaries.  The C++ binding owner remains authoritative for dedup state
+ * and retains every resource that becomes current. */
+#define MGL_RENDER_RESOURCE_BINDING_SNAPSHOT_MAX_OPS 512u
+
+enum {
+    MGL_RENDER_RESOURCE_BINDING_TEXTURE = 0,
+    MGL_RENDER_RESOURCE_BINDING_SAMPLER = 1,
+};
+
+typedef struct MGLRenderResourceBindingOp_t {
+    uint32_t kind;
+    uint32_t index;
+    void *resource; /* borrowed MTL::Texture* or MTL::SamplerState* */
+} MGLRenderResourceBindingOp;
+
+typedef struct MGLRenderResourceBindingSnapshot_t {
+    uint32_t vertex_op_count;
+    MGLRenderResourceBindingOp
+        vertex_ops[MGL_RENDER_RESOURCE_BINDING_SNAPSHOT_MAX_OPS];
+    uint32_t fragment_op_count;
+    MGLRenderResourceBindingOp
+        fragment_ops[MGL_RENDER_RESOURCE_BINDING_SNAPSHOT_MAX_OPS];
+} MGLRenderResourceBindingSnapshot;
+
+int mglRenderSetRenderBytes(void *render_encoder,
+                               const void *bytes,
+                               size_t length,
+                               uint32_t stage,
+                               uint32_t index);
+
+int mglRenderSetRenderDepthStencilState(void *render_encoder,
+                                           void *depth_stencil_state);
+
+int mglRenderSetRenderViewport(void *render_encoder,
+                                  double origin_x,
+                                  double origin_y,
+                                  double width,
+                                  double height,
+                                  double znear,
+                                  double zfar);
+
+int mglRenderSetRenderScissor(void *render_encoder,
+                                 uint64_t x,
+                                 uint64_t y,
+                                 uint64_t width,
+                                 uint64_t height);
+
+int mglRenderSetDepthClipMode(void *render_encoder, uint32_t mode);
+
+int mglRenderSetStencilReferenceValues(void *render_encoder,
+                                          uint32_t front_reference,
+                                          uint32_t back_reference);
+
+int mglRenderSetRenderBytesForOwner(MGLRenderEncoderOwner *render_encoder_owner, const void *bytes, size_t length, uint32_t stage, uint32_t index);
+
+int mglRenderSetRenderDepthStencilStateForOwner(MGLRenderEncoderOwner *render_encoder_owner, void *depth_stencil_state);
+
+int mglRenderSetRenderViewportForOwner(MGLRenderEncoderOwner *render_encoder_owner, double origin_x, double origin_y, double width, double height, double znear, double zfar);
+
+int mglRenderSetRenderScissorForOwner(MGLRenderEncoderOwner *render_encoder_owner, uint64_t x, uint64_t y, uint64_t width, uint64_t height);
+
+int mglRenderSetDepthClipModeForOwner(MGLRenderEncoderOwner *render_encoder_owner, uint32_t mode);
+
+int mglRenderSetStencilReferenceValuesForOwner(MGLRenderEncoderOwner *render_encoder_owner, uint32_t front_reference, uint32_t back_reference);
+
+int mglRenderUseRenderResource(void *render_encoder,
+                                  void *resource,
+                                  uint32_t usage,
+                                  uint32_t stages);
+
+int mglRenderExecuteIndirectCommands(void *render_encoder,
+                                        void *indirect_buffer,
+                                        uint64_t location,
+                                        uint64_t length);
+
+int mglRenderReplayBatchDrawsForRenderEncoderOwner(MGLRenderEncoderOwner *render_encoder_owner, const MGLRenderReplayBatch *batch, char *err, size_t errcap);
+
+int mglRenderUseRenderResourceForOwner(MGLRenderEncoderOwner *render_encoder_owner, void *resource, uint32_t usage, uint32_t stages);
+
+int mglRenderExecuteIndirectCommandsForOwner(MGLRenderEncoderOwner *render_encoder_owner, void *indirect_buffer, uint64_t location, uint64_t length);
+
 
 void mglRenderBindBuffer(GLMContext glm_ctx, Buffer *buffer);
 
@@ -270,6 +595,34 @@ void mglRenderBindingInvalidate(MGLBindingState *binding_state);
 void mglRenderBindingSetValid(MGLBindingState *binding_state, int valid);
 
 int mglRenderBindingGetValid(MGLBindingState *binding_state, uint32_t *valid_out);
+
+/* Per-encoder sampled/image bind gate (see BindingState::sampledNeedsBind). */
+void mglRenderBindingMarkSampledNeedsBind(MGLBindingState *binding_state);
+void mglRenderBindingClearSampledNeedsBind(MGLBindingState *binding_state);
+int mglRenderBindingSampledNeedsBind(MGLBindingState *binding_state);
+
+/* Sampler warmup latch scoped to this binding state (not process-static). */
+int mglRenderBindingWarmupUnchanged(MGLBindingState *binding_state,
+                                    const void *vertex_program,
+                                    const void *fragment_program,
+                                    const uint32_t *vertex_mask,
+                                    const uint32_t *fragment_mask);
+void mglRenderBindingStoreWarmup(MGLBindingState *binding_state,
+                                 const void *vertex_program,
+                                 const void *fragment_program,
+                                 const uint32_t *vertex_mask,
+                                 const uint32_t *fragment_mask);
+
+/* Borrowed MTL sampler cache keyed by (unit, tex, gl_sampler, params_sig). */
+void *mglRenderBindingLookupSampledSampler(MGLBindingState *binding_state,
+                                           uint32_t unit, const void *tex,
+                                           const void *gl_sampler,
+                                           uint64_t params_sig);
+void mglRenderBindingStoreSampledSampler(MGLBindingState *binding_state,
+                                         uint32_t unit, const void *tex,
+                                         const void *gl_sampler,
+                                         uint64_t params_sig,
+                                         void *mtl_sampler);
 
 int mglRenderBindingRecordVertexBuffer(MGLBindingState *binding_state, void *buffer, uint64_t offset, uint32_t index);
 

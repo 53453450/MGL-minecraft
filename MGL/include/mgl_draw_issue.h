@@ -138,6 +138,11 @@ void mglDrawHostWatchdogElements(void *renderer, GLMContext ctx);
 bool mglDrawHostResolveIndirectBuffer(void *renderer, GLMContext ctx,
                                       const char *label, Buffer **glBufferOut,
                                       void **metalBufferOut);
+bool mglDrawHostResolveIndirectBufferSpan(void *renderer, GLMContext ctx,
+                                          const char *label, uint64_t offset,
+                                          uint64_t need_bytes,
+                                          Buffer **glBufferOut,
+                                          void **metalBufferOut);
 bool mglDrawHostPrepareIndirectCPURead(void *renderer, GLMContext ctx,
                                        const char *label);
 bool mglDrawHostHasGeometry(GLMContext ctx);

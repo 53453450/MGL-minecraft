@@ -476,6 +476,99 @@ TEST(Metallib, TessEvaluationResources) {
     mglShaderFree(bytes);
 }
 
+/* Fragment-stage reflection of the sampled-image list as "name@slot" text. */
+static std::string FragmentSamplerSlots(const std::string &body) {
+    std::string src = "#version 460 core\nin vec2 uv;\nout vec4 o;\n" + body;
+    unsigned char *bytes = nullptr;
+    size_t size = 0;
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES] = {{0}};
+    char err[512] = {0};
+    if (mglAirCompileGLSLWithReflect(src.c_str(), MGL_STAGE_FRAGMENT, nullptr,
+                                     &bytes, &size, lists, err,
+                                     sizeof(err)) != 0) {
+        return std::string("compile failed: ") + err;
+    }
+    std::string out;
+    const MGLShaderResourceList &sl = lists[_SAMPLED_IMAGE_RES];
+    for (uint32_t i = 0; i < sl.count; i++) {
+        out += std::string(sl.list[i].name) + "@" +
+               std::to_string(sl.list[i].combined_sampler_binding) + " ";
+    }
+    mglAirReflectDestroy(lists);
+    mglShaderFree(bytes);
+    return out;
+}
+
+static std::string SamplerDecls(int n) {
+    std::string d;
+    for (int i = 0; i < n; i++)
+        d += "uniform sampler2D s" + std::to_string(i) + ";\n";
+    return d;
+}
+
+/* GL 4.6 §7.6: a uniform nothing reads is inactive.  A shader that declares a
+ * header's worth of samplers must not claim a Metal texture/sampler slot (or
+ * a uniform location) for each declaration: a function has 16 sampler slots. */
+TEST(Metallib, InactiveSamplersTakeNoSlot) {
+    EXPECT_EQ("s3@0 s7@1 ",
+              FragmentSamplerSlots(
+                  SamplerDecls(24) +
+                  "void main() { o = texture(s3, uv) + texture(s7, uv); }\n"));
+    EXPECT_EQ("", FragmentSamplerSlots(SamplerDecls(24) +
+                                       "void main() { o = vec4(1); }\n"));
+}
+
+TEST(Metallib, SamplerReachabilityFollowsCalls) {
+    /* Read through a helper that main() calls. */
+    EXPECT_EQ("s9@0 ",
+              FragmentSamplerSlots(
+                  SamplerDecls(12) +
+                  "vec4 f() { return texture(s9, uv); }\n"
+                  "void main() { o = f(); }\n"));
+    /* Read only by a function nothing calls: still inactive. */
+    EXPECT_EQ("s6@0 ",
+              FragmentSamplerSlots(
+                  SamplerDecls(12) +
+                  "vec4 dead() { return texture(s5, uv); }\n"
+                  "vec4 live() { return texture(s6, uv); }\n"
+                  "void main() { o = live(); }\n"));
+    /* Passed to a function as an argument. */
+    EXPECT_EQ("s2@0 s11@1 ",
+              FragmentSamplerSlots(
+                  SamplerDecls(12) +
+                  "vec4 g(sampler2D t) { return texture(t, uv); }\n"
+                  "void main() { o = g(s11) + g(s2); }\n"));
+}
+
+TEST(Metallib, SamplerReachabilityCoversEveryStatementKind) {
+    EXPECT_EQ(
+        "s1@0 s2@1 s4@2 s8@3 s10@4 s13@5 s14@6 s15@7 ",
+        FragmentSamplerSlots(
+            SamplerDecls(16) +
+            "void main() {\n"
+            "  vec4 c = vec4(0);\n"
+            "  for (int i = 0; i < 2; i++) { c += texture(s1, uv); }\n"
+            "  int k = 0;\n"
+            "  do { c += texture(s2, uv); k++; } while (k < 2);\n"
+            "  switch (k) { case 2: c += texture(s4, uv); break;"
+            " default: break; }\n"
+            "  c += (k > 1) ? texture(s8, uv) : texture(s10, uv);\n"
+            "  while (k > 5) { c += texture(s13, uv); k--; }\n"
+            "  if (k == 0) c += texture(s14, uv); else c += texture(s15, uv);\n"
+            "  o = c;\n"
+            "}\n"));
+}
+
+TEST(Metallib, InactiveSamplerArraysAreSkippedWhole) {
+    /* arr spans four slots; unusedArr spans none; tail follows arr. */
+    EXPECT_EQ("arr@0 tail@4 ",
+              FragmentSamplerSlots(
+                  "uniform sampler2D arr[4];\n"
+                  "uniform sampler2D unusedArr[3];\n"
+                  "uniform sampler2D tail;\n"
+                  "void main() { o = texture(arr[2], uv) + texture(tail, uv); }\n"));
+}
+
 TEST(Metallib, RuntimeSSBOArrayLengthAcrossStages) {
     static const char *sources[] = {
         "#version 460 core\n"
@@ -940,6 +1033,91 @@ TEST(Reflect, VertexResources) {
     mglAirReflectDestroy(lists);
     mglIRModuleDestroy(mod);
     mglGLSLTranslationUnitDestroy(tu);
+}
+
+static const MGLShaderResource *findInput(const MGLShaderResourceList &list,
+                                          const char *name) {
+    for (GLuint i = 0; i < list.count; i++) {
+        if (strcmp(list.list[i].name, name) == 0) return &list.list[i];
+    }
+    return nullptr;
+}
+
+/* A bound attribute keeps its place, and an unbound one declared before it
+ * must not take that place.  Two inputs on one location make two
+ * air.vertex_input entries with the same location_index, which the Metal
+ * compiler aborts on. */
+TEST(Reflect, UnboundAttributeAvoidsBoundLocation) {
+    static const char *src =
+        "#version 460 core\n"
+        "in vec3 free_a;\n"
+        "in vec4 bound_b;\n"
+        "in vec2 free_c;\n"
+        "void main() {\n"
+        "    gl_Position = bound_b + vec4(free_a, 0.0) + vec4(free_c, 0.0, 0.0);\n"
+        "}\n";
+    const char *names[MAX_ATTRIBS] = {nullptr};
+    names[0] = "bound_b";
+    unsigned char *bytes = nullptr;
+    size_t size = 0;
+    char err[512] = {0};
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES] = {{0}};
+    ASSERT_EQ(0, mglAirCompileGLSLWithReflect(src, MGL_STAGE_VERTEX, names,
+                                              &bytes, &size, lists, err,
+                                              sizeof err))
+        << err;
+    const MGLShaderResource *a = findInput(lists[_STAGE_INPUT_RES], "free_a");
+    const MGLShaderResource *b = findInput(lists[_STAGE_INPUT_RES], "bound_b");
+    const MGLShaderResource *c = findInput(lists[_STAGE_INPUT_RES], "free_c");
+    ASSERT_TRUE(a && b && c);
+    EXPECT_EQ(0u, b->location);
+    EXPECT_EQ(1u, a->location);
+    EXPECT_EQ(2u, c->location);
+    mglShaderFree(bytes);
+    mglAirReflectDestroy(lists);
+}
+
+TEST(Dump, MetallibToIRTextShowsTheKernelAndItsAttributes) {
+    static const char *src =
+        "#version 460 core\n"
+        "in vec3 pos;\n"
+        "void main() { gl_Position = vec4(pos, 1.0); }\n";
+    unsigned char *bytes = nullptr;
+    size_t size = 0;
+    char err[512] = {0};
+    ASSERT_EQ(0, mglShaderCompileGLSL(src, MGL_STAGE_VERTEX, &bytes, &size, err,
+                                      sizeof err))
+        << err;
+    char *ir = mglAirMetallibToIRText(bytes, size);
+    ASSERT_NE(nullptr, ir);
+    EXPECT_NE(nullptr, strstr(ir, "define"));
+    EXPECT_NE(nullptr, strstr(ir, "air.vertex_input"));
+    EXPECT_NE(nullptr, strstr(ir, "\"pos\""));
+    mglShaderFree(ir);
+    EXPECT_EQ(nullptr, mglAirMetallibToIRText(bytes, 3));
+    unsigned char junk[16] = {1, 2, 3};
+    EXPECT_EQ(nullptr, mglAirMetallibToIRText(junk, sizeof junk));
+    mglShaderFree(bytes);
+}
+
+TEST(Reflect, UnboundAttributeKeepsDeclarationOrderWithoutBinds) {
+    static const char *src =
+        "#version 460 core\n"
+        "in vec3 first;\n"
+        "in vec4 second;\n"
+        "void main() { gl_Position = second + vec4(first, 0.0); }\n";
+    unsigned char *bytes = nullptr;
+    size_t size = 0;
+    char err[512] = {0};
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES] = {{0}};
+    ASSERT_EQ(0, mglAirCompileGLSLWithReflect(src, MGL_STAGE_VERTEX, nullptr,
+                                              &bytes, &size, lists, err,
+                                              sizeof err))
+        << err;
+    EXPECT_EQ(0u, findInput(lists[_STAGE_INPUT_RES], "first")->location);
+    EXPECT_EQ(1u, findInput(lists[_STAGE_INPUT_RES], "second")->location);
+    mglShaderFree(bytes);
+    mglAirReflectDestroy(lists);
 }
 
 TEST(Reflect, TessEvalPerVertexBuiltinDoesNotStealUserLocations) {

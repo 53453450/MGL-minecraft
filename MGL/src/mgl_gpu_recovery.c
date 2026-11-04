@@ -21,8 +21,9 @@
 static const int kMGLDiagnosticStateLogsC = 0;
 #include "mgl_sync.h"
 #include "mgl_thread_affinity.h"   /* MGL_ASSERT_GL_THREAD */       /* MGL_COMMAND_BUFFER_STATUS_COMMITTED */
-#include "mgl_renderer_ports.h"
-#include "mgl_render.h"     /* mglRenderCommandRecovery* */
+#include "mgl_renderer_state_areas.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_query.h"
 
 #include <time.h>
 
@@ -56,8 +57,8 @@ static double mglGpuRecoveryNowSeconds(void)
 
 void mglRendererRecordGPUError(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *owner = areas.gpu_recovery_command_owner
                       ? *areas.gpu_recovery_command_owner
                       : NULL;
@@ -71,8 +72,8 @@ void mglRendererRecordGPUError(void *renderer)
 
 void mglRendererRecordGPUSuccess(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *owner = areas.gpu_recovery_command_owner
                       ? *areas.gpu_recovery_command_owner
                       : NULL;
@@ -89,9 +90,9 @@ void mglRendererRecordGPUSuccess(void *renderer)
 
 void mglRendererClearProblematicGPUState(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
-    MGLCommandState *cs = areas.command;
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
+    const MGLCommandState *cs = areas.command;
 
     fprintf(stderr, "MGL AGX: Clearing problematic GPU state for recovery\n");
 
@@ -106,8 +107,8 @@ void mglRendererClearProblematicGPUState(void *renderer)
 
 int mglRendererShouldSkipGPUOperations(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *owner = areas.gpu_recovery_command_owner
                       ? *areas.gpu_recovery_command_owner
                       : NULL;
@@ -135,9 +136,9 @@ int mglRendererShouldSkipGPUOperations(void *renderer)
  * wrapped it is provided by mglPlatformShellGuardedCall(). */
 int mglRendererCleanupCommandBufferBody(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
-    MGLCommandState *cs = areas.command;
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
+    const MGLCommandState *cs = areas.command;
     if (!cs) {
         return 0;
     }
@@ -167,8 +168,8 @@ int mglRendererCleanupCommandBufferBody(void *renderer)
 void mglRendererResetMetalState(void *renderer)
 {
     MGL_ASSERT_GL_THREAD();
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     fprintf(stderr, "MGL INFO: Performing full Metal state reset for AGX recovery\n");
 
@@ -186,7 +187,7 @@ void mglRendererResetMetalState(void *renderer)
         fprintf(stderr, "MGL AGX RECOVERY: Command queue successfully recreated\n");
     }
 
-    (void)mglPipelineCacheResetCaches(areas.pipeline_cache_object);
+    mglRendererResetPipelineCaches(renderer);
 
     mglRendererClearTextureCache();
 
@@ -204,9 +205,9 @@ static int mglRendererValidateMetalObjectsBody(void *renderer)
         return 0;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
-    MGLCommandState *cs = areas.command;
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
+    const MGLCommandState *cs = areas.command;
 
     /* GPU ERROR THROTTLING: track recent failures to prevent error cascades. */
     static uint64_t consecutiveGpuErrors = 0;
@@ -285,8 +286,8 @@ static int mglRendererCommitCommandBufferWithAGXRecoveryBody(void *renderer,
         return 0;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     void *recoveryOwner = areas.gpu_recovery_command_owner
                               ? *areas.gpu_recovery_command_owner
                               : NULL;
@@ -329,8 +330,7 @@ static int mglRendererCommitCommandBufferWithAGXRecoveryBody(void *renderer,
                     transaction.before.status);
         }
         if (transaction.device_reset_requested) {
-            atomic_store_explicit(&areas.core->deviceResetRequested, true,
-                                  memory_order_release);
+            mglRendererRequestDeviceReset(renderer);
         }
         return 0;
     }
@@ -341,8 +341,7 @@ static int mglRendererCommitCommandBufferWithAGXRecoveryBody(void *renderer,
                 transaction.used_submission,
                 (unsigned long long)transaction.recovery.consecutive_errors);
         if (transaction.device_reset_requested) {
-            atomic_store_explicit(&areas.core->deviceResetRequested, true,
-                                  memory_order_release);
+            mglRendererRequestDeviceReset(renderer);
         }
         return 0;
     }

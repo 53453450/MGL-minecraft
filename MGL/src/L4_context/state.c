@@ -1,0 +1,1524 @@
+/*
+ * Copyright (C) Michael Larson on 1/6/2022
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * state.c
+ * MGL
+ *
+ */
+
+#include "mgl.h"
+#include "glm_context.h"
+#include "mgl_safety.h"
+#include "glm_limits.h"
+
+#define ENABLE_CAP(_cap_)   STATE(caps)._cap_ = true; break
+#define DISABLE_CAP(_cap_)   STATE(caps)._cap_ = false; break
+
+static Framebuffer *mglGetSafeDrawFramebuffer(GLMContext ctx, const char *where);
+
+static void mglSetAllBlendEnables(GLMContext ctx, GLboolean enabled)
+{
+    if (!ctx)
+        return;
+
+    for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; i++)
+    {
+        STATE(caps).blendi[i] = enabled ? GL_TRUE : GL_FALSE;
+    }
+    STATE(caps).blend = enabled ? GL_TRUE : GL_FALSE;
+}
+
+static GLuint mglEffectiveMaxViewports(GLMContext ctx)
+{
+    GLuint max_viewports = ctx ? STATE(var).max_viewports : 1u;
+    if (max_viewports == 0u || max_viewports > MGL_MAX_VIEWPORTS)
+        max_viewports = MGL_MAX_VIEWPORTS;
+    return max_viewports ? max_viewports : 1u;
+}
+
+static void mglSetAllScissorEnables(GLMContext ctx, GLboolean enabled)
+{
+    if (!ctx)
+        return;
+
+    for (GLuint i = 0; i < MGL_MAX_VIEWPORTS; i++)
+    {
+        STATE(caps).scissor_testi[i] = enabled ? GL_TRUE : GL_FALSE;
+    }
+    STATE(caps).scissor_test = enabled ? GL_TRUE : GL_FALSE;
+}
+
+static void mglUpdateGlobalScissorEnableFromIndexZero(GLMContext ctx)
+{
+    if (!ctx)
+        return;
+
+    STATE(caps).scissor_test = STATE(caps).scissor_testi[0] ? GL_TRUE : GL_FALSE;
+}
+
+static Framebuffer *mglGetSafeDrawFramebuffer(GLMContext ctx, const char *where)
+{
+    Framebuffer *fbo;
+
+    if (!ctx)
+        return NULL;
+
+    fbo = STATE(framebuffer);
+    if (!fbo)
+        return NULL;
+
+    /* Table membership implies live memory (framebuffers leave the table
+     * before free), so no readability probe is needed on the hit path. */
+    if (!mglObjectPointerLooksPlausible(fbo) ||
+        !mglHashTableContainsData(&STATE(framebuffer_table), fbo))
+    {
+        fprintf(stderr, "MGL WARNING: %s dropping invalid draw framebuffer pointer %p\n",
+                where ? where : "state",
+                (void *)fbo);
+        if (STATE(readbuffer) == fbo)
+            STATE(readbuffer) = NULL;
+        STATE(framebuffer) = NULL;
+        return NULL;
+    }
+
+    return fbo;
+}
+
+static void mglRecomputeGlobalBlendEnable(GLMContext ctx)
+{
+    GLboolean enabled = GL_FALSE;
+
+    if (!ctx)
+        return;
+
+    for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; i++)
+    {
+        if (STATE(caps).blendi[i])
+        {
+            enabled = GL_TRUE;
+            break;
+        }
+    }
+
+    STATE(caps).blend = enabled;
+}
+
+static GLboolean mglClipDistanceIndex(GLMContext ctx, GLenum cap, GLuint *index)
+{
+    if (cap < GL_CLIP_DISTANCE0 || cap > GL_CLIP_DISTANCE7)
+        return GL_FALSE;
+
+    GLuint idx = (GLuint)(cap - GL_CLIP_DISTANCE0);
+    GLuint limit = ctx ? STATE(var).max_clip_distances : MAX_CLIP_DISTANCES;
+    if (limit == 0 || limit > MAX_CLIP_DISTANCES)
+        limit = MAX_CLIP_DISTANCES;
+    if (idx >= limit)
+        return GL_FALSE;
+
+    if (index)
+        *index = idx;
+    return GL_TRUE;
+}
+
+void mglDisable(GLMContext ctx, GLenum cap)
+{
+    GLuint clipIndex = 0;
+
+    if (mglClipDistanceIndex(ctx, cap, &clipIndex))
+    {
+        STATE(caps).clip_distances[clipIndex] = GL_FALSE;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
+        return;
+    }
+
+    switch(cap)
+    {
+        case GL_BLEND:
+            mglSetAllBlendEnables(ctx, GL_FALSE);
+            break;
+        case GL_LINE_SMOOTH: DISABLE_CAP(line_smooth);
+        case GL_POLYGON_SMOOTH: DISABLE_CAP(polygon_smooth);
+        case GL_CULL_FACE: DISABLE_CAP(cull_face);
+        case GL_DEPTH_TEST: DISABLE_CAP(depth_test);
+        case GL_STENCIL_TEST: DISABLE_CAP(stencil_test);
+        case GL_DITHER: DISABLE_CAP(dither);
+        case GL_SCISSOR_TEST:
+            mglSetAllScissorEnables(ctx, GL_FALSE);
+            break;
+        case GL_COLOR_LOGIC_OP: DISABLE_CAP(color_logic_op);
+        case GL_POLYGON_OFFSET_POINT: DISABLE_CAP(polygon_offset_point);
+        case GL_POLYGON_OFFSET_LINE: DISABLE_CAP(polygon_offset_line);
+        case GL_POLYGON_OFFSET_FILL: DISABLE_CAP(polygon_offset_fill);
+        case GL_MULTISAMPLE: DISABLE_CAP(multisample);
+        case GL_SAMPLE_ALPHA_TO_COVERAGE: DISABLE_CAP(sample_alpha_to_coverage);
+        case GL_SAMPLE_ALPHA_TO_ONE: DISABLE_CAP(sample_alpha_to_one);
+        case GL_SAMPLE_COVERAGE: DISABLE_CAP(sample_coverage);
+        case GL_RASTERIZER_DISCARD: DISABLE_CAP(rasterizer_discard);
+        case GL_FRAMEBUFFER_SRGB: DISABLE_CAP(framebuffer_srgb);
+        case GL_PRIMITIVE_RESTART: DISABLE_CAP(primitive_restart);
+        case GL_DEPTH_CLAMP: DISABLE_CAP(depth_clamp);
+        case GL_TEXTURE_CUBE_MAP_SEAMLESS: DISABLE_CAP(texture_cube_map_seamless);
+        case GL_SAMPLE_MASK: DISABLE_CAP(sample_mask);
+        case GL_SAMPLE_SHADING: DISABLE_CAP(sample_shading);
+        case GL_PRIMITIVE_RESTART_FIXED_INDEX: DISABLE_CAP(primitive_restart_fixed_index);
+        case GL_DEBUG_OUTPUT_SYNCHRONOUS: DISABLE_CAP(debug_output_synchronous);
+        case GL_DEBUG_OUTPUT: DISABLE_CAP(debug_output);
+        case GL_PROGRAM_POINT_SIZE: DISABLE_CAP(program_point_size);
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
+    if (cap == GL_BLEND ||
+        cap == GL_COLOR_LOGIC_OP ||
+        cap == GL_SAMPLE_ALPHA_TO_COVERAGE ||
+        cap == GL_SAMPLE_ALPHA_TO_ONE) {
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_ALPHA_STATE);
+    }
+    if (cap == GL_DEPTH_TEST || cap == GL_STENCIL_TEST || cap == GL_FRAMEBUFFER_SRGB) {
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_FBO);
+        Framebuffer *fbo = mglGetSafeDrawFramebuffer(ctx, __FUNCTION__);
+        if (fbo) {
+            fbo->dirty_bits |= DIRTY_FBO_BINDING;
+        }
+    }
+}
+
+void mglEnable(GLMContext ctx, GLenum cap)
+{
+    GLuint clipIndex = 0;
+
+    if (mglClipDistanceIndex(ctx, cap, &clipIndex))
+    {
+        STATE(caps).clip_distances[clipIndex] = GL_TRUE;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
+        return;
+    }
+
+    switch(cap)
+    {
+        case GL_BLEND:
+            mglSetAllBlendEnables(ctx, GL_TRUE);
+            break;
+        case GL_LINE_SMOOTH: ENABLE_CAP(line_smooth);
+        case GL_POLYGON_SMOOTH: ENABLE_CAP(polygon_smooth);
+        case GL_CULL_FACE: ENABLE_CAP(cull_face);
+        case GL_DEPTH_TEST: ENABLE_CAP(depth_test);
+        case GL_STENCIL_TEST: ENABLE_CAP(stencil_test);
+        case GL_DITHER: ENABLE_CAP(dither);
+        case GL_SCISSOR_TEST:
+            mglSetAllScissorEnables(ctx, GL_TRUE);
+            break;
+        case GL_COLOR_LOGIC_OP: ENABLE_CAP(color_logic_op);
+        case GL_POLYGON_OFFSET_POINT: ENABLE_CAP(polygon_offset_point);
+        case GL_POLYGON_OFFSET_LINE: ENABLE_CAP(polygon_offset_line);
+        case GL_POLYGON_OFFSET_FILL: ENABLE_CAP(polygon_offset_fill);
+        case GL_PROGRAM_POINT_SIZE: ENABLE_CAP(program_point_size);
+        case GL_MULTISAMPLE: ENABLE_CAP(multisample);
+        case GL_SAMPLE_ALPHA_TO_COVERAGE: ENABLE_CAP(sample_alpha_to_coverage);
+        case GL_SAMPLE_ALPHA_TO_ONE: ENABLE_CAP(sample_alpha_to_one);
+        case GL_SAMPLE_COVERAGE: ENABLE_CAP(sample_coverage);
+        case GL_RASTERIZER_DISCARD: ENABLE_CAP(rasterizer_discard);
+        case GL_FRAMEBUFFER_SRGB: ENABLE_CAP(framebuffer_srgb);
+        case GL_PRIMITIVE_RESTART: ENABLE_CAP(primitive_restart);
+        case GL_DEPTH_CLAMP: ENABLE_CAP(depth_clamp);
+        case GL_TEXTURE_CUBE_MAP_SEAMLESS: ENABLE_CAP(texture_cube_map_seamless);
+        case GL_SAMPLE_MASK: ENABLE_CAP(sample_mask);
+        case GL_SAMPLE_SHADING: ENABLE_CAP(sample_shading);
+        case GL_PRIMITIVE_RESTART_FIXED_INDEX: ENABLE_CAP(primitive_restart_fixed_index);
+        case GL_DEBUG_OUTPUT_SYNCHRONOUS: ENABLE_CAP(debug_output_synchronous);
+        case GL_DEBUG_OUTPUT: ENABLE_CAP(debug_output);
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
+    if (cap == GL_BLEND ||
+        cap == GL_COLOR_LOGIC_OP ||
+        cap == GL_SAMPLE_ALPHA_TO_COVERAGE ||
+        cap == GL_SAMPLE_ALPHA_TO_ONE) {
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_ALPHA_STATE);
+    }
+    if (cap == GL_DEPTH_TEST || cap == GL_STENCIL_TEST || cap == GL_FRAMEBUFFER_SRGB) {
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_FBO);
+        Framebuffer *fbo = mglGetSafeDrawFramebuffer(ctx, __FUNCTION__);
+        if (fbo) {
+            fbo->dirty_bits |= DIRTY_FBO_BINDING;
+        }
+    }
+}
+
+void mglCullFace(GLMContext ctx, GLenum mode)
+{
+    switch(mode)
+    {
+        case GL_FRONT:
+        case GL_BACK:
+        case GL_FRONT_AND_BACK:
+            STATE(var).cull_face_mode = mode;
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+void mglFrontFace(GLMContext ctx, GLenum mode)
+{
+    switch(mode)
+    {
+        case GL_CW:
+        case GL_CCW:
+            STATE(var).front_face = mode;
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+#define HINT(_target_) STATE(hints)._target_ = mode; break;
+void mglHint(GLMContext ctx, GLenum target, GLenum mode)
+{
+    switch(target)
+    {
+        case GL_LINE_SMOOTH_HINT: HINT(line_smooth_hint);
+        case GL_POLYGON_SMOOTH_HINT: HINT(polygon_smooth_hint)
+        case GL_TEXTURE_COMPRESSION_HINT: HINT(texture_compression_hint);
+        case GL_FRAGMENT_SHADER_DERIVATIVE_HINT: HINT(fragment_shader_derivative_hint);
+            break;
+
+        case 0x8192: /* GL_GENERATE_MIPMAP_HINT -- ES-only enum, not in glcorearb */
+            /* GLES 3.2 keeps this one (it is the ES default hint target) and it
+             * has no effect on this backend -- the hint only selects a mipmap
+             * generation quality MGL does not vary.  Accept it instead of
+             * rejecting an enum ES clients are allowed to pass. */
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    mglMarkRendererDirtyBits(&ctx->state,
+                             DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
+}
+
+void mglLineWidth(GLMContext ctx, GLfloat width)
+{
+    ERROR_CHECK_RETURN(width > 0.0f, GL_INVALID_VALUE);
+
+    STATE(var).line_width = width;
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+void mglPointSize(GLMContext ctx, GLfloat size)
+{
+    ERROR_CHECK_RETURN(size > 0.0f, GL_INVALID_VALUE);
+
+    STATE(var).point_size = size;
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+void mglPolygonMode(GLMContext ctx, GLenum face, GLenum mode)
+{
+    if (face != GL_FRONT_AND_BACK)
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    switch(mode)
+    {
+        case GL_POINT:
+        case GL_LINE:
+        case GL_FILL:
+            STATE(var).polygon_mode = mode;
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+void mglScissor(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height)
+{
+    ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(height >= 0, GL_INVALID_VALUE);
+
+    STATE(var).scissor_box[0] = x;
+    STATE(var).scissor_box[1] = y;
+    STATE(var).scissor_box[2] = width;
+    STATE(var).scissor_box[3] = height;
+    for (int i = 0; i < MGL_MAX_VIEWPORTS; i++) {
+        STATE(scissor_box_array)[i][0] = x;
+        STATE(scissor_box_array)[i][1] = y;
+        STATE(scissor_box_array)[i][2] = width;
+        STATE(scissor_box_array)[i][3] = height;
+    }
+    STATE(scissor_box_defined) = GL_TRUE;
+
+    mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+void mglLogicOp(GLMContext ctx, GLenum opcode)
+{
+    switch(opcode)
+    {
+        case GL_CLEAR:
+        case GL_SET:
+        case GL_COPY:
+        case GL_COPY_INVERTED:
+        case GL_NOOP:
+        case GL_AND:
+        case GL_NAND:
+        case GL_OR:
+        case GL_NOR:
+        case GL_XOR:
+        case GL_EQUIV:
+        case GL_INVERT:
+        case GL_AND_REVERSE:
+        case GL_AND_INVERTED:
+        case GL_OR_REVERSE:
+        case GL_OR_INVERTED:
+            STATE(var).logic_op_mode = opcode;
+            STATE(var).logic_op = opcode;
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+void mglStencilFunc(GLMContext ctx, GLenum func, GLint ref, GLuint mask)
+{
+    switch(func)
+    {
+        case GL_LEQUAL:
+        case GL_GEQUAL:
+        case GL_LESS:
+        case GL_GREATER:
+        case GL_EQUAL:
+        case GL_NOTEQUAL:
+        case GL_ALWAYS:
+        case GL_NEVER:
+            STATE(var).stencil_func = func;
+            STATE(var).stencil_back_func = func;
+            STATE(var).stencil_ref = ref;
+            STATE(var).stencil_back_ref = ref;
+            STATE(var).stencil_value_mask = mask;
+            STATE(var).stencil_back_value_mask = mask;
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+static bool validStencilOpSeparate(GLMContext ctx, GLenum op)
+{
+    switch(op)
+    {
+        case GL_KEEP:
+        case GL_ZERO:
+        case GL_REPLACE:
+        case GL_INCR:
+        case GL_INCR_WRAP:
+        case GL_DECR:
+        case GL_DECR_WRAP:
+        case GL_INVERT:
+            return true;
+    }
+
+    return false;
+}
+
+void mglStencilOp(GLMContext ctx, GLenum fail, GLenum zfail, GLenum zpass)
+{
+    ERROR_CHECK_RETURN(validStencilOpSeparate(ctx, fail), GL_INVALID_ENUM);
+    ERROR_CHECK_RETURN(validStencilOpSeparate(ctx, zfail), GL_INVALID_ENUM);
+    ERROR_CHECK_RETURN(validStencilOpSeparate(ctx, zpass), GL_INVALID_ENUM);
+
+    STATE(var).stencil_fail = fail;
+    STATE(var).stencil_pass_depth_fail = zfail;
+    STATE(var).stencil_pass_depth_pass = zpass;
+    STATE(var).stencil_back_fail = fail;
+    STATE(var).stencil_back_pass_depth_fail = zfail;
+    STATE(var).stencil_back_pass_depth_pass = zpass;
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+
+void mglStencilMask(GLMContext ctx, GLuint mask)
+{
+    STATE(var).stencil_writemask = mask;
+    STATE(var).stencil_back_writemask = mask;
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+void mglColorMask(GLMContext ctx, GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha)
+{
+    if (!ctx) {
+        return;
+    }
+
+    red = red ? GL_TRUE : GL_FALSE;
+    green = green ? GL_TRUE : GL_FALSE;
+    blue = blue ? GL_TRUE : GL_FALSE;
+    alpha = alpha ? GL_TRUE : GL_FALSE;
+
+    if (red == GL_FALSE || green == GL_FALSE || blue == GL_FALSE || alpha == GL_FALSE)
+    {
+        for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
+        {
+            STATE(caps.use_color_mask[i]) = true;
+
+            STATE(var).color_writemask[i][0] = red;
+            STATE(var).color_writemask[i][1] = green;
+            STATE(var).color_writemask[i][2] = blue;
+            STATE(var).color_writemask[i][3] = alpha;
+
+        }
+    }
+    else
+    {
+        for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
+        {
+            STATE(caps.use_color_mask[i]) = false;
+
+            STATE(var).color_writemask[i][0] = GL_TRUE;
+            STATE(var).color_writemask[i][1] = GL_TRUE;
+            STATE(var).color_writemask[i][2] = GL_TRUE;
+            STATE(var).color_writemask[i][3] = GL_TRUE;
+        }
+    }
+
+    // Metal color write masks are baked into MTLRenderPipelineState, not a
+    // dynamic encoder state. Rebuild the pipeline whenever GL_COLOR_WRITEMASK
+    // changes; otherwise a depth-only pass can poison later color draws.
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE | DIRTY_ALPHA_STATE);
+}
+
+void mglDepthMask(GLMContext ctx, GLboolean flag)
+{
+    STATE(var).depth_writemask = flag ? GL_TRUE : GL_FALSE;
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+void mglStencilOpSeparate(GLMContext ctx, GLenum face, GLenum sfail, GLenum dpfail, GLenum dppass)
+{
+    ERROR_CHECK_RETURN(validStencilOpSeparate(ctx, sfail), GL_INVALID_ENUM);
+    ERROR_CHECK_RETURN(validStencilOpSeparate(ctx, dpfail), GL_INVALID_ENUM);
+    ERROR_CHECK_RETURN(validStencilOpSeparate(ctx, dppass), GL_INVALID_ENUM);
+
+    switch(face)
+    {
+        case GL_FRONT:
+            STATE(var).stencil_fail = sfail;
+            STATE(var).stencil_pass_depth_fail = dpfail;
+            STATE(var).stencil_pass_depth_pass = dppass;
+            break;
+
+        case GL_BACK:
+            STATE(var).stencil_back_fail = sfail;
+            STATE(var).stencil_back_pass_depth_fail = dpfail;
+            STATE(var).stencil_back_pass_depth_pass = dppass;
+            break;
+
+        case GL_FRONT_AND_BACK:
+            STATE(var).stencil_fail = sfail;
+            STATE(var).stencil_pass_depth_fail = dpfail;
+            STATE(var).stencil_pass_depth_pass = dppass;
+            STATE(var).stencil_back_fail = sfail;
+            STATE(var).stencil_back_pass_depth_fail = dpfail;
+            STATE(var).stencil_back_pass_depth_pass = dppass;
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+void mglStencilFuncSeparate(GLMContext ctx, GLenum face, GLenum func, GLint ref, GLuint mask)
+{
+    switch(func)
+    {
+        case GL_LEQUAL:
+        case GL_GEQUAL:
+        case GL_LESS:
+        case GL_GREATER:
+        case GL_EQUAL:
+        case GL_NOTEQUAL:
+        case GL_ALWAYS:
+        case GL_NEVER:
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+    }
+
+    switch(face)
+    {
+        case GL_FRONT:
+            STATE(var).stencil_func = func;
+            STATE(var).stencil_ref = ref;
+            STATE(var).stencil_value_mask = mask;
+            break;
+
+        case GL_BACK:
+            STATE(var).stencil_back_func = func;
+            STATE(var).stencil_back_ref = ref;
+            STATE(var).stencil_back_value_mask = mask;
+            break;
+
+        case GL_FRONT_AND_BACK:
+            STATE(var).stencil_func = func;
+            STATE(var).stencil_ref = ref;
+            STATE(var).stencil_value_mask = mask;
+            STATE(var).stencil_back_func = func;
+            STATE(var).stencil_back_ref = ref;
+            STATE(var).stencil_back_value_mask = mask;
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+void mglStencilMaskSeparate(GLMContext ctx, GLenum face, GLuint mask)
+{
+    switch(face)
+    {
+        case GL_FRONT:
+            STATE(var).stencil_writemask = mask;
+            break;
+
+        case GL_BACK:
+            STATE(var).stencil_back_writemask = mask;
+            break;
+
+        case GL_FRONT_AND_BACK:
+            STATE(var).stencil_writemask = mask;
+            STATE(var).stencil_back_writemask = mask;
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+void mglDepthFunc(GLMContext ctx, GLenum func)
+{
+    switch(func)
+    {
+        case GL_LEQUAL:
+        case GL_GEQUAL:
+        case GL_LESS:
+        case GL_GREATER:
+        case GL_EQUAL:
+        case GL_NOTEQUAL:
+        case GL_ALWAYS:
+        case GL_NEVER:
+            STATE(var).depth_func = func;
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+static GLdouble _clamp(GLdouble a)
+{
+    if (a < 0.0)
+        a = 0.0;
+    else if (a > 1.0)
+        a = 1.0;
+
+    return a;
+}
+
+void mglDepthRange(GLMContext ctx, GLdouble n, GLdouble f)
+{
+    n = _clamp(n);
+    f = _clamp(f);
+
+    STATE(var).depth_range[0] = n;
+    STATE(var).depth_range[1] = f;
+    for (int i = 0; i < MGL_MAX_VIEWPORTS; i++) {
+        STATE(depth_range_array)[i][0] = n;
+        STATE(depth_range_array)[i][1] = f;
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+void mglViewport(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height)
+{
+    ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(height >= 0, GL_INVALID_VALUE);
+
+    if (ctx &&
+        (STATE(viewport)[0] != x ||
+         STATE(viewport)[1] != y ||
+         STATE(viewport)[2] != width ||
+         STATE(viewport)[3] != height)) {
+        mglFlushPendingDraws(ctx);
+    }
+
+    STATE(viewport)[0] = x;
+    STATE(viewport)[1] = y;
+    STATE(viewport)[2] = width;
+    STATE(viewport)[3] = height;
+    /* GL 4.6 §13.6.1: Viewport() writes every viewport index. */
+    for (int i = 0; i < MGL_MAX_VIEWPORTS; i++) {
+        STATE(viewport_array)[i][0] = (GLfloat)x;
+        STATE(viewport_array)[i][1] = (GLfloat)y;
+        STATE(viewport_array)[i][2] = (GLfloat)width;
+        STATE(viewport_array)[i][3] = (GLfloat)height;
+    }
+    /* First window-sized Viewport() is the attach: seed scissor to match
+     * (§14.9.2) so a later surface size (CTS FBO 256) is not left at the
+     * dummy CGL 1024×768 from context alloc. glScissor sets the flag. */
+    if (!STATE(scissor_box_defined)) {
+        STATE(var).scissor_box[0] = x;
+        STATE(var).scissor_box[1] = y;
+        STATE(var).scissor_box[2] = width;
+        STATE(var).scissor_box[3] = height;
+        for (int i = 0; i < MGL_MAX_VIEWPORTS; i++) {
+            STATE(scissor_box_array)[i][0] = x;
+            STATE(scissor_box_array)[i][1] = y;
+            STATE(scissor_box_array)[i][2] = width;
+            STATE(scissor_box_array)[i][3] = height;
+        }
+        STATE(scissor_box_defined) = GL_TRUE;
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
+}
+
+#define RET_VAR(_VAR_, _DEFAULT_)  return (STATE(var)._VAR_ == _DEFAULT_)
+#define RET_CAP(_CAP_)  *enabled = STATE(caps)._CAP_; return GL_TRUE
+
+GLboolean mglGetCapState(GLMContext ctx, GLenum cap, GLboolean *enabled)
+{
+    GLuint clipIndex = 0;
+    if (mglClipDistanceIndex(ctx, cap, &clipIndex))
+    {
+        *enabled = STATE(caps).clip_distances[clipIndex];
+        return GL_TRUE;
+    }
+
+    switch(cap)
+    {
+        case GL_BLEND: RET_CAP(blend);
+        case GL_COLOR_LOGIC_OP: RET_CAP(color_logic_op);
+        case GL_CULL_FACE: RET_CAP(cull_face);
+        case GL_DEPTH_CLAMP: RET_CAP(depth_clamp);
+        case GL_DEBUG_OUTPUT: RET_CAP(debug_output);
+        case GL_DEBUG_OUTPUT_SYNCHRONOUS: RET_CAP(debug_output_synchronous);
+        case GL_DEPTH_TEST: RET_CAP(depth_test);
+        case GL_DITHER: RET_CAP(dither);
+        case GL_FRAMEBUFFER_SRGB: RET_CAP(framebuffer_srgb);
+        case GL_LINE_SMOOTH: RET_CAP(line_smooth);
+        case GL_MULTISAMPLE: RET_CAP(multisample);
+        case GL_POLYGON_SMOOTH: RET_CAP(polygon_smooth);
+        case GL_POLYGON_OFFSET_FILL: RET_CAP(polygon_offset_fill);
+        case GL_POLYGON_OFFSET_LINE: RET_CAP(polygon_offset_line);
+        case GL_POLYGON_OFFSET_POINT: RET_CAP(polygon_offset_point);
+        case GL_PROGRAM_POINT_SIZE: RET_CAP(program_point_size);
+        case GL_PRIMITIVE_RESTART: RET_CAP(primitive_restart);
+        case GL_PRIMITIVE_RESTART_FIXED_INDEX: RET_CAP(primitive_restart_fixed_index);
+        case GL_SAMPLE_ALPHA_TO_COVERAGE: RET_CAP(sample_alpha_to_coverage);
+        case GL_SAMPLE_ALPHA_TO_ONE: RET_CAP(sample_alpha_to_one);
+        case GL_SAMPLE_COVERAGE: RET_CAP(sample_coverage);
+        case GL_SAMPLE_MASK: RET_CAP(sample_mask);
+        case GL_SAMPLE_SHADING: RET_CAP(sample_shading);
+        case GL_SCISSOR_TEST: RET_CAP(scissor_test);
+        case GL_STENCIL_TEST: RET_CAP(stencil_test);
+        case GL_TEXTURE_CUBE_MAP_SEAMLESS: RET_CAP(texture_cube_map_seamless);
+        case GL_RASTERIZER_DISCARD: RET_CAP(rasterizer_discard);
+    }
+
+    return GL_FALSE;
+}
+
+GLboolean mglIsEnabled(GLMContext ctx, GLenum cap)
+{
+    GLboolean enabled = GL_FALSE;
+    if (!mglGetCapState(ctx, cap, &enabled))
+        ERROR_RETURN_VALUE(GL_INVALID_ENUM, GL_FALSE);
+    return enabled;
+}
+
+void mglEnablei(GLMContext ctx, GLenum target, GLuint index)
+{
+    if (!ctx)
+        return;
+
+    if (target == GL_BLEND)
+    {
+        if (index < MAX_COLOR_ATTACHMENTS)
+        {
+            STATE(caps).blendi[index] = GL_TRUE;
+            mglRecomputeGlobalBlendEnable(ctx);
+            mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
+
+            return;
+        }
+
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (target == GL_SCISSOR_TEST)
+    {
+        if (index < mglEffectiveMaxViewports(ctx))
+        {
+            STATE(caps).scissor_testi[index] = GL_TRUE;
+            if (index == 0)
+                mglUpdateGlobalScissorEnableFromIndexZero(ctx);
+            mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
+            return;
+        }
+
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    ERROR_RETURN(GL_INVALID_ENUM);
+}
+
+void mglDisablei(GLMContext ctx, GLenum target, GLuint index)
+{
+    if (!ctx)
+        return;
+
+    if (target == GL_BLEND)
+    {
+        if (index < MAX_COLOR_ATTACHMENTS)
+        {
+            STATE(caps).blendi[index] = GL_FALSE;
+            mglRecomputeGlobalBlendEnable(ctx);
+            mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
+
+            return;
+        }
+
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (target == GL_SCISSOR_TEST)
+    {
+        if (index < mglEffectiveMaxViewports(ctx))
+        {
+            STATE(caps).scissor_testi[index] = GL_FALSE;
+            if (index == 0)
+                mglUpdateGlobalScissorEnableFromIndexZero(ctx);
+            mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
+            return;
+        }
+
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    ERROR_RETURN(GL_INVALID_ENUM);
+}
+
+GLboolean mglIsEnabledi(GLMContext ctx, GLenum target, GLuint index)
+{
+    if (!ctx)
+        return GL_FALSE;
+
+    if (target == GL_BLEND)
+    {
+        if (index < MAX_COLOR_ATTACHMENTS)
+        {
+            return STATE(caps).blendi[index];
+        }
+
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+
+    if (target == GL_SCISSOR_TEST)
+    {
+        if (index < mglEffectiveMaxViewports(ctx))
+        {
+            return STATE(caps).scissor_testi[index];
+        }
+
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+
+    ERROR_RETURN_VALUE(GL_INVALID_ENUM, false);
+}
+
+void mglClearDepthf(GLMContext ctx, GLfloat d)
+{
+    STATE(var).depth_clear_value = _clamp(d);
+    mglMarkRendererDirtyBits(&ctx->state, DIRTY_STATE);
+}
+
+void mglBlendColor(GLMContext ctx, GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha)
+{
+    STATE(var).blend_color[0] = red;
+    STATE(var).blend_color[1] = green;
+    STATE(var).blend_color[2] = blue;
+    STATE(var).blend_color[3] = alpha;
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
+}
+
+void mglBlendEquation(GLMContext ctx, GLenum mode)
+{
+    switch(mode)
+    {
+        case GL_FUNC_ADD:
+        case GL_FUNC_SUBTRACT:
+        case GL_FUNC_REVERSE_SUBTRACT:
+        case GL_MIN:
+        case GL_MAX:
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
+    {
+        STATE(var).blend_equation_rgb[i] = mode;
+        STATE(var).blend_equation_alpha[i] = mode;
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
+}
+
+void mglBlendEquationi(GLMContext ctx, GLuint buf, GLenum mode)
+{
+    switch(mode)
+    {
+        case GL_FUNC_ADD:
+        case GL_FUNC_SUBTRACT:
+        case GL_FUNC_REVERSE_SUBTRACT:
+        case GL_MIN:
+        case GL_MAX:
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    ERROR_CHECK_RETURN(buf >=0 && buf < MAX_COLOR_ATTACHMENTS, GL_INVALID_VALUE);
+
+    STATE(var).blend_equation_rgb[buf] = mode;
+    STATE(var).blend_equation_alpha[buf] = mode;
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
+}
+
+void mglBlendEquationSeparatei(GLMContext ctx, GLuint buf, GLenum modeRGB, GLenum modeAlpha)
+{
+    switch(modeRGB)
+    {
+        case GL_FUNC_ADD:
+        case GL_FUNC_SUBTRACT:
+        case GL_FUNC_REVERSE_SUBTRACT:
+        case GL_MIN:
+        case GL_MAX:
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    switch(modeAlpha)
+    {
+        case GL_FUNC_ADD:
+        case GL_FUNC_SUBTRACT:
+        case GL_FUNC_REVERSE_SUBTRACT:
+        case GL_MIN:
+        case GL_MAX:
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    ERROR_CHECK_RETURN(buf >= 0 && buf < MAX_COLOR_ATTACHMENTS, GL_INVALID_VALUE);
+
+    STATE(var).blend_equation_rgb[buf] = modeRGB;
+    STATE(var).blend_equation_alpha[buf] = modeAlpha;
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
+}
+
+void mglBlendFunc(GLMContext ctx, GLenum sfactor, GLenum dfactor)
+{
+    switch(sfactor)
+    {
+        case GL_ZERO:
+        case GL_ONE:
+        case GL_SRC_COLOR:
+        case GL_ONE_MINUS_SRC_COLOR:
+        case GL_DST_COLOR:
+        case GL_ONE_MINUS_DST_COLOR:
+        case GL_SRC_ALPHA:
+        case GL_ONE_MINUS_SRC_ALPHA:
+        case GL_DST_ALPHA:
+        case GL_ONE_MINUS_DST_ALPHA:
+        case GL_CONSTANT_COLOR:
+        case GL_ONE_MINUS_CONSTANT_COLOR:
+        case GL_CONSTANT_ALPHA:
+        case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC_ALPHA_SATURATE:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    switch(dfactor)
+    {
+        case GL_ZERO:
+        case GL_ONE:
+        case GL_SRC_COLOR:
+        case GL_ONE_MINUS_SRC_COLOR:
+        case GL_DST_COLOR:
+        case GL_ONE_MINUS_DST_COLOR:
+        case GL_SRC_ALPHA:
+        case GL_ONE_MINUS_SRC_ALPHA:
+        case GL_DST_ALPHA:
+        case GL_ONE_MINUS_DST_ALPHA:
+        case GL_CONSTANT_COLOR:
+        case GL_ONE_MINUS_CONSTANT_COLOR:
+        case GL_CONSTANT_ALPHA:
+        case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
+    {
+        STATE(var).blend_src_rgb[i] = sfactor;
+        STATE(var).blend_src_alpha[i] = sfactor;
+        STATE(var).blend_dst_rgb[i] = dfactor;
+        STATE(var).blend_dst_alpha[i] = dfactor;
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
+}
+
+void mglBlendFunci(GLMContext ctx, GLuint buf, GLenum sfactor, GLenum dfactor)
+{
+    switch(sfactor)
+    {
+        case GL_ZERO:
+        case GL_ONE:
+        case GL_SRC_COLOR:
+        case GL_ONE_MINUS_SRC_COLOR:
+        case GL_DST_COLOR:
+        case GL_ONE_MINUS_DST_COLOR:
+        case GL_SRC_ALPHA:
+        case GL_ONE_MINUS_SRC_ALPHA:
+        case GL_DST_ALPHA:
+        case GL_ONE_MINUS_DST_ALPHA:
+        case GL_CONSTANT_COLOR:
+        case GL_ONE_MINUS_CONSTANT_COLOR:
+        case GL_CONSTANT_ALPHA:
+        case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC_ALPHA_SATURATE:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    switch(dfactor)
+    {
+        case GL_ZERO:
+        case GL_ONE:
+        case GL_SRC_COLOR:
+        case GL_ONE_MINUS_SRC_COLOR:
+        case GL_DST_COLOR:
+        case GL_ONE_MINUS_DST_COLOR:
+        case GL_SRC_ALPHA:
+        case GL_ONE_MINUS_SRC_ALPHA:
+        case GL_DST_ALPHA:
+        case GL_ONE_MINUS_DST_ALPHA:
+        case GL_CONSTANT_COLOR:
+        case GL_ONE_MINUS_CONSTANT_COLOR:
+        case GL_CONSTANT_ALPHA:
+        case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    ERROR_CHECK_RETURN(buf >=0 && buf < MAX_COLOR_ATTACHMENTS, GL_INVALID_VALUE);
+
+    STATE(var).blend_src_rgb[buf] = sfactor;
+    STATE(var).blend_src_alpha[buf] = sfactor;
+    STATE(var).blend_dst_rgb[buf] = dfactor;
+    STATE(var).blend_dst_alpha[buf] = dfactor;
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
+}
+
+void mglBlendFuncSeparatei(GLMContext ctx, GLuint buf, GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha)
+{
+    switch(srcRGB)
+    {
+        case GL_ZERO:
+        case GL_ONE:
+        case GL_SRC_COLOR:
+        case GL_ONE_MINUS_SRC_COLOR:
+        case GL_DST_COLOR:
+        case GL_ONE_MINUS_DST_COLOR:
+        case GL_SRC_ALPHA:
+        case GL_ONE_MINUS_SRC_ALPHA:
+        case GL_DST_ALPHA:
+        case GL_ONE_MINUS_DST_ALPHA:
+        case GL_CONSTANT_COLOR:
+        case GL_ONE_MINUS_CONSTANT_COLOR:
+        case GL_CONSTANT_ALPHA:
+        case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC_ALPHA_SATURATE:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    switch(dstRGB)
+    {
+        case GL_ZERO:
+        case GL_ONE:
+        case GL_SRC_COLOR:
+        case GL_ONE_MINUS_SRC_COLOR:
+        case GL_DST_COLOR:
+        case GL_ONE_MINUS_DST_COLOR:
+        case GL_SRC_ALPHA:
+        case GL_ONE_MINUS_SRC_ALPHA:
+        case GL_DST_ALPHA:
+        case GL_ONE_MINUS_DST_ALPHA:
+        case GL_CONSTANT_COLOR:
+        case GL_ONE_MINUS_CONSTANT_COLOR:
+        case GL_CONSTANT_ALPHA:
+        case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    switch(srcAlpha)
+    {
+        case GL_ZERO:
+        case GL_ONE:
+        case GL_SRC_COLOR:
+        case GL_ONE_MINUS_SRC_COLOR:
+        case GL_DST_COLOR:
+        case GL_ONE_MINUS_DST_COLOR:
+        case GL_SRC_ALPHA:
+        case GL_ONE_MINUS_SRC_ALPHA:
+        case GL_DST_ALPHA:
+        case GL_ONE_MINUS_DST_ALPHA:
+        case GL_CONSTANT_COLOR:
+        case GL_ONE_MINUS_CONSTANT_COLOR:
+        case GL_CONSTANT_ALPHA:
+        case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC_ALPHA_SATURATE:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    switch(dstAlpha)
+    {
+        case GL_ZERO:
+        case GL_ONE:
+        case GL_SRC_COLOR:
+        case GL_ONE_MINUS_SRC_COLOR:
+        case GL_DST_COLOR:
+        case GL_ONE_MINUS_DST_COLOR:
+        case GL_SRC_ALPHA:
+        case GL_ONE_MINUS_SRC_ALPHA:
+        case GL_DST_ALPHA:
+        case GL_ONE_MINUS_DST_ALPHA:
+        case GL_CONSTANT_COLOR:
+        case GL_ONE_MINUS_CONSTANT_COLOR:
+        case GL_CONSTANT_ALPHA:
+        case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    ERROR_CHECK_RETURN(buf < MAX_COLOR_ATTACHMENTS, GL_INVALID_VALUE);
+
+    STATE(var).blend_src_rgb[buf] = srcRGB;
+    STATE(var).blend_dst_rgb[buf] = dstRGB;
+    STATE(var).blend_src_alpha[buf] = srcAlpha;
+    STATE(var).blend_dst_alpha[buf] = dstAlpha;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
+}
+
+void mglBlendEquationSeparate(GLMContext ctx, GLenum modeRGB, GLenum modeAlpha)
+{
+    switch(modeRGB)
+    {
+        case GL_FUNC_ADD:
+        case GL_FUNC_SUBTRACT:
+        case GL_FUNC_REVERSE_SUBTRACT:
+        case GL_MIN:
+        case GL_MAX:
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    switch(modeAlpha)
+    {
+        case GL_FUNC_ADD:
+        case GL_FUNC_SUBTRACT:
+        case GL_FUNC_REVERSE_SUBTRACT:
+        case GL_MIN:
+        case GL_MAX:
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++)
+    {
+        STATE(var).blend_equation_rgb[i] = modeRGB;
+        STATE(var).blend_equation_alpha[i] = modeAlpha;
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
+}
+
+
+void mglGetPointerv(GLMContext ctx, GLenum pname, void **params)
+{
+    if (!params)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    switch (pname)
+    {
+        case GL_DEBUG_CALLBACK_FUNCTION:
+            *params = (void *)ctx->debug_callback;
+            return;
+        case GL_DEBUG_CALLBACK_USER_PARAM:
+            *params = (void *)ctx->debug_callback_user;
+            return;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+}
+
+void mglPolygonOffset(GLMContext ctx, GLfloat factor, GLfloat units)
+{
+    if (!ctx)
+        return;
+
+    STATE(var).polygon_offset_factor = factor;
+    STATE(var).polygon_offset_units = units;
+    STATE(var).polygon_offset_clamp = 0.0f;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
+}
+
+void mglBlendFuncSeparate(GLMContext ctx, GLenum sfactorRGB, GLenum dfactorRGB, GLenum sfactorAlpha, GLenum dfactorAlpha)
+{
+    switch(sfactorRGB)
+    {
+        case GL_ZERO:
+        case GL_ONE:
+        case GL_SRC_COLOR:
+        case GL_ONE_MINUS_SRC_COLOR:
+        case GL_DST_COLOR:
+        case GL_ONE_MINUS_DST_COLOR:
+        case GL_SRC_ALPHA:
+        case GL_ONE_MINUS_SRC_ALPHA:
+        case GL_DST_ALPHA:
+        case GL_ONE_MINUS_DST_ALPHA:
+        case GL_CONSTANT_COLOR:
+        case GL_ONE_MINUS_CONSTANT_COLOR:
+        case GL_CONSTANT_ALPHA:
+        case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC_ALPHA_SATURATE:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    switch(dfactorRGB)
+    {
+        case GL_ZERO:
+        case GL_ONE:
+        case GL_SRC_COLOR:
+        case GL_ONE_MINUS_SRC_COLOR:
+        case GL_DST_COLOR:
+        case GL_ONE_MINUS_DST_COLOR:
+        case GL_SRC_ALPHA:
+        case GL_ONE_MINUS_SRC_ALPHA:
+        case GL_DST_ALPHA:
+        case GL_ONE_MINUS_DST_ALPHA:
+        case GL_CONSTANT_COLOR:
+        case GL_ONE_MINUS_CONSTANT_COLOR:
+        case GL_CONSTANT_ALPHA:
+        case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    switch(sfactorAlpha)
+    {
+        case GL_ZERO:
+        case GL_ONE:
+        case GL_SRC_COLOR:
+        case GL_ONE_MINUS_SRC_COLOR:
+        case GL_DST_COLOR:
+        case GL_ONE_MINUS_DST_COLOR:
+        case GL_SRC_ALPHA:
+        case GL_ONE_MINUS_SRC_ALPHA:
+        case GL_DST_ALPHA:
+        case GL_ONE_MINUS_DST_ALPHA:
+        case GL_CONSTANT_COLOR:
+        case GL_ONE_MINUS_CONSTANT_COLOR:
+        case GL_CONSTANT_ALPHA:
+        case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC_ALPHA_SATURATE:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    switch(dfactorAlpha)
+    {
+        case GL_ZERO:
+        case GL_ONE:
+        case GL_SRC_COLOR:
+        case GL_ONE_MINUS_SRC_COLOR:
+        case GL_DST_COLOR:
+        case GL_ONE_MINUS_DST_COLOR:
+        case GL_SRC_ALPHA:
+        case GL_ONE_MINUS_SRC_ALPHA:
+        case GL_DST_ALPHA:
+        case GL_ONE_MINUS_DST_ALPHA:
+        case GL_CONSTANT_COLOR:
+        case GL_ONE_MINUS_CONSTANT_COLOR:
+        case GL_CONSTANT_ALPHA:
+        case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++)
+    {
+        STATE(var).blend_src_rgb[i] = sfactorRGB;
+        STATE(var).blend_dst_rgb[i] = dfactorRGB;
+        STATE(var).blend_src_alpha[i] = sfactorAlpha;
+        STATE(var).blend_dst_alpha[i] = dfactorAlpha;
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
+}
+
+void mglPointParameterf(GLMContext ctx, GLenum pname, GLfloat param)
+{
+    switch (pname)
+    {
+        case GL_POINT_FADE_THRESHOLD_SIZE:
+            if (param < 0.0f)
+                ERROR_RETURN(GL_INVALID_VALUE);
+            else
+                STATE(var).point_fade_threshold_size = param;
+            return;
+        case GL_POINT_SPRITE_COORD_ORIGIN:
+            mglPointParameteri(ctx, pname, (GLint)param);
+            return;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+}
+
+void mglPointParameterfv(GLMContext ctx, GLenum pname, const GLfloat *params)
+{
+    if (!params)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    mglPointParameterf(ctx, pname, *params);
+}
+
+void mglPointParameteri(GLMContext ctx, GLenum pname, GLint param)
+{
+    switch (pname)
+    {
+        case GL_POINT_FADE_THRESHOLD_SIZE:
+            mglPointParameterf(ctx, pname, (GLfloat)param);
+            return;
+        case GL_POINT_SPRITE_COORD_ORIGIN:
+            if (param != GL_LOWER_LEFT && param != GL_UPPER_LEFT)
+                ERROR_RETURN(GL_INVALID_ENUM);
+            else {
+                STATE(var).point_sprite_coord_origin = (GLenum)param;
+                mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
+            }
+            return;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+}
+
+void mglPointParameteriv(GLMContext ctx, GLenum pname, const GLint *params)
+{
+    if (!params)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    mglPointParameteri(ctx, pname, *params);
+}

@@ -19,7 +19,7 @@
 #include "mgl_attachment_binding.h" /* mglRendererBindFramebufferAttachmentTextures */
 #include "mgl_renderer_binding_ops.h"  /* binding set / invalidate entries */
 #include "mgl_blit_pipelines.h"     /* mglBlitClearRectPipeline / DepthState */
-#include "mgl_blit_sampled_copy.h"  /* mglBlitFlipRenderTargetStorageForFirstWrite */
+#include "mgl_rt_sync.h"  /* mglRenderTargetMarkGPUAuthoritative */
 #include "mgl_metal_ref.h"          /* mglReleaseMetalObjNoNull */
 #include "mgl_draw_buffer.h"        /* mglMetal* draw-buffer mapping */
 #include "mgl_renderer_backend.h"
@@ -35,10 +35,14 @@
 #include "mgl_renderer_host.h"          /* mglMarkTextureLevelRenderTargetWritten */
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_render_encoder_ops.h" /* mglRenderPassNewCommandBufferLocked */
+#include "mgl_ms_sample_loop.h" /* broadcast after scissored MS clear */
 
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
+#include "mgl_pso_format_class.h"
+#include "mgl_texture_backend.h"
+#include "mgl_raster_orientation_state.h"
 
 /* The .m's file-local constants this TU needs (values copied verbatim from
  * MGLRenderer.m's enum). */
@@ -87,11 +91,8 @@ extern MGLSizeValue mglPlatformShellApplyPendingDrawableSize(void *renderer);
 void *mglBlitClearRectDepthState(void *renderer);
 
 /* MGL_STATE(ctx) twin (same shape as mgl_render_pass_manager_ops.c). */
-static GLMState *mglPdState(const MGLRendererStateAreas *areas)
+static GLMState *mglPdState(const MGLRendererStateAreas *areas) /* C5-EXEMPT: read helper for the write side */
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 
@@ -280,17 +281,14 @@ static int mglPdClearColorIsInteger(void *texture)
     return kind == MGLTextureDataKindUint || kind == MGLTextureDataKindSint;
 }
 
-/* The clear draws address the attachment as flipped render-target storage. */
 static int mglPdBindClearTarget(void *renderer, Texture *tex)
 {
     tex->is_render_target = 1;
-    if (!mglRendererBindMTLTexture(renderer, tex) || !tex->mtl_data) {
+    if (!mglRendererBindMTLTexture(renderer, tex) || !mglTextureMtl(tex)) {
         return 0;
     }
-    if (tex->mtl_render_target_write_version == 0u) {
-        mglRendererEndRenderEncodingLocked(renderer);
-    }
-    return mglBlitFlipRenderTargetStorageForFirstWrite(renderer, tex);
+    mglRenderTargetMarkGPUAuthoritative(tex);
+    return 1;
 }
 
 /* Clears reach every layer of a layered attachment (§9.8). */
@@ -422,10 +420,14 @@ static void mglPdClearRectDraw(void *renderer, GLMContext glm_ctx,
     const GLint clearW = x1 - x0;
     const GLint clearH = y1 - y0;
     GLint metalY = y0;
-    if (mglRenderClipOriginIsLowerLeft((uint32_t)glState->var.clip_origin)) {
-        metalY = (GLint)passHeight - y1;
-        if (metalY < 0) {
-            metalY = 0;
+    {
+        const MGLRasterOrientationPlan orientation =
+            mglRasterOrientationForState(glState);
+        if (orientation.scissor_from_top) {
+            metalY = (GLint)passHeight - y1;
+            if (metalY < 0) {
+                metalY = 0;
+            }
         }
     }
 
@@ -474,9 +476,11 @@ static void mglPdClearRectDraw(void *renderer, GLMContext glm_ctx,
         dsDesc.front = stencilDesc;
         dsDesc.back = stencilDesc;
         depthStencilState = NULL;
-        if (areas->pipeline_cache_depth_stencil_state_for_value_state) {
-            areas->pipeline_cache_depth_stencil_state_for_value_state(
-                areas->pipeline_cache_object, &dsDesc, &depthStencilState);
+        const MGLPipelineCachePort cache =
+            mglRendererPipelineCachePort(renderer);
+        if (cache.depth_stencil_state_for_value_state) {
+            cache.depth_stencil_state_for_value_state(
+                cache.object, &dsDesc, &depthStencilState);
         }
     }
     const uint32_t stencilClearValue = values->stencil & 0xffu;
@@ -781,7 +785,7 @@ static void mglPdClearRects(void *renderer, GLMContext glm_ctx, unsigned int mas
                 }
                 colors[colorCount].tex_obj = texObj;
                 colors[colorCount].attachment = attachment;
-                colors[colorCount].texture = texObj->mtl_data;
+                colors[colorCount].texture = mglTextureMtl(texObj);
                 colors[colorCount].subresource =
                     mglMetalAttachmentSubresourceForAttachment(attachment);
                 colors[colorCount].write_mask = writeMask;
@@ -793,7 +797,7 @@ static void mglPdClearRects(void *renderer, GLMContext glm_ctx, unsigned int mas
             ds.depth_attachment = &fbo->depth;
             ds.depth_obj = mglRendererAttachmentTextureFor(glm_ctx, &fbo->depth);
             if (ds.depth_obj && mglPdBindClearTarget(renderer, ds.depth_obj)) {
-                ds.depth_texture = ds.depth_obj->mtl_data;
+                ds.depth_texture = mglTextureMtl(ds.depth_obj);
                 ds.depth_subresource =
                     mglMetalAttachmentSubresourceForAttachment(&fbo->depth);
             }
@@ -802,7 +806,7 @@ static void mglPdClearRects(void *renderer, GLMContext glm_ctx, unsigned int mas
             ds.stencil_attachment = &fbo->stencil;
             ds.stencil_obj = mglRendererAttachmentTextureFor(glm_ctx, &fbo->stencil);
             if (ds.stencil_obj && mglPdBindClearTarget(renderer, ds.stencil_obj)) {
-                ds.stencil_texture = ds.stencil_obj->mtl_data;
+                ds.stencil_texture = mglTextureMtl(ds.stencil_obj);
                 ds.stencil_subresource =
                     mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
             }
@@ -927,6 +931,12 @@ static void mglPdClearRects(void *renderer, GLMContext glm_ctx, unsigned int mas
                                values, rawX, rawY, rawW, rawH);
         }
     }
+
+    /* Scissored clear only draws into the attached MS sample plane.  Copy
+     * plane 0 onto the remaining planes so a later blit-resolve does not
+     * average in uncleared samples (MS→SS color_config_test → 0.25). */
+    mglRendererBroadcastEmulatedMSSamplePlanesAfterDrawIfNeeded(renderer,
+                                                                glm_ctx);
 
     mglMarkRendererDirtyBits(glm_ctx->active_state,
                              DIRTY_FBO | DIRTY_RENDER_STATE);

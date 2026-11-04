@@ -61,6 +61,243 @@ extern "C" {
 uint32_t mglRenderGLIndexElementSize(uint64_t gl_index_type);
 uint32_t mglRenderReadGLIndexValue(const uint8_t *bytes, uint32_t elem_width,
                                       uint64_t element_index);
+/* Vertex format class: kind * 4 + component count, where kind is 1 = float,
+ * 2 = int, 3 = uint; 0 means "not a vertex scalar/vector type".  The class is
+ * GL-free so the backend can map it to MTL::VertexFormat without reading GL
+ * enums (C2).  Inline: every user needs only a handful of cases, and the
+ * Metal-cpp smoke test links a subset of the objects. */
+static inline uint32_t mglRenderVertexFormatClass(uint64_t gl_type)
+{
+    switch (gl_type) {
+        case GL_FLOAT: return 1u * 4u + 1u;
+        case GL_FLOAT_VEC2: return 1u * 4u + 2u;
+        case GL_FLOAT_VEC3: return 1u * 4u + 3u;
+        case GL_FLOAT_VEC4: return 1u * 4u + 4u;
+        case GL_INT: return 2u * 4u + 1u;
+        case GL_INT_VEC2: return 2u * 4u + 2u;
+        case GL_INT_VEC3: return 2u * 4u + 3u;
+        case GL_INT_VEC4: return 2u * 4u + 4u;
+        case GL_UNSIGNED_INT:
+        case GL_BOOL: return 3u * 4u + 1u;
+        case GL_UNSIGNED_INT_VEC2:
+        case GL_BOOL_VEC2: return 3u * 4u + 2u;
+        case GL_UNSIGNED_INT_VEC3:
+        case GL_BOOL_VEC3: return 3u * 4u + 3u;
+        case GL_UNSIGNED_INT_VEC4:
+        case GL_BOOL_VEC4: return 3u * 4u + 4u;
+        default: return 0u;
+    }
+}
+
+/* Decode a vertex format class: kind (1 = float, 2 = int, 3 = uint) and the
+ * component count (1..4).  A count of 4 makes the encoded value the next
+ * kind's base, so it cannot be recovered with a shift. */
+static inline uint32_t mglVertexFormatClassCount(uint32_t cls)
+{
+    /* class = kind * 4 + count, count 1..4 */
+    return cls == 0u ? 0u : (cls - 1u) % 4u + 1u;
+}
+
+static inline uint32_t mglVertexFormatClassKind(uint32_t cls)
+{
+    return cls == 0u ? 0u : (cls - mglVertexFormatClassCount(cls)) / 4u;
+}
+
+/* Same question for one 16-byte location of a control-point input: a matrix
+ * type occupies one location per column, so its class is that of the column
+ * vector. */
+static inline uint32_t mglRenderVertexLocationFormatClass(uint64_t gl_type)
+{
+    switch (gl_type) {
+        case GL_FLOAT_MAT2:
+        case GL_FLOAT_MAT3x2:
+        case GL_FLOAT_MAT4x2:
+            return 1u * 4u + 2u;
+        case GL_FLOAT_MAT3:
+        case GL_FLOAT_MAT2x3:
+        case GL_FLOAT_MAT4x3:
+            return 1u * 4u + 3u;
+        case GL_FLOAT_MAT4:
+        case GL_FLOAT_MAT2x4:
+        case GL_FLOAT_MAT3x4:
+            return 1u * 4u + 4u;
+        default:
+            return mglRenderVertexFormatClass(gl_type);
+    }
+}
+
+/* GL draw mode -> primitive class (0 point, 1 line, 2 line strip, 3 triangle,
+ * 4 triangle strip), 0xFFFFFFFFu when the mode routes elsewhere. */
+static inline uint32_t mglRenderPrimitiveClassForGLMode(uint32_t mode)
+{
+    switch (mode) {
+        case GL_POINTS: return 0u;
+        case GL_LINES: return 1u;
+        case GL_LINE_STRIP: return 2u;
+        case GL_TRIANGLES: return 3u;
+        case GL_TRIANGLE_STRIP: return 4u;
+        default: return 0xFFFFFFFFu;
+    }
+}
+
+/* How the client stores one attribute component.  The backend asks this
+ * instead of comparing GL enums, so the GL vocabulary stays in the frontend. */
+typedef enum MGLVertexFetchKind {
+    MGL_VFETCH_KIND_INVALID = 0,
+    MGL_VFETCH_KIND_S8,
+    MGL_VFETCH_KIND_U8,
+    MGL_VFETCH_KIND_S16,
+    MGL_VFETCH_KIND_U16,
+    MGL_VFETCH_KIND_S32,
+    MGL_VFETCH_KIND_U32,
+    MGL_VFETCH_KIND_F16,
+    MGL_VFETCH_KIND_F32,
+    MGL_VFETCH_KIND_F64,
+    MGL_VFETCH_KIND_FIXED,
+    MGL_VFETCH_KIND_PACKED_10_10_10_2,
+    MGL_VFETCH_KIND_PACKED_10F_11F_11F,
+    MGL_VFETCH_KIND_PACKED_2_10_10_10_REV,
+    MGL_VFETCH_KIND_PACKED_2_10_10_10_REV_INT
+} MGLVertexFetchKind;
+
+static inline MGLVertexFetchKind mglVertexFetchKindForGLType(uint32_t type)
+{
+    switch (type) {
+        case GL_BYTE: return MGL_VFETCH_KIND_S8;
+        case GL_UNSIGNED_BYTE: return MGL_VFETCH_KIND_U8;
+        case GL_SHORT: return MGL_VFETCH_KIND_S16;
+        case GL_UNSIGNED_SHORT: return MGL_VFETCH_KIND_U16;
+        case GL_INT: return MGL_VFETCH_KIND_S32;
+        case GL_UNSIGNED_INT: return MGL_VFETCH_KIND_U32;
+        case GL_HALF_FLOAT: return MGL_VFETCH_KIND_F16;
+        case GL_FLOAT: return MGL_VFETCH_KIND_F32;
+        case GL_DOUBLE: return MGL_VFETCH_KIND_F64;
+        case GL_FIXED: return MGL_VFETCH_KIND_FIXED;
+        case GL_UNSIGNED_INT_10_10_10_2:
+            return MGL_VFETCH_KIND_PACKED_10_10_10_2;
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+            return MGL_VFETCH_KIND_PACKED_10F_11F_11F;
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+            return MGL_VFETCH_KIND_PACKED_2_10_10_10_REV;
+        case GL_INT_2_10_10_10_REV:
+            return MGL_VFETCH_KIND_PACKED_2_10_10_10_REV_INT;
+        default: return MGL_VFETCH_KIND_INVALID;
+    }
+}
+
+/* The "BGRA" pseudo-size GL passes to glVertexAttribPointer for packed color
+ * data.  Kept here so the backend can test it without naming the enum. */
+static inline bool mglVertexAttribSizeIsBGRA(uint32_t size)
+{
+    return size == GL_BGRA;
+}
+
+/* Swizzle suffix that selects the components a GLSL type actually uses:
+ * ".x", ".xy", ".xyz", or "" when the type already fills the vector.  NULL for
+ * types that are not scalar/vector numbers. */
+static inline const char *mglGlslTypeSwizzleSuffix(uint32_t type)
+{
+    switch (type) {
+        case GL_FLOAT:
+        case GL_INT:
+        case GL_UNSIGNED_INT:
+            return ".x";
+        case GL_FLOAT_VEC2:
+        case GL_INT_VEC2:
+        case GL_UNSIGNED_INT_VEC2:
+            return ".xy";
+        case GL_FLOAT_VEC3:
+        case GL_INT_VEC3:
+        case GL_UNSIGNED_INT_VEC3:
+            return ".xyz";
+        case GL_FLOAT_VEC4:
+        case GL_INT_VEC4:
+        case GL_UNSIGNED_INT_VEC4:
+            return "";
+        default:
+            return NULL;
+    }
+}
+
+/* The float-shaped name of an integer GLSL type ("float"/"vec2"/"vec3"/"vec4"),
+ * for code that reads an integer attribute as floats.  NULL for non-integer
+ * types. */
+static inline const char *mglGlslIntegerAsFloatTypeName(uint32_t type)
+{
+    switch (type) {
+        case GL_INT:
+        case GL_UNSIGNED_INT:
+            return "float";
+        case GL_INT_VEC2:
+        case GL_UNSIGNED_INT_VEC2:
+            return "vec2";
+        case GL_INT_VEC3:
+        case GL_UNSIGNED_INT_VEC3:
+            return "vec3";
+        case GL_INT_VEC4:
+        case GL_UNSIGNED_INT_VEC4:
+            return "vec4";
+        default:
+            return NULL;
+    }
+}
+
+/* Bytes per component for a client storage kind (the "integer type" helper's
+ * question).  Unknown kinds fall back to 4, like the GL default did. */
+static inline uint32_t mglVertexFetchKindComponentBytes(MGLVertexFetchKind kind)
+{
+    switch (kind) {
+        case MGL_VFETCH_KIND_S8:
+        case MGL_VFETCH_KIND_U8: return 1u;
+        case MGL_VFETCH_KIND_S16:
+        case MGL_VFETCH_KIND_U16: return 2u;
+        case MGL_VFETCH_KIND_F64: return 8u;
+        default: return 4u;
+    }
+}
+
+static inline bool mglVertexTypeIsFixed(uint32_t type)
+{
+    return type == GL_FIXED;
+}
+
+/* GL_BGRA doubles as the "size" marker for BGRA component order. */
+static inline bool mglVertexSizeIsBGRA(uint32_t size)
+{
+    return size == GL_BGRA;
+}
+
+/* The GL enum a plan API expects for a kind (callers that must pass a type). */
+static inline uint32_t mglVertexFetchKindGLType(MGLVertexFetchKind kind)
+{
+    switch (kind) {
+        case MGL_VFETCH_KIND_S32: return GL_INT;
+        case MGL_VFETCH_KIND_U32: return GL_UNSIGNED_INT;
+        default: return GL_FLOAT;
+    }
+}
+
+/* 10_10_10_2 packed vertex types (the unsigned and the signed variant). */
+static inline bool mglVertexTypeIs1010102(uint32_t type)
+{
+    return type == GL_UNSIGNED_INT_10_10_10_2;
+}
+
+static inline bool mglVertexTypeIs1010102Signed(uint32_t type)
+{
+    return type == GL_INT_2_10_10_10_REV;
+}
+
+/* GL index type -> element width (2 or 4), 0 when unsupported. */
+static inline uint32_t mglRenderIndexElementClass(uint32_t gl_type)
+{
+    switch (gl_type) {
+        case GL_UNSIGNED_BYTE:
+        case GL_UNSIGNED_SHORT: return 2u;
+        case GL_UNSIGNED_INT: return 4u;
+        default: return 0u;
+    }
+}
 uint32_t mglRenderVertexAttribComponentSize(uint64_t gl_type);
 uint64_t mglRenderVertexAttribElementBytes(uint64_t gl_type, uint32_t size);
 uint64_t mglRenderAlignVertexStrideForMetal(uint64_t stride);
@@ -146,7 +383,7 @@ uint64_t mglVertexDescriptorSignature(const void *vertexDescriptor);
 uint64_t mglPipelineDescriptorSignature(const void *pipelineStateDescriptor);
 
 /* Value-state signature. Field order must remain stable because it defines the
- * pipeline-cache key. The complete state is defined in mgl_air_loader.h. */
+ * pipeline-cache key. The complete state is defined in mgl_render_api_query.h. */
 typedef struct MGLRenderPipelineDescriptorState
     MGLRenderPipelineDescriptorState;
 uint64_t mglVertexDescriptorSignatureFromState(

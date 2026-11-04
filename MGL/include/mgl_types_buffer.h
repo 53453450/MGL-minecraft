@@ -34,6 +34,7 @@
 
 #include <mach/vm_types.h>
 #include "glm_params.h"
+#include "glm_context_fwd.h" /* GLMContext — G5: types headers stay off full Rec */
 
 enum {
     _TEXTURE_BUFFER = 0, // duplicate of _TEXTURE_BUFFER_TARGET
@@ -120,9 +121,6 @@ typedef struct BufferData_t {
     GLuint          dirty_bits;
     size_t          buffer_size;
     vm_address_t    buffer_data;
-    void            *mtl_data;
-    /* True when a no-copy MTLBuffer deallocator owns buffer_data. */
-    GLboolean       mtl_owns_buffer_data;
 } BufferData;
 
 #define BUFFER_IMMUTABLE_STORAGE_FLAG   0x1
@@ -137,6 +135,8 @@ typedef enum MGLBufferInitSource_t {
     kInitReadPixels,
     kInitMapWrite
 } MGLBufferInitSource;
+
+struct MGLBufferBackend;
 
 typedef struct Buffer_t {
     GLuint name;
@@ -166,56 +166,42 @@ typedef struct Buffer_t {
     GLboolean gpu_write_target;
     GLintptr written_min;
     GLintptr written_max; // exclusive byte offset, -1 when unknown/unwritten
+    /* Bumped by every CPU-side content mutation (mglBufferMarkWrite and the
+     * allocate-uninitialized reset).  Consumers that snapshot derived facts
+     * about the bytes (index scans) key their cache on this version instead
+     * of re-deriving validity from the write parameters. */
+    uint64_t content_version;
     MGLBufferInitSource last_init_source;
     GLintptr last_write_offset;
     GLsizeiptr last_write_size;
     const void *last_write_src_ptr;
     uint64_t last_write_src_hash;
-    /* Cached UInt8→UInt16 expanded index buffer.
-     *
-     * Metal does not support GL_UNSIGNED_BYTE indices, so the element buffer
-     * must be expanded to UInt16 per draw.  This cache stores the expanded
-     * MTLBuffer keyed on (last_write_src_hash, sourceByteCount) so that
-     * unchanged EBOs skip the calloc + newBufferWithBytes + free on subsequent
-     * draws.
-     *
-     * Invalidation: every GL write path (glBufferData, glBufferSubData,
-     * glCopyBufferSubData, glMapBuffer unmap, glFlushMappedBufferRange) calls
-     * mglBufferMarkWrite which updates last_write_src_hash.  The cache-hit
-     * check compares the stored hash against the current last_write_src_hash.
-     *
-     * Safety exclusions (skip cache, always rebuild):
-     * - Persistent-mapped buffers (storage_flags & GL_MAP_PERSISTENT_BIT):
-     *   the app can modify contents through the persistent pointer without
-     *   any GL call, so last_write_src_hash would not update.
-     * - Buffers without CPU-side buffer_data: the source bytes come from a
-     *   Metal MTLBuffer whose contents may be modified by the GPU without
-     *   updating the hash.
-     *
-     * The stored pointer is retained via CFRetain (not CFBridgingRetain) so
-     * that ARC retains its own reference in the .m file; released via
-     * mglSafeReleaseMetalObj in the .c file (CFRelease under non-ARC). */
-    void       *mtl_uint16_expanded_data;       /* id<MTLBuffer> retained via CFRetain */
-    uint64_t    mtl_uint16_expanded_src_hash;
-    size_t      mtl_uint16_expanded_byte_count;
-    /* Cached drawElements index-range scan (min/max) used by the drawElements
-     * VBO-range guard.  Keyed on last_write_src_hash + (offset,count,type,
-     * restart) — the same invalidation contract as mtl_uint16_expanded_* :
-     * only valid while the hash matches AND the bytes came from CPU-side
-     * buffer_data (GPU-own buffers and persistent maps can change without a
-     * GL call).  Skips the O(count) scan on every draw of unchanged EBOs. */
-    uint32_t    scan_cache_min_index;
-    uint32_t    scan_cache_max_index;
-    uint64_t    scan_cache_src_hash;
+    /* Cached drawElements index-range scan (min/max), shared by the hazard
+     * vertex-range walk and the stream-merge candidate walk in
+     * draw_command.c.  Keyed on content_version + (offset,count,type,
+     * restart).  Only stored while the bytes came from CPU-side buffer_data
+     * and cannot change without a GL call: mapped, persistently mappable or
+     * GPU-write-target buffers are rescanned every draw. */
+    uint32_t    scan_cache_min_index;   /* restart-excluding min */
+    uint32_t    scan_cache_max_index;   /* restart-excluding max */
+    uint32_t    scan_cache_all_min_index; /* min over every index */
+    uint32_t    scan_cache_all_max_index; /* max over every index */
+    uint64_t    scan_cache_content_version;
     uint64_t    scan_cache_offset;
     uint32_t    scan_cache_count;
     GLenum      scan_cache_type;
     uint32_t    scan_cache_restart_index;
     uint8_t     scan_cache_restart_enabled;
-    uint8_t     scan_cache_valid;
-    /* Backend-owned CoW pool. This is an opaque C++ allocation, not a CF object;
-     * release it only through mglRenderReleaseBufferCowPool. */
-    void *mtl_cow_pool;
+    uint8_t     scan_cache_valid;       /* entry holds a completed scan */
+    uint8_t     scan_cache_live_valid;  /* scan saw a non-restart index */
+    /* PERF-024: skip restart-index rescans when this draw range had no restart
+     * markers (Metal has no HW primitive restart; encode splits segments). */
+    uint64_t    restart_absent_encode_key;
+    uint8_t     restart_absent_encode_valid;
+    /* Backend state kept beside the buffer's own storage (CoW snapshot pool,
+     * expanded index copy).  Opaque here; see mgl_backend_objects.h.  Release
+     * only through mglRenderReleaseBufferBackend. */
+    struct MGLBufferBackend *backend;
     void *mapped_ptr;
     GLboolean transient_batch_buffer;
     /* Program-owned storage for a default-block (glUniform*) location.  Small
@@ -236,7 +222,41 @@ typedef struct Buffer_t {
     int refcount;
     GLboolean delete_status;
     char *debug_label;  /* ObjectLabel, GL 4.6 §20.7; NULL = empty */
+    /* ARB_sparse_buffer: one byte per SPARSE_BUFFER_PAGE_SIZE_ARB page.
+     * Non-zero = committed.  NULL when the buffer is not sparse.  Decommit
+     * clears bits and zeros the CPU shadow (and Metal store) so later reads
+     * see a defined zero rather than stale fully-resident contents. */
+    uint8_t *sparse_page_committed;
+    GLuint sparse_page_count;
 } Buffer;
+
+/* Dirty-bit bookkeeping for the buffer record, so the backend asks instead of
+ * reading the field. */
+static inline uint32_t mglBufferDirtyBitsOf(const Buffer *buf)
+{
+    return buf ? buf->data.dirty_bits : 0u;
+}
+
+static inline void mglBufferSetDirtyBitsOf(Buffer *buf, uint32_t bits)
+{
+    if (buf) buf->data.dirty_bits |= bits;
+}
+
+static inline void mglBufferClearDirtyBitsOf(Buffer *buf, uint32_t bits)
+{
+    if (buf) buf->data.dirty_bits &= ~bits;
+}
+
+static inline void mglBufferAssignDirtyBitsOf(Buffer *buf, uint32_t bits)
+{
+    if (buf) buf->data.dirty_bits = bits;
+}
+
+static inline void mglBufferResetDirtyBitsOf(Buffer *buf)
+{
+    if (buf) buf->data.dirty_bits = 0u;
+}
+
 
 /* Buffer reference counting (mirrors Program refcount pattern).
  * Declared here alongside the Buffer type, matching how Program refcount
@@ -391,5 +411,51 @@ typedef struct BufferMapList_t {
     GLuint      count;
     BufferMap   buffers[MAX_MAPPED_BUFFERS];
 } BufferMapList;
+
+/* The buffer has CPU-side changes the Metal store has not seen yet. */
+static inline int mglBufferHasPendingUpdate(const Buffer *buffer)
+{
+    return buffer && buffer->data.dirty_bits ? 1 : 0;
+}
+
+/* The Metal store absorbed the CPU range.  A persistently-coherent mapping
+ * keeps its data pending; otherwise the CPU shadow and written range are
+ * dropped so a later GPU-write copy-on-write does not re-apply them. */
+static inline void mglBufferMarkAbsorbedByMetal(Buffer *buffer, int coherent)
+{
+    if (!buffer) return;
+    if (coherent) {
+        buffer->data.dirty_bits = DIRTY_BUFFER_DATA;
+        return;
+    }
+    buffer->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
+    buffer->cpu_shadow_pending = GL_FALSE;
+    buffer->written_min = -1;
+    buffer->written_max = -1;
+}
+
+/* The Metal store was rewritten from the whole CPU copy: nothing is pending. */
+static inline void mglBufferMarkSyncedToMetal(Buffer *buffer)
+{
+    if (!buffer) return;
+    buffer->data.dirty_bits = 0;
+    buffer->cpu_shadow_pending = GL_FALSE;
+    buffer->written_min = -1;
+    buffer->written_max = -1;
+}
+
+/* A backend-made uniform buffer standing in for packed plain uniforms (the
+ * draw path binds Buffer objects).  Create returns a zeroed object with the
+ * GL-visible fields set; Adopt installs a Metal store and returns the handle
+ * it replaces (NULL the first time) for the caller to release. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+Buffer *mglBufferTransientCreate(GLuint name);
+void *mglBufferTransientAdopt(Buffer *buffer, void *mtl_buffer,
+                              size_t padded_size);
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* mgl_types_buffer_h */

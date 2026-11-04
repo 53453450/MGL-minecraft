@@ -19,7 +19,7 @@
 #include "mgl_state_compat.h"
 #include <stdbool.h>
 #include <stdio.h>
-#include "mgl_render.h"
+#include "mgl_render_api_draw.h"
 
 #include <math.h>
 

@@ -12,7 +12,7 @@
 #include <stdint.h>
 #include "glcorearb.h"
 #include "glm_context.h"
-#include "mgl_render.h"
+#include "mgl_render_api_texture.h"
 #include "mgl_draw_encode.h"
 #include "mgl_air_gs_abi.h"
 #include "mgl_renderer_backend.h"
@@ -69,6 +69,7 @@ void mglDrawSupportDrawIndexedPrimitives(
     void *renderEncoderOwner,
     uint32_t primitiveType,
     size_t indexCount,
+    uint32_t indexType,
     void * indexBuffer,
     size_t indexBufferOffset,
     size_t instanceCount,

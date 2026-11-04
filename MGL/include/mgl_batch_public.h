@@ -37,7 +37,8 @@
 #ifndef MGL_BATCH_PUBLIC_H
 #define MGL_BATCH_PUBLIC_H
 
-#include "glm_context.h"
+#include "glm_context_fwd.h" /* opaque GLMContext — G5 */
+#include "glm_state.h"       /* GLMState for MGLBatchFlushPass.saved */
 
 /* MGLSamplerSnapshotKey (draw_command.h) and TextureParameter
  * (mgl_types_texture.h) are the argument/return types of the sampler entry

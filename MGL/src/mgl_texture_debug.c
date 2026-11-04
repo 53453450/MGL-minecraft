@@ -23,6 +23,7 @@
 #include "mgl_pixel_format.h"
 #include "mgl_trace_log.h"
 #include "utils.h"
+#include "mgl_texture_backend.h"
 
 #ifndef MGL_VERBOSE_TEXTURE_UPLOAD_LOGS
 #define MGL_VERBOSE_TEXTURE_UPLOAD_LOGS 0
@@ -491,7 +492,7 @@ void mglDumpTexSubImageZeroCpuResourceTag(GLMContext ctx,
             tex ? tex->depth : 0u,
             tex ? tex->num_levels : 0u,
             tex ? tex->complete : 0,
-            tex ? tex->mtl_data : NULL,
+            tex ? mglTextureMtl(tex) : NULL,
             pixels_raw,
             resolved_src,
             resolved_unpack_buf ? resolved_unpack_buf->name : 0u);

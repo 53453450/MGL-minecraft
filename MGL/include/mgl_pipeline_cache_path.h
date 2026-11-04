@@ -19,7 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "mgl_render.h"   /* mglRenderGetDeviceIdentity */
+#include "mgl_render_fwd.h"
 
 #ifdef __cplusplus
 extern "C" {

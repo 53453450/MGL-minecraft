@@ -89,7 +89,6 @@ int mglBindingTexturePlanStorageImage(const MGLStorageImageBindInput *in,
 enum {
     MGL_ST_PHASE_GATE = 0,   /* OOR / skip before materialize */
     MGL_ST_PHASE_COMPAT = 1, /* type / data-kind after MTL texture */
-    MGL_ST_PHASE_RT = 2,     /* render-target Y-flip path */
     MGL_ST_PHASE_FINAL = 3   /* nil fallback + queue texture/sampler */
 };
 
@@ -98,11 +97,6 @@ enum {
     MGL_ST_ACTION_PROCEED,          /* materialize / continue phase */
     MGL_ST_ACTION_TYPE_FALLBACK,    /* replace with expected-type fallback */
     MGL_ST_ACTION_KIND_FALLBACK,    /* replace with expected-kind fallback */
-    MGL_ST_ACTION_RT_USE_COPY,      /* bind fresh sampled copy */
-    MGL_ST_ACTION_RT_REPAIR,        /* ObjC rebuilds copy; may retry */
-    MGL_ST_ACTION_RT_RETRY,         /* encoder rotated; caller returns false */
-    MGL_ST_ACTION_RT_ORIGINAL,      /* keep original (or inject path) */
-    MGL_ST_ACTION_RT_GATE_MISS,     /* copy wanted but unavailable */
     MGL_ST_ACTION_NIL_FALLBACK,     /* missing texture → fallback */
     MGL_ST_ACTION_QUEUE             /* queue texture (+ optional sampler) */
 };
@@ -113,11 +107,6 @@ enum {
     MGL_ST_REASON_SKIP_RESOURCE,
     MGL_ST_REASON_TYPE_MISMATCH,
     MGL_ST_REASON_KIND_MISMATCH,
-    MGL_ST_REASON_RT_COPY,
-    MGL_ST_REASON_RT_REPAIR,
-    MGL_ST_REASON_RT_RETRY,
-    MGL_ST_REASON_RT_ORIGINAL,
-    MGL_ST_REASON_RT_GATE,
     MGL_ST_REASON_NIL,
     MGL_ST_REASON_QUEUE
 };
@@ -134,19 +123,7 @@ typedef struct MGLSampledTextureBindInput {
     uint32_t mtl_type;
     uint32_t expected_type;
     int format_kind_ok; /* pixel format compatible with expected kind */
-    /* RT */
     int used_type_fallback;
-    int is_render_target;
-    int yflip; /* MGL_YFLIP_* */
-    int has_sampled_copy;
-    int copy_fresh;
-    int can_use_rt_copy;
-    int copy_type_ok;
-    int copy_kind_ok;
-    int repaired_available;
-    int repaired_fresh; /* after repair: content fresh → RETRY else USE_COPY */
-    /* Fragment ORIGINAL path wants base-level view on live RT. */
-    int want_base_level_on_original;
     /* FINAL */
     int has_bound_texture;
     int has_combined_sampler;
@@ -166,8 +143,6 @@ typedef struct MGLSampledTextureBindPlan {
     int mark_bound;
     int mark_fallback;
     int mark_nil;
-    /* RT apply ports (ObjC thin set*). */
-    int apply_base_level_view; /* viewForBaseLevel on chosen MTL texture */
     int force_default_sampler; /* FINAL: depth-fallback → default sampler */
 } MGLSampledTextureBindPlan;
 
@@ -331,10 +306,6 @@ void mglBindingTextureFillSamplerMaterializeInput(
     int has_gl_sampler, int gl_sampler_dirty, int has_gl_sampler_mtl,
     int has_tex_params_mtl, int require_tex_params_mtl);
 
-void mglBindingTextureFillSampledRTInput(
-    MGLSampledTextureBindInput *in, int used_type_fallback, int is_render_target,
-    int yflip, int has_sampled_copy, int copy_fresh, int can_use_rt_copy,
-    int want_base_level_on_original, int copy_type_ok, int copy_kind_ok);
 
 void mglBindingTextureFillStorageImageInput(
     MGLStorageImageBindInput *in, int pass, int skip_resource, int has_resource,
@@ -355,10 +326,10 @@ void mglBindingTextureFillSampledDiagGateInput(
 void mglBindingTextureWriteFragTrace(
     void *out, uint32_t gl_texture_name, uint32_t sampler_unit,
     uint32_t metal_binding, uint32_t program_name, uint32_t rt_write_version,
-    uint32_t sampled_write_version, void *gl_texture_ptr, void *mtl_texture_ptr,
-    void *direct_mtl_texture_ptr, void *sampled_copy_ptr, uint64_t width,
+    void *gl_texture_ptr, void *mtl_texture_ptr,
+    void *direct_mtl_texture_ptr, uint64_t width,
     uint64_t height, uint64_t pixel_format, uint64_t texture_type,
-    int used_sampled_copy, int used_fallback);
+    int used_fallback);
 
 /* Sampled diag emit ports @C (calls existing log helpers; texture_log frozen). */
 typedef struct MGLSampledDiagEmitInput {
@@ -391,11 +362,13 @@ typedef struct MGLSampledDiagEmitInput {
     uint64_t l0_upload;
     const void *l0_src;
     uint64_t l0_hash;
+    const void *l0_data;        /* lazily hashed into l0_data_hash on log */
+    uint64_t l0_data_bytes;
     uint64_t l0_data_hash;
     const void *ptr;
     uint32_t ptr_tex;
     const void *sampler;
-    uint64_t mtl_format;
+    uint64_t pixel_format;
     int stage_is_fragment;
     int is_gui_rt_copy_eligible;
     int focused_loading_window;
@@ -408,9 +381,7 @@ typedef struct MGLSampledDiagEmitInput {
     int do_focused;
     int do_trace_file;
     uint64_t bind_call;
-    int used_sampled_copy_trace;
     const void *direct_for_trace;
-    const void *copy_for_trace;
     const char *rt_label;
     uint32_t draw_fbo;
     uint32_t rp_fbo;
@@ -434,13 +405,14 @@ void mglBindingTextureFillSampledDiagEmitCore(
     int used_fallback, uint64_t expected_type, uint64_t lookup_type,
     int expected_index, uint32_t unit_active, uint32_t unit_expected,
     uint32_t unit_2d, uint32_t unit_cube, uint64_t mtl_type, uint64_t mtl_w,
-    uint64_t mtl_h, uint64_t mtl_format, uint32_t l0w, uint32_t l0h, uint32_t l0d,
+    uint64_t mtl_h, uint64_t pixel_format, uint32_t l0w, uint32_t l0h, uint32_t l0d,
     uint64_t l0_bytes, uint32_t l0_ever, uint32_t l0_full, uint32_t l0_zero,
-    uint32_t l0_source, uint64_t l0_upload, uint64_t l0_hash, uint64_t l0_data_hash,
+    uint32_t l0_source, uint64_t l0_upload, uint64_t l0_hash,
+    const void *l0_data, uint64_t l0_data_bytes,
     uint32_t ptr_tex, int stage_is_fragment, int is_gui_rt_copy_eligible,
     int focused_loading_window, int vertex_focus_program, int is_texel_buffer,
     int level0_suspicious_zero, int level0_never_written, int level0_uninit,
-    int has_bound_texture, uint64_t bind_call, int used_sampled_copy_trace,
+    int has_bound_texture, uint64_t bind_call,
     uint32_t draw_fbo, uint32_t rp_fbo, uint32_t unit_buffer_tex);
 
 /* MIP_DIAG: rate on signature change; returns 1 if logged. */
@@ -495,15 +467,11 @@ void mglBindingLogTexBufferBind(
     uint64_t expected_type, uint64_t lookup_type, const void *mtl,
     uint64_t mtl_type, uint64_t w, uint64_t h, uint64_t format,
     const void *sampler);
-void mglBindingLogRTYFlipDecision(
-    const char *stage, uint32_t program, const char *name, uint32_t binding,
-    uint32_t unit, uint32_t tex, const char *label, const char *decision_name,
-    int decision, uint32_t rt_ver, uint32_t copy_ver, int has_copy);
 void mglBindingLogRTSampleCopySample(
     uint64_t hit, uint64_t bind_call, uint32_t program, uint32_t vs,
     uint32_t fs, const char *name, uint32_t binding, uint32_t unit,
-    uint32_t rt_tex, const char *label, int fallback, int use_copy,
-    const void *ptr, const void *mtl, const void *direct, const void *copy,
+    uint32_t rt_tex, const char *label, int fallback,
+    const void *ptr, const void *mtl, const void *direct,
     uint64_t fmt, uint64_t type, uint64_t w, uint64_t h, uint32_t draw_fbo,
     uint32_t rp_fbo, const void *rp_color, const void *rp_depth);
 

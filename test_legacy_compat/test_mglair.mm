@@ -571,6 +571,106 @@ int main(int argc, const char *argv[]) {
         }
         printf("PSO_OK\n");
 
+        /* pow / sin / cos / tan in a fragment program.  Emitted as the llvm
+         * intrinsics they abort the AGX compiler ("unable to legalize
+         * instruction") and the pipeline never builds. */
+        {
+            static const char *kFSTranscendental =
+                "#version 330 core\n"
+                "uniform vec3 u;\n"
+                "in vec2 vUV;\n"
+                "out vec4 o;\n"
+                "void main() {\n"
+                "    o = vec4(pow(u.z * abs(vUV.x), 0.75),\n"
+                "             sin(vUV.y * 6.2831853) + cos(u.x),\n"
+                "             tan(vUV.x), pow(abs(vUV), vec2(2.2)).y);\n"
+                "}\n";
+            unsigned char *trBytes = NULL;
+            size_t trSize = 0;
+            if (mglShaderCompileGLSL(kFSTranscendental, MGL_STAGE_FRAGMENT,
+                                     &trBytes, &trSize, err, sizeof err) != 0) {
+                fprintf(stderr, "TRANSCENDENTAL_COMPILE_FAIL: %s\n", err);
+                return 1;
+            }
+            id<MTLLibrary> trLib =
+                loadLibrary(dev, trBytes, trSize, "transcendental-fragment");
+            mglShaderFree(trBytes);
+            id<MTLFunction> trFn = [trLib newFunctionWithName:@"main"];
+            MTLRenderPipelineDescriptor *trPD = [MTLRenderPipelineDescriptor new];
+            trPD.vertexFunction = vsFn;
+            trPD.fragmentFunction = trFn;
+            trPD.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+            trPD.vertexDescriptor = vd;
+            NSError *trErr = nil;
+            id<MTLRenderPipelineState> trPSO =
+                [dev newRenderPipelineStateWithDescriptor:trPD error:&trErr];
+            if (!trFn || !trPSO) {
+                fprintf(stderr, "TRANSCENDENTAL_PSO_FAIL: %s\n",
+                        trErr.localizedDescription.UTF8String ?: "?");
+                return 1;
+            }
+            printf("TRANSCENDENTAL_PSO_OK\n");
+        }
+
+        /* An attribute declared before a bound one must not share its
+         * location: the duplicate air.location_index aborts the compiler.
+         * `freeAttr` is unbound and declared first; `boundAttr` is bound to
+         * location 0, so the free one has to move to 1. */
+        {
+            static const char *kVSBound =
+                "#version 330 core\n"
+                "in vec3 freeAttr;\n"
+                "in vec4 boundAttr;\n"
+                "void main() { gl_Position = boundAttr + vec4(freeAttr, 0.0); }\n";
+            const char *names[32] = {NULL};
+            names[0] = "boundAttr";
+            unsigned char *bBytes = NULL;
+            size_t bSize = 0;
+            if (mglAirCompileGLSLWithReflect(kVSBound, MGL_STAGE_VERTEX, names,
+                                             &bBytes, &bSize, NULL, err,
+                                             sizeof err) != 0) {
+                fprintf(stderr, "BOUND_ATTR_COMPILE_FAIL: %s\n", err);
+                return 1;
+            }
+            id<MTLLibrary> bLib = loadLibrary(dev, bBytes, bSize, "bound-attr-vs");
+            mglShaderFree(bBytes);
+            id<MTLFunction> bFn = [bLib newFunctionWithName:@"main"];
+            MTLRenderPipelineDescriptor *bPD = [MTLRenderPipelineDescriptor new];
+            static const char *kFSPlain =
+                "#version 330 core\n"
+                "out vec4 o;\n"
+                "void main() { o = vec4(1.0); }\n";
+            unsigned char *pBytes = NULL;
+            size_t pSize = 0;
+            if (mglShaderCompileGLSL(kFSPlain, MGL_STAGE_FRAGMENT, &pBytes,
+                                     &pSize, err, sizeof err) != 0) {
+                fprintf(stderr, "BOUND_ATTR_FS_COMPILE_FAIL: %s\n", err);
+                return 1;
+            }
+            id<MTLLibrary> pLib = loadLibrary(dev, pBytes, pSize, "plain-fs");
+            mglShaderFree(pBytes);
+            bPD.vertexFunction = bFn;
+            bPD.fragmentFunction = [pLib newFunctionWithName:@"main"];
+            bPD.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+            MTLVertexDescriptor *bVD = [MTLVertexDescriptor new];
+            bVD.attributes[0].format = MTLVertexFormatFloat4;
+            bVD.attributes[0].bufferIndex = 16;
+            bVD.layouts[16].stride = 16;
+            bVD.attributes[1].format = MTLVertexFormatFloat3;
+            bVD.attributes[1].bufferIndex = 17;
+            bVD.layouts[17].stride = 12;
+            bPD.vertexDescriptor = bVD;
+            NSError *bErr = nil;
+            id<MTLRenderPipelineState> bPSO =
+                [dev newRenderPipelineStateWithDescriptor:bPD error:&bErr];
+            if (!bFn || !bPSO) {
+                fprintf(stderr, "BOUND_ATTR_PSO_FAIL: %s\n",
+                        bErr.localizedDescription.UTF8String ?: "?");
+                return 1;
+            }
+            printf("BOUND_ATTR_PSO_OK\n");
+        }
+
         /* Multiple named fragment outputs must become a struct return with one
          * air.render_target entry per explicit layout(location). */
         {
@@ -1602,7 +1702,11 @@ int main(int argc, const char *argv[]) {
             float verts[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
             id<MTLBuffer> vbuf = [dev newBufferWithBytes:verts length:36
                                                  options:MTLResourceStorageModeShared];
-            id<MTLBuffer> capBuf = [dev newBufferWithLength:3 * 32
+            /* One record per vertex: the canonical per-vertex record
+             * (MGL_AIR_PER_VERTEX_STRIDE bytes, position first) followed by
+             * one 16-byte slot per varying location, vUV at location 0. */
+            const size_t xfbStride = MGL_AIR_PER_VERTEX_STRIDE + 16u;
+            id<MTLBuffer> capBuf = [dev newBufferWithLength:3 * xfbStride
                                                     options:MTLResourceStorageModeShared];
             id<MTLCommandBuffer> xcb = [cq commandBuffer];
             MTLRenderPassDescriptor *xrp =
@@ -1620,16 +1724,18 @@ int main(int argc, const char *argv[]) {
             [xenc endEncoding];
             [xcb commit];
             [xcb waitUntilCompleted];
-            float *cap = (float *)capBuf.contents;
-            /* 32-byte records (align 16): vertex 1 starts at cap[8].
-             * Records hold the raw shader-written clip position (z=0 for
+            const float *rec1 =
+                (const float *)((const char *)capBuf.contents + xfbStride);
+            const float *uv1 =
+                (const float *)((const char *)rec1 + MGL_AIR_PER_VERTEX_STRIDE);
+            /* Vertex 1 holds the raw shader-written clip position (z=0 for
              * the identity-MVP triangle); the Metal [0,1] depth remap is
              * applied where records feed rasterization, not here. */
-            if (fabsf(cap[8] - 1.0f) > 1e-4f || fabsf(cap[9] - 1.0f) > 1e-4f ||
-                fabsf(cap[10] - 0.0f) > 1e-4f || fabsf(cap[11] - 1.0f) > 1e-4f ||
-                fabsf(cap[12] - 1.0f) > 1e-4f || fabsf(cap[13]) > 1e-4f) {
+            if (fabsf(rec1[0] - 1.0f) > 1e-4f || fabsf(rec1[1] - 1.0f) > 1e-4f ||
+                fabsf(rec1[2] - 0.0f) > 1e-4f || fabsf(rec1[3] - 1.0f) > 1e-4f ||
+                fabsf(uv1[0] - 1.0f) > 1e-4f || fabsf(uv1[1]) > 1e-4f) {
                 fprintf(stderr, "XFB_VALUE_FAIL: pos=(%f,%f,%f,%f) uv=(%f,%f)\n",
-                        cap[8], cap[9], cap[10], cap[11], cap[12], cap[13]);
+                        rec1[0], rec1[1], rec1[2], rec1[3], uv1[0], uv1[1]);
                 return 1;
             }
             printf("XFB_OK\n");

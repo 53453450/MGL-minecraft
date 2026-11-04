@@ -33,9 +33,14 @@
 
 #include "mgl_swap_diagnostics.h"
 #include "glm_context.h"
-#include "mgl_renderer_ports.h"  /* state areas */
+#include "mgl_ports_present.h"
+#include "mgl_renderer_state_areas.h"  /* state areas */
 #include "mgl_blit_pipelines.h"  /* scaled-blit pipeline/sampler + params */
-#include "mgl_render.h"          /* the mglRender* facade */
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_draw.h"
 #include "mgl_sync.h"            /* mglCommandBufferStatusName */
 #include "mgl_trace_log.h"       /* mglTraceLog */
 #include "mgl_metal_ref.h"       /* mglSafeReleaseMetalObj */
@@ -50,15 +55,12 @@
 
 /* MGL_STATE() from MGLRenderer_Private.h, expressed in C: the core state's
  * active pointer wins, NULL means "the context's own state". */
-static GLMState *mglSwapStateForRenderer(const MGLRendererStateAreas *areas)
+static GLMState *mglSwapStateForRenderer(const MGLRendererStateView *areas)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 
-static void *mglSwapCommandBufferOwner(const MGLRendererStateAreas *areas)
+static void *mglSwapCommandBufferOwner(const MGLRendererStateView *areas)
 {
     return areas->command ? areas->command->currentCommandBufferOwner : NULL;
 }
@@ -242,8 +244,8 @@ static void mglSwapScheduleTextureSample(void *renderer, void *sample_texture,
                                          size_t origin_x, size_t origin_y,
                                          uint64_t swap_call)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     if (!sample_texture) {
         mglTraceLog("MGL TRACE swap.sample.%s call=%llu skipped(texture=nil)",
@@ -354,8 +356,8 @@ void mglSwapCopyRenderPassColorToDrawableIfNeeded(void *renderer, void *rp_color
                                                   uint64_t swap_call,
                                                   bool trace_swap)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     MGLRenderTextureInfo sourceInfo = {0};
     MGLRenderTextureInfo drawableInfo = {0};

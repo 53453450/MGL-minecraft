@@ -43,6 +43,13 @@ GLuint bicountForFormatType(GLenum format, GLenum type, GLenum component);
 
 GLMContext MGLgetCurrentContext(void);
 void MGLsetCurrentContext(GLMContext ctx);
+
+/* Profile-aware creation: one image serves both.  Defined in MGL's
+ * glm_context.h; redeclared here so glfw does not pull that header in. */
+#define MGL_PROFILE_DEFAULT (-1)
+GLMContext createGLMContextProfile(int profile_es, GLenum format, GLenum type,
+                                   GLenum depth_format, GLenum depth_type,
+                                   GLenum stencil_format, GLenum stencil_type);
 void destroyGLMContext(GLMContext ctx);
 
 // MGLswapBuffers can take NULL for the ctx, in this case it will use the current ctx

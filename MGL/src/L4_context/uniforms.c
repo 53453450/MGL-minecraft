@@ -1,0 +1,4555 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
+/*
+ * Copyright (C) Michael Larson on 1/6/25.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * uniforms.c
+ * MGL
+ *
+ */
+
+#include <stdio.h>
+#include "mgl_binding_policy.h"  /* mglRenderResourceLooksSamplerLike */
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include <math.h>
+#include <stdint.h>
+#include <unistd.h>
+
+#include "shaders.h"
+#include "programs.h"
+#include "buffers.h"
+#include "glm_context.h"
+#include "mgl_safety.h"
+#include "draw_command.h"
+#include "mgl_buffer_plan.h"
+
+#pragma mark uniforms
+
+#define MGL_INTERNAL_UNIFORM_BUFFER_NAME_BASE 0xf0000000u
+#define MGL_SAFE_SPIRV_RESOURCE_MAX 4096u
+
+#include "mgl_trace_log.h"
+
+static GLMContext mglUniformResolveContext(GLMContext ctx, const char *func)
+{
+    /* The thread-local current context stays live from lazy init to context
+     * destruction, so a NULL check suffices - no readability probe needed. */
+    GLMContext current = MGLgetCurrentContext();
+    if (!current) {
+        fprintf(stderr,
+                "MGL WARNING: dropping uniform update in %s with no current ctx arg=%p\n",
+                func ? func : "(null)",
+                (void *)ctx);
+        return NULL;
+    }
+
+    if (ctx != current) {
+        static unsigned long long s_stale_uniform_ctx_count = 0;
+        s_stale_uniform_ctx_count++;
+        if (s_stale_uniform_ctx_count <= 32ull || (s_stale_uniform_ctx_count % 1024ull) == 0ull) {
+            fprintf(stderr,
+                    "MGL WARNING: uniform update in %s used stale ctx=%p current=%p hit=%llu\n",
+                    func ? func : "(null)",
+                    (void *)ctx,
+                    (void *)current,
+                    s_stale_uniform_ctx_count);
+        }
+    }
+
+    return current;
+}
+
+static void mglUniformSetError(GLMContext ctx, GLenum error)
+{
+    if (!ctx) {
+        return;
+    }
+    mglDispatchError(ctx, __FUNCTION__, error);
+}
+
+/* Defined in MGLRenderer.m (ObjC BOOL == bool on arm64); declared extern here
+ * so this C TU can query the flag. */
+extern bool mglEnvFlagEnabledDefaultOn(const char *name);
+
+/* Kill switch for skipping state-hash invalidation when a glUniform upload
+ * leaves the plain-uniform slot identity unchanged.  Set
+ * MGL_UNIFORM_IDENTITY_GATE=0 to restore unconditional invalidation. */
+static bool mglUniformIdentityGateEnabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        cached = mglEnvFlagEnabledDefaultOn("MGL_UNIFORM_IDENTITY_GATE") ? 1 : 0;
+    }
+    return cached == 1;
+}
+
+/* Debug-only uniform upload trace. Cached once — getenv on every glUniform*
+ * cost ~100ns and dominated the hot path in microbenchmarks. */
+static bool mglUniformUploadDiagEnabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("MGL_DIAG_UNIFORM_UPLOAD");
+        cached = (v && v[0] != '\0' && strcmp(v, "0") != 0) ? 1 : 0;
+    }
+    return cached == 1;
+}
+
+#define MGL_SAFE_CSTRING_MAX 4096u
+
+static GLboolean mglSafeCStringLength(const char *str, size_t *length_out)
+{
+    if (length_out) {
+        *length_out = 0u;
+    }
+    if (!str) {
+        return GL_FALSE;
+    }
+
+    /* Bounded terminator scan: memchr stops at MGL_SAFE_CSTRING_MAX, so a
+     * non-terminated (or corrupt) string cannot make this loop run away.
+     * No kernel-backed readability probe — a bad pointer is UB like on any
+     * other GL driver. */
+    const char *terminator = (const char *)memchr(str, '\0', MGL_SAFE_CSTRING_MAX);
+    if (!terminator) {
+        return GL_FALSE;
+    }
+    if (length_out) {
+        *length_out = (size_t)(terminator - str);
+    }
+    return GL_TRUE;
+}
+
+/* Parse a strict GLSL array subscript between '[' and ']'.
+ * Returns the parsed index on success, or -1 if the subscript is not
+ * a valid GLSL array element index (no whitespace, no expressions,
+ * no leading zeros except for "0" itself).  This matches the GL spec
+ * requirement that glGetUniformLocation/glGetProgramResourceLocation
+ * only match valid array element names. */
+static long mglParseStrictArraySubscript(const char *str, size_t len)
+{
+    if (!str || len == 0) {
+        return -1;
+    }
+
+    /* All characters must be digits — no whitespace, no '+', no expressions. */
+    for (size_t i = 0; i < len; i++) {
+        if (str[i] < '0' || str[i] > '9') {
+            return -1;
+        }
+    }
+
+    /* Reject leading zeros except for the single digit "0". */
+    if (len > 1 && str[0] == '0') {
+        return -1;
+    }
+
+    char *end = NULL;
+    long parsed = strtol(str, &end, 10);
+    if (end != str + len) {
+        return -1;
+    }
+
+    return parsed;
+}
+
+static GLboolean mglSafeCStringEquals(const char *lhs, const char *rhs)
+{
+    if (!lhs || !rhs) {
+        return GL_FALSE;
+    }
+
+    size_t lhsLength = 0u;
+    size_t rhsLength = 0u;
+    if (!mglSafeCStringLength(lhs, &lhsLength) ||
+        !mglSafeCStringLength(rhs, &rhsLength) ||
+        lhsLength != rhsLength) {
+        return GL_FALSE;
+    }
+
+    return memcmp(lhs, rhs, lhsLength + 1u) == 0 ? GL_TRUE : GL_FALSE;
+}
+
+static GLboolean mglSafeCStringContains(const char *haystack, const char *needle)
+{
+    size_t hay_len = 0u;
+    size_t needle_len = 0u;
+
+    if (!mglSafeCStringLength(haystack, &hay_len) ||
+        !mglSafeCStringLength(needle, &needle_len)) {
+        return GL_FALSE;
+    }
+    if (needle_len == 0u) {
+        return GL_TRUE;
+    }
+    if (needle_len > hay_len) {
+        return GL_FALSE;
+    }
+
+    return strstr(haystack, needle) != NULL ? GL_TRUE : GL_FALSE;
+}
+
+static const char *mglSafeCStringForLog(const char *str)
+{
+    return mglSafeCStringLength(str, NULL) ? str : "(invalid)";
+}
+
+static MGLShaderResourceList *mglUniformSafeResourceList(Program *program, int stage, int res_type, const char *func)
+{
+    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES ||
+        res_type < 0 || res_type >= MGL_MAX_SHADER_RESOURCES) {
+        return NULL;
+    }
+
+    MGLShaderResourceList *resources = &program->shader_resources_list[stage][res_type];
+    if (program->validated_resource_lists[stage][res_type] == resources &&
+        program->validated_resource_list_storage[stage][res_type] == resources->list &&
+        program->validated_resource_list_counts[stage][res_type] == resources->count) {
+        return resources;
+    }
+
+    /* `resources` is embedded in the validated live program object, so its
+     * memory is readable by construction — no readability probe needed. */
+
+    if (resources->count == 0u) {
+        program->validated_resource_lists[stage][res_type] = resources;
+        program->validated_resource_list_storage[stage][res_type] = NULL;
+        program->validated_resource_list_counts[stage][res_type] = 0u;
+        return resources;
+    }
+    if (resources->count > MGL_SAFE_SPIRV_RESOURCE_MAX) {
+        fprintf(stderr,
+                "MGL WARNING: %s dropping suspicious resource list program=%p stage=%d type=%d count=%u\n",
+                func ? func : "uniform",
+                (void *)program,
+                stage,
+                res_type,
+                resources->count);
+        return NULL;
+    }
+    if (!resources->list) {
+        fprintf(stderr,
+                "MGL WARNING: %s dropping resource list with missing storage program=%p stage=%d type=%d count=%u\n",
+                func ? func : "uniform",
+                (void *)program,
+                stage,
+                res_type,
+                resources->count);
+        return NULL;
+    }
+
+    program->validated_resource_lists[stage][res_type] = resources;
+    program->validated_resource_list_storage[stage][res_type] = resources->list;
+    program->validated_resource_list_counts[stage][res_type] = resources->count;
+    return resources;
+}
+
+static Program *mglUniformValidateProgramPointer(GLMContext ctx, Program *program, GLuint expectedName, const char *func)
+{
+    if (!ctx || !program || expectedName == 0u) {
+        return NULL;
+    }
+
+    /* expectedName comes from a known source (the state's binding name, a
+     * retained pipeline's active program name, or the user-passed name
+     * getProgram resolved) — no readability probe (decision D6). */
+    if (!mglProgramPointerUsableForName(ctx, program, expectedName)) {
+        fprintf(stderr,
+                "MGL WARNING: %s dropping invalid program pointer %p\n",
+                func ? func : "uniform",
+                (void *)program);
+        if (STATE(program) == program) {
+            STATE(program) = NULL;
+            STATE(program_name) = 0;
+        }
+        return NULL;
+    }
+
+    return program;
+}
+
+static Program *mglUniformGetCurrentProgram(GLMContext ctx, const char *func)
+{
+    if (!ctx) {
+        return NULL;
+    }
+    /* GL 4.6 §7.6.1: without UseProgram, the bound pipeline's active program.
+     * The state holds a reference on the pipeline, which retained its active
+     * program, so reading its own name is safe (decision D6). */
+    if (!STATE(program) && STATE(program_pipeline)) {
+        Program *activeProgram = STATE(program_pipeline)->active_program;
+        return mglUniformValidateProgramPointer(
+            ctx, activeProgram, activeProgram ? activeProgram->name : 0u, func);
+    }
+    return mglUniformValidateProgramPointer(ctx, STATE(program), STATE(program_name), func);
+}
+
+/* GL 4.6 §7.10: subroutine selections are per-stage state.  With a bound
+ * pipeline the selection belongs to that stage's program, which is not
+ * `active_program` (that one is the last stage bound and stays NULL until a
+ * draw resolves it) -- CTS shader_subroutine.subroutine_uniform_reset sets and
+ * reads back every stage of a pipeline. */
+static Program *mglUniformGetCurrentProgramForStage(GLMContext ctx, int stage,
+                                                    const char *func)
+{
+    if (!ctx) {
+        return NULL;
+    }
+    if (!STATE(program) && STATE(program_pipeline)) {
+        ProgramPipeline *pipeline = STATE(program_pipeline);
+        Program *stage_program =
+            (stage >= 0 && stage < _MAX_SHADER_TYPES)
+                ? pipeline->stage_programs[stage] : NULL;
+        if (!stage_program) {
+            stage_program = pipeline->active_program;
+        }
+        return mglUniformValidateProgramPointer(
+            ctx, stage_program, stage_program ? stage_program->name : 0u, func);
+    }
+    return mglUniformValidateProgramPointer(ctx, STATE(program), STATE(program_name), func);
+}
+
+static Program *mglUniformGetNamedProgram(GLMContext ctx, GLuint program, const char *func)
+{
+    if (!ctx || program == 0u) {
+        return NULL;
+    }
+    return mglUniformValidateProgramPointer(ctx, getProgram(ctx, program), program, func);
+}
+
+static GLint mglKnownPlainUniformLocation(const char *name)
+{
+    if (!name) {
+        return -1;
+    }
+
+    /* Validate the input pointer once; the string literals below are
+     * compile-time constants and inherently trusted, so plain strcmp is
+     * safe (no need to re-validate them with mglSafeCStringEquals). */
+    if (!mglSafeCStringLength(name, NULL)) {
+        return -1;
+    }
+
+    /* First-letter switch dispatch bounds each lookup to the comparisons in
+     * one first-letter bucket instead of a linear chain over all names. */
+    switch (name[0]) {
+        case 'C':
+            if (strcmp(name, "ColorModulator") == 0) return 3;
+            if (strcmp(name, "CameraBlockPos") == 0) return 13;
+            if (strcmp(name, "ChunkOffset") == 0) return 12;
+            if (strcmp(name, "ChunkVisibility") == 0) return 16;
+            if (strcmp(name, "CameraOffset") == 0) return 14;
+            return -1;
+        case 'F':
+            if (strcmp(name, "FogStart") == 0) return 4;
+            if (strcmp(name, "FogEnd") == 0) return 5;
+            if (strcmp(name, "FogColor") == 0) return 6;
+            if (strcmp(name, "FogShape") == 0) return 7;
+            return -1;
+        case 'G':
+            if (strcmp(name, "GameTime") == 0) return 8;
+            return -1;
+        case 'I':
+            if (strcmp(name, "IViewRotMat") == 0) return 11;
+            return -1;
+        case 'L':
+            if (strcmp(name, "LineWidth") == 0) return 10;
+            return -1;
+        case 'M':
+            if (strcmp(name, "ModelViewMat") == 0) return 0;
+            return -1;
+        case 'P':
+            if (strcmp(name, "ProjMat") == 0) return 1;
+            return -1;
+        case 'S':
+            if (strcmp(name, "ScreenSize") == 0) return 9;
+            return -1;
+        case 'T':
+            if (strcmp(name, "TextureMat") == 0) return 2;
+            return -1;
+        case 'U':
+            if (strcmp(name, "UseRgss") == 0) return 15;
+            return -1;
+        case 'u':
+            if (strcmp(name, "u_ProjectionMatrix") == 0) return 0;
+            if (strcmp(name, "u_ModelViewMatrix") == 0) return 1;
+            if (strcmp(name, "u_RegionOffset") == 0) return 2;
+            if (strcmp(name, "u_TexCoordShrink") == 0) return 3;
+            if (strcmp(name, "u_FogColor") == 0) return 4;
+            if (strcmp(name, "u_EnvironmentFog") == 0) return 5;
+            if (strcmp(name, "u_RenderFog") == 0) return 6;
+            return -1;
+        default:
+            return -1;
+    }
+}
+
+
+
+/* Uniform queries classify sampler-like resources through the shared policy
+ * predicate (exact reflected facts only); the SPIRV-era synthetic-location and
+ * name heuristics are gone, see mglRenderResourceLooksSamplerLike. */
+static GLboolean mglUniformResourceLooksSamplerLike(const MGLShaderResource *res, int res_type)
+{
+    if (!res) {
+        return GL_FALSE;
+    }
+    return mglRenderResourceLooksSamplerLike((uint32_t)res_type,
+                                             (uint32_t)res->image_dim)
+               ? GL_TRUE
+               : GL_FALSE;
+}
+
+static const int mglActiveUniformResourceTypes[] = {
+    _UNIFORM_CONSTANT_RES,
+    _SAMPLED_IMAGE_RES,
+    _SEPARATE_IMAGE_RES,
+    _SEPARATE_SAMPLERS_RES,
+    _STORAGE_IMAGE_RES,
+    _ATOMIC_COUNTER_RES
+};
+
+/* Sequential GL_ATOMIC_COUNTER_BUFFER index for a binding (sorted unique
+ * bindings, same order as GetActiveAtomicCounterBufferiv). */
+static GLint mglAtomicCounterUniformBufferIndex(Program *ptr, GLuint binding)
+{
+    GLuint bindings[MAX_BINDABLE_BUFFERS];
+    GLboolean seen[MAX_BINDABLE_BUFFERS];
+    GLuint count = 0;
+    GLuint i;
+
+    if (!ptr)
+        return -1;
+    memset(seen, 0, sizeof(seen));
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *list =
+            &ptr->shader_resources_list[stage][_ATOMIC_COUNTER_RES];
+        for (i = 0; i < list->count; i++) {
+            GLuint b = list->list[i].gl_binding;
+            if (b < MAX_BINDABLE_BUFFERS && !seen[b]) {
+                seen[b] = GL_TRUE;
+                if (count < MAX_BINDABLE_BUFFERS)
+                    bindings[count] = b;
+                count++;
+            }
+        }
+    }
+    for (i = 1; i < count && i < MAX_BINDABLE_BUFFERS; i++) {
+        GLuint key = bindings[i];
+        GLuint j = i;
+        while (j > 0 && bindings[j - 1] > key) {
+            bindings[j] = bindings[j - 1];
+            j--;
+        }
+        bindings[j] = key;
+    }
+    for (i = 0; i < count && i < MAX_BINDABLE_BUFFERS; i++) {
+        if (bindings[i] == binding)
+            return (GLint)i;
+    }
+    return -1;
+}
+
+static GLboolean mglActiveUniformResourceHasName(const MGLShaderResource *res)
+{
+    return res && mglSafeCStringLength(res->name, NULL);
+}
+
+static GLboolean mglActiveUniformNamesMatch(const char *resource_name, const char *query_name)
+{
+    size_t resource_len = 0u;
+    size_t query_len = 0u;
+
+    if (!mglSafeCStringLength(resource_name, &resource_len) ||
+        !mglSafeCStringLength(query_name, &query_len)) {
+        return GL_FALSE;
+    }
+
+    if (resource_len == query_len && memcmp(resource_name, query_name, resource_len) == 0) {
+        return GL_TRUE;
+    }
+
+    if (query_len == resource_len + 3u &&
+        query_name[resource_len] == '[' &&
+        query_name[resource_len + 1u] == '0' &&
+        query_name[resource_len + 2u] == ']' &&
+        memcmp(resource_name, query_name, resource_len) == 0) {
+        return GL_TRUE;
+    }
+
+    if (resource_len == query_len + 3u &&
+        resource_name[query_len] == '[' &&
+        resource_name[query_len + 1u] == '0' &&
+        resource_name[query_len + 2u] == ']' &&
+        memcmp(resource_name, query_name, query_len) == 0) {
+        return GL_TRUE;
+    }
+
+    /* Multi-dimensional array: query "a[2][1]" matches resource "a[2][1][0]".
+     * The resource name may have one or more trailing "[0]" suffixes that
+     * the query omits.  Check if the resource name is the query name plus
+     * trailing "[0]" repetitions. */
+    if (resource_len > query_len &&
+        memcmp(resource_name, query_name, query_len) == 0 &&
+        resource_name[query_len] == '[')
+    {
+        const char *suffix = resource_name + query_len;
+        GLboolean all_zero_brackets = GL_TRUE;
+        while (*suffix)
+        {
+            if (suffix[0] == '[' && suffix[1] == '0' && suffix[2] == ']')
+            {
+                suffix += 3;
+            }
+            else
+            {
+                all_zero_brackets = GL_FALSE;
+                break;
+            }
+        }
+        if (all_zero_brackets && suffix == resource_name + resource_len) {
+            return GL_TRUE;
+        }
+    }
+
+    return GL_FALSE;
+}
+
+static GLboolean mglActiveUniformBlockMemberNamesMatch(const char *block_name,
+                                                       const char *member_name,
+                                                       const char *member_query_name,
+                                                       const char *query_name)
+{
+    size_t block_len = 0u;
+    size_t member_query_len = 0u;
+    size_t query_len = 0u;
+
+    if (mglActiveUniformNamesMatch(member_name, query_name) ||
+        mglActiveUniformNamesMatch(member_query_name, query_name)) {
+        return GL_TRUE;
+    }
+
+    if (mglSafeCStringLength(member_query_name, &member_query_len) &&
+        mglSafeCStringLength(query_name, &query_len) &&
+        member_query_len == query_len + 3u &&
+        member_query_name[query_len] == '[' &&
+        member_query_name[query_len + 1u] == '0' &&
+        member_query_name[query_len + 2u] == ']' &&
+        memcmp(member_query_name, query_name, query_len) == 0) {
+        return GL_TRUE;
+    }
+
+    {
+        if (!mglSafeCStringLength(block_name, &block_len) ||
+            !mglSafeCStringLength(member_name, NULL) ||
+            !mglSafeCStringLength(query_name, &query_len)) {
+            return GL_FALSE;
+        }
+
+        if (query_len <= block_len + 1u ||
+            query_name[block_len] != '.' ||
+            memcmp(query_name, block_name, block_len) != 0) {
+            return GL_FALSE;
+        }
+
+        return mglActiveUniformNamesMatch(member_name, query_name + block_len + 1u);
+    }
+}
+
+static GLboolean mglActiveUniformNameSeenBefore(Program *program,
+                                                GLint target_type_ordinal,
+                                                int target_stage,
+                                                GLuint target_index,
+                                                const char *name)
+{
+    if (!program || target_type_ordinal < 0 || !mglSafeCStringLength(name, NULL)) {
+        return GL_FALSE;
+    }
+
+    for (GLint type_ordinal = 0;
+         type_ordinal <= target_type_ordinal &&
+         type_ordinal < (GLint)(sizeof(mglActiveUniformResourceTypes) / sizeof(mglActiveUniformResourceTypes[0]));
+         type_ordinal++) {
+        int res_type = mglActiveUniformResourceTypes[type_ordinal];
+        for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+            MGLShaderResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) {
+                continue;
+            }
+            for (GLuint i = 0; i < resources->count; i++) {
+                if (type_ordinal == target_type_ordinal &&
+                    stage == target_stage &&
+                    i >= target_index) {
+                    return GL_FALSE;
+                }
+                if (mglActiveUniformNamesMatch(resources->list[i].name, name)) {
+                    return GL_TRUE;
+                }
+            }
+        }
+    }
+
+    return GL_FALSE;
+}
+
+/* Open-addressing hash set for UBO block name deduplication.
+ *
+ * The caller walks blocks in forward order, inserting each accepted
+ * (non-duplicate) name, so "seen before?" is a set membership test rather
+ * than a linear re-scan of all earlier blocks.
+ *
+ * The set is stack-allocated (no malloc) and scoped to a single forward
+ * enumeration pass.  Capacity is a power of two so modulo reduces to a
+ * bitmask; 128 slots is ample for real-world UBO block counts.  Empty slots
+ * are NULL; collision resolution is linear probing.  Key equality is by
+ * string content (strcmp). */
+#define MGL_UBO_NAME_SET_CAPACITY 128u
+
+typedef struct MGLUBOBlockNameSet_t {
+    const char *slots[MGL_UBO_NAME_SET_CAPACITY];
+    uint32_t count;
+} MGLUBOBlockNameSet;
+
+static void mglUBOBlockNameSetInit(MGLUBOBlockNameSet *set)
+{
+    if (!set) {
+        return;
+    }
+    for (uint32_t i = 0u; i < MGL_UBO_NAME_SET_CAPACITY; i++) {
+        set->slots[i] = NULL;
+    }
+    set->count = 0u;
+}
+
+/* FNV-1a string hash. */
+static uint32_t mglUBOBlockNameHash(const char *str, size_t len)
+{
+    uint32_t h = 2166136261u;
+    for (size_t i = 0u; i < len; i++) {
+        h ^= (uint32_t)(unsigned char)str[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+/* Returns GL_TRUE if name was already present in the set (duplicate).
+ * Otherwise inserts name and returns GL_FALSE (first occurrence).
+ * GL_FALSE is also returned for invalid/empty input so callers that rely on
+ * a separate mglSafeCStringLength validation before this call are
+ * unaffected; callers without a pre-check treat unreadable names as
+ * "not seen" (matching the original mglUniformBlockNameSeenBefore behavior,
+ * which also returned GL_FALSE for unreadable names). */
+static GLboolean mglUBOBlockNameSetContainsOrInsert(MGLUBOBlockNameSet *set,
+                                                    const char *name)
+{
+    if (!set || !name) {
+        return GL_FALSE;
+    }
+    size_t len = 0u;
+    if (!mglSafeCStringLength(name, &len) || len == 0u) {
+        return GL_FALSE;
+    }
+
+    uint32_t h = mglUBOBlockNameHash(name, len);
+    uint32_t mask = MGL_UBO_NAME_SET_CAPACITY - 1u;
+    uint32_t startIdx = h & mask;
+
+    int32_t emptySlot = -1;
+    for (uint32_t probe = 0u; probe < MGL_UBO_NAME_SET_CAPACITY; probe++) {
+        uint32_t idx = (startIdx + probe) & mask;
+        const char *existing = set->slots[idx];
+        if (existing == NULL) {
+            if (emptySlot < 0) {
+                emptySlot = (int32_t)idx;
+            }
+            break;
+        }
+        /* Existing entries were validated when inserted; strcmp is safe and
+         * matches the content-equality semantics of mglSafeCStringEquals. */
+        if (strcmp(existing, name) == 0) {
+            return GL_TRUE;  /* duplicate — already seen */
+        }
+    }
+
+    if (emptySlot >= 0) {
+        set->slots[emptySlot] = name;
+        set->count++;
+    }
+    /* If the table is full (extremely unlikely for UBO blocks), fall back to
+     * "not seen" — worst case the caller reports a duplicate block, which is
+     * non-fatal over-reporting. */
+    return GL_FALSE;
+}
+
+/* Build the deduplicated active-uniform cache.  This runs the same
+ * enumeration logic as mglProgramActiveUniformAt but in a single pass,
+ * collecting all entries into a heap array.  After this, the 4 query
+ * functions run in O(1)/O(1)/O(N)/O(1) instead of O(N³)/O(N²)/O(N³)/O(N³). */
+void mglBuildActiveUniformCache(Program *program)
+{
+    if (!program) {
+        return;
+    }
+
+    /* Free any previous cache. */
+    mglFreeActiveUniformCache(program);
+
+    /* First pass: count total entries to size the array. */
+    GLuint total = 0u;
+    const size_t type_count = sizeof(mglActiveUniformResourceTypes) / sizeof(mglActiveUniformResourceTypes[0]);
+    for (size_t type_ordinal = 0; type_ordinal < type_count; type_ordinal++) {
+        int res_type = mglActiveUniformResourceTypes[type_ordinal];
+        for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+            MGLShaderResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) continue;
+            for (GLuint i = 0; i < resources->count; i++) {
+                MGLShaderResource *res = &resources->list[i];
+                if (!mglActiveUniformResourceHasName(res) ||
+                    mglActiveUniformNameSeenBefore(program, (GLint)type_ordinal, stage, i, res->name)) {
+                    continue;
+                }
+                if (res->ubo_members && res_type == _UNIFORM_CONSTANT_RES) {
+                    for (GLuint mem_i = 0; mem_i < res->ubo_member_count; mem_i++) {
+                        if (res->ubo_members[mem_i].query_name) {
+                            total++;
+                        }
+                    }
+                } else {
+                    total++;
+                }
+            }
+        }
+    }
+    /* UBO members.  The name set is built forward as we accept blocks, so
+     * each "already seen?" check is O(1) average. */
+    MGLUBOBlockNameSet ubo_seen_1;
+    mglUBOBlockNameSetInit(&ubo_seen_1);
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *ubo_list = mglUniformSafeResourceList(
+            program, stage, _UNIFORM_BUFFER_RES, __FUNCTION__);
+        if (!ubo_list) continue;
+        for (GLuint ubo_i = 0; ubo_i < ubo_list->count; ubo_i++) {
+            MGLShaderResource *ubo = &ubo_list->list[ubo_i];
+            if (mglUBOBlockNameSetContainsOrInsert(&ubo_seen_1, ubo->name)) continue;
+            if (!ubo->ubo_members) continue;
+            for (GLuint mem_i = 0; mem_i < ubo->ubo_member_count; mem_i++) {
+                if (ubo->ubo_members[mem_i].name) {
+                    total++;
+                }
+            }
+        }
+    }
+
+    if (total == 0u) {
+        program->active_uniform_cache = NULL;
+        program->active_uniform_cache_count = 0u;
+        program->active_uniform_cache_max_name_length = 0;
+        program->active_uniform_cache_valid = GL_TRUE;
+        return;
+    }
+
+    /* Second pass: fill the array. */
+    MGLActiveUniformEntry *cache = (MGLActiveUniformEntry *)calloc(total, sizeof(MGLActiveUniformEntry));
+    if (!cache) {
+        program->active_uniform_cache_valid = GL_FALSE;
+        return;
+    }
+
+    GLuint idx = 0u;
+    for (size_t type_ordinal = 0; type_ordinal < type_count; type_ordinal++) {
+        int res_type = mglActiveUniformResourceTypes[type_ordinal];
+        for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+            MGLShaderResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) continue;
+            for (GLuint i = 0; i < resources->count; i++) {
+                MGLShaderResource *res = &resources->list[i];
+                /* Clear stale ubo_member from resource (same as original At). */
+                res->ubo_member = NULL;
+                if (!mglActiveUniformResourceHasName(res) ||
+                    mglActiveUniformNameSeenBefore(program, (GLint)type_ordinal, stage, i, res->name)) {
+                    continue;
+                }
+                if (res->ubo_members && res_type == _UNIFORM_CONSTANT_RES) {
+                    for (GLuint mem_i = 0; mem_i < res->ubo_member_count; mem_i++) {
+                        if (!res->ubo_members[mem_i].query_name) continue;
+                        if (idx < total) {
+                            cache[idx].res = res;
+                            cache[idx].stage = stage;
+                            cache[idx].res_type = res_type;
+                            cache[idx].ubo_member = &res->ubo_members[mem_i];
+                        }
+                        idx++;
+                    }
+                    continue;
+                }
+                if (idx < total) {
+                    cache[idx].res = res;
+                    cache[idx].stage = stage;
+                    cache[idx].res_type = res_type;
+                    cache[idx].ubo_member = NULL;
+                }
+                idx++;
+            }
+        }
+    }
+    /* UBO members */
+    /* Same name set as pass 1 — both passes walk blocks in the same forward
+     * order, so the set contents at each position match. */
+    MGLUBOBlockNameSet ubo_seen_2;
+    mglUBOBlockNameSetInit(&ubo_seen_2);
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *ubo_list = mglUniformSafeResourceList(
+            program, stage, _UNIFORM_BUFFER_RES, __FUNCTION__);
+        if (!ubo_list) continue;
+        for (GLuint ubo_i = 0; ubo_i < ubo_list->count; ubo_i++) {
+            MGLShaderResource *ubo = &ubo_list->list[ubo_i];
+            if (mglUBOBlockNameSetContainsOrInsert(&ubo_seen_2, ubo->name)) continue;
+            if (!ubo->ubo_members) continue;
+            for (GLuint mem_i = 0; mem_i < ubo->ubo_member_count; mem_i++) {
+                if (!ubo->ubo_members[mem_i].name) continue;
+                if (idx < total) {
+                    cache[idx].res = ubo;
+                    cache[idx].stage = stage;
+                    cache[idx].res_type = _UNIFORM_BUFFER_RES;
+                    cache[idx].ubo_member = &ubo->ubo_members[mem_i];
+                }
+                idx++;
+            }
+        }
+    }
+
+    program->active_uniform_cache = cache;
+    program->active_uniform_cache_count = (idx <= total) ? idx : total;
+
+    /* Compute max name length. */
+    GLint max_len = 0;
+    for (GLuint i = 0; i < program->active_uniform_cache_count; i++) {
+        MGLShaderResource *res = cache[i].res;
+        /* Temporarily set ubo_member so mglProgramActiveUniformNameLength
+         * computes the right length for member entries. */
+        const SpirvUBOMember *saved = res->ubo_member;
+        res->ubo_member = cache[i].ubo_member;
+        GLsizei len = mglProgramActiveUniformNameLength(res);
+        res->ubo_member = saved;
+        if ((GLint)len + 1 > max_len) {
+            max_len = (GLint)len + 1;
+        }
+    }
+    program->active_uniform_cache_max_name_length = max_len;
+    program->active_uniform_cache_valid = GL_TRUE;
+}
+
+void mglFreeActiveUniformCache(Program *program)
+{
+    if (!program) return;
+    if (program->active_uniform_cache) {
+        free(program->active_uniform_cache);
+        program->active_uniform_cache = NULL;
+    }
+    program->active_uniform_cache_count = 0u;
+    program->active_uniform_cache_max_name_length = 0;
+    program->active_uniform_cache_valid = GL_FALSE;
+    if (program->plain_uniform_type_table) {
+        free(program->plain_uniform_type_table);
+        program->plain_uniform_type_table = NULL;
+    }
+}
+
+MGLShaderResource *mglProgramActiveUniformAt(Program *program, GLuint index, int *stage_out, int *res_type_out)
+{
+    if (stage_out) {
+        *stage_out = -1;
+    }
+    if (res_type_out) {
+        *res_type_out = -1;
+    }
+    if (!program) {
+        return NULL;
+    }
+
+    /* Fast path — index into the cached deduplicated list (O(1)). */
+    if (program->active_uniform_cache_valid && program->active_uniform_cache) {
+        if (index >= program->active_uniform_cache_count) {
+            return NULL;
+        }
+        MGLActiveUniformEntry *entry = &program->active_uniform_cache[index];
+        if (stage_out) {
+            *stage_out = entry->stage;
+        }
+        if (res_type_out) {
+            *res_type_out = entry->res_type;
+        }
+        /* Set ubo_member side effect (same as the original code). */
+        entry->res->ubo_member = entry->ubo_member;
+        return entry->res;
+    }
+
+    /* Fallback: original O(N²) path (cache not built yet, e.g. pre-link). */
+    GLuint ordinal = 0u;
+
+    /* Pass 1: Enumerate visible uniforms from non-UBO resource lists. */
+    const size_t type_count = sizeof(mglActiveUniformResourceTypes) / sizeof(mglActiveUniformResourceTypes[0]);
+    for (size_t type_ordinal = 0; type_ordinal < type_count; type_ordinal++) {
+        int res_type = mglActiveUniformResourceTypes[type_ordinal];
+        for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+            MGLShaderResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) {
+                continue;
+            }
+            for (GLuint i = 0; i < resources->count; i++) {
+                MGLShaderResource *res = &resources->list[i];
+                /* Clear any stale ubo_member from a previous lookup. */
+                res->ubo_member = NULL;
+                if (!mglActiveUniformResourceHasName(res) ||
+                    mglActiveUniformNameSeenBefore(program, (GLint)type_ordinal, stage, i, res->name)) {
+                    continue;
+                }
+                /* Plain (non-UBO) struct uniforms expose their leaf members
+                 * as individual active uniforms. Enumerate them here so that
+                 * glGetActiveUniform / glGetUniformLocation can address each
+                 * member (e.g. "u0[0].m0"). */
+                if (res->ubo_members && res_type == _UNIFORM_CONSTANT_RES) {
+                    for (GLuint mem_i = 0; mem_i < res->ubo_member_count; mem_i++) {
+                        if (!res->ubo_members[mem_i].query_name) {
+                            continue;
+                        }
+                        if (ordinal == index) {
+                            if (stage_out) {
+                                *stage_out = stage;
+                            }
+                            if (res_type_out) {
+                                *res_type_out = res_type;
+                            }
+                            res->ubo_member = &res->ubo_members[mem_i];
+                            return res;
+                        }
+                        ordinal++;
+                    }
+                    continue;
+                }
+                if (ordinal == index) {
+                    if (stage_out) {
+                        *stage_out = stage;
+                    }
+                    if (res_type_out) {
+                        *res_type_out = res_type;
+                    }
+                    return res;
+                }
+                ordinal++;
+            }
+        }
+    }
+
+    /* Pass 2: Enumerate UBO member uniforms.
+     * Members are visible through glGetActiveUniform and friends.  The owning
+     * UBO resource is returned with ubo_member set so that callers can
+     * retrieve member-specific properties (type, offset, strides, block index). */
+    MGLUBOBlockNameSet ubo_seen_fallback;
+    mglUBOBlockNameSetInit(&ubo_seen_fallback);
+    GLuint ubo_block_idx = 0;
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *ubo_list = mglUniformSafeResourceList(
+            program, stage, _UNIFORM_BUFFER_RES, __FUNCTION__);
+        if (!ubo_list) {
+            continue;
+        }
+        for (GLuint ubo_i = 0; ubo_i < ubo_list->count; ubo_i++) {
+            MGLShaderResource *ubo = &ubo_list->list[ubo_i];
+            /* De-duplicate across stages (same block name seen before). */
+            if (mglUBOBlockNameSetContainsOrInsert(&ubo_seen_fallback, ubo->name)) {
+                ubo_block_idx++;
+                continue;
+            }
+            if (!ubo->ubo_members) {
+                ubo_block_idx++;
+                continue;
+            }
+            for (GLuint mem_i = 0; mem_i < ubo->ubo_member_count; mem_i++) {
+                if (!ubo->ubo_members[mem_i].name) {
+                    continue;
+                }
+                if (ordinal == index) {
+                    if (stage_out) {
+                        *stage_out = stage;
+                    }
+                    if (res_type_out) {
+                        *res_type_out = _UNIFORM_BUFFER_RES;
+                    }
+                    /* Return the owning UBO resource with ubo_member set
+                     * so the caller can retrieve per-member properties. */
+                    ubo->ubo_member = &ubo->ubo_members[mem_i];
+                    return ubo;
+                }
+                ordinal++;
+            }
+            ubo_block_idx++;
+        }
+    }
+
+    return NULL;
+}
+
+GLint mglProgramActiveUniformCount(Program *program)
+{
+    if (!program) {
+        return 0;
+    }
+
+    /* Fast path — return the cached deduplicated count (O(1)). */
+    if (program->active_uniform_cache_valid && program->active_uniform_cache) {
+        return (GLint)program->active_uniform_cache_count;
+    }
+
+    GLint count = 0;
+    while (mglProgramActiveUniformAt(program, (GLuint)count, NULL, NULL)) {
+        count++;
+    }
+    return count;
+}
+
+GLint mglProgramActiveUniformIndexByName(Program *program, const GLchar *name)
+{
+    if (!program || !mglSafeCStringLength(name, NULL)) {
+        return -1;
+    }
+
+    GLint count = mglProgramActiveUniformCount(program);
+    for (GLint i = 0; i < count; i++) {
+        int res_type = -1;
+        MGLShaderResource *res = mglProgramActiveUniformAt(program, (GLuint)i, NULL, &res_type);
+        if (!res) {
+            continue;
+        }
+        if (res->ubo_member) {
+            if (res_type == _UNIFORM_CONSTANT_RES) {
+                if (mglActiveUniformNamesMatch(res->ubo_member->query_name, name)) {
+                    return i;
+                }
+                continue;
+            }
+            if (mglActiveUniformBlockMemberNamesMatch(res->name,
+                                                      res->ubo_member->name,
+                                                      res->ubo_member->query_name,
+                                                      name)) {
+                return i;
+            }
+            continue;
+        }
+        if (mglActiveUniformNamesMatch(res->name, name)) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static GLint mglKnownPlainUniformType(const char *name)
+{
+    if (!name || !mglSafeCStringLength(name, NULL)) {
+        return GL_FLOAT;
+    }
+
+    if (mglSafeCStringEquals(name, "ModelViewMat") ||
+        mglSafeCStringEquals(name, "ProjMat") ||
+        mglSafeCStringEquals(name, "TextureMat") ||
+        mglSafeCStringEquals(name, "u_ProjectionMatrix") ||
+        mglSafeCStringEquals(name, "u_ModelViewMatrix")) {
+        return GL_FLOAT_MAT4;
+    }
+    if (mglSafeCStringEquals(name, "IViewRotMat")) {
+        return GL_FLOAT_MAT3;
+    }
+    if (mglSafeCStringEquals(name, "ColorModulator") ||
+        mglSafeCStringEquals(name, "FogColor") ||
+        mglSafeCStringEquals(name, "u_FogColor") ||
+        mglSafeCStringEquals(name, "u_TexCoordShrink")) {
+        return GL_FLOAT_VEC4;
+    }
+    if (mglSafeCStringEquals(name, "ScreenSize")) {
+        return GL_FLOAT_VEC2;
+    }
+    if (mglSafeCStringEquals(name, "ChunkOffset") ||
+        mglSafeCStringEquals(name, "u_RegionOffset")) {
+        return GL_FLOAT_VEC3;
+    }
+    if (mglSafeCStringEquals(name, "FogShape") ||
+        mglSafeCStringEquals(name, "u_EnvironmentFog") ||
+        mglSafeCStringEquals(name, "u_RenderFog")) {
+        return GL_INT;
+    }
+
+    return GL_FLOAT;
+}
+
+static GLint mglSamplerUniformGLType(const MGLShaderResource *res, int res_type)
+{
+    if (!res) {
+        return 0;
+    }
+
+    if (res_type == _STORAGE_IMAGE_RES) {
+        /* Prefer reflected gl_type (image1D / image2DMS / iimage2D / ...).
+         * Returning 0 lets mglProgramActiveUniformGLType use res->gl_type.
+         * Hardcoding INT_IMAGE_2D broke CTS GetActiveUniform for float images. */
+        return 0;
+    }
+
+    if (res_type == _SEPARATE_SAMPLERS_RES) {
+        return GL_SAMPLER_2D;
+    }
+
+    if (res_type == _SAMPLED_IMAGE_RES ||
+        res_type == _SEPARATE_IMAGE_RES ||
+        mglUniformResourceLooksSamplerLike(res, res_type)) {
+        switch (res->image_dim) {
+            case 0: return res->image_arrayed ? GL_SAMPLER_1D_ARRAY : GL_SAMPLER_1D;
+            case 1: return res->image_arrayed ? GL_SAMPLER_2D_ARRAY : GL_SAMPLER_2D;
+            case 2: return GL_SAMPLER_3D;
+            case 3: return res->image_arrayed ? GL_SAMPLER_CUBE_MAP_ARRAY : GL_SAMPLER_CUBE;
+            case 5: return GL_INT_SAMPLER_BUFFER;
+            default: return GL_SAMPLER_2D;
+        }
+    }
+
+    return 0;
+}
+
+GLint mglProgramActiveUniformGLType(const MGLShaderResource *res, int res_type)
+{
+    /* GL 4.6 §7.3.1: GetActiveUniform TYPE is the declared GLSL type.
+     * AIR reflection already encodes sampler/image signedness and shadow
+     * in res->gl_type; the image_dim fallback collapses isampler/usampler/
+     * *Shadow to the float non-shadow enum and fails CTS. */
+    if (res && res->gl_type != 0) {
+        return (GLint)res->gl_type;
+    }
+    GLint sampler_type = mglSamplerUniformGLType(res, res_type);
+    if (sampler_type != 0) {
+        return sampler_type;
+    }
+    return mglKnownPlainUniformType(res ? res->name : NULL);
+}
+
+GLint mglProgramActiveUniformSize(const MGLShaderResource *res, int res_type)
+{
+    (void)res_type;
+    if (res && res->gl_array_size > 0) {
+        return res->gl_array_size;
+    }
+    return 1;
+}
+
+GLsizei mglProgramActiveUniformNameLength(const MGLShaderResource *res)
+{
+    size_t len = 0u;
+    GLsizei extra = 0;
+    const char *name = NULL;
+
+    if (!res) {
+        return 0;
+    }
+
+    /* UBO member uniforms carry their name on the ubo_member sub-struct. */
+    if (res->ubo_member) {
+        name = res->ubo_member->query_name ? res->ubo_member->query_name : res->ubo_member->name;
+    } else {
+        name = res->name;
+    }
+
+    if (!name || !mglSafeCStringLength(name, &len)) {
+        return 0;
+    }
+    if (!res->ubo_member && res->gl_array_size > 1 && !strchr(name, '[')) {
+        extra = 3;
+    }
+    return (GLsizei)len + extra;
+}
+
+GLint mglProgramActiveUniformMaxNameLength(Program *program)
+{
+    if (!program) {
+        return 0;
+    }
+
+    /* Fast path — return the cached max name length (O(1)). */
+    if (program->active_uniform_cache_valid && program->active_uniform_cache) {
+        return program->active_uniform_cache_max_name_length;
+    }
+
+    GLint max_len = 0;
+    GLint count = mglProgramActiveUniformCount(program);
+    for (GLint i = 0; i < count; i++) {
+        MGLShaderResource *res = mglProgramActiveUniformAt(program, (GLuint)i, NULL, NULL);
+        GLsizei len = mglProgramActiveUniformNameLength(res);
+        if ((GLint)len + 1 > max_len) {
+            max_len = (GLint)len + 1;
+        }
+    }
+    return max_len;
+}
+
+void mglProgramCopyActiveUniformName(const MGLShaderResource *res, GLsizei bufSize, GLsizei *length, GLchar *name)
+{
+    GLsizei src_len = mglProgramActiveUniformNameLength(res);
+    const char *src = "";
+
+    if (src_len > 0 && res) {
+        if (res->ubo_member) {
+            src = res->ubo_member->query_name
+                ? res->ubo_member->query_name
+                : (res->ubo_member->name ? res->ubo_member->name : "");
+        } else {
+            src = res->name ? res->name : "";
+        }
+    }
+
+    char array_name[256];
+    if (res && !res->ubo_member && res->gl_array_size > 1 && src && !strchr(src, '[')) {
+        snprintf(array_name, sizeof(array_name), "%s[0]", src);
+        src = array_name;
+        src_len = (GLsizei)strlen(src);
+    }
+
+    if (name && bufSize > 0) {
+        GLsizei copy_len = src_len < (bufSize - 1) ? src_len : (bufSize - 1);
+        if (copy_len > 0) {
+            memcpy(name, src, (size_t)copy_len);
+        }
+        name[copy_len] = '\0';
+        if (length) {
+            *length = copy_len;
+        }
+    } else if (length) {
+        *length = src_len;
+    }
+}
+
+static GLuint mglUniformBlockArraySize(const MGLShaderResource *block);
+
+/* Return the block index for the UBO that owns the given member uniform,
+ * or -1 if the uniform is not inside a UBO. */
+GLint mglProgramActiveUniformBlockIndex(Program *program, const MGLShaderResource *res)
+{
+    if (!program || !res || !res->ubo_member) {
+        return -1;
+    }
+
+    GLuint block_idx = 0;
+    MGLUBOBlockNameSet ubo_seen_bi;
+    mglUBOBlockNameSetInit(&ubo_seen_bi);
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *ubo_list = mglUniformSafeResourceList(
+            program, stage, _UNIFORM_BUFFER_RES, __FUNCTION__);
+        if (!ubo_list) {
+            continue;
+        }
+        for (GLuint i = 0; i < ubo_list->count; i++) {
+            MGLShaderResource *ubo = &ubo_list->list[i];
+            if (mglUBOBlockNameSetContainsOrInsert(&ubo_seen_bi, ubo->name)) {
+                continue;
+            }
+            if (ubo == res || ubo->ubo_members == res->ubo_member) {
+                /* Quick check: if res->ubo_member points into ubo->ubo_members array. */
+                return (GLint)block_idx;
+            }
+            /* More robust: check if the member pointer is within the array. */
+            if (ubo->ubo_members && res->ubo_member >= ubo->ubo_members &&
+                res->ubo_member < ubo->ubo_members + ubo->ubo_member_count) {
+                return (GLint)block_idx;
+            }
+            block_idx += mglUniformBlockArraySize(ubo);
+        }
+    }
+
+    return -1;
+}
+
+static GLint mglPlainUniformResourceLocation(const MGLShaderResource *res)
+{
+    if (!res) {
+        return -1;
+    }
+
+    if (mglUniformResourceLooksSamplerLike(res, _UNIFORM_CONSTANT_RES)) {
+        return -1;
+    }
+
+    GLint known = mglKnownPlainUniformLocation(res->name);
+    if (known >= 0) {
+        return known;
+    }
+    if (res->uniform_location >= 0) {
+        return res->uniform_location;
+    }
+    if (res->location != 0xffffffffu && res->location < 1024u) {
+        return (GLint)res->location;
+    }
+    if (res->gl_binding < MAX_BINDABLE_BUFFERS) {
+        return (GLint)res->gl_binding;
+    }
+
+    return -1;
+}
+
+static GLboolean mglUniformLocationMatchesResource(const MGLShaderResource *res, int res_type, GLint location)
+{
+    if (!res || location < 0) {
+        return GL_FALSE;
+    }
+
+    // Reflected sampler/image resources often report location 0 even when they
+    // are distinct uniforms. Once we assign a synthetic location, only that
+    // location should match; otherwise unrelated integer uniforms at location 0
+    // can accidentally rewrite sampler units.
+    if (mglUniformResourceLooksSamplerLike(res, res_type)) {
+        GLint array_size = res->gl_array_size > 0 ? res->gl_array_size : 1;
+        return (res->uniform_location >= 0 &&
+                location >= res->uniform_location &&
+                location < res->uniform_location + array_size) ? GL_TRUE : GL_FALSE;
+    }
+
+    if (res_type == _UNIFORM_CONSTANT_RES) {
+        GLint plain_location = mglPlainUniformResourceLocation(res);
+        if (plain_location >= 0 && plain_location == location) {
+            return GL_TRUE;
+        }
+    }
+
+    if (res->uniform_location >= 0 && res->uniform_location == location) {
+        return GL_TRUE;
+    }
+    if (res->uniform_location >= 0) {
+        return GL_FALSE;
+    }
+
+    if (res->location != 0xffffffffu && (GLint)res->location == location) {
+        return GL_TRUE;
+    }
+
+    return (GLint)res->gl_binding == location ? GL_TRUE : GL_FALSE;
+}
+
+static MGLShaderResource *mglFindSamplerUniformResource(Program *program,
+                                                    GLint location,
+                                                    int *stage_out,
+                                                    GLuint *metal_binding_out)
+{
+    static const int sampler_resource_types[] = {
+        _UNIFORM_CONSTANT_RES,
+        _SAMPLED_IMAGE_RES,
+        _SEPARATE_IMAGE_RES,
+        _SEPARATE_SAMPLERS_RES,
+        _STORAGE_IMAGE_RES
+    };
+
+    if (stage_out) {
+        *stage_out = -1;
+    }
+    if (metal_binding_out) {
+        *metal_binding_out = 0u;
+    }
+
+    if (!program || location < 0) {
+        return NULL;
+    }
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
+            int res_type = sampler_resource_types[rt];
+            MGLShaderResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) {
+                continue;
+            }
+            for (GLuint i = 0; i < resources->count; i++) {
+                MGLShaderResource *res = &resources->list[i];
+                if (!mglUniformResourceLooksSamplerLike(res, res_type)) {
+                    continue;
+                }
+                if (!mglUniformLocationMatchesResource(res, res_type, location)) {
+                    continue;
+                }
+
+                if (stage_out) {
+                    *stage_out = stage;
+                }
+                if (metal_binding_out) {
+                    *metal_binding_out = res->binding + (GLuint)(location - res->uniform_location);
+                }
+                return res;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+static GLboolean mglSamplerResourcesShareUniform(const MGLShaderResource *a, int a_type,
+                                                 const MGLShaderResource *b, int b_type)
+{
+    if (!a || !b ||
+        !mglUniformResourceLooksSamplerLike(a, a_type) ||
+        !mglUniformResourceLooksSamplerLike(b, b_type)) {
+        return GL_FALSE;
+    }
+
+    if (mglSafeCStringLength(a->name, NULL) &&
+        mglSafeCStringLength(b->name, NULL) &&
+        mglSafeCStringEquals(a->name, b->name)) {
+        return GL_TRUE;
+    }
+
+    if (a->uniform_location >= 0 &&
+        b->uniform_location >= 0 &&
+        a->uniform_location == b->uniform_location) {
+        return GL_TRUE;
+    }
+
+    return GL_FALSE;
+}
+
+static GLboolean mglSamplerResourceMatchesUniformWrite(MGLShaderResource *res,
+                                                       int res_type,
+                                                       GLint location,
+                                                       MGLShaderResource *primary,
+                                                       int primary_type)
+{
+    if (!res || !mglUniformResourceLooksSamplerLike(res, res_type)) {
+        return GL_FALSE;
+    }
+
+    if (mglUniformLocationMatchesResource(res, res_type, location)) {
+        return GL_TRUE;
+    }
+
+    return mglSamplerResourcesShareUniform(res, res_type, primary, primary_type);
+}
+
+static GLboolean mglMetalSamplerSlotSharedAcrossResources(Program *program, GLuint metal_binding)
+{
+    static const int sampler_resource_types[] = {
+        _UNIFORM_CONSTANT_RES,
+        _SAMPLED_IMAGE_RES,
+        _SEPARATE_IMAGE_RES,
+        _SEPARATE_SAMPLERS_RES,
+        _STORAGE_IMAGE_RES
+    };
+
+    if (!program || metal_binding >= TEXTURE_UNITS) {
+        return GL_FALSE;
+    }
+
+    /* Fast path — use the precomputed shared-binding table built at
+     * link time.  O(1) lookup instead of a full stage×resource scan. */
+    if (program->sampler_binding_shared_valid) {
+        return program->sampler_binding_shared[metal_binding] ? GL_TRUE : GL_FALSE;
+    }
+
+    /* Fallback: full scan (pre-link or if the table was invalidated). */
+    unsigned hits = 0u;
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
+            int res_type = sampler_resource_types[rt];
+            MGLShaderResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) {
+                continue;
+            }
+
+            for (GLuint i = 0; i < resources->count; i++) {
+                MGLShaderResource *res = &resources->list[i];
+                if (res->binding != metal_binding ||
+                    !mglUniformResourceLooksSamplerLike(res, res_type)) {
+                    continue;
+                }
+
+                if (++hits > 1u) {
+                    return GL_TRUE;
+                }
+            }
+        }
+    }
+
+    return GL_FALSE;
+}
+
+static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint unit)
+{
+    static const int sampler_resource_types[] = {
+        _UNIFORM_CONSTANT_RES,
+        _SAMPLED_IMAGE_RES,
+        _SEPARATE_IMAGE_RES,
+        _SEPARATE_SAMPLERS_RES,
+        _STORAGE_IMAGE_RES
+    };
+
+    ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+    if (!ctx || location < 0) {
+        return GL_FALSE;
+    }
+
+    Program *program = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
+    if (!program) {
+        return GL_FALSE;
+    }
+
+    /* Fast reject: if the link-time bitmap says this location is not a
+     * sampler, skip the full 6-stage × 5-type resource scan entirely.
+     * This is the common case — MC uploads many plain int uniforms
+     * (FogShape, etc.) via glUniform1i, none of which are samplers. */
+    if (program->sampler_location_bitmap_valid &&
+        location >= 0 && location < 128) {
+        if (!((program->sampler_location_bitmap[(GLuint)location >> 6] >>
+               ((GLuint)location & 63u)) & 1ull)) {
+            return GL_FALSE;
+        }
+    }
+
+    /* Stack array collecting matched resources, merging the former 3-pass
+     * scan into 2 scans + a small write iteration.  64 entries covers all
+     * practical cases (typical match count is 1-4). */
+    typedef struct {
+        MGLShaderResource *res;
+        int stage;
+    } MGLSamplerMatch;
+    MGLSamplerMatch matches[64];
+    GLuint matchCount = 0u;
+
+    GLboolean matched = GL_FALSE;
+    GLboolean needs_update = GL_FALSE;
+    const char *firstMatchedName = NULL;
+    GLuint firstMatchedBinding = 0u;
+    int firstMatchedStage = -1;
+    MGLShaderResource *primaryResource = NULL;
+    int primaryResourceType = -1;
+
+    /* Pass 1: find primary resource (first sampler-like resource whose
+     * location matches).  Same logic as the original first loop. */
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
+            int res_type = sampler_resource_types[rt];
+            MGLShaderResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) {
+                continue;
+            }
+
+            for (GLuint i = 0; i < resources->count; i++) {
+                MGLShaderResource *res = &resources->list[i];
+                if (!mglUniformResourceLooksSamplerLike(res, res_type) ||
+                    !mglUniformLocationMatchesResource(res, res_type, location)) {
+                    continue;
+                }
+
+                matched = GL_TRUE;
+                if (!firstMatchedName) {
+                    firstMatchedName = res->name;
+                    firstMatchedBinding = res->binding;
+                    firstMatchedStage = stage;
+                }
+                if (!primaryResource) {
+                    primaryResource = res;
+                    primaryResourceType = res_type;
+                }
+            }
+        }
+    }
+
+    if (!matched) {
+        return GL_FALSE;
+    }
+
+    /* Samplers use TEXTURE_UNITS; storage images use MAX_IMAGE_UNITS.
+     * CTS negative-uniform expects INVALID_VALUE when unit >= MAX_IMAGE_UNITS. */
+    {
+        GLint max_units = TEXTURE_UNITS;
+        if (primaryResourceType == _STORAGE_IMAGE_RES) {
+            max_units = (GLint)STATE(var).max_image_units;
+        }
+        if (unit < 0 || unit >= max_units) {
+            ERROR_RETURN_VALUE(GL_INVALID_VALUE, GL_TRUE);
+        }
+    }
+
+    /* Pass 2: collect all resources matching mglSamplerResourceMatchesUniformWrite
+     * into the stack array AND check needs_update in the same scan (replaces
+     * the original second loop).  The collected array is then used for the
+     * write pass below (replaces the original third loop). */
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
+            int res_type = sampler_resource_types[rt];
+            MGLShaderResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) {
+                continue;
+            }
+
+            for (GLuint i = 0; i < resources->count; i++) {
+                MGLShaderResource *res = &resources->list[i];
+                if (!mglSamplerResourceMatchesUniformWrite(res,
+                                                           res_type,
+                                                           location,
+                                                           primaryResource,
+                                                           primaryResourceType)) {
+                    continue;
+                }
+
+                if (matchCount < 64u) {
+                    matches[matchCount].res = res;
+                    matches[matchCount].stage = stage;
+                    matchCount++;
+                }
+
+                /* needs_update check (from the original second loop) */
+                if (res->sampler_unit != unit || !res->sampler_unit_explicit) {
+                    needs_update = GL_TRUE;
+                } else if (res->binding < TEXTURE_UNITS) {
+                    GLboolean shared_slot =
+                        mglMetalSamplerSlotSharedAcrossResources(program, res->binding);
+                    if (program->sampler_units_by_stage[stage][res->binding] != unit ||
+                        !program->sampler_units_explicit_by_stage[stage][res->binding] ||
+                        (!shared_slot &&
+                         (program->sampler_units[res->binding] != unit ||
+                          !program->sampler_units_explicit[res->binding]))) {
+                        needs_update = GL_TRUE;
+                    }
+                }
+            }
+        }
+    }
+
+    if (needs_update) {
+        mglFlushPendingDraws(ctx);
+    }
+
+    /* Pass 3: perform the update by iterating the collected matches
+     * (replaces the original third full stage×resource scan). */
+    GLboolean changed = GL_FALSE;
+    GLboolean explicit_changed = GL_FALSE;
+
+    for (GLuint m = 0; m < matchCount; m++) {
+        MGLShaderResource *res = matches[m].res;
+        int stage = matches[m].stage;
+
+        GLint array_element = location - res->uniform_location;
+        if (array_element < 0) {
+            array_element = 0;
+        }
+        GLuint metal_slot = res->binding + (GLuint)array_element;
+        if (array_element == 0 && res->sampler_unit != unit) {
+            changed = GL_TRUE;
+            res->sampler_unit = unit;
+        }
+        if (array_element == 0 && !res->sampler_unit_explicit) {
+            explicit_changed = GL_TRUE;
+            res->sampler_unit_explicit = GL_TRUE;
+        }
+
+        if (metal_slot < TEXTURE_UNITS) {
+            GLboolean shared_slot =
+                mglMetalSamplerSlotSharedAcrossResources(program, metal_slot);
+            if (!shared_slot && program->sampler_units[metal_slot] != unit) {
+                changed = GL_TRUE;
+                program->sampler_units[metal_slot] = unit;
+            }
+            if (!shared_slot && !program->sampler_units_explicit[metal_slot]) {
+                explicit_changed = GL_TRUE;
+                program->sampler_units_explicit[metal_slot] = GL_TRUE;
+            }
+            if (program->sampler_units_by_stage[stage][metal_slot] != unit) {
+                changed = GL_TRUE;
+                program->sampler_units_by_stage[stage][metal_slot] = unit;
+            }
+            if (!program->sampler_units_explicit_by_stage[stage][metal_slot]) {
+                explicit_changed = GL_TRUE;
+                program->sampler_units_explicit_by_stage[stage][metal_slot] = GL_TRUE;
+            }
+        }
+    }
+
+    if (changed || explicit_changed) {
+        static unsigned long long s_sampler_uniform_update_count = 0;
+        unsigned long long hit = ++s_sampler_uniform_update_count;
+        mglTraceLogExternal("SAMPLER_UNIFORM_SET program=%u location=%d unit=%d firstStage=%d firstBinding=%u firstName=%s resources=%u/%u changed=%d explicitChanged=%d hit=%llu",
+                            (unsigned)program->name,
+                            (int)location,
+                            (int)unit,
+                            firstMatchedStage,
+                            (unsigned)firstMatchedBinding,
+                            mglSafeCStringForLog(firstMatchedName),
+                            (unsigned)matchCount,
+                            (unsigned)matchCount,
+                            changed ? 1 : 0,
+                            explicit_changed ? 1 : 0,
+                            hit);
+        /* Invalidate the sampled-texture-unit bitmap so the next
+         * mglProgramSamplesTextureUnit query rebuilds it with the new
+         * sampler binding.  Also invalidate the merged state-level mask
+         * (active_sampled_texture_unit_mask): the sampler binding change
+         * alters the set of sampled units, and DIRTY_PROGRAM is not set
+         * here, so without this the draw-command hazard/rebuild paths
+         * would keep using the stale unit set. */
+        program->sampled_texture_unit_mask_valid = 0u;
+        STATE(active_sampled_texture_unit_mask_valid) = 0u;
+        mglMarkRendererDirtyBits(&ctx->state,
+                                 DIRTY_TEX_BINDING | DIRTY_SAMPLER);
+    }
+    return GL_TRUE;
+}
+
+/* True when <location> names a storage image uniform in the current program. */
+static GLboolean mglUniformLocationIsStorageImage(GLMContext ctx, GLint location)
+{
+    ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+    if (!ctx || location < 0) {
+        return GL_FALSE;
+    }
+    Program *program = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
+    if (!program) {
+        return GL_FALSE;
+    }
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *resources =
+            mglUniformSafeResourceList(program, stage, _STORAGE_IMAGE_RES, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
+        for (GLuint i = 0; i < resources->count; i++) {
+            MGLShaderResource *res = &resources->list[i];
+            if (mglUniformLocationMatchesResource(res, _STORAGE_IMAGE_RES, location)) {
+                return GL_TRUE;
+            }
+        }
+    }
+    return GL_FALSE;
+}
+
+static size_t mglRoundUpUniformBlockSize(size_t value)
+{
+    return value ? ((value + 15) & ~(size_t)15) : 0;
+}
+
+static GLboolean mglUniformBlockHasName(const MGLShaderResource *block)
+{
+    return block && mglSafeCStringLength(block->name, NULL);
+}
+
+static GLboolean mglUniformBlockSameIdentity(const MGLShaderResource *a, const MGLShaderResource *b)
+{
+    if (!a || !b) {
+        return GL_FALSE;
+    }
+
+    if (mglUniformBlockHasName(a) && mglUniformBlockHasName(b)) {
+        return mglSafeCStringEquals(a->name, b->name);
+    }
+
+    return a == b;
+}
+
+static GLuint mglUniformBlockArraySize(const MGLShaderResource *block)
+{
+    return (block && block->ubo_array_size > 0) ? block->ubo_array_size : 1u;
+}
+
+static GLuint mglUniformBlockElementBinding(const MGLShaderResource *block, GLuint element)
+{
+    if (!block) {
+        return 0;
+    }
+    if (block->ubo_array_bindings && element < mglUniformBlockArraySize(block)) {
+        return block->ubo_array_bindings[element];
+    }
+    return block->gl_binding + element;
+}
+
+static GLsizei mglUniformBlockElementName(const MGLShaderResource *block,
+                                          GLuint element,
+                                          GLsizei bufSize,
+                                          GLchar *name)
+{
+    GLsizei len = 0;
+    if (!block || !block->name) {
+        if (name && bufSize > 0) {
+            name[0] = '\0';
+        }
+        return 0;
+    }
+
+    if (block->ubo_is_array || mglUniformBlockArraySize(block) > 1) {
+        len = snprintf(name && bufSize > 0 ? name : NULL,
+                       name && bufSize > 0 ? (size_t)bufSize : 0u,
+                       "%s[%u]", block->name, element);
+    } else {
+        len = snprintf(name && bufSize > 0 ? name : NULL,
+                       name && bufSize > 0 ? (size_t)bufSize : 0u,
+                       "%s", block->name);
+    }
+    return len;
+}
+
+static MGLShaderResource *mglFindUniformBlockByIndex(Program *program, GLuint uniformBlockIndex, int *stage_out)
+{
+    GLuint ordinal = 0;
+
+    if (!program || uniformBlockIndex == GL_INVALID_INDEX) {
+        return NULL;
+    }
+
+    MGLUBOBlockNameSet ubo_seen_fbi;
+    mglUBOBlockNameSetInit(&ubo_seen_fbi);
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *resources = mglUniformSafeResourceList(program, stage, _UNIFORM_BUFFER_RES, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
+        for (GLuint i = 0; i < resources->count; i++) {
+            MGLShaderResource *res = &resources->list[i];
+            if (mglUBOBlockNameSetContainsOrInsert(&ubo_seen_fbi, res->name)) {
+                continue;
+            }
+            GLuint element_count = mglUniformBlockArraySize(res);
+            if (uniformBlockIndex < ordinal + element_count) {
+                if (stage_out) {
+                    *stage_out = stage;
+                }
+                res->ubo_array_element = uniformBlockIndex - ordinal;
+                return res;
+            }
+            ordinal += element_count;
+        }
+    }
+
+    return NULL;
+}
+
+static size_t mglUniformBlockRequiredSize(Program *program, const MGLShaderResource *block)
+{
+    size_t required_size = 0;
+
+    if (!program || !block) {
+        return 0;
+    }
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *resources = mglUniformSafeResourceList(program, stage, _UNIFORM_BUFFER_RES, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
+        for (GLuint i = 0; i < resources->count; i++) {
+            MGLShaderResource *res = &resources->list[i];
+            if (mglUniformBlockSameIdentity(block, res) && res->required_size > required_size) {
+                required_size = res->required_size;
+            }
+        }
+    }
+
+    return mglRoundUpUniformBlockSize(required_size);
+}
+
+static GLboolean mglUniformBlockReferencedByStage(Program *program, const MGLShaderResource *block, int query_stage)
+{
+    if (!program || !block || query_stage < 0 || query_stage >= _MAX_SHADER_TYPES) {
+        return GL_FALSE;
+    }
+
+    MGLShaderResourceList *resources = mglUniformSafeResourceList(program, query_stage, _UNIFORM_BUFFER_RES, __FUNCTION__);
+    if (!resources) {
+        return GL_FALSE;
+    }
+    for (GLuint i = 0; i < resources->count; i++) {
+        MGLShaderResource *res = &resources->list[i];
+        if (mglUniformBlockSameIdentity(block, res)) {
+            return GL_TRUE;
+        }
+    }
+
+    return GL_FALSE;
+}
+
+GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
+{
+    /* Capture the query-name length once so the inner loops can reuse it
+     * instead of calling strlen(name) on every iteration (the query string
+     * never changes during this function). */
+    size_t query_name_len = 0u;
+
+    if (!ctx) {
+        return -1;
+    }
+
+    if (!name || !mglSafeCStringLength(name, &query_name_len)) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, -1);
+    }
+
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, -1);
+    }
+
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, -1);
+    }
+
+    if (!ptr->link_success) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, -1);
+    }
+
+    const int resource_types[] = {
+        _UNIFORM_CONSTANT_RES,
+        _SAMPLED_IMAGE_RES,
+        _SEPARATE_IMAGE_RES,
+        _SEPARATE_SAMPLERS_RES,
+        _STORAGE_IMAGE_RES
+    };
+
+    for (size_t rt = 0; rt < sizeof(resource_types) / sizeof(resource_types[0]); rt++)
+    {
+        int res_type = resource_types[rt];
+        for (int stage=_VERTEX_SHADER; stage<_MAX_SHADER_TYPES; stage++)
+        {
+            MGLShaderResourceList *resources = mglUniformSafeResourceList(ptr, stage, res_type, __FUNCTION__);
+            if (!resources || resources->count == 0u) {
+                continue;
+            }
+
+            for (GLuint i=0; i<resources->count; i++)
+            {
+                MGLShaderResource *list = resources->list;
+                const char *str = list[i].name;
+                /* Capture the resource-name length during validation so the
+                 * array-suffix matching below can reuse it without calling
+                 * strlen(str) again. */
+                size_t resource_name_len = 0u;
+                if (!mglSafeCStringLength(str, &resource_name_len)) {
+                    continue;
+                }
+
+                if (res_type == _UNIFORM_CONSTANT_RES &&
+                    list[i].ubo_members &&
+                    !mglUniformResourceLooksSamplerLike(&list[i], res_type)) {
+                    GLint base_location = mglPlainUniformResourceLocation(&list[i]);
+                    if (base_location >= 0) {
+                        for (GLuint m = 0; m < list[i].ubo_member_count; m++) {
+                            const SpirvUBOMember *member = &list[i].ubo_members[m];
+                            const char *mqn = member->query_name ? member->query_name : member->name;
+                            if (mglSafeCStringEquals(mqn, name) ||
+                                mglActiveUniformNamesMatch(mqn, name)) {
+                                return base_location + member->location_offset;
+                            }
+                            /* Handle array-element queries like "u0[0].m1[1]"
+                             * when the reflected member is "u0[0].m1[0]".
+                             * Match the base name (everything before the last
+                             * "[N]" suffix) and add the parsed index to the
+                             * member's location_offset. */
+                            if (mqn && member->size > 1) {
+                                /* Validate mqn and obtain its length in one
+                                 * pass; reuse the precomputed query_name_len. */
+                                size_t mqn_len = 0u;
+                                if (!mglSafeCStringLength(mqn, &mqn_len)) {
+                                    continue;
+                                }
+                                size_t q_len = query_name_len;
+                                /* Member reflected as "arr[0]" with size N;
+                                 * query "arr[k]". */
+                                if (mqn_len >= 3u &&
+                                    mqn[mqn_len - 3u] == '[' &&
+                                    mqn[mqn_len - 2u] == '0' &&
+                                    mqn[mqn_len - 1u] == ']' &&
+                                    q_len >= mqn_len &&
+                                    strncmp(mqn, name, mqn_len - 3u) == 0 &&
+                                    name[mqn_len - 3u] == '[' &&
+                                    name[q_len - 1u] == ']') {
+                                    size_t sub_len = q_len - mqn_len + 3u - 2u;
+                                    long parsed = mglParseStrictArraySubscript(
+                                        name + mqn_len - 2u, sub_len);
+                                    if (parsed >= 0 && parsed < member->size) {
+                                        return base_location +
+                                               member->location_offset +
+                                               (GLint)parsed;
+                                    }
+                                }
+                                /* Member reflected as bare "arr" with size N;
+                                 * query "arr[k]" (GL 4.6 §7.6.1). */
+                                if (q_len > mqn_len + 2u &&
+                                    strncmp(mqn, name, mqn_len) == 0 &&
+                                    name[mqn_len] == '[' &&
+                                    name[q_len - 1u] == ']') {
+                                    size_t sub_len = q_len - mqn_len - 2u;
+                                    long parsed = mglParseStrictArraySubscript(
+                                        name + mqn_len + 1u, sub_len);
+                                    if (parsed >= 0 && parsed < member->size) {
+                                        return base_location +
+                                               member->location_offset +
+                                               (GLint)parsed;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                GLint array_element = 0;
+                GLboolean name_matches = mglSafeCStringEquals(str, name);
+                if (!name_matches && list[i].gl_array_size > 0 &&
+                    query_name_len >= resource_name_len + 3u &&
+                    strncmp(str, name, resource_name_len) == 0 &&
+                    name[resource_name_len] == '[' &&
+                    name[query_name_len - 1u] == ']') {
+                    size_t sub_len = query_name_len - resource_name_len - 2u; /* content between [ and ] */
+                    long parsed = mglParseStrictArraySubscript(name + resource_name_len + 1u, sub_len);
+                    if (parsed >= 0 && parsed < list[i].gl_array_size) {
+                        array_element = (GLint)parsed;
+                        name_matches = GL_TRUE;
+                    }
+                }
+                /* Multi-dimensional array: query "a[2][1]" matches
+                 * resource "a[2][1][0]" (query omits trailing [0]).
+                 * Also accepts "arr[0]" for resource "arr" (GL 4.6
+                 * §7.6.1: GetUniformLocation of the first element). */
+                if (!name_matches && mglActiveUniformNamesMatch(str, name)) {
+                    name_matches = GL_TRUE;
+                }
+
+                if (name_matches)
+                {
+                    GLuint gl_binding = list[i].gl_binding;
+                    GLboolean sampler_like = mglUniformResourceLooksSamplerLike(&list[i], res_type);
+                    GLint location = sampler_like
+                        ? list[i].uniform_location
+                        : ((res_type == _UNIFORM_CONSTANT_RES)
+                            ? mglPlainUniformResourceLocation(&list[i])
+                            : ((list[i].uniform_location >= 0)
+                                ? list[i].uniform_location
+                                : ((list[i].location != 0xffffffffu) ? (GLint)list[i].location : (GLint)gl_binding)));
+
+                    return location >= 0 ? location + array_element : location;
+                }
+            }
+        }
+    }
+
+    return -1;
+}
+
+/* Map a plain-uniform GL type to (component count, float-ness). */
+static GLboolean mglGLTypeIsDoubleUniform(GLuint gl_type)
+{
+    switch (gl_type) {
+        case GL_DOUBLE:
+        case GL_DOUBLE_VEC2:
+        case GL_DOUBLE_VEC3:
+        case GL_DOUBLE_VEC4:
+        case GL_DOUBLE_MAT2:
+        case GL_DOUBLE_MAT3:
+        case GL_DOUBLE_MAT4:
+        case GL_DOUBLE_MAT2x3:
+        case GL_DOUBLE_MAT2x4:
+        case GL_DOUBLE_MAT3x2:
+        case GL_DOUBLE_MAT3x4:
+        case GL_DOUBLE_MAT4x2:
+        case GL_DOUBLE_MAT4x3:
+            return GL_TRUE;
+        default:
+            return GL_FALSE;
+    }
+}
+
+static GLuint mglPlainUniformTypeInfo(GLuint gl_type, GLboolean *is_float)
+{
+    *is_float = GL_TRUE;
+    switch (gl_type) {
+        case GL_FLOAT: case GL_DOUBLE: return 1;
+        case GL_FLOAT_VEC2: case GL_DOUBLE_VEC2: return 2;
+        case GL_FLOAT_VEC3: case GL_DOUBLE_VEC3: return 3;
+        case GL_FLOAT_VEC4: case GL_DOUBLE_VEC4: return 4;
+        case GL_FLOAT_MAT2: return 4;
+        case GL_FLOAT_MAT3: return 9;
+        case GL_FLOAT_MAT4: return 16;
+        case GL_FLOAT_MAT2x3: case GL_FLOAT_MAT3x2: return 6;
+        case GL_FLOAT_MAT2x4: case GL_FLOAT_MAT4x2: return 8;
+        case GL_FLOAT_MAT3x4: case GL_FLOAT_MAT4x3: return 12;
+        case GL_INT: case GL_UNSIGNED_INT: *is_float = GL_FALSE; return 1;
+        case GL_INT_VEC2: case GL_UNSIGNED_INT_VEC2: *is_float = GL_FALSE; return 2;
+        case GL_INT_VEC3: case GL_UNSIGNED_INT_VEC3: *is_float = GL_FALSE; return 3;
+        case GL_INT_VEC4: case GL_UNSIGNED_INT_VEC4: *is_float = GL_FALSE; return 4;
+        /* Bool uniforms are stored as IEEE 0.0/1.0 floats in the plain pack
+         * (Metal has no bool buffer type).  Report as float so GetUniformfv
+         * returns 0.0/1.0 and GetUniformiv rounds to 0/1. */
+        case GL_BOOL: *is_float = GL_TRUE; return 1;
+        case GL_BOOL_VEC2: *is_float = GL_TRUE; return 2;
+        case GL_BOOL_VEC3: *is_float = GL_TRUE; return 3;
+        case GL_BOOL_VEC4: *is_float = GL_TRUE; return 4;
+        default: return 0;
+    }
+}
+
+/* Matrix CPU slots normally hold 16-byte columns (padded_words per element);
+ * mat3 may also be tightly packed GL layout (tight_words).  Detect from the
+ * slot's logical upload size, not Buffer.size, which may include allocation
+ * padding.  When the size is a multiple of both (e.g. 36 words for mat3),
+ * prefer the padded layout -- that is the normal upload path. */
+static GLuint mglMatrixElementStrideWords(size_t avail_words,
+                                          GLuint padded_words,
+                                          GLuint tight_words)
+{
+    if (avail_words >= padded_words && (avail_words % padded_words) == 0u) {
+        return padded_words;
+    }
+    return tight_words;
+}
+
+/* Read back one element of a plain (non-sampler) default-block uniform from
+ * the per-program CPU store (plain_uniform_buffers).  Returns the component
+ * count (0 = location does not name a plain uniform).  out[] receives raw
+ * 32-bit words; *is_float_out tells the caller whether they are float or
+ * integer bits.  Slots never uploaded read as zero (GL initial value; shader
+ * initializers are seeded into the slots at link time). */
+static GLuint mglReadPlainUniform(Program *ptr, GLint location,
+                                  uint32_t out[16], GLboolean *is_float_out,
+                                  GLboolean *is_double_out)
+{
+    if (is_double_out) {
+        *is_double_out = GL_FALSE;
+    }
+    if (!ptr || location < 0) {
+        return 0;
+    }
+
+    GLint base_loc = -1, element = 0;
+    GLuint gl_type = 0;
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES && base_loc < 0; stage++) {
+        MGLShaderResourceList *resources =
+            mglUniformSafeResourceList(ptr, stage, _UNIFORM_CONSTANT_RES, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
+        for (GLuint i = 0; i < resources->count && base_loc < 0; i++) {
+            MGLShaderResource *res = &resources->list[i];
+            if (mglUniformResourceLooksSamplerLike(res, _UNIFORM_CONSTANT_RES)) {
+                continue;
+            }
+            GLint base = mglPlainUniformResourceLocation(res);
+            if (base < 0) {
+                continue;
+            }
+            if (res->ubo_members && res->ubo_member_count > 0) {
+                /* Struct leaves: one location per leaf element; glUniform*
+                 * stores each leaf location in its own plain_uniform_buffers
+                 * slot. */
+                for (GLuint m = 0; m < res->ubo_member_count; m++) {
+                    const SpirvUBOMember *member = &res->ubo_members[m];
+                    GLint mbase = base + member->location_offset;
+                    GLint msize = member->size > 1 ? member->size : 1;
+                    if (location >= mbase && location < mbase + msize) {
+                        base_loc = mbase;
+                        element = location - mbase;
+                        gl_type = member->gl_type;
+                        break;
+                    }
+                }
+            } else {
+                GLint arr = res->gl_array_size > 1 ? res->gl_array_size : 1;
+                if (location >= base && location < base + arr) {
+                    base_loc = base;
+                    element = location - base;
+                    gl_type = res->gl_type;
+                }
+            }
+        }
+    }
+
+    if (base_loc < 0) {
+        return 0;
+    }
+
+    GLuint comps = mglPlainUniformTypeInfo(gl_type, is_float_out);
+    if (comps == 0) {
+        return 0;
+    }
+
+    /* Doubles occupy two 32-bit words per component in the plain pack. */
+    const GLboolean is_double = mglGLTypeIsDoubleUniform(gl_type);
+    if (is_double_out) {
+        *is_double_out = is_double;
+    }
+    const GLuint word_scale = is_double ? 2u : 1u;
+    const GLuint word_comps = comps * word_scale;
+    if (word_comps > 16u) {
+        return 0;
+    }
+
+    memset(out, 0, word_comps * sizeof(uint32_t));
+
+    /* Prefer the exact location slot: glUniform* writes each location
+     * independently (arr[i] / mat3[i] live at location+i).  Fall back to the
+     * base slot with an element stride for Uniform*v(count>1) bulk uploads
+     * that pack consecutive elements into one buffer. */
+    Buffer *buf = NULL;
+    size_t first = 0;
+    GLuint stored_words = word_comps;
+    const GLuint padded_words =
+        mglPlainUniformMatrixElementBytes(gl_type) / sizeof(uint32_t);
+
+    Buffer *direct = location < MAX_PLAIN_UNIFORM_LOCATIONS
+        ? ptr->plain_uniform_buffers[location].buf : NULL;
+    if (direct && direct->data.buffer_data && direct->size > 0) {
+        buf = direct;
+        first = 0;
+        if (padded_words) {
+            GLsizeiptr logical_size =
+                ptr->plain_uniform_buffers[location].size;
+            size_t avail = logical_size > 0
+                ? (size_t)logical_size / sizeof(uint32_t) : 0u;
+            stored_words =
+                mglMatrixElementStrideWords(avail, padded_words, comps);
+        }
+    } else if (element > 0 && base_loc < MAX_PLAIN_UNIFORM_LOCATIONS) {
+        Buffer *base_buf = ptr->plain_uniform_buffers[base_loc].buf;
+        if (base_buf && base_buf->data.buffer_data && base_buf->size > 0) {
+            buf = base_buf;
+            if (padded_words) {
+                GLsizeiptr logical_size =
+                    ptr->plain_uniform_buffers[base_loc].size;
+                size_t avail = logical_size > 0
+                    ? (size_t)logical_size / sizeof(uint32_t) : 0u;
+                stored_words =
+                    mglMatrixElementStrideWords(avail, padded_words, comps);
+            }
+            first = (size_t)element * stored_words;
+        }
+    }
+
+    if (buf) {
+        const uint32_t *src = (const uint32_t *)(uintptr_t)buf->data.buffer_data;
+        size_t avail_words = (size_t)buf->size / sizeof(uint32_t);
+        uint32_t tmp[16];
+        memset(tmp, 0, sizeof(tmp));
+        for (GLuint w = 0; w < stored_words && w < 16u; w++) {
+            if (first + w < avail_words) {
+                tmp[w] = src[first + w];
+            }
+        }
+        if (padded_words && stored_words == padded_words &&
+            padded_words != comps) {
+            GLuint cols = padded_words / 4u;
+            GLuint rows = comps / cols;
+            for (GLuint col = 0; col < cols; col++) {
+                for (GLuint row = 0; row < rows; row++) {
+                    out[col * rows + row] = tmp[col * 4u + row];
+                }
+            }
+        } else {
+            memcpy(out, tmp, stored_words * sizeof(uint32_t));
+        }
+    }
+    return comps;
+}
+
+void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *params);
+
+/* GL 4.6 §7.6.1: INVALID_VALUE if <program> was never generated;
+ * INVALID_OPERATION if it names a non-program object (e.g. a shader). */
+static GLenum mglGetUniformProgramNameError(GLMContext ctx, GLuint program)
+{
+    if (isProgram(ctx, program)) {
+        return GL_NO_ERROR;
+    }
+    if (program != 0u && isShader(ctx, program)) {
+        return GL_INVALID_OPERATION;
+    }
+    return GL_INVALID_VALUE;
+}
+
+/* Returns the component count written to out[16], 0 when an error was raised. */
+static GLuint mglGetUniformAsFloat(GLMContext ctx, GLuint program, GLint location,
+                                   const char *caller, GLfloat *out)
+{
+    {
+        GLenum name_err = mglGetUniformProgramNameError(ctx, program);
+        if (name_err != GL_NO_ERROR) {
+            mglDispatchError(ctx, caller, name_err);
+            return 0;
+        }
+    }
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, caller);
+    if (!ptr || !ptr->link_success) {
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return 0;
+    }
+
+    uint32_t bits[16];
+    GLboolean is_float = GL_TRUE;
+    GLboolean is_double = GL_FALSE;
+    GLuint comps = mglReadPlainUniform(ptr, location, bits, &is_float, &is_double);
+    if (comps == 0) {
+        /* Sampler uniforms are valid GetUniform targets: return the unit. */
+        if (mglFindSamplerUniformResource(ptr, location, NULL, NULL)) {
+            GLint unit = 0;
+            mglGetUniformiv(ctx, program, location, &unit);
+            out[0] = (GLfloat)unit;
+            return 1;
+        }
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return 0;  /* location not an active uniform */
+    }
+    for (GLuint i = 0; i < comps; i++) {
+        if (is_double) {
+            GLdouble d;
+            memcpy(&d, &bits[i * 2u], sizeof(d));
+            out[i] = (GLfloat)d;
+        } else if (is_float) {
+            GLfloat f;
+            memcpy(&f, &bits[i], sizeof(f));
+            out[i] = f;
+        } else {
+            out[i] = (GLfloat)(GLint)bits[i];
+        }
+    }
+    return comps;
+}
+
+static GLuint mglGetUniformAsDouble(GLMContext ctx, GLuint program, GLint location,
+                                    const char *caller, GLdouble *out)
+{
+    {
+        GLenum name_err = mglGetUniformProgramNameError(ctx, program);
+        if (name_err != GL_NO_ERROR) {
+            mglDispatchError(ctx, caller, name_err);
+            return 0;
+        }
+    }
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, caller);
+    if (!ptr || !ptr->link_success) {
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return 0;
+    }
+
+    uint32_t bits[16];
+    GLboolean is_float = GL_TRUE;
+    GLboolean is_double = GL_FALSE;
+    GLuint comps = mglReadPlainUniform(ptr, location, bits, &is_float, &is_double);
+    if (comps == 0) {
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return 0;
+    }
+    for (GLuint i = 0; i < comps; i++) {
+        if (is_double) {
+            memcpy(&out[i], &bits[i * 2u], sizeof(GLdouble));
+        } else if (is_float) {
+            GLfloat f;
+            memcpy(&f, &bits[i], sizeof(f));
+            out[i] = (GLdouble)f;
+        } else {
+            out[i] = (GLdouble)(GLint)bits[i];
+        }
+    }
+    return comps;
+}
+
+void mglGetUniformfv(GLMContext ctx, GLuint program, GLint location, GLfloat *params)
+{
+    GLfloat values[16];
+    if (!ctx) {
+        return;
+    }
+    GLuint comps = mglGetUniformAsFloat(ctx, program, location, __FUNCTION__, values);
+    if (params) {
+        memcpy(params, values, comps * sizeof(GLfloat));
+    }
+}
+
+/* Default-block doubles are stored as IEEE754 binary64 to match AIR i64
+ * payloads.  Read them back as doubles (not via the float soft path). */
+void mglGetUniformdv(GLMContext ctx, GLuint program, GLint location, GLdouble *params)
+{
+    GLdouble values[16];
+    if (!ctx) {
+        return;
+    }
+    GLuint comps =
+        mglGetUniformAsDouble(ctx, program, location, __FUNCTION__, values);
+    if (params) {
+        memcpy(params, values, comps * sizeof(GLdouble));
+    }
+}
+
+/* GL 4.6 2.2.2: a float is converted to an integer by rounding to nearest.
+ * Round in double and clamp, because narrowing an out-of-range or NaN float to
+ * an integer is undefined -- on arm64 it merely happens to saturate. */
+static int64_t mglRoundToInt64Clamped(GLfloat f, int64_t lo, int64_t hi)
+{
+    if (f != f) {
+        return 0; /* NaN has no nearest integer; the sign tests used to yield 0 */
+    }
+    int64_t r = llround((double)f);
+    if (r < lo) r = lo;
+    if (r > hi) r = hi;
+    return r;
+}
+
+void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *params)
+{
+    if (!ctx) {
+        return;
+    }
+    {
+        GLenum name_err = mglGetUniformProgramNameError(ctx, program);
+        if (name_err != GL_NO_ERROR) {
+            ERROR_RETURN(name_err);
+            return;
+        }
+    }
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr || !ptr->link_success) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (!params) {
+        return;
+    }
+
+    GLuint metal_binding = 0;
+    int stage = -1;
+    MGLShaderResource *res = mglFindSamplerUniformResource(ptr, location, &stage, &metal_binding);
+    if (res) {
+        if (res->sampler_unit >= 0 && res->sampler_unit < TEXTURE_UNITS) {
+            GLint array_element = location - res->uniform_location;
+            *params = res->sampler_unit + (array_element > 0 ? array_element : 0);
+        } else if (metal_binding < TEXTURE_UNITS &&
+                   stage >= 0 && stage < _MAX_SHADER_TYPES &&
+                   ptr->sampler_units_by_stage[stage][metal_binding] >= 0) {
+            *params = ptr->sampler_units_by_stage[stage][metal_binding];
+        } else if (metal_binding < TEXTURE_UNITS &&
+                   ptr->sampler_units[metal_binding] >= 0) {
+            *params = ptr->sampler_units[metal_binding];
+        } else {
+            *params = 0;
+        }
+        return;
+    }
+
+    uint32_t bits[16];
+    GLboolean is_float = GL_TRUE;
+    GLboolean is_double = GL_FALSE;
+    GLuint comps = mglReadPlainUniform(ptr, location, bits, &is_float, &is_double);
+    if (comps == 0) {
+        ERROR_RETURN(GL_INVALID_OPERATION);  /* location not an active uniform */
+        return;
+    }
+    for (GLuint i = 0; i < comps; i++) {
+        if (is_double) {
+            GLdouble d;
+            memcpy(&d, &bits[i * 2u], sizeof(d));
+            params[i] = (GLint)mglRoundToInt64Clamped((GLfloat)d, INT_MIN, INT_MAX);
+        } else if (is_float) {
+            GLfloat f;
+            memcpy(&f, &bits[i], sizeof(f));
+            /* Spec 2.2.2: float -> int converts by rounding to nearest. */
+            params[i] = (GLint)mglRoundToInt64Clamped(f, INT_MIN, INT_MAX);
+        } else {
+            params[i] = (GLint)bits[i];
+        }
+    }
+}
+
+void mglGetUniformuiv(GLMContext ctx, GLuint program, GLint location, GLuint *params)
+{
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr || !ptr->link_success) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (!params) {
+        return;
+    }
+
+    uint32_t bits[16];
+    GLboolean is_float = GL_TRUE;
+    GLboolean is_double = GL_FALSE;
+    GLuint comps = mglReadPlainUniform(ptr, location, bits, &is_float, &is_double);
+    if (comps == 0) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    for (GLuint i = 0; i < comps; i++) {
+        if (is_double) {
+            GLdouble d;
+            memcpy(&d, &bits[i * 2u], sizeof(d));
+            params[i] = (GLuint)mglRoundToInt64Clamped((GLfloat)d, 0, (int64_t)UINT32_MAX);
+        } else if (is_float) {
+            GLfloat f;
+            memcpy(&f, &bits[i], sizeof(f));
+            /* Spec 2.2.2: negative inputs clamp to 0 for an unsigned target. */
+            params[i] = (GLuint)mglRoundToInt64Clamped(f, 0, (int64_t)UINT32_MAX);
+        } else {
+            params[i] = bits[i];
+        }
+    }
+}
+
+
+void mglGetUniformIndices(GLMContext ctx, GLuint program, GLsizei uniformCount, const GLchar *const*uniformNames, GLuint *uniformIndices)
+{
+    if (!ctx) {
+        return;
+    }
+    if (uniformCount < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (uniformCount > 0 && (!uniformNames || !uniformIndices)) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr || !ptr->link_success) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    for (GLsizei i = 0; i < uniformCount; i++) {
+        GLint index = mglProgramActiveUniformIndexByName(ptr, uniformNames[i]);
+        uniformIndices[i] = (index >= 0) ? (GLuint)index : GL_INVALID_INDEX;
+    }
+}
+
+void mglGetActiveUniformsiv(GLMContext ctx, GLuint program, GLsizei uniformCount, const GLuint *uniformIndices, GLenum pname, GLint *params)
+{
+    if (!ctx) {
+        return;
+    }
+    if (uniformCount < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (uniformCount > 0 && !params) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (uniformCount > 0 && !uniformIndices) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr || !ptr->link_success) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    for (GLsizei i = 0; i < uniformCount; i++) {
+        int stage = -1;
+        int res_type = -1;
+        MGLShaderResource *res = mglProgramActiveUniformAt(ptr, uniformIndices[i], &stage, &res_type);
+        (void)stage;
+        if (!res) {
+            ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        }
+
+        switch (pname) {
+            case GL_UNIFORM_TYPE:
+                if (res->ubo_member) {
+                    params[i] = (GLint)res->ubo_member->gl_type;
+                } else {
+                    params[i] = mglProgramActiveUniformGLType(res, res_type);
+                }
+                break;
+            case GL_UNIFORM_SIZE:
+                if (res->ubo_member) {
+                    params[i] = res->ubo_member->size;
+                } else {
+                    params[i] = mglProgramActiveUniformSize(res, res_type);
+                }
+                break;
+            case GL_UNIFORM_NAME_LENGTH:
+                if (res->ubo_member) {
+                    size_t len = 0u;
+                    const char *member_name = res->ubo_member->query_name
+                        ? res->ubo_member->query_name
+                        : res->ubo_member->name;
+                    params[i] = (GLint)(mglSafeCStringLength(member_name, &len) ? len + 1u : 1u);
+                } else {
+                    params[i] = (GLint)mglProgramActiveUniformNameLength(res) + 1;
+                }
+                break;
+            case GL_UNIFORM_BLOCK_INDEX:
+                if (res->ubo_member) {
+                    params[i] = mglProgramActiveUniformBlockIndex(ptr, res);
+                } else {
+                    params[i] = -1;
+                }
+                break;
+            case GL_UNIFORM_OFFSET:
+                /* UBO members and atomic counters (GL 4.6 §7.3.1.1). */
+                if (res->ubo_member && res_type == _UNIFORM_BUFFER_RES) {
+                    params[i] = (GLint)res->ubo_member->offset;
+                } else if (res_type == _ATOMIC_COUNTER_RES) {
+                    params[i] = (GLint)res->location;
+                } else {
+                    params[i] = -1;
+                }
+                break;
+            case GL_UNIFORM_ARRAY_STRIDE:
+                if (res->ubo_member && res_type == _UNIFORM_BUFFER_RES) {
+                    params[i] = res->ubo_member->array_stride;
+                } else if (res_type == _ATOMIC_COUNTER_RES) {
+                    params[i] = (res->is_array || res->gl_array_size > 1)
+                        ? 4 : 0;
+                } else {
+                    params[i] = -1;
+                }
+                break;
+            case GL_UNIFORM_MATRIX_STRIDE:
+                if (res->ubo_member && res_type == _UNIFORM_BUFFER_RES) {
+                    params[i] = res->ubo_member->matrix_stride;
+                } else if (res_type == _ATOMIC_COUNTER_RES) {
+                    params[i] = 0;
+                } else {
+                    params[i] = -1;
+                }
+                break;
+            case GL_UNIFORM_ATOMIC_COUNTER_BUFFER_INDEX:
+                if (res_type == _ATOMIC_COUNTER_RES) {
+                    params[i] = mglAtomicCounterUniformBufferIndex(
+                        ptr, res->gl_binding);
+                } else {
+                    params[i] = -1;
+                }
+                break;
+            case GL_UNIFORM_IS_ROW_MAJOR:
+                if (res->ubo_member && res_type == _UNIFORM_BUFFER_RES) {
+                    params[i] = res->ubo_member->is_row_major;
+                } else {
+                    params[i] = GL_FALSE;
+                }
+                break;
+            default:
+                ERROR_RETURN(GL_INVALID_ENUM);
+                return;
+        }
+    }
+}
+
+void mglGetActiveUniformName(GLMContext ctx, GLuint program, GLuint uniformIndex, GLsizei bufSize, GLsizei *length, GLchar *uniformName)
+{
+    if (!ctx) {
+        return;
+    }
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (bufSize < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (length) {
+        *length = 0;
+    }
+    if (uniformName && bufSize > 0) {
+        uniformName[0] = '\0';
+    }
+
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr || !ptr->link_success) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    MGLShaderResource *res = mglProgramActiveUniformAt(ptr, uniformIndex, NULL, NULL);
+    if (!res) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    mglProgramCopyActiveUniformName(res, bufSize, length, uniformName);
+}
+
+GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *uniformBlockName)
+{
+    if (!ctx) {
+        return (GLuint)-1;
+    }
+
+    if (!uniformBlockName || !mglSafeCStringLength(uniformBlockName, NULL)) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, (GLuint)-1);
+    }
+
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, (GLuint)-1);
+    }
+
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, (GLuint)-1);
+    }
+
+    if (!ptr->link_success) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, (GLuint)-1);
+    }
+
+    GLuint block_index = 0;
+    MGLUBOBlockNameSet ubo_seen_gubi;
+    mglUBOBlockNameSetInit(&ubo_seen_gubi);
+    for (int stage=_VERTEX_SHADER; stage<_MAX_SHADER_TYPES; stage++)
+    {
+        MGLShaderResourceList *resources = mglUniformSafeResourceList(ptr, stage, _UNIFORM_BUFFER_RES, __FUNCTION__);
+        if (!resources || resources->count == 0u) {
+            continue;
+        }
+
+        for (GLuint i=0; i<resources->count; i++)
+        {
+            MGLShaderResource *list = resources->list;
+            const char *str = list[i].name;
+            if (!mglSafeCStringLength(str, NULL)) {
+                continue;
+            }
+            if (mglUBOBlockNameSetContainsOrInsert(&ubo_seen_gubi, str)) {
+                continue;
+            }
+
+            GLuint element_count = mglUniformBlockArraySize(&list[i]);
+            for (GLuint element = 0; element < element_count; element++) {
+                char element_name[256];
+                mglUniformBlockElementName(&list[i],
+                                           element,
+                                           (GLsizei)sizeof(element_name),
+                                           element_name);
+                if ((element == 0 && mglSafeCStringEquals(str, uniformBlockName)) ||
+                    mglSafeCStringEquals(element_name, uniformBlockName)) {
+                    return block_index + element;
+                }
+            }
+            block_index += element_count;
+        }
+    }
+
+    fprintf(stderr, "MGL WARNING: uniform block '%s' binding not found, returning GL_INVALID_INDEX\n",
+            mglSafeCStringForLog(uniformBlockName));
+    return (GLuint)-1;
+}
+
+void mglGetActiveUniformBlockiv(GLMContext ctx, GLuint program, GLuint uniformBlockIndex, GLenum pname, GLint *params)
+{
+    if (!params) {
+        return;
+    }
+    *params = 0;
+
+    if (!ctx) {
+        return;
+    }
+
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr || !ptr->link_success) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    MGLShaderResource *block = mglFindUniformBlockByIndex(ptr, uniformBlockIndex, NULL);
+    if (!block) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    switch (pname) {
+        case GL_UNIFORM_BLOCK_BINDING:
+            *params = (GLint)mglUniformBlockElementBinding(block, block->ubo_array_element);
+            break;
+        case GL_UNIFORM_BLOCK_DATA_SIZE:
+            *params = (GLint)mglUniformBlockRequiredSize(ptr, block);
+            break;
+        case GL_UNIFORM_BLOCK_NAME_LENGTH:
+            {
+                char block_name[256];
+                *params = mglUniformBlockElementName(block,
+                                                     block->ubo_array_element,
+                                                     (GLsizei)sizeof(block_name),
+                                                     block_name) + 1;
+            }
+            break;
+        case GL_UNIFORM_BLOCK_ACTIVE_UNIFORMS:
+            *params = (block->ubo_members ? (GLint)block->ubo_member_count : 0);
+            break;
+        case GL_UNIFORM_BLOCK_REFERENCED_BY_VERTEX_SHADER:
+            *params = mglUniformBlockReferencedByStage(ptr, block, _VERTEX_SHADER);
+            break;
+        case GL_UNIFORM_BLOCK_REFERENCED_BY_GEOMETRY_SHADER:
+            *params = mglUniformBlockReferencedByStage(ptr, block, _GEOMETRY_SHADER);
+            break;
+        case GL_UNIFORM_BLOCK_REFERENCED_BY_FRAGMENT_SHADER:
+            *params = mglUniformBlockReferencedByStage(ptr, block, _FRAGMENT_SHADER);
+            break;
+        case GL_UNIFORM_BLOCK_REFERENCED_BY_TESS_CONTROL_SHADER:
+            *params = GL_FALSE;
+            break;
+        case GL_UNIFORM_BLOCK_REFERENCED_BY_TESS_EVALUATION_SHADER:
+            *params = GL_FALSE;
+            break;
+        case GL_UNIFORM_BLOCK_REFERENCED_BY_COMPUTE_SHADER:
+            *params = mglUniformBlockReferencedByStage(ptr, block, _COMPUTE_SHADER);
+            break;
+        case GL_UNIFORM_BLOCK_ACTIVE_UNIFORM_INDICES:
+            /* Compute global active-uniform indices for each UBO member.
+             * The caller provides a buffer sized for
+             * GL_UNIFORM_BLOCK_ACTIVE_UNIFORMS entries.
+             * Members are matched by (block-scoped) member name, not by
+             * pointer: per-stage block resources are distinct objects and
+             * the de-duplicated active-uniform cache keeps only the first
+             * owner's copy.  Unmatched tail entries get -1 so callers
+             * never read uninitialized indices. */
+            if (block->ubo_members && block->ubo_member_count > 0) {
+                GLint total = mglProgramActiveUniformCount(ptr);
+                GLuint member_idx = 0;
+                for (GLint ui = 0; ui < total && member_idx < block->ubo_member_count; ui++) {
+                    MGLShaderResource *res = mglProgramActiveUniformAt(ptr, (GLuint)ui, NULL, NULL);
+                    if (!res || !res->ubo_member) {
+                        continue;
+                    }
+                    const char *qn = res->ubo_member->query_name
+                                         ? res->ubo_member->query_name
+                                         : res->ubo_member->name;
+                    if (!qn) {
+                        continue;
+                    }
+                    for (GLuint m = 0; m < block->ubo_member_count; m++) {
+                        const char *bq = block->ubo_members[m].query_name
+                                             ? block->ubo_members[m].query_name
+                                             : block->ubo_members[m].name;
+                        if (bq && strcmp(bq, qn) == 0) {
+                            params[member_idx++] = ui;
+                            break;
+                        }
+                    }
+                }
+                for (GLuint k = member_idx; k < block->ubo_member_count; k++) {
+                    params[k] = -1;
+                }
+            }
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            break;
+    }
+}
+
+void mglGetActiveUniformBlockName(GLMContext ctx, GLuint program, GLuint uniformBlockIndex, GLsizei bufSize, GLsizei *length, GLchar *uniformBlockName)
+{
+    if (length) {
+        *length = 0;
+    }
+    if (uniformBlockName && bufSize > 0) {
+        uniformBlockName[0] = '\0';
+    }
+    if (!ctx) {
+        return;
+    }
+    if (bufSize < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr || !ptr->link_success) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    MGLShaderResource *block = mglFindUniformBlockByIndex(ptr, uniformBlockIndex, NULL);
+    if (!block) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    char src_buf[256];
+    GLsizei src_len = mglUniformBlockElementName(block,
+                                                block->ubo_array_element,
+                                                (GLsizei)sizeof(src_buf),
+                                                src_buf);
+    const char *src = src_buf;
+    if (length) {
+        *length = src_len;
+    }
+    if (uniformBlockName && bufSize > 0) {
+        GLsizei copy_len = src_len < (bufSize - 1) ? src_len : (bufSize - 1);
+        if (copy_len > 0) {
+            memcpy(uniformBlockName, src, (size_t)copy_len);
+        }
+        uniformBlockName[copy_len] = '\0';
+    }
+}
+
+void mglUniformBlockBinding(GLMContext ctx, GLuint program, GLuint uniformBlockIndex, GLuint uniformBlockBinding)
+{
+    if (!ctx) {
+        return;
+    }
+
+    if (uniformBlockBinding >= MAX_BINDABLE_BUFFERS) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr || !ptr->link_success) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    int block_stage = -1;
+    MGLShaderResource *block = mglFindUniformBlockByIndex(ptr, uniformBlockIndex, &block_stage);
+    if (!block) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    const char *block_name = mglSafeCStringLength(block->name, NULL) ? block->name : NULL;
+    GLuint block_element = block->ubo_array_element;
+    GLuint old_binding = mglUniformBlockElementBinding(block, block_element);
+    if (old_binding != uniformBlockBinding) {
+        mglFlushPendingDraws(ctx);
+    }
+
+    mglTraceLogExternal("UNIFORM_BLOCK_BINDING program=%u blockIndex=%u blockName=%s oldBinding=%u newBinding=%u",
+                        (unsigned)program,
+                        (unsigned)uniformBlockIndex,
+                        block_name ? block_name : "(invalid)",
+                        (unsigned)old_binding,
+                        (unsigned)uniformBlockBinding);
+
+    /*
+     * `binding` is the Metal argument slot after MSL reflection/repair.
+     * `gl_binding` is the client-side UBO binding point used to find
+     * glBindBufferRange state. glUniformBlockBinding changes only the latter.
+     *
+     * Match the block identity, not the old binding number. Minecraft's 1.21.x
+     * shaders legitimately remap blocks through occupied binding points during
+     * setup (for example Fog 3->2 followed by Lighting 2->3). Updating every
+     * resource with the old binding makes those blocks alias the same UBO.
+     */
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *resources = mglUniformSafeResourceList(ptr, stage, _UNIFORM_BUFFER_RES, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
+        for (GLuint i = 0; i < resources->count; i++) {
+            MGLShaderResource *res = &resources->list[i];
+            GLboolean same_named_block =
+                block_name &&
+                mglSafeCStringLength(res->name, NULL) &&
+                mglSafeCStringEquals(block_name, res->name);
+            GLboolean same_resource =
+                !block_name && stage == block_stage && res == block;
+            if (same_named_block || same_resource) {
+                if (res->ubo_array_bindings && block_element < mglUniformBlockArraySize(res)) {
+                    res->ubo_array_bindings[block_element] = uniformBlockBinding;
+                }
+                if (block_element == 0) {
+                    res->gl_binding = uniformBlockBinding;
+                }
+            }
+        }
+    }
+
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE | DIRTY_PROGRAM);
+
+    /* Invalidate the buffer binding plan: the cached client_binding_base
+     * reflects the pre-call gl_binding, which glUniformBlockBinding just
+     * mutated.  The next draw rebuilds the plan lazily.  For UBO arrays
+     * with a live bindings table (MGL_BP_FLAG_UBO_ARRAY_TABLE) the draw
+     * path reads ubo_array_bindings[element] directly, but non-array UBOs
+     * and UBO arrays without the table still use gl_binding, so the full
+     * invalidation is required for correctness. */
+    mglBufferBindingPlanInvalidate(ptr);
+}
+
+bool checkUniformParams(GLMContext ctx, GLint location)
+{
+    ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+    if (!ctx) {
+        return false;
+    }
+
+    Program* ptr = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
+    
+    if (!ptr) {
+        mglUniformSetError(ctx, GL_INVALID_OPERATION);
+        return false;
+    }
+
+    if (location == -1) {
+        return false;
+    }
+
+    if (location < -1) {
+        mglUniformSetError(ctx, GL_INVALID_OPERATION);
+        return false;
+    }
+
+    return true;
+}
+
+static bool checkUniformUploadParams(GLMContext ctx, GLint location, const void *ptr, GLsizei count, size_t element_size, GLsizeiptr *size_out)
+{
+    if (!checkUniformParams(ctx, location)) {
+        return false;
+    }
+
+    if (count < 0) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_INVALID_VALUE);
+        return false;
+    }
+
+    size_t element_count = (size_t)count;
+    if (element_size != 0 && element_count > (SIZE_MAX / element_size)) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return false;
+    }
+
+    size_t total = element_count * element_size;
+    if (total > (size_t)PTRDIFF_MAX) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return false;
+    }
+
+    /* Cheap NULL check only (decision D2): a bad but non-NULL value pointer
+     * is GL UB, like on any other driver — no readability probe. */
+    if (total > 0 && !ptr) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_INVALID_VALUE);
+        return false;
+    }
+
+    if (size_out) {
+        *size_out = (GLsizeiptr)total;
+    }
+    return true;
+}
+
+/* Fill one [base, base+count) location span of the type table.  Earlier
+ * stages own a location once written, matching the linear scan's
+ * first-stage-wins result. */
+static void mglFillPlainUniformTypeSpan(MGLPlainUniformTypeInfo *table,
+                                        GLint base,
+                                        GLint count,
+                                        GLuint glType)
+{
+    if (base < 0 || count <= 0 || base >= MAX_PLAIN_UNIFORM_LOCATIONS) {
+        return;
+    }
+    GLint end = base + count;
+    if (end > MAX_PLAIN_UNIFORM_LOCATIONS) {
+        end = MAX_PLAIN_UNIFORM_LOCATIONS;
+    }
+    for (GLint loc = base; loc < end; loc++) {
+        if (table[loc].gl_type == 0u) {
+            table[loc].gl_type = glType;
+            table[loc].base = base;
+            table[loc].size = count;
+        }
+    }
+}
+
+/* Lazily build the location→(glType, base, size) table for glUniform*
+ * uploads, replacing the per-upload stage×resource linear scan.  Freed with
+ * the active-uniform cache wherever uniform reflection is invalidated. */
+static MGLPlainUniformTypeInfo *mglBuildPlainUniformTypeTable(Program *program)
+{
+    MGLPlainUniformTypeInfo *table = (MGLPlainUniformTypeInfo *)calloc(
+        MAX_PLAIN_UNIFORM_LOCATIONS, sizeof(MGLPlainUniformTypeInfo));
+    if (!table) {
+        return NULL;
+    }
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *resources =
+            mglUniformSafeResourceList(program, stage, _UNIFORM_CONSTANT_RES, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
+        for (GLuint i = 0; i < resources->count; i++) {
+            MGLShaderResource *res = &resources->list[i];
+            if (mglUniformResourceLooksSamplerLike(res, _UNIFORM_CONSTANT_RES)) {
+                continue;
+            }
+            GLint base = mglPlainUniformResourceLocation(res);
+            if (base < 0) {
+                continue;
+            }
+            if (res->ubo_members && res->ubo_member_count > 0u) {
+                for (GLuint m = 0u; m < res->ubo_member_count; m++) {
+                    const SpirvUBOMember *member = &res->ubo_members[m];
+                    GLint memberBase = base + member->location_offset;
+                    GLint memberSize = member->size > 1 ? member->size : 1;
+                    mglFillPlainUniformTypeSpan(table, memberBase, memberSize,
+                                                member->gl_type);
+                }
+            } else {
+                GLint arraySize = res->gl_array_size > 1
+                    ? res->gl_array_size : 1;
+                mglFillPlainUniformTypeSpan(table, base, arraySize, res->gl_type);
+            }
+        }
+    }
+    program->plain_uniform_type_table = table;
+    return table;
+}
+
+static GLuint mglPlainUniformTypeAtLocation(Program *program, GLint location,
+                                            GLint *base_out, GLint *size_out)
+{
+    if (!program || location < 0) {
+        return 0u;
+    }
+
+    MGLPlainUniformTypeInfo *table = program->plain_uniform_type_table;
+    if (!table) {
+        table = mglBuildPlainUniformTypeTable(program);
+    }
+    if (table && location < MAX_PLAIN_UNIFORM_LOCATIONS) {
+        /* The table spans every occupied location below the cap, so a zero
+         * row is a definitive miss; only explicit layout locations above the
+         * cap need the reflection scan. */
+        const MGLPlainUniformTypeInfo *info = &table[location];
+        if (info->gl_type != 0u) {
+            if (base_out) *base_out = info->base;
+            if (size_out) *size_out = info->size;
+            return info->gl_type;
+        }
+        return 0u;
+    }
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *resources =
+            mglUniformSafeResourceList(program, stage, _UNIFORM_CONSTANT_RES, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
+
+        for (GLuint i = 0; i < resources->count; i++) {
+            MGLShaderResource *res = &resources->list[i];
+            if (mglUniformResourceLooksSamplerLike(res, _UNIFORM_CONSTANT_RES)) {
+                continue;
+            }
+            GLint base = mglPlainUniformResourceLocation(res);
+            if (base < 0) {
+                continue;
+            }
+            if (res->ubo_members && res->ubo_member_count > 0u) {
+                for (GLuint m = 0u; m < res->ubo_member_count; m++) {
+                    const SpirvUBOMember *member = &res->ubo_members[m];
+                    GLint memberBase = base + member->location_offset;
+                    GLint memberSize = member->size > 1 ? member->size : 1;
+                    if (location >= memberBase &&
+                        location < memberBase + memberSize) {
+                        if (base_out) *base_out = memberBase;
+                        if (size_out) *size_out = memberSize;
+                        return member->gl_type;
+                    }
+                }
+            } else {
+                GLint arraySize = res->gl_array_size > 1
+                    ? res->gl_array_size : 1;
+                if (location >= base && location < base + arraySize) {
+                    if (base_out) *base_out = base;
+                    if (size_out) *size_out = arraySize;
+                    return res->gl_type;
+                }
+            }
+        }
+    }
+
+    return 0u;
+}
+
+static GLboolean mglPlainUniformNeedsMetalMat3Packing(GLMContext ctx, GLint location)
+{
+    Program *program = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
+    return mglPlainUniformTypeAtLocation(program, location, NULL, NULL) == GL_FLOAT_MAT3
+        ? GL_TRUE : GL_FALSE;
+}
+
+void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size);
+
+/* Plain uniforms live in an implicit std140 buffer: each matrix column is
+ * a 16-byte slot.  glUniformMatrix*fv supplies tightly packed columns
+ * (cols*rows floats); expand into cols*4 floats when rows < 4. */
+static void mglUploadPlainUniformMatrixStd140(GLMContext ctx,
+                                              GLint location,
+                                              GLsizei count,
+                                              GLboolean transpose,
+                                              GLuint cols,
+                                              GLuint rows,
+                                              const GLfloat *value)
+{
+    const GLuint srcWords = cols * rows;
+    const GLuint dstWords = cols * 4u;
+    GLsizeiptr sourceBytes = 0;
+    if (!checkUniformUploadParams(ctx, location, value, count,
+                                  (GLsizeiptr)(srcWords * sizeof(GLfloat)),
+                                  &sourceBytes)) {
+        return;
+    }
+    if (count == 0) {
+        mglUniform(ctx, location, NULL, 0);
+        return;
+    }
+    /* rows==4: already matches std140 column size; optional transpose only. */
+    if (rows == 4u && !transpose) {
+        mglUniform(ctx, location, (void *)value, sourceBytes);
+        return;
+    }
+    if (rows == 4u && transpose) {
+        /* Fall through to pack loop (identity size, swap indices). */
+    } else if (rows >= 4u) {
+        mglUniform(ctx, location, (void *)value, sourceBytes);
+        return;
+    }
+
+    if ((size_t)count > SIZE_MAX / (dstWords * sizeof(GLfloat))) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return;
+    }
+    size_t packedFloats = (size_t)count * dstWords;
+    GLfloat stackValues[64];
+    GLfloat *packed =
+        (packedFloats <= (sizeof(stackValues) / sizeof(stackValues[0])))
+            ? stackValues
+            : (GLfloat *)malloc(packedFloats * sizeof(GLfloat));
+    if (!packed) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return;
+    }
+    for (GLsizei m = 0; m < count; m++) {
+        const GLfloat *src = value + (size_t)m * srcWords;
+        GLfloat *dst = packed + (size_t)m * dstWords;
+        for (GLuint col = 0; col < cols; col++) {
+            for (GLuint row = 0; row < 4u; row++) {
+                if (row < rows) {
+                    dst[col * 4u + row] =
+                        transpose ? src[row * cols + col]
+                                  : src[col * rows + row];
+                } else {
+                    dst[col * 4u + row] = 0.0f;
+                }
+            }
+        }
+    }
+    mglUniform(ctx, location, packed,
+               (GLsizeiptr)(packedFloats * sizeof(GLfloat)));
+    if (packed != stackValues) {
+        free(packed);
+    }
+}
+
+static void mglUploadPlainUniformMat3fv(GLMContext ctx,
+                                        GLint location,
+                                        GLsizei count,
+                                        GLboolean transpose,
+                                        const GLfloat *value);
+
+static void mglUniformStore(GLMContext ctx, Program *program, GLint location,
+                            void *ptr, GLsizeiptr size);
+
+static GLsizeiptr mglPlainUniformScalarVectorBytes(GLuint gl_type)
+{
+    switch (gl_type) {
+        case GL_FLOAT: case GL_INT: case GL_UNSIGNED_INT: case GL_BOOL:
+            return 4;
+        case GL_FLOAT_VEC2: case GL_INT_VEC2: case GL_UNSIGNED_INT_VEC2:
+        case GL_BOOL_VEC2:
+            return 8;
+        case GL_FLOAT_VEC3: case GL_INT_VEC3: case GL_UNSIGNED_INT_VEC3:
+        case GL_BOOL_VEC3:
+            return 12;
+        case GL_FLOAT_VEC4: case GL_INT_VEC4: case GL_UNSIGNED_INT_VEC4:
+        case GL_BOOL_VEC4:
+            return 16;
+        /* AIR stores GLSL double as i64 payloads (8 bytes per component). */
+        case GL_DOUBLE:
+            return 8;
+        case GL_DOUBLE_VEC2:
+            return 16;
+        case GL_DOUBLE_VEC3:
+            return 24;
+        case GL_DOUBLE_VEC4:
+            return 32;
+        default:
+            return 0;
+    }
+}
+
+static void mglUniformStoreArrayRange(GLMContext ctx, Program *program,
+                                      GLint base, GLint arraySize,
+                                      GLint element, GLsizeiptr elemBytes,
+                                      const void *ptr, GLsizeiptr size)
+{
+    GLsizeiptr total = (GLsizeiptr)arraySize * elemBytes;
+    GLsizeiptr offset = (GLsizeiptr)element * elemBytes;
+    if (size > total - offset)
+        size = total - offset;
+    if (size <= 0)
+        return;
+
+    uint8_t *data = (uint8_t *)calloc(1, (size_t)total);
+    if (!data) {
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return;
+    }
+    const BufferBaseTarget *slot = &program->plain_uniform_buffers[base];
+    if (slot->buf && slot->buf->data.buffer_data && slot->size == total) {
+        memcpy(data, (const void *)(uintptr_t)slot->buf->data.buffer_data,
+               (size_t)total);
+    }
+    memcpy(data + offset, ptr, (size_t)size);
+    mglUniformStore(ctx, program, base, data, total);
+    free(data);
+}
+
+typedef enum {
+    MGL_UNIFORM_PAYLOAD_BYTES = 0,
+    MGL_UNIFORM_PAYLOAD_FLOAT,
+    MGL_UNIFORM_PAYLOAD_INT,
+    MGL_UNIFORM_PAYLOAD_UINT
+} MGLUniformPayloadKind;
+
+static GLboolean mglGLTypeIsBoolUniform(GLuint gl_type)
+{
+    return gl_type == GL_BOOL || gl_type == GL_BOOL_VEC2 ||
+           gl_type == GL_BOOL_VEC3 || gl_type == GL_BOOL_VEC4;
+}
+
+/* Bool plain-pack storage is IEEE 0.0/1.0 (Metal has no bool buffer type).
+ * Uniform*i/*ui must convert before store so GetUniform*f/i agree (GL 4.6 §2.2.1). */
+static GLboolean mglNormalizeBoolUniformPayload(MGLUniformPayloadKind kind,
+                                                const void *ptr,
+                                                GLsizeiptr size,
+                                                GLfloat *out,
+                                                GLsizeiptr out_cap_bytes,
+                                                GLsizeiptr *out_size)
+{
+    if (!ptr || size <= 0 || !out || !out_size) {
+        return GL_FALSE;
+    }
+    if ((size % (GLsizeiptr)sizeof(GLfloat)) != 0) {
+        return GL_FALSE;
+    }
+    GLsizeiptr comps = size / (GLsizeiptr)sizeof(GLfloat);
+    if (comps * (GLsizeiptr)sizeof(GLfloat) > out_cap_bytes) {
+        return GL_FALSE;
+    }
+    for (GLsizeiptr i = 0; i < comps; i++) {
+        GLboolean truth = GL_FALSE;
+        if (kind == MGL_UNIFORM_PAYLOAD_FLOAT) {
+            GLfloat f;
+            memcpy(&f, (const GLfloat *)ptr + i, sizeof(f));
+            /* 0.0 and -0.0 → false; all other floats → true. */
+            truth = (f != 0.0f) ? GL_TRUE : GL_FALSE;
+        } else if (kind == MGL_UNIFORM_PAYLOAD_INT) {
+            truth = ((const GLint *)ptr)[i] != 0 ? GL_TRUE : GL_FALSE;
+        } else if (kind == MGL_UNIFORM_PAYLOAD_UINT) {
+            truth = ((const GLuint *)ptr)[i] != 0u ? GL_TRUE : GL_FALSE;
+        } else {
+            return GL_FALSE;
+        }
+        out[i] = truth ? 1.0f : 0.0f;
+    }
+    *out_size = comps * (GLsizeiptr)sizeof(GLfloat);
+    return GL_TRUE;
+}
+
+static void mglUniformWithPayload(GLMContext ctx, GLint location, void *ptr,
+                                  GLsizeiptr size, MGLUniformPayloadKind kind);
+
+void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
+{
+    mglUniformWithPayload(ctx, location, ptr, size, MGL_UNIFORM_PAYLOAD_BYTES);
+}
+
+static void mglUniformWithPayload(GLMContext ctx, GLint location, void *ptr,
+                                  GLsizeiptr size, MGLUniformPayloadKind kind)
+{
+    ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+    if (!ctx) {
+        return;
+    }
+    if (!checkUniformParams(ctx, location)) {
+        return;
+    }
+    if (size < 0) {
+        mglUniformSetError(ctx, GL_INVALID_VALUE);
+        return;
+    }
+    /* Cheap NULL check only (decision D2): no readability probe. */
+    if (size > 0 && !ptr) {
+        mglUniformSetError(ctx, GL_INVALID_VALUE);
+        return;
+    }
+    
+    Program *program = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
+    if (!program) {
+        mglUniformSetError(ctx, GL_INVALID_OPERATION);
+        return;
+    }
+    /* Each array element owns its location's storage (GL 4.6 §7.6.1):
+     * Uniform*v writes count elements from the named one, dropping values
+     * past the end of the array. */
+    GLint arrayBase = -1;
+    GLint arraySize = 1;
+    GLuint glType = mglPlainUniformTypeAtLocation(program, location,
+                                                  &arrayBase, &arraySize);
+    GLsizeiptr elemBytes = mglPlainUniformScalarVectorBytes(glType);
+    if (elemBytes == 0)
+        elemBytes = mglPlainUniformMatrixElementBytes(glType);
+    if (glType == 0u) {
+        mglUniformSetError(ctx, GL_INVALID_OPERATION);
+        return;
+    }
+
+    GLfloat bool_norm_stack[64];
+    GLfloat *bool_norm = NULL;
+    if (mglGLTypeIsBoolUniform(glType) &&
+        kind != MGL_UNIFORM_PAYLOAD_BYTES && size > 0 && ptr) {
+        GLsizeiptr need = size; /* same component count, float words */
+        GLsizeiptr out_size = 0;
+        if (need <= (GLsizeiptr)sizeof(bool_norm_stack)) {
+            bool_norm = bool_norm_stack;
+        } else {
+            bool_norm = (GLfloat *)malloc((size_t)need);
+            if (!bool_norm) {
+                mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+                return;
+            }
+        }
+        if (!mglNormalizeBoolUniformPayload(kind, ptr, size, bool_norm,
+                                            need, &out_size)) {
+            if (bool_norm != bool_norm_stack) {
+                free(bool_norm);
+            }
+            mglUniformSetError(ctx, GL_INVALID_VALUE);
+            return;
+        }
+        ptr = bool_norm;
+        size = out_size;
+    }
+
+    /* Storage is indexed by location.  An array that runs past the last
+     * slot keeps all of its elements in the slot of element 0. */
+    if (arraySize > 1 && elemBytes > 0 && arrayBase >= 0 &&
+        arrayBase < MAX_PLAIN_UNIFORM_LOCATIONS &&
+        arrayBase + arraySize > MAX_PLAIN_UNIFORM_LOCATIONS) {
+        mglUniformStoreArrayRange(ctx, program, arrayBase, arraySize,
+                                  location - arrayBase, elemBytes, ptr, size);
+    } else if (location >= MAX_PLAIN_UNIFORM_LOCATIONS) {
+        mglUniformSetError(ctx, GL_INVALID_OPERATION);
+    } else if (arraySize > 1 && elemBytes > 0 && size > elemBytes) {
+        GLsizeiptr n = size / elemBytes;
+        GLsizeiptr remaining = (GLsizeiptr)(arrayBase + arraySize - location);
+        if (n > remaining)
+            n = remaining;
+        for (GLsizeiptr i = 0;
+             i < n && location + i < MAX_PLAIN_UNIFORM_LOCATIONS; i++) {
+            mglUniformStore(ctx, program, location + (GLint)i,
+                            (uint8_t *)ptr + i * elemBytes, elemBytes);
+        }
+    } else {
+        mglUniformStore(ctx, program, location, ptr, size);
+    }
+    if (bool_norm && bool_norm != bool_norm_stack) {
+        free(bool_norm);
+    }
+}
+
+static void mglUniformStore(GLMContext ctx, Program *program, GLint location,
+                            void *ptr, GLsizeiptr size)
+{
+    /*
+     * Deferred draws snapshot the GL state struct, but Program-owned uniform
+     * storage is mutable shared state.  Only flush when the upload will
+     * actually mutate the buffer — if the data is unchanged the pending draws
+     * render identically, so skipping the flush is safe and lets batching
+     * survive the frequent no-op glUniform* calls that Minecraft's shader
+     * layer makes.  When buf is NULL (first upload) there is no existing
+     * buffer for pending draws to reference, so no flush is needed.
+     */
+    BufferBaseTarget *uniformSlot = &program->plain_uniform_buffers[location];
+    Buffer *buf = uniformSlot->buf;
+    (void)0;
+    if (mglUniformUploadDiagEnabled())
+        fprintf(stderr, "MGL UNIFORM UPLOAD prog=%u loc=%d size=%lld w0=%u w1=%u\n",
+                (unsigned)program->name, location, (long long)size,
+                size >= 4 ? *(const uint32_t *)ptr : 0u,
+                size >= 8 ? *((const uint32_t *)ptr + 1) : 0u);
+    Buffer *prevUniformBuf = uniformSlot->buf;
+    GLsizeiptr prevUniformSize = uniformSlot->size;
+
+    if(buf == NULL)
+    {
+        GLuint internalName = MGL_INTERNAL_UNIFORM_BUFFER_NAME_BASE |
+                              (((GLuint)program->name & 0x0fffu) << 12) |
+                              (GLuint)location;
+        uniformSlot->buf = newBuffer(ctx, GL_UNIFORM_BUFFER, internalName);
+        buf = uniformSlot->buf;
+        if (buf) {
+            buf->plain_uniform_slot = GL_TRUE;
+            insertHashElement(&STATE(buffer_table), internalName, buf);
+            mglProgramPlainUniformSetActive(program, (GLuint)location);
+        }
+    }
+
+    /* initBufferData(isUniformConstant=true) internally memcmps and flushes
+     * pending draws only when data actually changes — no need for the
+     * redundant mglUniformBufferDataWouldChange pre-check here. */
+    initBufferData(ctx, buf, size, ptr, true);
+    uniformSlot->buffer = buf ? buf->name : 0u;
+    uniformSlot->offset = 0;
+    uniformSlot->size = size;
+
+    /* The binding hashes only see slot identity ({buf, name, offset, size};
+     * offset is always 0 here), not buffer contents.  A repeat upload to the
+     * same location with the same size leaves that identity untouched, so
+     * invalidating the state-hash caches would just force a full per-draw
+     * binding-hash recompute for an identical result.  Contents changes are
+     * handled by initBufferData's own memcmp+flush above; the renderer bit
+     * still triggers the buffer remap. */
+    if (!mglUniformIdentityGateEnabled() ||
+        uniformSlot->buf != prevUniformBuf || uniformSlot->size != prevUniformSize) {
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE);
+    } else {
+        mglMarkRendererDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE);
+    }
+}
+
+/* Default-block doubles must be IEEE754 binary64 blobs: AIR loads them as
+ * i64 payloads.  Narrowing to float here used to pack two floats into one
+ * double word and soft-truncate to ≈value+ulp. */
+static void mglUniformDoubleVector(GLMContext ctx,
+                                   GLint location,
+                                   const GLdouble *value,
+                                   GLsizei count,
+                                   size_t components)
+{
+    GLsizeiptr sourceBytes = 0;
+
+    if (!checkUniformUploadParams(ctx,
+                                  location,
+                                  value,
+                                  count,
+                                  components * sizeof(GLdouble),
+                                  &sourceBytes)) {
+        return;
+    }
+
+    if (count == 0) {
+        mglUniform(ctx, location, NULL, 0);
+        return;
+    }
+
+    mglUniform(ctx, location, (void *)value, sourceBytes);
+}
+
+void mglUniform1d(GLMContext ctx, GLint location, GLdouble x)
+{
+    mglUniformDoubleVector(ctx, location, &x, 1, 1);
+}
+
+void mglUniform1dv(GLMContext ctx, GLint location, GLsizei count, const GLdouble *value)
+{
+    mglUniformDoubleVector(ctx, location, value, count, 1);
+}
+
+void mglUniform1f(GLMContext ctx, GLint location, GLfloat v0)
+{
+    mglUniformWithPayload(ctx, location, &v0, sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
+}
+
+void mglUniform1fv(GLMContext ctx, GLint location, GLsizei count, const GLfloat *value)
+{
+    mglUniformWithPayload(ctx, location, (void *)value, count * sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
+}
+
+void mglUniform1i(GLMContext ctx, GLint location, GLint v0)
+{
+    if (mglSetSamplerUniformUnit(ctx, location, v0)) {
+        return;
+    }
+
+    mglUniformWithPayload(ctx, location, &v0, sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
+}
+
+void mglUniform1iv(GLMContext ctx, GLint location, GLsizei count, const GLint *value)
+{
+    if (count > 0 && value &&
+        mglSetSamplerUniformUnit(ctx, location, value[0])) {
+        for (GLsizei i = 1; i < count; i++)
+            mglSetSamplerUniformUnit(ctx, location + i, value[i]);
+        return;
+    }
+
+    mglUniformWithPayload(ctx, location, (void *)value, count * sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
+}
+
+void mglUniform1ui(GLMContext ctx, GLint location, GLuint v0)
+{
+    /* Spec / CTS negative-uniform: Uniform1ui on an image → INVALID_OPERATION. */
+    if (mglUniformLocationIsStorageImage(ctx, location)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (v0 <= (GLuint)INT_MAX && mglSetSamplerUniformUnit(ctx, location, (GLint)v0)) {
+        return;
+    }
+
+    mglUniformWithPayload(ctx, location, &v0, sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
+}
+
+
+/* GLSL 4.0: select the subroutine implementations for the current program.
+ * The uniform table carries the subroutine uniforms in declaration order, so
+ * index i here is the location glGetSubroutineUniformLocation reports; each
+ * one is an ordinary uint slot in the program's uniform storage. */
+static int mglSubroutineShaderStage(GLenum type)
+{
+    switch (type) {
+    case GL_VERTEX_SHADER:          return _VERTEX_SHADER;
+    case GL_TESS_CONTROL_SHADER:    return _TESS_CONTROL_SHADER;
+    case GL_TESS_EVALUATION_SHADER: return _TESS_EVALUATION_SHADER;
+    case GL_GEOMETRY_SHADER:        return _GEOMETRY_SHADER;
+    case GL_FRAGMENT_SHADER:        return _FRAGMENT_SHADER;
+    case GL_COMPUTE_SHADER:         return _COMPUTE_SHADER;
+    default:                        return -1;
+    }
+}
+
+/* ARB_shader_subroutine: subroutine selections are context state -- "When
+ * UseProgram is called, the subroutine uniforms for all shader stages are
+ * reset to arbitrarily chosen default functions."  MGL keeps selections in
+ * the program's plain-uniform pack and rewrites every subroutine row to the
+ * first named implementation of that uniform's type (a compatible default).
+ * mglUniformStore memcmps and only flushes pending draws when a value
+ * actually changes, so rebinding a program whose selections are already
+ * default costs nothing. */
+
+/* Resolve the plain-uniform location of a subroutine uniform from ONE
+ * stage's resource list.  Subroutine uniforms are per-stage state (GL 4.6
+ * §7.10), but the generic name-based lookup walks the stages in order and
+ * returns the first match, so a selection intended for stage N would land
+ * in whichever stage declares the name first -- the cross-stage aliasing
+ * behind CTS subroutine_uniform_reset / same_subroutine / SSO.  Matching
+ * mirrors the setter: the base name, or the element-0 spelling of an
+ * arrayed uniform. */
+GLint mglUniformSubroutinePlainLocation(Program *pptr, int stage,
+                                        const char *base)
+{
+    if (!pptr || stage < 0 || stage >= _MAX_SHADER_TYPES || !base) {
+        return -1;
+    }
+    /* Stage-qualified pack spelling ("op@fs") first: subroutine uniforms
+     * are per-stage state, and the pack leaves carry the same qualifier
+     * the codegen writes (GL 4.6 §7.10).  Tag order matches the _*_SHADER
+     * enum (VS, TCS, TES, GS, FS, CS). */
+    static const char *const kTags[] = {
+        "vs", "tc", "te", "gs", "fs", "cs"
+    };
+    char qualified[MGL_AIR_SUBROUTINE_NAME_MAX + 8];
+    snprintf(qualified, sizeof(qualified), "%s@%s",
+             base, (stage <= 5) ? kTags[stage] : "s");
+    MGLShaderResourceList *resources =
+        mglUniformSafeResourceList(pptr, stage, _UNIFORM_CONSTANT_RES,
+                                   __FUNCTION__);
+    if (!resources) {
+        return -1;
+    }
+    size_t base_len = strlen(base);
+    for (GLuint i = 0; i < resources->count; i++) {
+        const MGLShaderResource *res = &resources->list[i];
+        if (!res->name) {
+            continue;
+        }
+        if (strcmp(res->name, qualified) == 0) {
+            return mglPlainUniformResourceLocation(res);
+        }
+        if (strcmp(res->name, base) == 0) {
+            return mglPlainUniformResourceLocation(res);
+        }
+        /* Arrayed uniform: the resource is spelled "g[0]"; the caller adds
+         * the element offset itself. */
+        if (strncmp(res->name, base, base_len) == 0 &&
+            res->name[base_len] == '[') {
+            return mglPlainUniformResourceLocation(res);
+        }
+        /* A stage's default-block uniforms are reflected as members of its
+         * plain-uniform pack block ("air_uniforms_sN"), not as standalone
+         * resources.  Resolve through the member list so the answer is this
+         * stage's slot. */
+        if (res->ubo_members && res->ubo_member_count > 0) {
+            GLint base_location = mglPlainUniformResourceLocation(res);
+            if (base_location < 0) {
+                continue;
+            }
+            for (GLuint m = 0; m < res->ubo_member_count; m++) {
+                const SpirvUBOMember *member = &res->ubo_members[m];
+                const char *mqn =
+                    member->query_name ? member->query_name : member->name;
+                if (!mqn) {
+                    continue;
+                }
+                if (strcmp(mqn, qualified) == 0) {
+                    return base_location + member->location_offset;
+                }
+                /* Arrayed subroutine uniform: the pack leaf spells the stage
+                 * qualifier before the element subscript ("arr@fs[0]"), so
+                 * neither the qualified base ("arr@fs") nor the bare name
+                 * matches it and the selection had no plain location to land
+                 * on — glUniformSubroutinesuiv then failed with
+                 * INVALID_OPERATION for a perfectly valid index.  The element
+                 * rows are consecutive, so element 0 anchors the array. */
+                if (strncmp(mqn, qualified, strlen(qualified)) == 0 &&
+                    mqn[strlen(qualified)] == '[') {
+                    return base_location + member->location_offset;
+                }
+                if (strcmp(mqn, base) == 0 ||
+                    mglActiveUniformNamesMatch(mqn, base)) {
+                    return base_location + member->location_offset;
+                }
+            }
+        }
+    }
+    return -1;
+}
+
+/* First selectable absolute index of a subroutine type, or 0 when the type
+ * has no named implementations (should not happen after a successful link). */
+static GLuint mglSubroutineTypeDefaultIndex(const MGLAIRSubroutineTable *table,
+                                            uint32_t typeIdx)
+{
+    if (!table || typeIdx >= table->type_count) {
+        return 0u;
+    }
+    const MGLAIRSubroutineTypeInfo *ty = &table->types[typeIdx];
+    if (ty->impl_name_count == 0u) {
+        return 0u;
+    }
+    return ty->impl_name_index[0];
+}
+
+void mglUniformResetSubroutineSelections(GLMContext ctx, GLuint program)
+{
+    if (!ctx || program == 0u) {
+        return;
+    }
+    Program *pptr = getProgram(ctx, program);
+    if (!pptr || !pptr->link_success) {
+        return;
+    }
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        const MGLAIRSubroutineTable *table = &pptr->subroutine_tables[stage];
+        if (table->uniform_count == 0u) {
+            continue;
+        }
+        for (uint32_t u = 0; u < table->uniform_count; u++) {
+            /* Arrayed uniforms contribute one row per element; only the
+             * element-0 row carries the whole span (same grouping as the
+             * setter). */
+            if (table->uniform_element[u] != 0u) {
+                continue;
+            }
+            char base[MGL_AIR_SUBROUTINE_NAME_MAX];
+            mglSubroutineUniformBaseName(table->uniform_names[u], base,
+                                         sizeof(base));
+            /* Per-stage resolution: the generic name lookup would return
+             * the first stage that declares this name. */
+            GLint uniformLoc = mglUniformSubroutinePlainLocation(pptr, stage,
+                                                                base);
+            if (uniformLoc < 0) {
+                uniformLoc = mglGetUniformLocation(ctx, pptr->name, base);
+            }
+            if (uniformLoc < 0) {
+                continue;
+            }
+            uint32_t elements = table->uniform_declared_elements[u]
+                                    ? table->uniform_declared_elements[u]
+                                    : 1u;
+            if (elements > MGL_AIR_MAX_SUBROUTINE_UNIFORM_ARRAY) {
+                elements = MGL_AIR_MAX_SUBROUTINE_UNIFORM_ARRAY;
+            }
+            /* GL 4.6 §7.10: reset picks an arbitrarily chosen *compatible*
+             * default function.  Writing the never-set sentinel 0 made
+             * GetUniformSubroutineuiv report 0 for every uniform — invalid
+             * when a type's implementations start at a non-zero absolute
+             * index (CTS subroutine_uniform_reset: type B at 2|3). */
+            GLuint def = mglSubroutineTypeDefaultIndex(
+                table, table->uniform_type[u]);
+            for (uint32_t e = 0; e < elements; e++) {
+                mglUniformStore(ctx, pptr, uniformLoc + (GLint)e, &def,
+                                sizeof(def));
+            }
+        }
+    }
+}
+
+void mglUniformSubroutinesuiv(GLMContext ctx, GLenum shadertype,
+                              GLsizei count, const GLuint *indices)
+{
+    ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+    if (!ctx) {
+        return;
+    }
+    int stage = mglSubroutineShaderStage(shadertype);
+    if (stage < 0) {
+        mglUniformSetError(ctx, GL_INVALID_ENUM);
+        return;
+    }
+    if (count < 0) {
+        mglUniformSetError(ctx, GL_INVALID_VALUE);
+        return;
+    }
+    Program *pptr = mglUniformGetCurrentProgramForStage(ctx, stage, __FUNCTION__);
+    if (!pptr) {
+        mglUniformSetError(ctx, GL_INVALID_OPERATION);
+        return;
+    }
+    if (!pptr->link_success) {
+        mglUniformSetError(ctx, GL_INVALID_OPERATION);
+        return;
+    }
+    if (count > 0 && !indices) {
+        mglUniformSetError(ctx, GL_INVALID_VALUE);
+        return;
+    }
+    const MGLAIRSubroutineTable *table = &pptr->subroutine_tables[stage];
+    /* GL 4.6 §7.10: count must equal ACTIVE_SUBROUTINE_UNIFORM_LOCATIONS for
+     * the stage (GL_INVALID_VALUE otherwise), and every index must name an
+     * implementation of the uniform occupying that location.  Silently
+     * clamping/continuing left the selection partly applied with no error
+     * reported.
+     *
+     * `count` counts *locations*, not uniforms: an explicit
+     * layout(location = 2) makes a single uniform occupy locations 0..2. */
+    GLint span = mglSubroutineUniformLocationSpan(table);
+    if (span < 0 || (uint32_t)count != (uint32_t)span) {
+        mglUniformSetError(ctx, GL_INVALID_VALUE);
+        return;
+    }
+    for (GLsizei i = 0; i < count; i++) {
+        /* Which uniform owns location i? */
+        int owner = -1;
+        for (uint32_t u = 0; u < table->uniform_count; u++) {
+            GLint loc = table->uniform_location[u];
+            if (loc < 0)
+                loc = mglSubroutineUniformImplicitLocation(table, u);
+            if (loc == i) {
+                owner = (int)u;
+                break;
+            }
+        }
+        /* A reserved-but-unused location has no uniform to select; the spec
+         * still requires an index there, and any value is ignored. */
+        if (owner < 0) continue;
+        uint32_t typeIdx = table->uniform_type[owner];
+        if (typeIdx >= table->type_count) {
+            mglUniformSetError(ctx, GL_INVALID_VALUE);
+            return;
+        }
+        /* `indices[i]` is an absolute program-wide subroutine index, and it
+         * must name a named implementation of this uniform's type (a sparse
+         * layout(index = N) leaves gaps that are not selectable).  An index
+         * that names an implementation of a DIFFERENT type of the same stage
+         * is INVALID_OPERATION; an index that is no stage subroutine at all
+         * is INVALID_VALUE (CTS subroutine_errors). */
+        const MGLAIRSubroutineTypeInfo *ty = &table->types[typeIdx];
+        GLboolean ok = GL_FALSE;
+        for (uint32_t nm = 0; nm < ty->impl_name_count; nm++) {
+            if (ty->impl_name_index[nm] == indices[i]) { ok = GL_TRUE; break; }
+        }
+        if (!ok) {
+            GLboolean in_stage = GL_FALSE;
+            for (uint32_t ti = 0; ti < table->type_count && !in_stage; ti++) {
+                const MGLAIRSubroutineTypeInfo *other = &table->types[ti];
+                for (uint32_t nm = 0; nm < other->impl_name_count; nm++) {
+                    if (other->impl_name_index[nm] == indices[i]) {
+                        in_stage = GL_TRUE;
+                        break;
+                    }
+                }
+            }
+            mglUniformSetError(ctx, in_stage ? GL_INVALID_OPERATION
+                                             : GL_INVALID_VALUE);
+            return;
+        }
+    }
+    /* Group the selected indices per uniform: `indices[i]` addresses a
+     * *subroutine* location, but the selection itself lives in the ordinary
+     * uniform pack, where an arrayed uniform is one entry whose elements are
+     * laid out at the std140 stride.  So one write per uniform, not one per
+     * location. */
+    for (uint32_t u = 0; u < table->uniform_count; u++) {
+        /* Rows are one per array element; only the first row of a uniform
+         * carries the whole selection. */
+        if (table->uniform_element[u] != 0u) continue;
+        GLint loc = table->uniform_location[u];
+        if (loc < 0)
+            loc = mglSubroutineUniformImplicitLocation(table, u);
+        if (loc < 0 || loc >= count) continue;
+        uint32_t elements = table->uniform_declared_elements[u]
+                                ? table->uniform_declared_elements[u]
+                                : 1u;
+        if (elements > MGL_AIR_MAX_SUBROUTINE_UNIFORM_ARRAY)
+            elements = MGL_AIR_MAX_SUBROUTINE_UNIFORM_ARRAY;
+        GLuint values[MGL_AIR_MAX_SUBROUTINE_UNIFORM_ARRAY];
+        for (uint32_t e = 0; e < elements; e++) {
+            GLsizei at = loc + (GLsizei)e;
+            values[e] = (at < count) ? indices[at] : indices[loc];
+        }
+        /* Per-stage resolution first (subroutine uniforms are per-stage
+         * state; the generic name lookup returns the first stage that
+         * declares the name, aliasing every stage's selection onto one
+         * slot).  Fall back to the generic lookup for programs whose
+         * per-stage reflection did not produce a location. */
+        char setName[MGL_AIR_SUBROUTINE_NAME_MAX];
+        snprintf(setName, sizeof(setName), "%s", table->uniform_names[u]);
+        {
+            char *bracket = strchr(setName, '[');
+            if (bracket) *bracket = '\0';
+        }
+        GLint uniformLoc =
+            mglUniformSubroutinePlainLocation(pptr, stage, setName);
+        if (uniformLoc < 0) {
+            uniformLoc =
+                mglGetUniformLocation(ctx, pptr->name,
+                                      table->uniform_names[u]);
+        }
+        if (uniformLoc < 0) {
+            uniformLoc = mglGetUniformLocation(ctx, pptr->name, setName);
+        }
+        if (uniformLoc < 0) {
+            mglUniformSetError(ctx, GL_INVALID_OPERATION);
+            return;
+        }
+        /* Store by the plain-uniform location, not the subroutine location:
+         * those differ when the uniform has an explicit layout(location = N)
+         * (subroutine locations index the selection array, plain locations
+         * index the shader's uniform pack).  Array elements are consecutive
+         * there, one uint each. */
+        for (uint32_t e = 0; e < elements; e++)
+            mglUniformStore(ctx, pptr, uniformLoc + (GLint)e, &values[e],
+                            sizeof(GLuint));
+    }
+}
+
+void mglUniform1uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint *value)
+{
+    if (mglUniformLocationIsStorageImage(ctx, location)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (count > 0 && value &&
+        value[0] <= (GLuint)INT_MAX &&
+        mglSetSamplerUniformUnit(ctx, location, (GLint)value[0])) {
+        for (GLsizei i = 1; i < count; i++) {
+            if (value[i] <= (GLuint)INT_MAX)
+                mglSetSamplerUniformUnit(ctx, location + i, (GLint)value[i]);
+        }
+        return;
+    }
+
+    mglUniformWithPayload(ctx, location, (void *)value, count * sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
+}
+
+void mglUniform2d(GLMContext ctx, GLint location, volatile GLdouble x, volatile GLdouble y)
+{
+    GLdouble data[] = {x, y};
+    
+    mglUniformDoubleVector(ctx, location, data, 1, 2);
+}
+
+void mglUniform2dv(GLMContext ctx, GLint location, GLsizei count, const GLdouble *value)
+{
+    mglUniformDoubleVector(ctx, location, value, count, 2);
+}
+
+void mglUniform2f(GLMContext ctx, GLint location, GLfloat v0, GLfloat v1)
+{
+    GLfloat data[] = {v0, v1};
+    
+    mglUniformWithPayload(ctx, location, data, 2 * sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
+}
+
+void mglUniform2fv(GLMContext ctx, GLint location, GLsizei count, const GLfloat *value)
+{
+    mglUniformWithPayload(ctx, location, (void *)value, 2 * count * sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
+}
+
+void mglUniform2i(GLMContext ctx, GLint location, GLint v0, GLint v1)
+{
+    GLint data[] = {v0, v1};
+
+    if (mglUniformLocationIsStorageImage(ctx, location)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    mglUniformWithPayload(ctx, location, data, 2 * sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
+}
+
+void mglUniform2iv(GLMContext ctx, GLint location, GLsizei count, const GLint *value)
+{
+    mglUniformWithPayload(ctx, location, (void *)value, 2 * count * sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
+}
+
+void mglUniform2ui(GLMContext ctx, GLint location, GLuint v0, GLuint v1)
+{
+    GLuint data[] = {v0, v1};
+    
+    mglUniformWithPayload(ctx, location, data, 2 * sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
+}
+
+void mglUniform2uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint *value)
+{
+    mglUniformWithPayload(ctx, location, (void *)value, 2 * count * sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
+}
+
+void mglUniform3d(GLMContext ctx, GLint location, GLdouble x, GLdouble y, GLdouble z)
+{
+    GLdouble data[] = {x, y, z};
+    
+    mglUniformDoubleVector(ctx, location, data, 1, 3);
+}
+
+void mglUniform3dv(GLMContext ctx, GLint location, GLsizei count, const GLdouble *value)
+{
+    mglUniformDoubleVector(ctx, location, value, count, 3);
+}
+
+void mglUniform3f(GLMContext ctx, GLint location, GLfloat v0, GLfloat v1, GLfloat v2)
+{
+    GLfloat data[] = {v0, v1, v2};
+    
+    mglUniformWithPayload(ctx, location, data, 3 * sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
+}
+
+void mglUniform3fv(GLMContext ctx, GLint location, GLsizei count, const GLfloat *value)
+{
+    mglUniformWithPayload(ctx, location, (void *)value, 3 * count * sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
+}
+
+void mglUniform3i(GLMContext ctx, GLint location, GLint v0, GLint v1, GLint v2)
+{
+    GLint data[] = {v0, v1, v2};
+    
+    mglUniformWithPayload(ctx, location, data, 3 * sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
+}
+
+void mglUniform3iv(GLMContext ctx, GLint location, GLsizei count, const GLint *value)
+{
+    mglUniformWithPayload(ctx, location, (void *)value, 3 * count * sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
+}
+
+void mglUniform3ui(GLMContext ctx, GLint location, GLuint v0, GLuint v1, GLuint v2)
+{
+    GLuint data[] = {v0, v1, v2};
+    
+    mglUniformWithPayload(ctx, location, (void *)data, 3 * sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
+}
+
+void mglUniform3uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint *value)
+{
+    mglUniformWithPayload(ctx, location, (void *)value, 3 * count * sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
+}
+
+void mglUniform4d(GLMContext ctx, GLint location, GLdouble x, GLdouble y, GLdouble z, GLdouble w)
+{
+    GLdouble data[] = {x, y, z, w};
+    
+    mglUniformDoubleVector(ctx, location, data, 1, 4);
+}
+
+void mglUniform4dv(GLMContext ctx, GLint location, GLsizei count, const GLdouble *value)
+{
+    mglUniformDoubleVector(ctx, location, value, count, 4);
+}
+
+void mglUniform4f(GLMContext ctx, GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3)
+{
+    GLfloat data[] = {v0, v1, v2, v3};
+    
+    mglUniformWithPayload(ctx, location, (void *)data, 4 * sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
+}
+
+void mglUniform4fv(GLMContext ctx, GLint location, GLsizei count, const GLfloat *value)
+{
+    mglUniformWithPayload(ctx, location, (void *)value, 4 * count * sizeof(GLfloat), MGL_UNIFORM_PAYLOAD_FLOAT);
+}
+
+void mglUniform4i(GLMContext ctx, GLint location, GLint v0, GLint v1, GLint v2, GLint v3)
+{
+    GLint data[] = {v0, v1, v2, v3};
+    
+    mglUniformWithPayload(ctx, location, data, 4 * sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
+}
+
+void mglUniform4iv(GLMContext ctx, GLint location, GLsizei count, const GLint *value)
+{
+    mglUniformWithPayload(ctx, location, (void *)value, 4 * count * sizeof(GLint), MGL_UNIFORM_PAYLOAD_INT);
+}
+
+void mglUniform4ui(GLMContext ctx, GLint location, GLuint v0, GLuint v1, GLuint v2, GLuint v3)
+{
+    GLuint data[] = {v0, v1, v2, v3};
+    
+    mglUniformWithPayload(ctx, location, data, 4 * sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
+}
+
+void mglUniform4uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint *value)
+{
+    mglUniformWithPayload(ctx, location, (void *)value, 4 * count * sizeof(GLuint), MGL_UNIFORM_PAYLOAD_UINT);
+}
+
+
+// Macro to define matrix types
+#define DEFINE_MATRIX_TYPE(_type_, _rows_, _cols_, _name_) \
+typedef struct { \
+    _type_ d[_rows_][_cols_]; \
+} _name_;
+
+// Macro to define transpose functions
+#define DEFINE_TRANSPOSE_FUNC(_type_, _rows_, _cols_, _name_, _transposed_name_) \
+void _name_##Transpose (const _name_ *matrix, _transposed_name_ *result) { \
+    for (int i = 0; i < _rows_; i++) { \
+        for (int j = 0; j < _cols_; j++) { \
+            result->d[j][i] = matrix->d[i][j]; \
+        } \
+    } \
+}
+
+// Generalized function for uniform matrix upload
+#define HANDLE_MATRIX_TRANSPOSE(_type_, _src_type_, _dst_type_, _transpose_func_) \
+    ctx = mglUniformResolveContext(ctx, __FUNCTION__); \
+    if (!ctx) { \
+        return; \
+    } \
+    GLsizeiptr uniformBytes = 0; \
+    if (!checkUniformUploadParams(ctx, location, value, count, sizeof(_src_type_), &uniformBytes)) { \
+        return; \
+    } \
+    if (transpose) { \
+        const _src_type_ *src = (const _src_type_ *)value; \
+        /* CRITICAL SECURITY FIX: Prevent integer overflow in uniform matrix allocation */ \
+        if (count > SIZE_MAX / sizeof(_dst_type_)) { \
+            fprintf(stderr, "MGL SECURITY ERROR: Uniform matrix count %d would cause allocation overflow\n", count); \
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY); \
+            return; \
+        } \
+        size_t alloc_size = count * sizeof(_dst_type_); \
+        _dst_type_ *dst = (_dst_type_ *)malloc(alloc_size); \
+        if (!dst) { \
+            fprintf(stderr, "MGL SECURITY ERROR: Failed to allocate %zu bytes for uniform matrix\n", alloc_size); \
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY); \
+            return; \
+        } \
+        for (int i = 0; i < count; i++) { \
+            _transpose_func_(&src[i], &dst[i]); \
+        } \
+        mglUniform(ctx, location, (void *)dst, count * sizeof(_dst_type_)); \
+        free(dst); \
+    } else { \
+        mglUniform(ctx, location, (void *)value, uniformBytes); \
+    }
+
+DEFINE_MATRIX_TYPE(GLdouble, 2, 2, Mat2x2dv)       // 2x2 matrix type
+DEFINE_MATRIX_TYPE(GLdouble, 2, 2, Mat2x2dvTrans) // Transposed matrix type (same dimensions for 2x2)
+DEFINE_TRANSPOSE_FUNC(GLdouble, 2, 2, Mat2x2dv, Mat2x2dvTrans)
+
+void mglUniformMatrix2dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
+{
+    HANDLE_MATRIX_TRANSPOSE(
+                            GLdouble,        // Element type
+                            Mat2x2dv,          // Source matrix type
+                            Mat2x2dvTrans,     // Destination matrix type
+                            Mat2x2dvTranspose  // Transpose function
+        );
+}
+
+DEFINE_MATRIX_TYPE(GLfloat, 2, 2, Mat2x2fv)       // 2x2 matrix type
+DEFINE_MATRIX_TYPE(GLfloat, 2, 2, Mat2x2fvTrans) // Transposed matrix type (same dimensions for 2x2)
+DEFINE_TRANSPOSE_FUNC(GLfloat, 2, 2, Mat2x2fv, Mat2x2fvTrans)
+
+void mglUniformMatrix2fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
+{
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 2u, 2u, value);
+}
+
+DEFINE_MATRIX_TYPE(GLdouble, 3, 2, Mat2x3dv)
+DEFINE_MATRIX_TYPE(GLdouble, 2, 3, Mat2x3dvTrans)
+DEFINE_TRANSPOSE_FUNC(GLdouble, 3, 2, Mat2x3dv, Mat2x3dvTrans)
+
+void mglUniformMatrix2x3dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
+{
+    HANDLE_MATRIX_TRANSPOSE(
+                            GLdouble,         // Element type
+                            Mat2x3dv,          // Source matrix type
+                            Mat2x3dvTrans,     // Destination matrix type
+                            Mat2x3dvTranspose  // Transpose function
+        );
+}
+
+DEFINE_MATRIX_TYPE(GLfloat, 3, 2, Mat2x3fv)
+DEFINE_MATRIX_TYPE(GLfloat, 2, 3, Mat2x3fvTrans)
+DEFINE_TRANSPOSE_FUNC(GLfloat, 3, 2, Mat2x3fv, Mat2x3fvTrans)
+
+void mglUniformMatrix2x3fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
+{
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 2u, 3u, value);
+}
+
+DEFINE_MATRIX_TYPE(GLdouble, 4, 2, Mat2x4dv)
+DEFINE_MATRIX_TYPE(GLdouble, 2, 4, Mat2x4dvTrans)
+DEFINE_TRANSPOSE_FUNC(GLdouble, 4, 2, Mat2x4dv, Mat2x4dvTrans)
+
+void mglUniformMatrix2x4dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
+{
+    HANDLE_MATRIX_TRANSPOSE(
+                            GLdouble,        // Element type
+                            Mat2x4dv,          // Source matrix type
+                            Mat2x4dvTrans,     // Destination matrix type
+                            Mat2x4dvTranspose  // Transpose function
+        );
+}
+
+DEFINE_MATRIX_TYPE(GLfloat, 4, 2, Mat2x4fv)
+DEFINE_MATRIX_TYPE(GLfloat, 2, 4, Mat2x4fvTrans)
+DEFINE_TRANSPOSE_FUNC(GLfloat, 4, 2, Mat2x4fv, Mat2x4fvTrans)
+
+void mglUniformMatrix2x4fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
+{
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 2u, 4u, value);
+}
+
+DEFINE_MATRIX_TYPE(GLdouble, 3, 3, Mat3x3dv)       // 3x3 matrix type
+DEFINE_MATRIX_TYPE(GLdouble, 3, 3, Mat3x3dvTrans) // Transposed matrix type (same dimensions for 3x3)
+DEFINE_TRANSPOSE_FUNC(GLdouble, 3, 3, Mat3x3dv, Mat3x3dvTrans)
+
+void mglUniformMatrix3dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
+{
+    HANDLE_MATRIX_TRANSPOSE(
+                            GLdouble,
+                            Mat3x3dv,
+                            Mat3x3dvTrans,
+                            Mat3x3dvTranspose
+        );
+}
+
+DEFINE_MATRIX_TYPE(GLfloat, 3, 3, Mat3x3fv)       // 3x3 matrix type
+DEFINE_MATRIX_TYPE(GLfloat, 3, 3, Mat3x3fvTrans) // Transposed matrix type (same dimensions for 3x3)
+DEFINE_TRANSPOSE_FUNC(GLfloat, 3, 3, Mat3x3fv, Mat3x3fvTrans)
+
+static void mglUploadPlainUniformMat3fv(GLMContext ctx,
+                                        GLint location,
+                                        GLsizei count,
+                                        GLboolean transpose,
+                                        const GLfloat *value)
+{
+    GLsizeiptr sourceBytes = 0;
+    if (!checkUniformUploadParams(ctx,
+                                  location,
+                                  value,
+                                  count,
+                                  9u * sizeof(GLfloat),
+                                  &sourceBytes)) {
+        return;
+    }
+
+    if (count == 0) {
+        mglUniform(ctx, location, NULL, 0);
+        return;
+    }
+
+    if (!mglPlainUniformNeedsMetalMat3Packing(ctx, location)) {
+        if (transpose) {
+            const Mat3x3fv *src = (const Mat3x3fv *)value;
+            if ((size_t)count > SIZE_MAX / sizeof(Mat3x3fvTrans)) {
+                ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+                mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+                return;
+            }
+            size_t alloc_size = (size_t)count * sizeof(Mat3x3fvTrans);
+            Mat3x3fvTrans *dst = (Mat3x3fvTrans *)malloc(alloc_size);
+            if (!dst) {
+                ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+                mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+                return;
+            }
+            for (int i = 0; i < count; i++) {
+                Mat3x3fvTranspose(&src[i], &dst[i]);
+            }
+            mglUniform(ctx, location, (void *)dst, (GLsizeiptr)alloc_size);
+            free(dst);
+        } else {
+            mglUniform(ctx, location, (void *)value, sourceBytes);
+        }
+        return;
+    }
+
+    if ((size_t)count > SIZE_MAX / (12u * sizeof(GLfloat))) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return;
+    }
+
+    size_t packedFloats = (size_t)count * 12u;
+    GLfloat stackValues[12];
+    GLfloat *packed = (packedFloats <= (sizeof(stackValues) / sizeof(stackValues[0])))
+        ? stackValues
+        : (GLfloat *)malloc(packedFloats * sizeof(GLfloat));
+    if (!packed) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return;
+    }
+
+    for (GLsizei m = 0; m < count; m++) {
+        const GLfloat *src = value + (size_t)m * 9u;
+        GLfloat *dst = packed + (size_t)m * 12u;
+        for (GLuint col = 0; col < 3u; col++) {
+            for (GLuint row = 0; row < 3u; row++) {
+                dst[col * 4u + row] =
+                    transpose ? src[row * 3u + col] : src[col * 3u + row];
+            }
+            dst[col * 4u + 3u] = 0.0f;
+        }
+    }
+
+    mglUniform(ctx, location, packed, (GLsizeiptr)(packedFloats * sizeof(GLfloat)));
+
+    if (packed != stackValues) {
+        free(packed);
+    }
+}
+
+void mglUniformMatrix3fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
+{
+    mglUploadPlainUniformMat3fv(ctx, location, count, transpose, value);
+}
+
+DEFINE_MATRIX_TYPE(GLdouble, 2, 3, Mat3x2dv)
+DEFINE_MATRIX_TYPE(GLdouble, 3, 2, Mat3x2dvTrans)
+DEFINE_TRANSPOSE_FUNC(GLdouble, 2, 3, Mat3x2dv, Mat3x2dvTrans)
+
+void mglUniformMatrix3x2dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
+{
+    HANDLE_MATRIX_TRANSPOSE(
+                            GLdouble,        // Element type
+                            Mat3x2dv,          // Source matrix type
+                            Mat3x2dvTrans,     // Destination matrix type
+                            Mat3x2dvTranspose  // Transpose function
+        );
+}
+
+DEFINE_MATRIX_TYPE(GLfloat, 2, 3, Mat3x2fv)
+DEFINE_MATRIX_TYPE(GLfloat, 3, 2, Mat3x2fvTrans)
+DEFINE_TRANSPOSE_FUNC(GLfloat, 2, 3, Mat3x2fv, Mat3x2fvTrans)
+
+void mglUniformMatrix3x2fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
+{
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 3u, 2u, value);
+}
+
+DEFINE_MATRIX_TYPE(GLdouble, 4, 3, Mat3x4dv)
+DEFINE_MATRIX_TYPE(GLdouble, 3, 4, Mat3x4dvTrans)
+DEFINE_TRANSPOSE_FUNC(GLdouble, 4, 3, Mat3x4dv, Mat3x4dvTrans)
+
+void mglUniformMatrix3x4dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
+{
+    HANDLE_MATRIX_TRANSPOSE(
+                            GLdouble,        // Element type
+                            Mat3x4dv,          // Source matrix type
+                            Mat3x4dvTrans,     // Destination matrix type
+                            Mat3x4dvTranspose  // Transpose function
+        );
+}
+
+DEFINE_MATRIX_TYPE(GLfloat, 4, 3, Mat3x4fv)
+DEFINE_MATRIX_TYPE(GLfloat, 3, 4, Mat3x4fvTrans)
+DEFINE_TRANSPOSE_FUNC(GLfloat, 4, 3, Mat3x4fv, Mat3x4fvTrans)
+
+void mglUniformMatrix3x4fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
+{
+    HANDLE_MATRIX_TRANSPOSE(
+                            GLfloat,        // Element type
+                            Mat3x4fv,          // Source matrix type
+                            Mat3x4fvTrans,     // Destination matrix type
+                            Mat3x4fvTranspose  // Transpose function
+        );
+}
+
+DEFINE_MATRIX_TYPE(GLdouble, 4, 4, Mat4x4dv)
+DEFINE_MATRIX_TYPE(GLdouble, 4, 4, Mat4x4dvTrans)
+DEFINE_TRANSPOSE_FUNC(GLdouble, 4, 4, Mat4x4dv, Mat4x4dvTrans)
+
+void mglUniformMatrix4dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
+{
+    HANDLE_MATRIX_TRANSPOSE(
+                            GLdouble,        // Element type
+                            Mat4x4dv,          // Source matrix type
+                            Mat4x4dvTrans,     // Destination matrix type
+                            Mat4x4dvTranspose  // Transpose function
+        );
+}
+
+DEFINE_MATRIX_TYPE(GLfloat, 4, 4, Mat4x4fv)       // 3x3 matrix type
+DEFINE_MATRIX_TYPE(GLfloat, 4, 4, Mat4x4fvTrans) // Transposed matrix type (same dimensions for 3x3)
+DEFINE_TRANSPOSE_FUNC(GLfloat, 4, 4, Mat4x4fv, Mat4x4fvTrans)
+
+void mglUniformMatrix4fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
+{
+    HANDLE_MATRIX_TRANSPOSE(
+                            GLfloat,        // Element type
+                            Mat4x4fv,          // Source matrix type
+                            Mat4x4fvTrans,     // Destination matrix type
+                            Mat4x4fvTranspose  // Transpose function
+        );
+}
+
+DEFINE_MATRIX_TYPE(GLdouble, 2, 4, Mat4x2dv)
+DEFINE_MATRIX_TYPE(GLdouble, 4, 2, Mat4x2dvTrans)
+DEFINE_TRANSPOSE_FUNC(GLdouble, 2, 4, Mat4x2dv, Mat4x2dvTrans)
+
+void mglUniformMatrix4x2dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
+{
+    HANDLE_MATRIX_TRANSPOSE(
+                            GLdouble,        // Element type
+                            Mat4x2dv,          // Source matrix type
+                            Mat4x2dvTrans,     // Destination matrix type
+                            Mat4x2dvTranspose  // Transpose function
+        );
+}
+
+DEFINE_MATRIX_TYPE(GLfloat, 2, 4, Mat4x2fv)
+DEFINE_MATRIX_TYPE(GLfloat, 4, 2, Mat4x2fvTrans)
+DEFINE_TRANSPOSE_FUNC(GLfloat, 2, 4, Mat4x2fv, Mat4x2fvTrans)
+
+void mglUniformMatrix4x2fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
+{
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 4u, 2u, value);
+}
+
+DEFINE_MATRIX_TYPE(GLdouble, 3, 4, Mat4x3dv)
+DEFINE_MATRIX_TYPE(GLdouble, 4, 3, Mat4x3dvTrans)
+DEFINE_TRANSPOSE_FUNC(GLdouble, 3, 4, Mat4x3dv, Mat4x3dvTrans)
+
+void mglUniformMatrix4x3dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
+{
+    HANDLE_MATRIX_TRANSPOSE(
+                            GLdouble,        // Element type
+                            Mat4x3dv,          // Source matrix type
+                            Mat4x3dvTrans,     // Destination matrix type
+                            Mat4x3dvTranspose  // Transpose function
+        );
+}
+
+DEFINE_MATRIX_TYPE(GLfloat, 3, 4, Mat4x3fv)
+DEFINE_MATRIX_TYPE(GLfloat, 4, 3, Mat4x3fvTrans)
+DEFINE_TRANSPOSE_FUNC(GLfloat, 3, 4, Mat4x3fv, Mat4x3fvTrans)
+
+void mglUniformMatrix4x3fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
+{
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 4u, 3u, value);
+}
+
+/* Legacy fixed-function clip-plane derivation state (glClipPlane +
+ * gl_ClipVertex): refresh the _mglClipPlane/_mglClipPlaneEnabled uniforms
+ * of the current program from the GL clip-plane state.  Called per draw
+ * (mglDrawDispatch) so any ordering of glClipPlane/glEnable/glUseProgram
+ * works; initBufferData's internal memcmp skips the upload when the values
+ * are unchanged, so idle draws cost nothing. */
+void mglRefreshLegacyStateUniforms(GLMContext ctx)
+{
+    if (!ctx) return;
+    Program *program =
+        mglUniformGetCurrentProgram(ctx, "mglRefreshLegacyStateUniforms");
+    if (!program) return;
+    if (program->legacy_clip_plane_loc < 0 &&
+        program->legacy_clip_plane_enabled_loc < 0) {
+        return;
+    }
+    GLfloat planes[8][4];
+    for (int i = 0; i < MAX_CLIP_DISTANCES; i++) {
+        for (int k = 0; k < 4; k++) {
+            planes[i][k] = (GLfloat)STATE(var).clip_planes[i][k];
+        }
+    }
+    GLfloat enabled[8];
+    for (int i = 0; i < MAX_CLIP_DISTANCES; i++) {
+        enabled[i] = (STATE(caps).clip_distances[i] != 0) ? 1.0f : 0.0f;
+    }
+    /* Deliver each element at its own leaf location: the renderer's struct
+     * packing path reads one plain-uniform slot per array element (CTS
+     * convention, 1 location per leaf), so writing the whole array at the
+     * base location would leave every leaf beyond the first stale.  The
+     * plane leaves are 16 bytes (vec4), the enabled leaves 4 bytes. */
+    if (program->legacy_clip_plane_loc >= 0) {
+        for (int i = 0; i < MAX_CLIP_DISTANCES; i++) {
+            mglUniform(ctx, program->legacy_clip_plane_loc + i,
+                       planes[i], sizeof(planes[i]));
+        }
+    }
+    if (program->legacy_clip_plane_enabled_loc >= 0) {
+        for (int i = 0; i < MAX_CLIP_DISTANCES; i++) {
+            mglUniform(ctx, program->legacy_clip_plane_enabled_loc + i,
+                       &enabled[i], sizeof(enabled[i]));
+        }
+    }
+}

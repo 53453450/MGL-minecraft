@@ -15,6 +15,7 @@
 
 #include "mgl_tess_texture.h"
 #include "mgl_texture_bind.h"   /* mglRendererBindMTLTexture */
+#include "mgl_texture_backend.h"
 
 static GLMState *mglTessTextureState(GLMContext draw_ctx)
 {
@@ -34,7 +35,7 @@ int mglTessEnsureTextureMetalData(void *renderer,
         Texture *ptr = mglTessTextureBindIsStorage(binds[i].kind)
             ? state->image_units[unit].tex
             : state->active_textures[unit];
-        if (ptr && !ptr->mtl_data) {
+        if (ptr && !mglTextureMtl(ptr)) {
             (void)mglRendererBindMTLTexture(renderer, ptr);
         }
     }

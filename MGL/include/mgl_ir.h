@@ -167,6 +167,42 @@ static inline uint32_t mglVaryingLocationSpan(int is_matrix, uint32_t cols,
     return per_element;
 }
 
+/* Vertex attribute locations.  An input that carries layout(location) or a
+ * glBindAttribLocation bind has a fixed place; the others take the first free
+ * run at or after the running declaration-order counter.  Without the
+ * reservation an unbound input declared before a bound one lands on the bound
+ * input's location, and two air.vertex_input entries with one location_index
+ * abort the Metal compiler.  Reflection and the metallib writer both build
+ * the reserved set and place unbound inputs through these two helpers, so the
+ * locations they report cannot diverge.  The set is a 64-bit mask; locations
+ * past it are never reserved. */
+static inline uint64_t mglAttribLocReserve(uint64_t set, uint32_t loc,
+                                           uint32_t span)
+{
+    for (uint32_t k = 0; k < span && loc + k < 64u; k++) {
+        set |= (uint64_t)1 << (loc + k);
+    }
+    return set;
+}
+
+static inline uint32_t mglAttribLocFirstFree(uint64_t set, uint32_t from,
+                                             uint32_t span)
+{
+    for (uint32_t loc = from; loc < 64u; loc++) {
+        int clash = 0;
+        for (uint32_t k = 0; k < span && loc + k < 64u; k++) {
+            if ((set >> (loc + k)) & 1u) {
+                clash = 1;
+                break;
+            }
+        }
+        if (!clash) {
+            return loc;
+        }
+    }
+    return from;
+}
+
 /* Constructors.  Returned structure is heap-owned; destroy with mglIRTypeDestroy. */
 MGLIRType *mglIRTypeScalar(MGLIRScalar s);
 MGLIRType *mglIRTypeVector(MGLIRScalar s, uint32_t components);

@@ -25,7 +25,8 @@
 #define MGL_COMPUTE_BIND_H
 
 #include "glm_context.h"
-#include "mgl_render.h"          /* MGLRenderComputeExecutionPlan */
+#include "mgl_render_api_command.h"
+#include "mgl_binding_stage.h"
 #include "mgl_types_buffer.h"    /* BufferMapList, MGLStageBindingCopyBackList */
 
 #include <stdbool.h>

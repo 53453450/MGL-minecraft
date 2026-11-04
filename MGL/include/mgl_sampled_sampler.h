@@ -57,8 +57,7 @@ void mglSampledEmitDiagPorts(
     void *sampler, int used_fallback, uint32_t expected_type,
     uint32_t lookup_type, uint64_t bind_call, GLuint program_name,
     GLuint vertex_program_name, GLuint fragment_program_name,
-    int used_sampled_copy_trace, void *direct_texture_for_trace,
-    void *sampled_copy_for_trace, uint64_t *focused_counter,
+    void *direct_texture_for_trace, uint64_t *focused_counter,
     uint64_t *trace_file_counter);
 
 /* Separate samplers (fragment) plus array-element textures/samplers for both
@@ -82,20 +81,6 @@ void *mglSampledCompatFallbackPlan(void *renderer, Texture *ptr, void *texture,
                                    const char *stage, GLuint program_name,
                                    GLuint program_binding, void *sample_program,
                                    int *used_fallback_out);
-
-/* The sampled render-target copy plan.  Was -applySampledRenderTargetCopyPlan:
- * texture:sampleProgram:expectedType:expectedKind:usedTypeFallback:stage:
- * programName:spirvBinding:textureUnit:sampledName:usedSampledCopyOut:
- * directTextureForTrace:sampledCopyForTrace:.  `texture_ptr` is an in/out
- * BORROWED handle (the .m's `id *` out-param), the two trace handles are
- * out-only borrowed handles, and `used_sampled_copy_out` is a BOOL out-param
- * (int in C).  Returns false when the caller must abandon the stage. */
-bool mglSampledRenderTargetCopyPlan(
-    void *renderer, Texture *ptr, void **texture_ptr,
-    uint32_t expected_type, uint32_t expected_kind, int used_type_fallback,
-    const char *stage, GLuint program_name, GLuint program_binding,
-    GLuint texture_unit, const char *sampled_name, int *used_sampled_copy_out,
-    void **direct_texture_for_trace, void **sampled_copy_for_trace);
 
 void *mglSampledSamplerMaterialize(void *renderer, Texture *ptr,
                                    GLuint texture_unit, void *default_sampler,

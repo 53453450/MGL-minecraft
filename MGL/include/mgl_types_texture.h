@@ -22,6 +22,7 @@
 #ifndef mgl_types_texture_h
 #define mgl_types_texture_h
 
+#include <stdbool.h>
 #include "mgl_types_buffer.h"
 
 enum {
@@ -81,12 +82,19 @@ typedef struct TextureParameter_t {
      * pipeline) or GL_SKIP_DECODE_EXT (treat sRGB-backed data as linear).
      * Stored here so the texture-creation / pixel-format selection path can
      * downgrade an sRGB Metal pixel format to its linear variant when
-     * SKIP_DECODE is requested.  Kept before mtl_data so the param-equality
-     * memcmp (which spans up to offsetof(mtl_data)) detects changes to it.
+     * SKIP_DECODE is requested.  The parameter-equality memcmp spans the whole
+     * struct, so it detects changes to it.
      * Default is GL_DECODE_EXT; texture structs are bzero'd at creation, so 0
      * is treated as "unset → DECODE" by the getter/helper. */
     GLenum  srgb_decode_ext;
-    void *mtl_data;
+    /* ARB_sparse_texture: the client asked for sparse storage.  Lives here
+     * because glTexParameteri only has the parameter block, not the texture.
+     * virtual_page_size_index selects the page layout at TexStorage time
+     * (only index 0 is advertised).  num_sparse_levels is 0 until storage
+     * exists, then the count of levels that can be committed per page. */
+    GLboolean sparse;
+    GLint virtual_page_size_index;
+    GLint num_sparse_levels;
 } TextureParameter;
 
 /* GL_EXT_texture_filter_anisotropic: advertised upper bound for
@@ -128,7 +136,7 @@ typedef struct TextureLevel_t {
     GLuint height;
     GLuint depth;
     size_t pitch;
-    GLuint mtl_format;
+    GLuint pixel_format;
     size_t  data_size;
     vm_address_t data;
     GLboolean has_initialized_data;
@@ -155,6 +163,10 @@ typedef struct TextureFace_t {
     TextureLevel    *levels;
 } TextureFace;
 
+struct MGLSamplerBackend;
+struct MGLTextureBackend;
+struct MGLImageUnitBackend;
+
 #define DIRTY_SAMPLER_PARAM   0x1
 typedef struct Sampler_t {
     GLuint dirty_bits;
@@ -163,14 +175,37 @@ typedef struct Sampler_t {
      * name+address reuse after delete (STATE_DATAFLOW T1-2). */
     uint64_t identity_generation;
     TextureParameter params;
-    void *mtl_data;
+    /* Backend state (the Metal sampler).  Opaque here; see
+     * mgl_backend_objects.h. */
+    struct MGLSamplerBackend *backend;
     char *debug_label;  /* ObjectLabel, GL 4.6 §20.7; NULL = empty */
 } Sampler;
 
+/* One committed texel box.  ARB_sparse_texture2 reads outside every box
+ * return zero, and writes there are discarded. */
+typedef struct MGLSparseCommit_t {
+    GLint level;
+    GLint x, y, z;
+    GLint w, h, d;
+} MGLSparseCommit;
+
 typedef struct Texture_t {
     GLuint dirty_bits;
-    GLuint dirty_on_gpu;
     GLboolean is_render_target;
+    /* ARB_sparse_texture: the client asked for sparse storage
+     * (GL_TEXTURE_SPARSE_ARB) and, once created, the placement heap the Metal
+     * texture was carved out of.  Commitment needs that heap again, so it
+     * travels with the texture and is released with it. */
+    void *sparse_heap;
+    /* Next free placement-heap tile index for Map.  Each Map must start at a
+     * unique offset — reusing 0 aliases every mip/region onto the same
+     * physical tiles (Clamp LookupColor rgba8 L0 flake). */
+    uint64_t sparse_heap_next_tile;
+    /* Page size selected at TexStorage (standard table, index 0). */
+    GLint sparse_page_x, sparse_page_y, sparse_page_z;
+    MGLSparseCommit *sparse_commits;
+    GLuint sparse_commit_count;
+    GLuint sparse_commit_cap;
     GLenum access;
     GLboolean immutable_storage;
     GLuint name;
@@ -180,11 +215,16 @@ typedef struct Texture_t {
     GLuint index;
     GLuint mipmapped;
     GLboolean genmipmaps;
-    GLboolean mtl_requires_private_storage; // depth, multi sample
     TextureParameter params;
 
     // base level params
     GLenum internalformat;
+    /* When BindImageTexture reinterprets a non-atomic Metal format as
+     * R32I/UI (same bpp), Metal ShaderAtomic needs a real R32 store — a
+     * PixelFormatView cannot carry ShaderAtomic.  Non-zero overrides the
+     * Metal pixel format while GL internalformat stays unchanged so
+     * GetTexImage still reads the raw cast bytes. */
+    GLenum image_metal_format;
     GLenum compressed_internalformat; // original compressed format if tex was created with compressed internalformat via glTexImage*, 0 otherwise
     GLuint width;
     GLuint height;
@@ -196,26 +236,9 @@ typedef struct Texture_t {
     GLuint samples;
     GLboolean fixed_sample_locations;
     TextureFace faces[6];
-    void    *mtl_data;
-    void    *mtl_gl_sampled_data;
-    GLuint  mtl_gl_sampled_width;
-    GLuint  mtl_gl_sampled_height;
-    GLuint  mtl_gl_sampled_format;
-    GLuint  mtl_gl_sampled_levels;
-    GLuint  mtl_gl_sampled_write_version;
-    uint32_t mtl_gl_sampled_dirty_mip_mask;
-    GLuint  mtl_render_target_write_version;
-    /* DontCare inference: renderer frame generation at which this
-     * texture was last written as a render target. Compared against the
-     * renderer's current generation to decide "first render-target use this
-     * frame" (a frame's first write can skip loading prior tile contents). */
-    GLuint  mtl_rt_frame_generation;
     GLboolean metal_data_authoritative; // set when Metal texture data is more recent than CPU data (e.g. after copyImageSubData blit)
-    /* F22/F24: set when mtl_data holds the emergency fallback gradient rather
-     * than the real texture.  Lets callers that check "did creation succeed?"
-     * distinguish a real texture from the silent substitute, and keeps the
-     * degraded state observable instead of indistinguishable from success. */
-    GLboolean mtl_data_is_fallback;
+    /* F22/F24's fallback flag lives in MGLTextureBackend::storage_is_fallback:
+     * it describes the Metal storage, not the GL object. */
     Buffer  *texture_buffer;
     GLintptr texture_buffer_offset;
     GLsizeiptr texture_buffer_size;
@@ -229,20 +252,10 @@ typedef struct Texture_t {
     GLubyte *rgb10a2_shadow;
     GLuint rgb10a2_shadow_width;
     GLuint rgb10a2_shadow_height;
-    /* Cached base-level texture view.  newTextureViewWithPixelFormat:
-     * is expensive and called per-draw when base_level != 0 (common in
-     * Minecraft).  Cache the view keyed on (source texture, base_level,
-     * max_level); self-invalidating via comparison in
-     * mglSampledTextureViewForBaseLevel.  Released via CFRelease in
-     * texture cleanup.  void* for pure-C header compatibility. */
-    void      *mtl_base_level_view;          /* id<MTLTexture> retained via CFRetain */
-    void      *mtl_base_level_view_source;   /* source id<MTLTexture> (weak ref for identity check) */
-    GLuint     mtl_base_level_view_base;
-    GLuint     mtl_base_level_view_max;
-    GLuint     mtl_base_level_view_swizzle_r;
-    GLuint     mtl_base_level_view_swizzle_g;
-    GLuint     mtl_base_level_view_swizzle_b;
-    GLuint     mtl_base_level_view_swizzle_a;
+    /* Backend state kept beside the texture's own storage (the cached
+     * base-level view).  Opaque here; see mgl_backend_objects.h and
+     * mgl_texture_backend.h. */
+    struct MGLTextureBackend *backend;
     /* §8.18/§8.19 state, meaningful only while immutable_storage is set.
      * view_min_level/view_min_layer are absolute in the shared store. */
     GLuint immutable_levels;
@@ -257,9 +270,14 @@ typedef struct Texture_t {
     GLuint view_count;
     GLuint view_capacity;
     GLboolean view_root_deleted;
-    void *view_parent_mtl;        /* view: retained owner id<MTLTexture> */
     char debug_label[MGL_MAX_LABEL_LENGTH];
 } Texture;
+
+/* Whether the texture is currently a render target (bookkeeping flag). */
+static inline bool mglTextureIsRenderTarget(const Texture *tex)
+{
+    return tex ? tex->is_render_target != 0 : false;
+}
 
 typedef struct TextureUnit_t {
     Texture *textures[_MAX_TEXTURE_TYPES];
@@ -274,9 +292,9 @@ typedef struct ImageUnit_t {
     GLenum access;
     GLenum internalformat;
     Texture *tex;
-    /* Retained Metal texture view for non-layered / mip binds.  Released on
-     * rebind or reset so the GPU can finish using the previous view. */
-    void *mtl_image_view;
+    /* Backend state (the Metal view used for non-layered / mip access).
+     * Opaque here; see mgl_backend_objects.h and mgl_texture_backend.h. */
+    struct MGLImageUnitBackend *backend;
 } ImageUnit;
 
 typedef struct ProxyTextureQueryState_t {

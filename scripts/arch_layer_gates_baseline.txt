@@ -1,0 +1,6 @@
+# Architecture layer gates baseline (Phase 0: ban NEW violations).
+# Format: rule path count. Counts may only go down; --update after paying debt.
+# See docs/MGL-architecture-design.md §9.
+
+Lyr-Ctx-FanIn MGL/src 59
+Lyr-Ports-FanIn MGL/src 14

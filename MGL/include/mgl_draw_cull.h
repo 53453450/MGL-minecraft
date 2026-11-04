@@ -50,9 +50,10 @@ typedef struct MGLCullDistanceHostOps {
                                   uint64_t instance_count, uint64_t base_instance,
                                   const void *enc_ctx);
     void (*draw_indexed_primitives)(void *encoder_owner, uint32_t primitive_type,
-                                    uint64_t index_count, void *index_buffer,
-                                    uint64_t index_offset, uint64_t instance_count,
-                                    int32_t base_vertex, uint64_t base_instance);
+                                    uint64_t index_count, uint32_t index_type,
+                                    void *index_buffer, uint64_t index_offset,
+                                    uint64_t instance_count, int32_t base_vertex,
+                                    uint64_t base_instance);
     int (*encode_context_active)(const void *enc_ctx);
     int (*primitive_restart)(GLMContext ctx, GLenum index_type,
                              uint32_t *out_restart_index);

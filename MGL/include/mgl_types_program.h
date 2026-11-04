@@ -36,8 +36,11 @@
 
 #include "mgl_types_buffer.h"
 #include "mgl_types_texture.h"
+#include "mgl_subroutine_table.h"
 
 typedef struct GLMContextRec_t *GLMContext;
+
+struct MGLProgramBackend;
 
 enum {
     _VERTEX_SHADER = 0,
@@ -127,7 +130,7 @@ typedef struct Shader_t {
     GLuint name;
     GLuint type;
     GLuint glm_type;
-    const char *mtl_shader_type_name;
+    const char *shader_type_name;
     size_t src_len;
     const char *src;
     GLboolean compile_success;
@@ -154,35 +157,12 @@ typedef struct Shader_t {
     char *debug_label;  /* ObjectLabel, GL 4.6 §20.7; NULL = empty */
 } Shader;
 
-/* Per-shader backend module state: AIR serialized metallib bytes + the
- * renderer-owned Metal objects built from them. */
+/* Per-stage module identity.  What the AIR backend built for the stage (the
+ * metallib bytes and the Metal objects made from them) is in
+ * Program::backend; see mgl_backend_objects.h. */
 typedef struct MGLShaderModule_t {
     GLuint stage;
     char *entry_point;
-    /* AIR backend output: serialized metallib (bitcode container). */
-    unsigned char *metallib_bytes;
-    size_t metallib_size;
-    unsigned char *metallib_tess_capture_bytes;
-    size_t metallib_tess_capture_size;
-    unsigned char *metallib_cull_capture_bytes;
-    size_t metallib_cull_capture_size;
-    /* TES render-vertex / compute dual-emit: when the TES is an isolines or
-     * point_mode program eligible for the render-vertex path, the compute
-     * expansion kernel is also stored here so indexed draws (glDrawElements /
-     * glMultiDrawElements) can fall back to the verified compute path, which
-     * carries the gather ABI the render-vertex ABI lacks. */
-    unsigned char *metallib_bytes_tes_compute;
-    size_t metallib_size_tes_compute;
-    void *mtl_function;
-    void *mtl_library;
-    void *mtl_tess_capture_function;
-    void *mtl_tess_capture_library;
-    void *mtl_cull_capture_function;
-    void *mtl_cull_capture_library;
-    /* Cached Metal function for metallib_bytes_tes_compute (TES kernel). */
-    void *mtl_function_compute;
-    void *mtl_compute_pipeline;
-    GLboolean needs_runtime_array_size_buffer;
 } MGLShaderModule;
 /* Compatibility aliases for the historical SPIR-V-era names. */
 typedef MGLShaderModule Spirv;
@@ -289,6 +269,15 @@ typedef struct MGLActiveUniformEntry_t {
     const SpirvUBOMember *ubo_member;  /* NULL for non-member uniforms */
 } MGLActiveUniformEntry;
 
+/* Row of the lazily built plain-uniform location table (glUniform* uploads).
+ * gl_type==0 marks an unoccupied location; base is the array/element base
+ * location and size its element count (1 for non-arrays). */
+typedef struct MGLPlainUniformTypeInfo_t {
+    uint32_t gl_type;
+    int32_t base;
+    int32_t size;
+} MGLPlainUniformTypeInfo;
+
 #define MAX_ATTACHED_SHADERS_PER_STAGE 8
 /* Forward declaration: full type defined in mgl_buffer_plan.h.  The plan
  * caches static reflection-derived buffer binding data (metal slots, client
@@ -339,6 +328,9 @@ typedef struct Program_t {
     GLuint air_builtin_mask[_MAX_SHADER_TYPES];
     MGLShaderModule modules[_MAX_SHADER_TYPES];
     MGLShaderResourceList shader_resources_list[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
+    /* GLSL 4.0 subroutine mirror per stage, filled at link from the frontend's
+     * translation unit (see mgl_shader_abi.h MGLAIRSubroutineTable). */
+    MGLAIRSubroutineTable subroutine_tables[_MAX_SHADER_TYPES];
     struct {
         unsigned x, y, z;
     } local_workgroup_size;
@@ -426,8 +418,9 @@ typedef struct Program_t {
     MGLShaderResourceList *validated_resource_lists[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
     MGLShaderResource *validated_resource_list_storage[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
     GLuint validated_resource_list_counts[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
-    uint64_t pipeline_cache_instance_id;
-    uint64_t pipeline_cache_generation;
+    /* Backend state: the built stages and the pipeline cache validity.
+     * Opaque here; see mgl_backend_objects.h and mgl_program_backend.h. */
+    struct MGLProgramBackend *backend;
     GLboolean program_separable;
     /* Latched at successful link (GL 4.6 table 23.32 / CTS PipelineApi). */
     GLboolean linked_program_separable;
@@ -479,9 +472,23 @@ typedef struct Program_t {
     GLuint active_uniform_cache_count;
     GLint active_uniform_cache_max_name_length;
     GLboolean active_uniform_cache_valid;
-    void *mtl_data;
+    /* Location→type table for plain uniform uploads (mglUniformWithPayload
+     * lookup).  Built lazily on first upload after link; freed together with
+     * the active-uniform cache wherever uniform reflection is invalidated. */
+    MGLPlainUniformTypeInfo *plain_uniform_type_table;
     char *debug_label;
 } Program;
+/* Dirty-bit bookkeeping for the program record. */
+static inline void mglProgramClearDirtyFlags(Program *program, uint32_t bits)
+{
+    if (program) program->dirty_bits &= ~bits;
+}
+
+static inline uint32_t mglProgramDirtyFlags(const Program *program)
+{
+    return program ? program->dirty_bits : 0u;
+}
+
 
 GLint mglProgramActiveUniformCount(Program *program);
 GLint mglProgramActiveUniformMaxNameLength(Program *program);

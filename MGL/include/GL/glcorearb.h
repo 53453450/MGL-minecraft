@@ -46,6 +46,13 @@ extern "C" {
 **
 ** Do not #include both <GL/glcorearb.h> and either of <GL/gl.h> or
 ** <GL/glext.h> in the same source file.
+**
+** MGL note (AUDIT-043): many prototypes take a bare client pointer with no
+** companion byte length (e.g. glReadPixels `data`, glTexImage* `pixels`,
+** glBufferData `data`).  The caller must supply a buffer large enough for
+** the transfer implied by the other arguments; the type system cannot
+** express that bound.  Prefer the sized *n* entry points (glReadnPixels,
+** glGetnUniform*, glGetnTexImage, …) when both exist.
 */
 
 /* Generated C header for:

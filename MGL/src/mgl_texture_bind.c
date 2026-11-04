@@ -38,8 +38,10 @@
 #include "glm_context.h"         /* GLMContext, before the type headers that need it */
 #include "mgl_texture_upload_ops.h"
 #include "mgl_texture_bind.h"
-#include "mgl_renderer_ports.h"  /* state areas + creation/upload ports */
-#include "mgl_render.h"          /* mglRender* texture predicates and queries */
+#include "mgl_texture_plan.h" /* MGL_TEXTURE_MS_PLANE_STRIDE */
+#include "mgl_ports_batch_flush.h"
+#include "mgl_renderer_state_areas.h"  /* state areas + creation/upload ports */
+#include "mgl_render_api_texture.h"
 #include "mgl_render_pass_manager_ops.h" /* mglRendererEndRenderEncodingLocked */
 #include "mgl_texture_compat.h"  /* sampled-copy release, swizzle predicate */
 #include "mgl_texture_sampler.h" /* mglTextureCreateSamplerForTexParam */
@@ -50,6 +52,7 @@
 
 #include <CoreFoundation/CoreFoundation.h>  /* CFRetain / CFRelease for the aliases */
 #include <time.h>                /* clock_gettime for the fallback circuit breaker */
+#include "mgl_texture_backend.h"
 
 /* Wall clock in UNIX seconds: the C twin of [[NSDate date]
  * timeIntervalSince1970], which gates the fallback-texture circuit breaker. */
@@ -97,43 +100,150 @@ static uint32_t mglTextureBindUploadLevelCount(uint64_t metal_levels,
 
 extern uint32_t mtlPixelFormatForGLTex(Texture *tex);
 
+/* Numeric IF values (avoid GL_* in this L3 TU — check_layering C2). */
+enum {
+    MGL_IF_BPTC_RGB_SFLOAT = 0x8E8Eu, /* GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT */
+    MGL_IF_BPTC_RGB_UFLOAT = 0x8E8Fu  /* GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT */
+};
+
+static int mglInternalFormatIsBPTCFloat(GLenum internalformat)
+{
+    return internalformat == (GLenum)MGL_IF_BPTC_RGB_SFLOAT ||
+           internalformat == (GLenum)MGL_IF_BPTC_RGB_UFLOAT;
+}
+
+/* Apple Metal newTextureView between BC6H_RGBFloat and BC6H_RGBUfloat does
+ * not reliably reinterpret block bits the way GL TextureView requires.  Clone
+ * the root's compressed CPU shadow into an independent Metal texture in the
+ * view's format instead. */
+static bool mglTextureBindBPTCFloatCloneStorage(void *renderer, Texture *tex,
+                                                Texture *root)
+{
+    if (!renderer || !tex || !root) {
+        return false;
+    }
+    if (!mglRendererBindMTLTexture(renderer, root) || !mglTextureMtl(root)) {
+        return false;
+    }
+
+    TextureLevel *root_lvl =
+        (root->faces[0].levels && root->num_levels > 0u)
+            ? &root->faces[0].levels[0]
+            : NULL;
+    if (!root_lvl || !root_lvl->data || root_lvl->pitch == 0u ||
+        root_lvl->data_size == 0u) {
+        return false;
+    }
+
+    /* Already cloned into the view format? */
+    if (mglTextureMtl(tex) && mglTextureViewParent(tex) == NULL) {
+        MGLRenderTextureInfo info = {0};
+        const uint32_t want = mtlPixelFormatForGLTex(tex);
+        if (mglRenderGetTextureInfo(mglTextureMtl(tex), &info) == 0 &&
+            info.pixel_format == want) {
+            return true;
+        }
+    }
+
+    /* Point the view's level-0 CPU shadow at the root so create-from-GL and
+     * dirty upload see the compressed blocks under the view's IF. */
+    if (!tex->faces[0].levels || tex->num_levels == 0u) {
+        return false;
+    }
+    TextureLevel *view_lvl = &tex->faces[0].levels[0];
+    view_lvl->width = root_lvl->width;
+    view_lvl->height = root_lvl->height;
+    view_lvl->depth = root_lvl->depth;
+    view_lvl->pitch = root_lvl->pitch;
+    view_lvl->data = root_lvl->data;
+    view_lvl->data_size = root_lvl->data_size;
+    view_lvl->complete = 1;
+    view_lvl->has_initialized_data = 1;
+    view_lvl->ever_written = 1;
+    view_lvl->metal_data_authoritative = 0;
+    tex->compressed_internalformat = (GLenum)tex->internalformat;
+    mglTextureSetDirtyBits(tex, DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
+
+    mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(tex)->mtl_data);
+    if (mglTextureViewParent(tex)) {
+        mglTextureBindReleaseAlias(mglTextureViewParent(tex));
+        mglTextureBackendEnsure(tex)->view_parent = NULL;
+    }
+
+    void *cloned = mglTextureCreateFromGLTexture(renderer, tex);
+    if (!cloned) {
+        view_lvl->data = 0;
+        view_lvl->data_size = 0u;
+        view_lvl->pitch = 0u;
+        return false;
+    }
+    /* create-from-GL may skip compressed uploads; push the root blocks now. */
+    const int uploaded = mglTextureUploadSliceViaBlit(
+        renderer, cloned, tex->name, (GLenum)mglTextureTargetOf(tex),
+        (const void *)(uintptr_t)root_lvl->data, root_lvl->pitch,
+        root_lvl->data_size, root_lvl->width, root_lvl->height, 1u, 0u, 0u, 0);
+    mglTextureBackendEnsure(tex)->mtl_data = cloned;
+    mglTextureClearDirtyBits(tex, DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
+    tex->metal_data_authoritative = 1;
+    view_lvl->metal_data_authoritative = 1;
+    /* Drop the borrowed CPU pointer so the view does not free the root's
+     * shadow on delete; GetTexImage still redirects via view_root. */
+    view_lvl->data = 0;
+    view_lvl->data_size = 0u;
+    view_lvl->pitch = root_lvl->pitch;
+    if (!uploaded) {
+        fprintf(stderr,
+                "MGL WARNING: BPTC float view %u clone upload failed "
+                "(root=%u %ux%u pitch=%zu)\n",
+                tex->name, root->name, root_lvl->width, root_lvl->height,
+                root_lvl->pitch);
+    }
+    return true;
+}
+
 /* §8.18: a view never owns storage.  Its Metal texture is a view of the
  * owner's, rebuilt only when the owner's Metal texture is replaced. */
 static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
 {
     Texture *root = tex->view_root;
-    void *source = tex->view_parent_mtl;
+    void *source = mglTextureViewParent(tex);
     if (!root->view_root_deleted) {
-        if (!mglRendererBindMTLTexture(renderer, root) || !root->mtl_data) {
+        if (!mglRendererBindMTLTexture(renderer, root) || !mglTextureMtl(root)) {
             return false;
+        }
+        /* BPTC float signed↔unsigned: clone instead of Metal format view. */
+        if (mglInternalFormatIsBPTCFloat((GLenum)tex->internalformat) &&
+            mglInternalFormatIsBPTCFloat((GLenum)root->internalformat) &&
+            (GLenum)tex->internalformat != (GLenum)root->internalformat) {
+            return mglTextureBindBPTCFloatCloneStorage(renderer, tex, root);
         }
         /* Any view may become an attachment, and a Metal view inherits its
          * parent's usage.  is_render_target is raised only for the
-         * content-preserving rebuild: left set, later uploads would bump the
-         * render-target write version and mark never-rendered storage as
-         * Y-flipped. */
+         * content-preserving rebuild: left set, a later upload would bump the
+         * render-target write version and claim GPU content that no pass
+         * wrote. */
         MGLRenderTextureInfo rootInfo = {0};
-        if (!root->is_render_target &&
-            mglRenderGetTextureInfo(root->mtl_data, &rootInfo) == 0 &&
+        if (!mglTextureIsRenderTarget(root) &&
+            mglRenderGetTextureInfo(mglTextureMtl(root), &rootInfo) == 0 &&
             (rootInfo.usage & (1ull << 2)) == 0 &&
             mglRenderMetalCompressedBlockHeight(rootInfo.pixel_format) <= 1u) {
-            root->is_render_target = true;
+            mglTextureSetRenderTarget(root, true);
             const bool rebound = mglRendererBindMTLTexture(renderer, root);
-            root->is_render_target = false;
-            if (!rebound || !root->mtl_data) {
+            mglTextureSetRenderTarget(root, false);
+            if (!rebound || !mglTextureMtl(root)) {
                 return false;
             }
         }
-        source = root->mtl_data;
+        source = mglTextureMtl(root);
     }
-    if (tex->mtl_data && source == tex->view_parent_mtl) {
+    if (mglTextureMtl(tex) && source == mglTextureViewParent(tex)) {
         return true;
     }
 
     MGLRenderTextureInfo info = {0};
     MGLRenderTextureTargetPlan plan = {0};
     if (!source || mglRenderGetTextureInfo(source, &info) != 0 ||
-        mglRenderTextureTargetPlan((uint32_t)tex->target, (uint32_t)tex->samples,
+        mglRenderTextureTargetPlan((uint32_t)mglTextureTargetOf(tex), (uint32_t)mglTextureSamplesOf(tex),
                                    &plan) != 0) {
         return false;
     }
@@ -157,18 +267,15 @@ static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
      * AIR texelFetch.  Expand the Metal slice range accordingly. */
     uint64_t slice_loc = tex->view_min_layer;
     uint64_t slice_len = tex->view_num_layers;
-    const GLenum root_target = root->target;
+    const GLenum root_target = mglTextureTargetOf(root);
     const int root_ms =
-        root_target == GL_TEXTURE_2D_MULTISAMPLE ||
-        root_target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+        mglTextureTargetIsMultisample(root_target);
     const int view_ms =
-        tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
-        tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY;
+        mglTextureTargetIsMultisample((uint32_t)mglTextureTargetOf(tex));
     if ((root_ms || view_ms) &&
         info.texture_type == MGLTextureType2DArray && slice_len > 0u) {
-        const uint64_t stride = 8u;
-        if (root_target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ||
-            root_target == GL_TEXTURE_2D_MULTISAMPLE) {
+        const uint64_t stride = MGL_TEXTURE_MS_PLANE_STRIDE;
+        if (mglTextureTargetIsMultisample(root_target)) {
             slice_loc = (uint64_t)tex->view_min_layer * stride;
             slice_len = (uint64_t)tex->view_num_layers * stride;
         }
@@ -193,12 +300,12 @@ static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
                 (unsigned long long)slice_loc, (unsigned long long)slice_len);
         return false;
     }
-    mglSafeReleaseMetalObj((void **)&tex->mtl_data);
-    mglTextureReleaseGLSampledCopy(tex);
-    tex->mtl_data = view;
-    if (source != tex->view_parent_mtl) {
-        mglTextureBindReleaseAlias(tex->view_parent_mtl);
-        tex->view_parent_mtl = mglTextureBindRetainAlias(source);
+    mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(tex)->mtl_data);
+    mglTextureBackendEnsure(tex)->mtl_data = view;
+    if (source != mglTextureViewParent(tex)) {
+        mglTextureBindReleaseAlias(mglTextureViewParent(tex));
+        mglTextureBackendEnsure(tex)->view_parent =
+            mglTextureBindRetainAlias(source);
     }
     return true;
 }
@@ -209,50 +316,64 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
         return false;
     }
 
+    /* Hot-path: stable Metal storage + sampler already match GL.  Skip for
+     * TextureViews (view_root rebuild) and render targets (usage/mip
+     * reconciliation still needs Metal queries). */
+    if (!tex->view_root && !mglTextureIsRenderTarget(tex) && mglTextureMtl(tex) &&
+        mglTextureSamplerState(tex) &&
+        (mglTextureDirtyBits(tex) &
+         (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_ACCESS |
+          DIRTY_TEXTURE_PARAM)) == 0 &&
+        !mglRenderTextureBufferNeedsDirty(
+            mglRenderIsTextureBufferTarget(mglTextureTargetOf(tex)),
+            tex->texture_buffer ? 1 : 0, mglTextureBufferDirtyBits(tex))) {
+        return true;
+    }
+
     if (tex->view_root) {
         if (!mglTextureBindViewStorage(renderer, tex)) {
             return false;
         }
-        tex->dirty_bits &= ~(DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA |
-                             DIRTY_TEXTURE_ACCESS);
-        if ((tex->dirty_bits & DIRTY_TEXTURE_PARAM) && tex->params.mtl_data) {
-            mglSafeReleaseMetalObj((void **)&tex->params.mtl_data);
+        mglTextureClearDirtyBits(tex, (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA |
+                             DIRTY_TEXTURE_ACCESS));
+        if ((mglTextureDirtyBits(tex) & DIRTY_TEXTURE_PARAM) && mglTextureSamplerState(tex)) {
+            mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(tex)->sampler_state);
         }
-        if (!tex->params.mtl_data) {
-            tex->params.mtl_data =
-                mglTextureCreateSamplerForTexParam(&tex->params, tex->target);
+        if (!mglTextureSamplerState(tex)) {
+            mglTextureBackendEnsure(tex)->sampler_state =
+                mglTextureCreateSamplerForTexParam(&tex->params, mglTextureTargetOf(tex));
         }
-        if (tex->params.mtl_data) {
-            tex->dirty_bits &= ~DIRTY_TEXTURE_PARAM;
+        if (mglTextureSamplerState(tex)) {
+            mglTextureClearDirtyBits(tex, DIRTY_TEXTURE_PARAM);
         }
         return true;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     if (mglRenderTextureBufferNeedsDirty(
-            mglRenderIsTextureBufferTarget(tex->target),
+            mglRenderIsTextureBufferTarget(mglTextureTargetOf(tex)),
             tex->texture_buffer ? 1 : 0,
-            tex->texture_buffer ? tex->texture_buffer->data.dirty_bits : 0u)) {
+            mglTextureBufferDirtyBits(tex))) {
         /* The in-place upload paths read texture levels, not the buffer
          * store; rebuild so the texel copy reflects the buffer (§8.9). */
-        tex->dirty_bits |= DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL;
+        mglTextureSetDirtyBits(tex, DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL);
     }
 
-    if (tex->mtl_data &&
-        mglRenderTextureNeedsArrayLengthCheck((uint32_t)tex->target)) {
+    if (mglTextureMtl(tex) &&
+        mglRenderTextureNeedsArrayLengthCheck((uint32_t)mglTextureTargetOf(tex))) {
         MGLRenderTextureInfo existingInfo = {0};
-        if (mglRenderGetTextureInfo(tex->mtl_data, &existingInfo) == 0) {
+        if (mglRenderGetTextureInfo(mglTextureMtl(tex), &existingInfo) == 0) {
             /* Metal cube-array arrayLength is cube count; GL depth is usually
              * face count (cubes * 6). Comparing raw depth forced a rebuild that
              * wiped imageStore results on the next bind. */
             uint64_t expectedLayers = mglRenderExpectedArrayLayers(
-                tex->target, tex->depth);
+                mglTextureTargetOf(tex), mglTextureDepthOf(tex));
             if (existingInfo.array_length < expectedLayers ||
                 existingInfo.width != (uint64_t)tex->width ||
                 existingInfo.height != (uint64_t)tex->height) {
-                tex->dirty_bits |= DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA;
+                mglTextureSetDirtyBits(tex, DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
             }
         }
     }
@@ -262,8 +383,8 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
      * When the old texture already has GPU-written data (e.g. from imageStore
      * in a compute shader), preserve it via a GPU-to-GPU blit instead of
      * re-uploading potentially stale CPU data. */
-    if (tex->mtl_data && tex->is_render_target) {
-        void *existingTexture = tex->mtl_data;
+    if (mglTextureMtl(tex) && mglTextureIsRenderTarget(tex)) {
+        void *existingTexture = mglTextureMtl(tex);
         MGLRenderTextureInfo existingInfo = {0};
         bool hasExistingInfo = existingTexture &&
             mglRenderGetTextureInfo(existingTexture, &existingInfo) == 0;
@@ -278,7 +399,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
          * Capacity-only sizing recreated MC atlases as 11-level Metal textures
          * when only 2 GL levels were uploaded. */
         uint64_t requiredMipLevels =
-            (mglRenderTargetIsRenderbuffer((uint32_t)tex->target) || tex->samples > 1u)
+            (mglRenderTargetIsRenderbuffer((uint32_t)mglTextureTargetOf(tex)) || mglTextureSamplesOf(tex) > 1u)
                 ? 1u
                 : (tex->num_levels > 1u
                        ? (uint64_t)tex->num_levels
@@ -309,11 +430,10 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                 if (!v) {
                     continue;
                 }
-                mglSafeReleaseMetalObj((void **)&v->mtl_data);
-                mglTextureReleaseGLSampledCopy(v);
-                if (v->view_parent_mtl) {
-                    mglTextureBindReleaseAlias(v->view_parent_mtl);
-                    v->view_parent_mtl = NULL;
+                mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(v)->mtl_data);
+                if (mglTextureViewParent(v)) {
+                    mglTextureBindReleaseAlias(mglTextureViewParent(v));
+                    mglTextureBackendEnsure(v)->view_parent = NULL;
                 }
             }
 
@@ -321,8 +441,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
              * new one after tex->mtl_data is released. */
             void *oldTexture = mglTextureBindRetainAlias(existingTexture);
 
-            mglSafeReleaseMetalObj((void **)&tex->mtl_data);
-            mglTextureReleaseGLSampledCopy(tex);
+            mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(tex)->mtl_data);
 
             /* Create a new texture with correct usage.  Don't set
              * DIRTY_TEXTURE_DATA so that createMTLTextureFromGLTexture
@@ -337,7 +456,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                 newInfo.depth == existingInfo.depth;
             if (oldTexture && dimensionsMatch) {
                 /* The creation port's +1 moves into the texture slot. */
-                tex->mtl_data = newTexture;
+                mglTextureBackendEnsure(tex)->mtl_data = newTexture;
                 const void *metalTexture = newTexture;
                 newTexture = NULL;
                 const bool packedDepthStencil =
@@ -346,7 +465,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                 if (packedDepthStencil) {
                     const bool isArray =
                         mglRenderTextureTargetIsLayeredUpload(
-                            (uint32_t)tex->target) != 0;
+                            (uint32_t)mglTextureTargetOf(tex)) != 0;
                     int allLevelsUploaded = 1;
                     const uint32_t levelCount = mglTextureBindUploadLevelCount(
                         newInfo.mipmap_level_count,
@@ -355,13 +474,13 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                             renderer, tex, (void *)metalTexture,
                             (uint32_t)newInfo.pixel_format, 1, levelCount,
                             isArray ? 1 : 0,
-                            mglRenderTextureTargetIs1D((uint32_t)tex->target) ? 1 : 0,
-                            mglRenderTextureTargetIs1DArray((uint32_t)tex->target) ? 1 : 0,
+                            mglRenderTextureTargetIs1D((uint32_t)mglTextureTargetOf(tex)) ? 1 : 0,
+                            mglRenderTextureTargetIs1DArray((uint32_t)mglTextureTargetOf(tex)) ? 1 : 0,
                             (uint32_t)newInfo.texture_type,
                             &allLevelsUploaded) && allLevelsUploaded) {
-                        tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
+                        mglTextureClearDirtyBits(tex, DIRTY_TEXTURE_DATA);
                     } else {
-                        tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+                        mglTextureSetDirtyBits(tex, DIRTY_TEXTURE_DATA);
                     }
                 } else {
                     /* Blit GPU data from old texture to new texture to preserve
@@ -378,18 +497,18 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                             fprintf(stderr,
                                     "MGL ERROR: Metal-cpp render-target preservation blit failed texture=%u\n",
                                     tex->name);
-                            tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+                            mglTextureSetDirtyBits(tex, DIRTY_TEXTURE_DATA);
                             mglTextureBindReleaseAlias(oldTexture);
                             return false;
                         }
                     }
                     /* CPU levels respecified since the old texture was built
                      * still need their upload. */
-                    tex->dirty_bits &= DIRTY_TEXTURE_DATA;
+                    mglTextureMaskDirtyBits(tex, DIRTY_TEXTURE_DATA);
                 }
             } else {
                 /* Fallback: use the old CPU-data-upload path */
-                tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+                mglTextureSetDirtyBits(tex, DIRTY_TEXTURE_DATA);
             }
             if (newTexture) {
                 /* Not stored: the port's +1 is ours to release. */
@@ -399,25 +518,25 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
         }
     }
 
-    if (tex->dirty_bits)
+    if (mglTextureDirtyBits(tex))
     {
         /* LEVEL/ACCESS require a new Metal texture object. DATA-only dirty
          * should upload in place; destroying an existing texture here wipes
          * GPU imageStore results when cube-array CPU uploads stay incomplete. */
         const bool storageShapeChanged =
-            (tex->dirty_bits & (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_ACCESS)) != 0;
+            (mglTextureDirtyBits(tex) & (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_ACCESS)) != 0;
         bool textureNeedsRebuild = storageShapeChanged;
         bool samplerNeedsRebuild =
             storageShapeChanged ||
-            ((tex->dirty_bits & (DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_PARAM)) != 0);
+            ((mglTextureDirtyBits(tex) & (DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_PARAM)) != 0);
 
-        if (tex->mtl_data &&
+        if (mglTextureMtl(tex) &&
             !storageShapeChanged &&
-            (tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0) {
-            void *existingTexture = tex->mtl_data;
+            (mglTextureDirtyBits(tex) & DIRTY_TEXTURE_DATA) != 0) {
+            void *existingTexture = mglTextureMtl(tex);
             bool uploadedDirty = false;
             if (existingTexture && !tex->metal_data_authoritative) {
-                if (mglRenderTextureTargetIs2D((uint32_t)tex->target)) {
+                if (mglRenderTextureTargetIs2D((uint32_t)mglTextureTargetOf(tex))) {
                     MGLRenderTextureInfo metalInfo = {0};
                     if (mglRenderGetTextureInfo(existingTexture, &metalInfo) == 0 &&
                         metalInfo.texture_type == MGLTextureType2D &&
@@ -433,11 +552,11 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                     if (mglRenderGetTextureInfo(existingTexture, &metalInfo) == 0) {
                         const bool isArray =
                             mglRenderTextureTargetIsLayeredUpload(
-                                (uint32_t)tex->target) != 0;
+                                (uint32_t)mglTextureTargetOf(tex)) != 0;
                         const bool texture1DBackedBy2D =
-                            mglRenderTextureTargetIs1D((uint32_t)tex->target) != 0;
+                            mglRenderTextureTargetIs1D((uint32_t)mglTextureTargetOf(tex)) != 0;
                         const bool texture1DArrayBackedBy2DArray =
-                            mglRenderTextureTargetIs1DArray((uint32_t)tex->target) != 0;
+                            mglRenderTextureTargetIs1DArray((uint32_t)mglTextureTargetOf(tex)) != 0;
                         int allLevelsUploaded = 1;
                         const uint32_t levelCount = mglTextureBindUploadLevelCount(
                             metalInfo.mipmap_level_count,
@@ -459,37 +578,36 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                 /* Successful CPU upload, or GPU is source of truth after
                  * imageStore / MemoryBarrier — drop DATA dirty without
                  * releasing mtl_data. */
-                tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
+                mglTextureClearDirtyBits(tex, DIRTY_TEXTURE_DATA);
             }
             samplerNeedsRebuild =
                 storageShapeChanged ||
-                ((tex->dirty_bits & (DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_PARAM)) != 0);
+                ((mglTextureDirtyBits(tex) & (DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_PARAM)) != 0);
         }
 
         /* Texture parameter changes only affect the Metal sampler object. Do
          * not throw away texture storage for wrap/filter/lod updates; doing so
          * can turn Minecraft's frequent sampler changes into render-pass and
          * upload storms. */
-        if (tex->mtl_data)
+        if (mglTextureMtl(tex))
         {
             if (textureNeedsRebuild) {
-                mglSafeReleaseMetalObj((void **)&tex->mtl_data);
-                mglTextureReleaseGLSampledCopy(tex);
+                mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(tex)->mtl_data);
             }
         }
 
-        if (samplerNeedsRebuild && tex->params.mtl_data)
+        if (samplerNeedsRebuild && mglTextureSamplerState(tex))
         {
-            mglSafeReleaseMetalObj((void **)&tex->params.mtl_data);
+            mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(tex)->sampler_state);
         }
     }
 
-    if (tex->mtl_data == NULL)
+    if (mglTextureMtl(tex) == NULL)
     {
-        tex->mtl_data = mglTextureCreateFromGLTexture(renderer, tex);
+        mglTextureBackendEnsure(tex)->mtl_data = mglTextureCreateFromGLTexture(renderer, tex);
 
         /* AGX-SAFE: Handle NULL texture gracefully when in GPU recovery mode */
-        if (!tex->mtl_data) {
+        if (!mglTextureMtl(tex)) {
             /* Circuit breaker: limit fallback texture creations to prevent
              * infinite loops. */
             static int s_fallbackTextureCount = 0;
@@ -503,8 +621,8 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                 fprintf(stderr,
                         "MGL AGX: Fallback texture limit reached (%d in %.1fs), suppressing further fallbacks\n",
                         s_fallbackTextureCount, now - s_fallbackTextureWindowStart);
-                tex->mtl_data = NULL;
-                tex->dirty_bits = 0;
+                mglTextureBackendEnsure(tex)->mtl_data = NULL;
+                mglTextureResetDirtyBits(tex);
             } else {
                 s_fallbackTextureCount++;
                 /* F22/P32: keep a cumulative count so the degradation is
@@ -519,10 +637,10 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                         s_fallbackTotal,
                         s_fallbackTextureCount);
                 /* Create a simple fallback texture to prevent crashes */
-                tex->mtl_data =
+                mglTextureBackendEnsure(tex)->mtl_data =
                     mglTextureCreateFallback(renderer, tex);
 
-                if (tex->mtl_data) {
+                if (mglTextureMtl(tex)) {
                     fprintf(stderr,
                             "MGL SUCCESS: Fallback texture created successfully (tex=%u degraded)\n",
                             (unsigned)tex->name);
@@ -531,29 +649,29 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                      * condition (re-specifies the missing level, repairs the FBO)
                      * would never get a rebuild.  Drop only what the substitute
                      * already satisfies and record that we are degraded. */
-                    tex->mtl_data_is_fallback = GL_TRUE;
-                    tex->dirty_bits &= ~(DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_PARAM);
+                    mglTextureSetStorageIsFallback(tex, 1);
+                    mglTextureClearDirtyBits(tex, (DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_PARAM));
                 } else {
                     fprintf(stderr,
                             "MGL ERROR: Even fallback texture creation failed - this texture will remain NULL\n");
                 }
             }
         } else {
-            tex->mtl_data_is_fallback = GL_FALSE;
+            mglTextureSetStorageIsFallback(tex, 0);
             if (kMGLDiagnosticStateLogs) {
                 mglTraceLog("MGL SUCCESS: Primary texture created successfully");
             }
         }
     }
 
-    if (tex->params.mtl_data == NULL)
+    if (mglTextureSamplerState(tex) == NULL)
     {
-        tex->params.mtl_data =
-            mglTextureCreateSamplerForTexParam(&tex->params, tex->target);
+        mglTextureBackendEnsure(tex)->sampler_state =
+            mglTextureCreateSamplerForTexParam(&tex->params, mglTextureTargetOf(tex));
         /* Sampler creation should not fail even in recovery mode */
-        if (!tex->params.mtl_data) {
+        if (!mglTextureSamplerState(tex)) {
             fprintf(stderr, "MGL WARNING: Sampler creation failed, using default\n");
-            tex->params.mtl_data = mglTextureBindCreateDefaultSampler();
+            mglTextureBackendEnsure(tex)->sampler_state = mglTextureBindCreateDefaultSampler();
         }
         if ((tex->name == 21u || tex->name == 27u) &&
             mgl_env_flag_enabled("MGL_TRACE_TEXTURE_NAMES")) {
@@ -570,17 +688,18 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
         }
     }
 
-    if (tex->params.mtl_data) {
-        tex->dirty_bits &= ~DIRTY_TEXTURE_PARAM;
+    if (mglTextureSamplerState(tex)) {
+        mglTextureClearDirtyBits(tex, DIRTY_TEXTURE_PARAM);
     }
 
     if (mglMipDiagEnabled()) {
-        void *mtlTex = tex->mtl_data;
+        void *mtlTex = mglTextureMtl(tex);
         MGLRenderTextureInfo textureInfo = {0};
         bool hasTextureInfo = mtlTex &&
             mglRenderGetTextureInfo(mtlTex, &textureInfo) == 0;
         uint64_t signature = 1469598103934665603ULL;
-        signature = mglMipDiagMixState(signature, (uint64_t)(uintptr_t)tex->mtl_data);
+        signature = mglMipDiagMixState(signature,
+                                    (uint64_t)(uintptr_t)mglTextureMtl(tex));
         signature = mglMipDiagMixState(
             signature, hasTextureInfo ? textureInfo.mipmap_level_count : 0u);
         signature = mglMipDiagMixState(signature, tex->num_levels);
@@ -598,7 +717,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                     "glLevels=%u mipmapLevels=%u mtlLevels=%lu base=%u max=%u "
                     "mipmapped=%d genmipmaps=%d renderTarget=%d mtlTex=%p\n",
                     (unsigned)tex->name,
-                    (unsigned)tex->target,
+                    (unsigned)mglTextureTargetOf(tex),
                     (unsigned)tex->width,
                     (unsigned)tex->height,
                     (unsigned)tex->num_levels,
@@ -608,7 +727,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                     (unsigned)tex->params.max_level,
                     tex->mipmapped ? 1 : 0,
                     tex->genmipmaps ? 1 : 0,
-                    tex->is_render_target ? 1 : 0,
+                    mglTextureIsRenderTarget(tex) ? 1 : 0,
                     mtlTex);
         }
     }

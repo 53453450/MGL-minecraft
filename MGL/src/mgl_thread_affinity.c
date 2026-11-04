@@ -1,6 +1,7 @@
 #include "mgl_thread_affinity.h"
 
-#if defined(DEBUG) || defined(MGL_ENABLE_THREAD_CHECKS)
+#if !defined(MGL_DISABLE_THREAD_CHECKS)
+#include <stdatomic.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,4 +36,4 @@ void mglAssertGLThreadImpl(const char *fn, const char *file, int line)
         abort();    /* fail at the first violation, not in later heap corruption */
     }
 }
-#endif /* DEBUG || MGL_ENABLE_THREAD_CHECKS */
+#endif /* !MGL_DISABLE_THREAD_CHECKS */

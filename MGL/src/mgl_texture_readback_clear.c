@@ -14,8 +14,9 @@
  */
 
 #include "mgl_texture_readback_clear.h"
-#include "mgl_renderer_ports.h"   /* command state */
-#include "mgl_render.h"
+#include "mgl_ports_batch_flush.h"
+#include "mgl_renderer_state_areas.h"   /* command state */
+#include "mgl_render_api_readback.h"
 #include "mgl_texture_compat.h"  /* mglMarkTextureLevelRenderTargetWrittenImpl */
 #include "mgl_sync.h"          /* mglMetalAttachmentSubresourceForAttachment */
 
@@ -84,7 +85,7 @@ void mglTextureApplyPendingFBOColorClearForReadback(void *renderer,
 
 void mglTextureApplyPendingDefaultDepthClear(void *renderer, void *mtl_texture)
 {
-    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas; mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     if (!ctx || !mtl_texture ||
         !mglRenderClearMaskHasDepth((uint32_t)ctx->active_state->default_fbo_clear_bitmask)) {
@@ -105,7 +106,7 @@ void mglTextureApplyPendingDefaultDepthClear(void *renderer, void *mtl_texture)
 
 void mglTextureApplyPendingDefaultColorClear(void *renderer, void *mtl_texture)
 {
-    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas; mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     if (!ctx || !mtl_texture ||
         !mglRenderClearMaskHasColor((uint32_t)ctx->active_state->default_fbo_clear_bitmask)) {

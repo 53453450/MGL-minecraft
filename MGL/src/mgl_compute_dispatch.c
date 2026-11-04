@@ -36,7 +36,6 @@
 #include "mgl_renderer_ports.h"     /* state areas + host entries */
 #include "mgl_renderer_backend.h"   /* mglRendererProcessBuffer, context lookup */
 #include "mgl_texture_bind.h"       /* mglRendererBindMTLTexture */
-#include "mgl_blit_sampled_copy.h"
 #include "mgl_compute_pipeline_cache.h" /* mglGetOrCreateProgramComputePipeline */
 #include "mgl_binding_stage.h"      /* MGLStageBindingCopyBackList */
 #include "mgl_buffer_slots.h"       /* kMGLMaxBufferSlots */
@@ -44,14 +43,19 @@
 #include "mgl_types_state.h"        /* mglMarkRendererDirtyBits */
 #include "glm_limits.h"             /* TEXTURE_UNITS */
 #include "glm_context.h"            /* mglRecordActiveComputeShaderQueryDispatch */
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_command.h" /* mglRenderCommandBufferOwnerGetCurrent */
+#include "mgl_render_api_query.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_program_backend.h"
+#include "mgl_buffer_backend.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
-static GLMState *mglComputeDispatchState(const MGLRendererStateAreas *areas,
+static GLMState *mglComputeDispatchState(const MGLRendererStateView *areas,
                                          GLMContext context)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
+    (void)areas;
     return context ? context->active_state : NULL;
 }
 
@@ -66,8 +70,8 @@ bool mglComputeProcess(void *renderer, void *encoder,
         return false;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglComputeDispatchState(&areas, ctx);
 
@@ -98,7 +102,7 @@ bool mglComputeProcess(void *renderer, void *encoder,
         return false;
     }
 
-    void *func = program->modules[_COMPUTE_SHADER].mtl_function;
+    void *func = mglProgramModuleView(program, _COMPUTE_SHADER)->mtl_function;
     if (!func) {
         fprintf(stderr,
                 "MGL COMPUTE ERROR: compute shader for program %u has no Metal function\n",
@@ -151,8 +155,8 @@ bool mglComputeRunDispatchOrchestrationLocked(
     uint32_t groups_y, uint32_t groups_z, void *indirect_buffer,
     size_t indirect_offset, const char *reason)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMState *state = mglComputeDispatchState(&areas, glm_ctx);
     void *command_buffer_owner =
         areas.command ? areas.command->currentCommandBufferOwner : NULL;
@@ -170,9 +174,7 @@ bool mglComputeRunDispatchOrchestrationLocked(
     for (size_t unit = 0; unit < TEXTURE_UNITS; unit++) {
         Texture *imageTexture = state->image_units[unit].tex;
         if (imageTexture) {
-            if (!mglRendererBindMTLTexture(renderer, imageTexture) ||
-                !mglBlitUnflipRenderTargetStorageForImageAccess(renderer,
-                                                                imageTexture)) {
+            if (!mglRendererBindMTLTexture(renderer, imageTexture)) {
                 return false;
             }
         }
@@ -226,6 +228,22 @@ bool mglComputeRunDispatchOrchestrationLocked(
         mglRendererTemporariesRelease(executionTemporaries);
         return false;
     }
+    /* AUDIT-054: Metal rejects a zero threadgroup dimension; refuse early. */
+    if (ptr->local_workgroup_size.x == 0u ||
+        ptr->local_workgroup_size.y == 0u ||
+        ptr->local_workgroup_size.z == 0u) {
+        fprintf(stderr,
+                "MGL COMPUTE ERROR: %s with zero local workgroup size\n",
+                reason ? reason : "glDispatchCompute");
+        if (computeCommandEncoder) {
+            (void)mglRenderEndComputeEncoder(computeCommandEncoder);
+        }
+        mglClearStageBindingCopyBacks(renderer, &copyBacks);
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        mglRendererTemporariesRelease(executionTemporaries);
+        return false;
+    }
 
     bool hasCopyBackEntries = false;
     if (useExecutionPlan) {
@@ -271,8 +289,7 @@ bool mglComputeRunDispatchOrchestrationLocked(
                 executionError,
                 sizeof(executionError)) != 0) {
             if (executionResult.transaction.device_reset_requested) {
-                atomic_store_explicit(&areas.core->deviceResetRequested, true,
-                                      memory_order_release);
+                mglRendererRequestDeviceReset(renderer);
             }
             fprintf(stderr,
                     "MGL COMPUTE ERROR: C++ %s execution transaction failed: %s\n",
@@ -307,7 +324,7 @@ bool mglComputeRunDispatchOrchestrationLocked(
      * command buffer and flushCommandBufferLocked's empty-CB skip drops it:
      * glFinish then never executes the compute writes (SSBO stores vanish). */
     if (areas.batching) {
-        areas.batching->currentCommandBufferHasWork = 1;
+        mglRendererSetCommandBufferHasWork(renderer, 1);
     }
 
     if (!useExecutionPlan &&
@@ -328,9 +345,12 @@ bool mglComputeRunDispatchOrchestrationLocked(
         return false;
     }
 
-    /* The plan held every temporary alive while it was encoded and dispatched;
-     * the Objective-C version dropped its NSMutableArray here. */
-    mglRendererTemporariesRelease(executionTemporaries);
+    /* AUDIT-053: keep temps until the CB that encoded the plan completes. */
+    {
+        void *cb =
+            mglRenderCommandBufferOwnerGetCurrent(command_buffer_owner);
+        mglRendererTemporariesReleaseOnCommandBuffer(executionTemporaries, cb);
+    }
 
     mglMarkRendererDirtyBits(
         glm_ctx->active_state,
@@ -381,8 +401,8 @@ void mglComputeMtlDispatchLocked(void *renderer, GLMContext glm_ctx,
         return;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMState *state = mglComputeDispatchState(&areas, glm_ctx);
     for (size_t unit = 0; unit < TEXTURE_UNITS; unit++) {
         ImageUnit *imageUnit = &state->image_units[unit];
@@ -412,8 +432,8 @@ void mglComputeMtlDispatchIndirectLocked(void *renderer, GLMContext glm_ctx,
 
     mglPlatformShellSetContext(renderer, glm_ctx);
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMState *state = mglComputeDispatchState(&areas, glm_ctx);
 
     Buffer *glIndirectBuffer = state->buffers[_DISPATCH_INDIRECT_BUFFER];
@@ -435,7 +455,7 @@ void mglComputeMtlDispatchIndirectLocked(void *renderer, GLMContext glm_ctx,
         return;
     }
 
-    void *indirectBuffer = glIndirectBuffer->data.mtl_data;
+    void *indirectBuffer = mglBufferMtl(glIndirectBuffer);
     if (!indirectBuffer) {
         fprintf(stderr,
                 "MGL COMPUTE ERROR: dispatch indirect buffer %u has no Metal backing\n",

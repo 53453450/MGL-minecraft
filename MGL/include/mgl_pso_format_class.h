@@ -29,6 +29,7 @@
 #define MGL_PSO_FORMAT_CLASS_H
 
 #include <stdint.h>
+#include "glcorearb.h"
 
 /* `Program` is used only as an opaque pointer below (mglRenderVSWritesLayer),
  * so forward-declare it instead of pulling glm_context.h -- which reaches
@@ -64,8 +65,6 @@ int mglRenderColorFormatNeedsFallback(uint32_t format);
 uint32_t mglRenderDefaultColorPixelFormat(void);
 uint32_t mglRenderColorFormatOrBGRA(uint32_t format);
 int mglRenderPipelineFormatCompatible(uint32_t cached, uint32_t built);
-int mglRenderPipelinePassColorMismatch(uint32_t pipeline, uint32_t pass);
-int mglRenderPipelinePassAttachmentMismatch(uint32_t pipeline, uint32_t pass);
 int mglRenderSkipInvalidColorAttachment(uint32_t format);
 int mglRenderPixelFormatIsInvalid(uint32_t format);
 uint32_t mglRenderInvalidPixelFormat(void);
@@ -80,8 +79,6 @@ int mglRenderClearColorWriteMasks(int rasterizer_discard, int tess_capture,
                                   int cull_capture);
 int mglRenderNeedsVertexDescriptor(int geometry_expansion, int tess_compute);
 int mglRenderColorAttachmentBitSet(uint32_t bitfield, uint32_t index);
-int mglRenderSampledRTNeedsCopy(int is_rt, uint32_t write_version);
-int mglRenderSampledRTCopyStale(uint32_t sampled_version, uint32_t rt_version);
 int mglRenderNativeAttribIndexValid(uint32_t index);
 uint32_t mglRenderNativeAttribStepFunction(void);
 int mglRenderSkipUnboundAttrib(int uses_current, int has_binding);
@@ -97,6 +94,9 @@ int mglRenderBlendFactorFromGL(uint32_t gl_blend, uint32_t *out);
 int mglRenderBlendOperationFromGL(uint32_t gl_op, uint32_t *out);
 int mglRenderStencilOpFromGL(uint32_t gl_op, uint32_t *out);
 int mglRenderFrontFaceValid(uint32_t front_face);
+
+/* Counter-clockwise winding, for callers that must pass the enum value. */
+static inline uint32_t mglFrontFaceCCWValue(void) { return GL_CCW; }
 uint32_t mglRenderFrontFaceOrCCW(uint32_t front_face);
 int mglRenderSkipCullForSampledPass(int has_fbo, int depth_test, int fs_sampled,
                                     int rt_copy);

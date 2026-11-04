@@ -80,4 +80,22 @@ typedef struct Framebuffer_t {
     char *debug_label;
 } Framebuffer;
 
+/* The framebuffer's attachment binding changed since the render pass last
+ * looked (DIRTY_FBO_BINDING).  A predicate rather than the flag so the Metal
+ * side need not know the dirty-bit layout. */
+static inline int mglFramebufferBindingDirty(const Framebuffer *fbo)
+{
+    return fbo && (fbo->dirty_bits & DIRTY_FBO_BINDING) ? 1 : 0;
+}
+
+/* Slices per GL layer when a layered attachment of the framebuffer is an
+ * emulated multisample array (a fixed plane stride), else 1.  NULL = 1. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+uint32_t mglFramebufferMultisampleLayerStride(const Framebuffer *fbo);
+#ifdef __cplusplus
+}
+#endif
+
 #endif /* mgl_types_framebuffer_h */

@@ -20,16 +20,24 @@
 #include "mgl_metal_ref.h"        /* mglReleaseMetalObjNoNull */
 #include "mgl_pixel_format.h"     /* mglTextureBytesPerPixelForFormat */
 #include "mgl_pso_format_class.h" /* mglRenderPixelFormatIsPackedDepthStencil */
-#include "mgl_renderer_ports.h"
+#include "mgl_ports_batch_flush.h"
+#include "mgl_renderer_state_areas.h"
 #include "mgl_texture_compat.h"   /* mglTextureNeedsChannelExpansion */
+#include "mgl_texture_upload_ops.h"
 #include "mgl_trace_log.h"
 #include "mgl_region_value.h"
 
-#include "mgl_render.h"
+#include "mgl_render_api_texture.h"
+
+#include "mgl_render_api_buffer.h"
+
+#include "mgl_render_api_pixel.h"
+#include "mgl_render_values.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "mgl_buffer_backend.h"
 
 /* The .m's file-local constants this TU needs (values copied verbatim). */
 enum {
@@ -298,7 +306,7 @@ void *mglTextureCreateMTLTexelBufferTexture(void *renderer, void *tex)
         return NULL;
     }
 
-    if (!sourceBuffer->data.mtl_data) {
+    if (!mglBufferMtl(sourceBuffer)) {
         fprintf(stderr,
                 "MGL TEXBUFFER ERROR: no Metal buffer for tex=%u buffer=%u\n",
                 texture->name, sourceBuffer->name);
@@ -307,7 +315,7 @@ void *mglTextureCreateMTLTexelBufferTexture(void *renderer, void *tex)
 
     /* Metal texture_buffer shares storage with the attached MTLBuffer.
      * RGB formats that Metal lacks need a temporary expanded RGBA buffer. */
-    void *metalBuffer = sourceBuffer->data.mtl_data;
+    void *metalBuffer = mglBufferMtl(sourceBuffer);
     uint64_t metalOffset = (uint64_t)texture->texture_buffer_offset;
     uint64_t bytesPerRow = texelCount * bytesPerTexel;
     void *expandedData = NULL;
@@ -323,7 +331,7 @@ void *mglTextureCreateMTLTexelBufferTexture(void *renderer, void *tex)
                 (size_t)texture->texture_buffer_offset;
         } else {
             void *contents =
-                mglPdTextureBufferContents(sourceBuffer->data.mtl_data);
+                mglPdTextureBufferContents(mglBufferMtl(sourceBuffer));
             if (contents) {
                 sourceBytes = ((const uint8_t *)contents) +
                               (size_t)texture->texture_buffer_offset;
@@ -357,7 +365,7 @@ void *mglTextureCreateMTLTexelBufferTexture(void *renderer, void *tex)
                     "MGL TEXBUFFER ERROR: channel expansion failed tex=%u "
                     "buffer=%u\n",
                     texture->name, sourceBuffer->name);
-            free(expandedData);
+            mglUploadExpandScratchRelease(expandedData);
             return NULL;
         }
         /* Shared staging buffer so TextureBuffer can view the expanded texels. */
@@ -369,7 +377,7 @@ void *mglTextureCreateMTLTexelBufferTexture(void *renderer, void *tex)
                     "MGL TEXBUFFER ERROR: failed creating expand buffer tex=%u "
                     "bytes=%llu\n",
                     texture->name, (unsigned long long)expandedBytes);
-            free(expandedData);
+            mglUploadExpandScratchRelease(expandedData);
             return NULL;
         }
         void *dstContents = mglPdTextureBufferContents(expandedMetalBuffer);
@@ -379,14 +387,14 @@ void *mglTextureCreateMTLTexelBufferTexture(void *renderer, void *tex)
                     "tex=%u\n",
                     texture->name);
             mglReleaseMetalObjNoNull(expandedMetalBuffer);
-            free(expandedData);
+            mglUploadExpandScratchRelease(expandedData);
             return NULL;
         }
         memcpy(dstContents, expandedData, (size_t)expandedBytes);
         metalBuffer = expandedMetalBuffer;
         metalOffset = 0u;
         bytesPerRow = expandedBytes;
-        free(expandedData);
+        mglUploadExpandScratchRelease(expandedData);
         expandedData = NULL;
     }
 

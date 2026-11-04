@@ -35,9 +35,12 @@
 #include "pixel_utils.h"
 #include "mgl_readback.h"
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h> /* calloc / free: scratch readback buffer */
 #include <stddef.h>
-#include "mgl_render.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_pixel.h"
+#include "mgl_render_api_readback.h"
 #include <stdint.h>
 
 bool mglMetalReadbackFormatIsBGRA8Compatible(uint32_t pixelFormat)
@@ -149,6 +152,13 @@ bool mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
     if (mglRenderReadbackPixelFormatIsRGB10A2((uint32_t)pixelFormat) &&
         mglRenderReadbackTypeAllowsRGB10A2((uint32_t)type))
     {
+        /* Defense in depth for AUDIT-035: reject short pitches here too,
+         * even though CopyRGB10A2…ToGL also checks (AUDIT-001). */
+        if (width > SIZE_MAX / 4u ||
+            srcBytesPerRow < width * 4u ||
+            dstBytesPerRow < width * 4u) {
+            return false;
+        }
         return mglRenderCopyRGB10A2TextureBytesToGL(
                    src, (uint64_t)srcBytesPerRow,
                    dst, (uint64_t)dstBytesPerRow,

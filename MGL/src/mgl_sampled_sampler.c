@@ -25,17 +25,19 @@
 #include "mgl_sampled_sampler.h"
 #include "mgl_binding_texture.h" /* sampler materialize plan + logging */
 #include "mgl_texture_sampler.h" /* mglTextureCreateSamplerForTexParam */
-#include "mgl_renderer_ports.h"  /* state areas */
-#include "mgl_render.h"          /* mglRenderGetTextureInfo */
+#include "mgl_renderer_state_areas.h"  /* state areas */
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_lifecycle.h"
 #include "mgl_metal_ref.h"       /* mglSafeReleaseMetalObj */
 #include "mgl_types_state.h"     /* Sampler */
 #include "mgl_sampled_fallback.h" /* mglSampledFallbackTextureForExpectedType */
 #include "mgl_texture_compat.h"  /* pixel-format/kind compatibility */
-#include "mgl_coordinate.h"      /* MGLYFlipDecision / mglDecideYFlipForSampledRT */
-#include "mgl_rt_sync.h"         /* mglTextureCanUseGLSampledRenderTargetCopy */
-#include "mgl_trace_strategy.h"  /* mglTraceRTYFlipDiagnosticsEnabled */
+#include "mgl_rt_sync.h"         /* mglTextureHasGPUContent */
+#include "mgl_trace_strategy.h"
 #include "mgl_trace_log.h"       /* mglTraceLogIsEnabled */
-#include "mgl_blit_drivers.h"    /* mglBlitFreshGLSampledRenderTargetCopyForSampling */
+#include "mgl_blit_drivers.h"    /* mglBlitReadTextureRegion */
 #include "mgl_types_program.h"   /* Program */
 #include "mgl_renderer_backend.h" /* mglRendererGetProgramBinding* */
 #include "mgl_shader_resource.h" /* mglMetalCombinedSamplerSlotForElement */
@@ -53,6 +55,8 @@
 #include "mgl_encode_context.h"   /* MGLEncodeContext */
 #include "mgl_storage_image_bind.h" /* mglBindingStateBindStorageImagesForVertexProgram */
 #include "mgl_trace_strategy.h" /* mglWriteProgramMSLDump */
+#include "mgl_backend_objects.h"
+#include "mgl_texture_backend.h"
 
 /* The .m's file-local invalid-pixel-format sentinel (MGLRenderer+BindingState.m). */
 enum { MGL_BINDING_PIXEL_FORMAT_INVALID = 0u };
@@ -63,31 +67,11 @@ enum { kMaxFragmentSamplerSlots = 16 };
 /* MGLRenderer_Private.h declares this BOOL (signed char on macOS). */
 extern signed char mglEnvFlagEnabled(const char *name);
 
-/* Twins of the MGLRenderer+Draw_Private.h statics (rule 7). */
-static int mglSsTraceRTYFlipDiagnosticsEnabled(void)
-{
-    return mglTraceLogIsEnabled() && mglEnvFlagEnabled("MGL_TRACE_RT_YFLIP");
-}
-
-static const char *mglSsYFlipDecisionName(MGLYFlipDecision decision)
-{
-    switch (decision) {
-        case MGL_YFLIP_USE_ORIGINAL:
-            return "original";
-        case MGL_YFLIP_USE_SAMPLED_COPY:
-            return "sampled-copy";
-        default:
-            return "unknown";
-    }
-}
-
 /* MGL_STATE() from MGLRenderer_Private.h, in C (same twin as mgl_tess_dispatch.c). */
-static GLMState *mglSsState(const MGLRendererStateAreas *areas)
+static GLMState *mglSsState(const MGLRendererCoreState *core, GLMContext ctx)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
-    return areas->ctx ? areas->ctx->active_state : NULL;
+    (void)core;
+    return ctx ? ctx->active_state : NULL;
 }
 
 static uint64_t mglSsTextureWidth(void *texture)
@@ -117,25 +101,63 @@ static uint64_t mglSsTextureMipmapLevelCount(void *texture)
     return info.mipmap_level_count;
 }
 
+static uint64_t mglSsSamplerParamsSig(const TextureParameter *params,
+                                      const Texture *tex)
+{
+    if (!params) {
+        return 0u;
+    }
+    uint64_t sig = (uint64_t)params->min_filter |
+                   ((uint64_t)params->mag_filter << 16) |
+                   ((uint64_t)params->wrap_s << 32) |
+                   ((uint64_t)params->wrap_t << 48);
+    sig ^= (uint64_t)(uint32_t)params->min_lod;
+    sig ^= (uint64_t)(uint32_t)params->max_lod << 32;
+    sig ^= (uint64_t)params->max_anisotropy << 16;
+    if (tex) {
+        sig ^= ((uint64_t)tex->params.base_level << 8) |
+               ((uint64_t)tex->params.max_level << 24);
+        sig ^= tex->identity_generation << 1;
+    }
+    return sig;
+}
+
 void *mglSampledSamplerMaterialize(void *renderer, Texture *ptr,
                                    GLuint texture_unit, void *default_sampler,
                                    int force_default, GLuint sampler_target,
                                    GLuint program_name, GLuint program_binding,
                                    const char *stage, void *texture)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
+    void *binding_state_owner =
+        areas.binding_state_owner ? *areas.binding_state_owner : NULL;
 
     Sampler *gl_sampler = (texture_unit < TEXTURE_UNITS)
-                              ? mglSsState(&areas)->texture_samplers[texture_unit]
+                              ? mglSsState(areas.core, areas.ctx)->texture_samplers[texture_unit]
                               : NULL;
+    if (force_default) {
+        return default_sampler;
+    }
+    /* Skip plan/create when this unit's MTL sampler identity is unchanged. */
+    if (binding_state_owner && texture_unit < TEXTURE_UNITS &&
+        !(gl_sampler && gl_sampler->dirty_bits)) {
+        const TextureParameter *cache_params =
+            gl_sampler ? &gl_sampler->params : (ptr ? &ptr->params : NULL);
+        uint64_t params_sig = mglSsSamplerParamsSig(cache_params, ptr);
+        void *cached = mglRenderBindingLookupSampledSampler(
+            binding_state_owner, texture_unit, ptr, gl_sampler, params_sig);
+        if (cached) {
+            return cached;
+        }
+    }
     MGLSamplerMaterializeInput in = {0};
     mglBindingTextureFillSamplerMaterializeInput(
         &in, force_default ? 1 : 0, texture_unit < TEXTURE_UNITS ? 1 : 0,
         gl_sampler ? 1 : 0, gl_sampler && gl_sampler->dirty_bits ? 1 : 0,
-        gl_sampler && gl_sampler->mtl_data ? 1 : 0,
-        ptr && ptr->params.mtl_data ? 1 : 0,
+        mglSamplerBackendState(gl_sampler) ? 1 : 0,
+        ptr && mglTextureSamplerState(ptr) ? 1 : 0,
         (stage && stage[0] == 'v') ? 1 : 0);
     MGLSamplerMaterializePlan plan = {0};
     if (mglBindingTexturePlanSamplerMaterialize(&in, &plan) != 0) {
@@ -149,27 +171,32 @@ void *mglSampledSamplerMaterialize(void *renderer, Texture *ptr,
     GLuint sampler_name = 0u;
     if (plan.action == MGL_SM_ACTION_USE_GL_SAMPLER && gl_sampler) {
         if (plan.recreate_gl_sampler_mtl) {
-            if (gl_sampler->mtl_data) {
-                mglSafeReleaseMetalObj((void **)&gl_sampler->mtl_data);
-            }
+            mglSamplerBackendResetState(gl_sampler);
             GLuint target = sampler_target
                                 ? sampler_target
                                 : (ptr ? ptr->target : GL_TEXTURE_2D);
             /* CFBridgingRetain(X) == (__bridge_retained CFTypeRef)(X). */
-            gl_sampler->mtl_data = (void *)CFRetain((CFTypeRef)
-                mglTextureCreateSamplerForTexParam(&gl_sampler->params, target));
+            mglSamplerBackendSetState(
+                gl_sampler, (void *)CFRetain((CFTypeRef)
+                    mglTextureCreateSamplerForTexParam(&gl_sampler->params,
+                                                       target)));
         }
         if (plan.clear_gl_sampler_dirty) {
             gl_sampler->dirty_bits = 0;
         }
-        sampler = gl_sampler->mtl_data;
+        sampler = mglSamplerBackendState(gl_sampler);
         params = &gl_sampler->params;
         sampler_name = gl_sampler->name;
     } else if (plan.action == MGL_SM_ACTION_USE_TEX_PARAMS && ptr) {
-        sampler = ptr->params.mtl_data;
+        sampler = mglTextureSamplerState(ptr);
         params = &ptr->params;
     } else {
         return default_sampler;
+    }
+    if (binding_state_owner && texture_unit < TEXTURE_UNITS && sampler) {
+        mglRenderBindingStoreSampledSampler(
+            binding_state_owner, texture_unit, ptr, gl_sampler,
+            mglSsSamplerParamsSig(params, ptr), sampler);
     }
     if (params && mglTraceLogIsEnabled()) {
         mglBindingLogSamplerResolve(
@@ -247,144 +274,6 @@ void *mglSampledCompatFallbackPlan(void *renderer, Texture *ptr, void *texture,
     return texture;
 }
 
-/* Twin of the MGLRenderer+Blit_Private.h static inline (see mgl_blit_drivers.c
- * for the blit-side copy of this helper). */
-static int mglSsGLSampledCopyContentFresh(const Texture *tex)
-{
-    return tex != NULL && tex->mtl_gl_sampled_data != NULL &&
-           tex->mtl_gl_sampled_write_version ==
-               tex->mtl_render_target_write_version &&
-           tex->mtl_gl_sampled_dirty_mip_mask == 0u;
-}
-
-bool mglSampledRenderTargetCopyPlan(
-    void *renderer, Texture *ptr, void **texture_ptr,
-    uint32_t expected_type, uint32_t expected_kind, int used_type_fallback,
-    const char *stage, GLuint program_name, GLuint program_binding,
-    GLuint texture_unit, const char *sampled_name, int *used_sampled_copy_out,
-    void **direct_texture_for_trace, void **sampled_copy_for_trace)
-{
-    if (!texture_ptr || used_type_fallback || !ptr || !ptr->is_render_target) {
-        return true;
-    }
-    void *texture = *texture_ptr;
-    MGLYFlipDecision yflip = mglDecideYFlipForSampledRT(ptr);
-    if (mglSsTraceRTYFlipDiagnosticsEnabled()) {
-        mglBindingLogRTYFlipDecision(
-            stage, program_name, sampled_name, program_binding, texture_unit,
-            ptr->name, mglTraceTextureLabel(ptr), mglSsYFlipDecisionName(yflip),
-            (int)yflip, ptr->mtl_render_target_write_version,
-            ptr->mtl_gl_sampled_write_version, ptr->mtl_gl_sampled_data ? 1 : 0);
-    }
-
-    void *sampled_copy = ptr->mtl_gl_sampled_data;
-    MGLSampledTextureBindInput in = {0};
-    mglBindingTextureFillSampledRTInput(
-        &in, used_type_fallback ? 1 : 0, 1, (int)yflip,
-        ptr->mtl_gl_sampled_data ? 1 : 0, mglSsGLSampledCopyContentFresh(ptr) ? 1 : 0,
-        mglTextureCanUseGLSampledRenderTargetCopy(ptr) ? 1 : 0,
-        (stage && stage[0] == 'f') ? 1 : 0,
-        sampled_copy && (expected_type == 0 ||
-                         mglSsTextureType(sampled_copy) == expected_type)
-            ? 1
-            : 0,
-        sampled_copy &&
-                mglTexturePixelFormatCompatibleWithExpectedDataKind(
-                    mglRenderSampledViewPixelFormat(
-                        ptr->params.depth_stencil_mode,
-                        mglSsTexturePixelFormat(sampled_copy)),
-                    expected_kind)
-            ? 1
-            : 0);
-
-    MGLSampledTextureBindPlan plan = {0};
-    if (mglBindingTexturePlanSampled(&in, &plan) != 0) {
-        return true;
-    }
-
-    if (plan.action == MGL_ST_ACTION_RT_USE_COPY && sampled_copy) {
-        if (direct_texture_for_trace) {
-            *direct_texture_for_trace = texture;
-        }
-        if (sampled_copy_for_trace) {
-            *sampled_copy_for_trace = sampled_copy;
-        }
-        if (mglTraceLogIsEnabled()) {
-            MGL_EMIT_RT_LOG(.kind = MGL_RT_LOG_BIND, .stage = stage,
-                            .program = program_name, .name = sampled_name,
-                            .binding = program_binding, .unit = texture_unit,
-                            .tex = ptr->name, .label = mglTraceTextureLabel(ptr),
-                            .original = (const void *)texture,
-                            .copy = (const void *)sampled_copy);
-        }
-        void *chosen = sampled_copy;
-        if (plan.apply_base_level_view) {
-            chosen = mglSampledTextureViewForBaseLevel(ptr, sampled_copy);
-        }
-        *texture_ptr = chosen;
-        if (used_sampled_copy_out) {
-            *used_sampled_copy_out = 1;
-        }
-        return true;
-    }
-
-    if (plan.action == MGL_ST_ACTION_RT_REPAIR) {
-        void *repaired_copy = mglBlitFreshGLSampledRenderTargetCopyForSampling(
-            renderer, ptr, texture, stage, program_name, program_binding,
-            texture_unit, expected_type, expected_kind);
-        if (!repaired_copy) {
-            return true;
-        }
-        in.repaired_available = 1;
-        in.repaired_fresh = mglSsGLSampledCopyContentFresh(ptr) ? 1 : 0;
-        if (mglBindingTexturePlanSampled(&in, &plan) != 0) {
-            return true;
-        }
-        if (plan.action == MGL_ST_ACTION_RT_RETRY) {
-            return false;
-        }
-        if (plan.action == MGL_ST_ACTION_RT_USE_COPY) {
-            void *chosen = repaired_copy;
-            if (plan.apply_base_level_view) {
-                chosen = mglSampledTextureViewForBaseLevel(ptr, repaired_copy);
-            }
-            *texture_ptr = chosen;
-            if (used_sampled_copy_out) {
-                *used_sampled_copy_out = 1;
-            }
-        }
-        return true;
-    }
-
-    if (plan.action == MGL_ST_ACTION_RT_GATE_MISS && mglTraceLogIsEnabled()) {
-        MGL_EMIT_RT_LOG(.kind = MGL_RT_LOG_GATE_MISS, .stage = stage,
-                        .program = program_name, .name = sampled_name,
-                        .binding = program_binding, .unit = texture_unit,
-                        .tex = ptr->name, .label = mglTraceTextureLabel(ptr),
-                        .is_rt = 1,
-                        .has_copy = ptr->mtl_gl_sampled_data ? 1 : 0,
-                        .can_use = in.can_use_rt_copy,
-                        .expected_type = expected_type);
-    } else if (plan.action == MGL_ST_ACTION_RT_ORIGINAL) {
-        static uint64_t s_rt_sample_copy_skip_existing_flip_log_count = 0;
-        if (mglTraceLogIsEnabled() &&
-            mglBindingTextureRateLogHit(
-                &s_rt_sample_copy_skip_existing_flip_log_count, 32ull, 512ull)) {
-            MGL_EMIT_RT_LOG(.kind = MGL_RT_LOG_SKIP_YFLIP,
-                            .hit = s_rt_sample_copy_skip_existing_flip_log_count,
-                            .stage = stage, .program = program_name,
-                            .name = sampled_name, .binding = program_binding,
-                            .tex = ptr ? ptr->name : 0u,
-                            .decision_name = mglSsYFlipDecisionName(yflip),
-                            .decision = (int)yflip);
-        }
-        if (plan.apply_base_level_view && texture) {
-            *texture_ptr = mglSampledTextureViewForBaseLevel(ptr, texture);
-        }
-    }
-    return true;
-}
-
 /* Twins of the MGLRenderer+Draw_Private.h resource-binding statics (rule 7). */
 static int mglSsCollectResourceBinding(MGLRenderResourceBindingSnapshot *snapshot,
                                        uint32_t stage, uint32_t kind,
@@ -457,8 +346,8 @@ bool mglSampledBindSeparateSamplersAndArrayTextures(
     GLuint *separate_sampler_count, GLuint *bound_separate_samplers)
 {
     (void)vertex_program_name;
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     void *binding_state_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
@@ -562,17 +451,11 @@ bool mglSampledBindSeparateSamplersAndArrayTextures(
                     array_stage == _FRAGMENT_SHADER ? "fragment" : "vertex";
                 if (array_texture &&
                     mglRendererBindMTLTexture(renderer, array_texture)) {
-                    metal_texture = array_texture->mtl_data;
-                    /* mtl_data may be a bound render target; sample its copy. */
-                    if (!mglSampledRenderTargetCopyPlan(
-                            renderer, array_texture, &metal_texture,
-                            expected_type,
-                            (uint32_t)mglExpectedTextureDataKindForResource(
-                                array_program, array_stage, resource),
-                            0, array_stage_tag, array_program->name,
-                            metal_slot, texture_unit, resource->name, NULL,
-                            NULL, NULL)) {
-                        return false;
+                    metal_texture = mglTextureMtl(array_texture);
+                    if (array_texture->is_render_target &&
+                        array_stage == _FRAGMENT_SHADER && metal_texture) {
+                        metal_texture = mglSampledTextureViewForBaseLevel(
+                            array_texture, metal_texture);
                     }
                     metal_sampler = mglSampledSamplerMaterialize(
                         renderer, array_texture, texture_unit, default_sampler, 0,
@@ -647,14 +530,13 @@ void mglSampledEmitDiagPorts(
     void *sampler, int used_fallback, uint32_t expected_type,
     uint32_t lookup_type, uint64_t bind_call, GLuint program_name,
     GLuint vertex_program_name, GLuint fragment_program_name,
-    int used_sampled_copy_trace, void *direct_texture_for_trace,
-    void *sampled_copy_for_trace, uint64_t *focused_counter,
+    void *direct_texture_for_trace, uint64_t *focused_counter,
     uint64_t *trace_file_counter)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
-    GLMState *state = mglSsState(&areas);
+    GLMState *state = mglSsState(areas.core, areas.ctx);
 
     TextureLevel *level0 = mglTraceTextureBaseLevel(ptr);
     int expected_index = (int)mglRenderTextureIndexForMetalType(
@@ -697,13 +579,11 @@ void mglSampledEmitDiagPorts(
         level0 ? level0->last_upload_size : 0u,
         level0 ? level0->last_src_hash : 0ull,
         (level0 && level0->data && level0->data_size > 0)
-            ? mglTraceHashBytes((const void *)(uintptr_t)level0->data,
-                                level0->data_size)
-            : 0ull,
+            ? (const void *)(uintptr_t)level0->data
+            : NULL,
+        level0 ? (uint64_t)level0->data_size : 0ull,
         ptr ? ptr->name : 0u, stage_is_fragment ? 1 : 0,
-        stage_is_fragment && ptr && mglTextureCanUseGLSampledRenderTargetCopy(ptr)
-            ? 1
-            : 0,
+        0,
         stage_is_fragment && mglIsFocusedLoadingProgram(program_name) &&
                 (bind_call <= 2048ull || ((bind_call % 512ull) == 0ull))
             ? 1
@@ -716,7 +596,6 @@ void mglSampledEmitDiagPorts(
         ptr && mglRenderTextureTargetIsBuffer((uint32_t)ptr->target) ? 1 : 0,
         level0 && level0->suspicious_zero_upload, level0 && !level0->ever_written,
         level0 && !level0->has_initialized_data, texture ? 1 : 0, bind_call,
-        used_sampled_copy_trace ? 1 : 0,
         ctx && state->framebuffer ? state->framebuffer->name : 0u,
         areas.command ? areas.command->renderPassFramebufferName : 0u,
         texture_unit < TEXTURE_UNITS
@@ -734,7 +613,6 @@ void mglSampledEmitDiagPorts(
         mglProgramNeedsTraceLog(program) &&
         mglShouldLogTraceFileBindingForProgram(program, trace_file_counter);
     ein.direct_for_trace = direct_texture_for_trace;
-    ein.copy_for_trace = sampled_copy_for_trace;
     ein.rt_label = mglTraceTextureLabel(ptr);
     ein.rp_color = mglRenderGetRenderPassAttachmentTextureOwner(
         areas.command ? areas.command->renderPassStateOwner : NULL,
@@ -792,8 +670,8 @@ bool mglSampledBindTexturesForStage(
     int trace_bind, GLuint *bound_count, GLuint *fallback_count,
     GLuint *nil_count, GLuint *sampler_count, GLuint *sampled_count_out)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     void *binding_state_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
@@ -853,7 +731,7 @@ bool mglSampledBindTexturesForStage(
         /* §11.1.3.5: an incomplete texture samples as (0,0,0,1), which is
          * what the missing-texture fallback below holds. */
         if (ptr && texture_unit < TEXTURE_UNITS) {
-            const Sampler *unit_sampler = mglSsState(&areas)->texture_samplers[texture_unit];
+            const Sampler *unit_sampler = mglSsState(areas.core, areas.ctx)->texture_samplers[texture_unit];
             const TextureParameter *sp = unit_sampler ? &unit_sampler->params : &ptr->params;
             if (!mglTextureSamplingComplete(ptr, sp->min_filter, sp->mag_filter)) {
                 ptr = NULL;
@@ -862,42 +740,15 @@ bool mglSampledBindTexturesForStage(
         void *texture = NULL;
         void *sampler = is_fragment ? NULL : default_sampler;
         void *direct_texture_for_trace = NULL;
-        void *sampled_copy_for_trace = NULL;
         int used_fallback = 0;
-        int used_sampled_copy = 0;
 
         if (ptr) {
             if (is_fragment) {
                 RETURN_FALSE_ON_FAILURE(mglRendererBindMTLTexture(renderer, ptr));
                 MGL_SS_ABORT_TBIND_IF_ENCODER_CLOSED();
-                if (ptr->mtl_data) {
-                    texture = ptr->mtl_data;
-                    /* Defer RT base-level views until Y-flip (avoids MRT view races). */
-                    if (!ptr->is_render_target) {
-                        texture = mglSampledTextureViewForBaseLevel(ptr, texture);
-                    }
-                }
-                {
-                    /* The .m's `id *` out-params travel as void* temporaries
-                     * (rule 4: an `id __strong` address cannot become void**)
-                     * and the BOOL out-param takes an int temporary. */
-                    void *texture_raw = texture;
-                    void *direct_trace_raw = direct_texture_for_trace;
-                    void *copy_trace_raw = sampled_copy_for_trace;
-                    int used_copy_raw = used_sampled_copy ? 1 : 0;
-                    bool planned = mglSampledRenderTargetCopyPlan(
-                        renderer, ptr, &texture_raw,
-                        expected_type, (uint32_t)expected_kind,
-                        used_fallback ? 1 : 0, stage_tag, program_name,
-                        program_binding, texture_unit, sampled_name, &used_copy_raw,
-                        &direct_trace_raw, &copy_trace_raw);
-                    texture = texture_raw;
-                    direct_texture_for_trace = direct_trace_raw;
-                    sampled_copy_for_trace = copy_trace_raw;
-                    used_sampled_copy = used_copy_raw ? 1 : 0;
-                    if (!planned) {
-                        return false;
-                    }
+                if (mglTextureMtl(ptr)) {
+                    texture = mglTextureMtl(ptr);
+                    texture = mglSampledTextureViewForBaseLevel(ptr, texture);
                 }
                 {
                     /* BOOL out-params take an int temporary in C (rule 4). */
@@ -909,9 +760,6 @@ bool mglSampledBindTexturesForStage(
                         &used_fallback_raw);
                     used_fallback = used_fallback_raw ? 1 : 0;
                 }
-                if (used_fallback) {
-                    used_sampled_copy = 0;
-                }
                 sampler = mglSampledSamplerMaterialize(
                     renderer, ptr, texture_unit,
                     sampler, 0, ptr ? ptr->target : 0u,
@@ -919,7 +767,7 @@ bool mglSampledBindTexturesForStage(
                     texture);
                 if (mglMipDiagEnabled() && texture_unit < TEXTURE_UNITS) {
                     Sampler *gl_sampler =
-                        mglSsState(&areas)->texture_samplers[texture_unit];
+                        mglSsState(areas.core, areas.ctx)->texture_samplers[texture_unit];
                     const TextureParameter *effective =
                         gl_sampler ? &gl_sampler->params : &ptr->params;
                     static uint64_t s_frag_sampler_state[TEXTURE_UNITS];
@@ -931,11 +779,8 @@ bool mglSampledBindTexturesForStage(
                             ptr->params.max_level,
                             texture ? mglSsTextureMipmapLevelCount(texture)
                                     : 0u,
-                            (uint64_t)(uintptr_t)texture, used_sampled_copy ? 1 : 0,
-                            ptr->mtl_gl_sampled_levels,
-                            ptr->mtl_gl_sampled_dirty_mip_mask,
-                            ptr->mtl_gl_sampled_write_version !=
-                                ptr->mtl_render_target_write_version),
+                            (uint64_t)(uintptr_t)texture, 0,
+                            0u, 0u, 0),
                         texture_unit, program_binding, fragment_program_name, ptr->name,
                         gl_sampler ? "gl_sampler" : "texParams",
                         effective->min_filter, effective->mag_filter,
@@ -947,17 +792,16 @@ bool mglSampledBindTexturesForStage(
                         texture ? mglSsTextureWidth(texture) : 0u,
                         texture ? mglSsTextureHeight(texture) : 0u,
                         texture,
-                        ptr->is_render_target ? 1 : 0, used_sampled_copy ? 1 : 0,
-                        ptr->mtl_gl_sampled_levels,
-                        ptr->mtl_gl_sampled_dirty_mip_mask,
-                        ptr->mtl_render_target_write_version,
-                        ptr->mtl_gl_sampled_write_version);
+                        ptr->is_render_target ? 1 : 0, 0,
+                        0u, 0u,
+                        mglTextureWriteVersion(ptr),
+                        0u);
                 }
             } else {
                 RETURN_FALSE_ON_FAILURE(mglRendererBindMTLTexture(renderer, ptr));
                 MGL_SS_ABORT_TBIND_IF_ENCODER_CLOSED();
-                if (ptr->mtl_data) {
-                    texture = (ptr->mtl_data);
+                if (mglTextureMtl(ptr)) {
+                    texture = (mglTextureMtl(ptr));
                     texture = mglSampledTextureViewForBaseLevel(
                         ptr, texture);
                 }
@@ -976,19 +820,6 @@ bool mglSampledBindTexturesForStage(
                     default_sampler, 0, ptr ? ptr->target : 0u,
                     program_name, program_binding, stage_tag,
                     texture);
-                {
-                    void *texture_raw = texture;
-                    bool planned = mglSampledRenderTargetCopyPlan(
-                        renderer, ptr, &texture_raw,
-                        expected_type, (uint32_t)expected_kind,
-                        used_fallback ? 1 : 0, stage_tag, program_name,
-                        program_binding, texture_unit, sampled_name, NULL, NULL,
-                        NULL);
-                    texture = texture_raw;
-                    if (!planned) {
-                        return false;
-                    }
-                }
             }
         }
 
@@ -1012,7 +843,6 @@ bool mglSampledBindTexturesForStage(
                 fallback++;
                 if (is_fragment) {
                     used_fallback = 1;
-                    used_sampled_copy = 0;
                     mglFocusLoadingProgram(fragment_program_name, "sample-fallback",
                                            bind_call);
                     static uint64_t s_frag_fb_log = 0;
@@ -1071,20 +901,19 @@ bool mglSampledBindTexturesForStage(
             sample_program ? sample_program->name : program_name;
         if (is_fragment && program_binding < TEXTURE_UNITS) {
             mglBindingTextureWriteFragTrace(
-                &areas.fragment_trace_bindings[program_binding],
+                &mglRendererFragmentTraceBindings(renderer)[program_binding],
                 ptr ? ptr->name : 0u, texture_unit, program_binding, sample_program_name,
-                ptr ? ptr->mtl_render_target_write_version : 0u,
-                ptr ? ptr->mtl_gl_sampled_write_version : 0u, ptr,
+                ptr ? mglTextureWriteVersion(ptr) : 0u,
+                ptr,
                 texture,
                 (direct_texture_for_trace ? direct_texture_for_trace
                                                        : texture),
-                sampled_copy_for_trace,
                 texture ? mglSsTextureWidth(texture) : 0u,
                 texture ? mglSsTextureHeight(texture) : 0u,
                 texture ? mglSsTexturePixelFormat(texture)
                         : MGL_BINDING_PIXEL_FORMAT_INVALID,
                 texture ? mglSsTextureType(texture) : 0u,
-                used_sampled_copy ? 1 : 0, used_fallback ? 1 : 0);
+                used_fallback ? 1 : 0);
         }
 
         mglSampledEmitDiagPorts(
@@ -1093,9 +922,8 @@ bool mglSampledBindTexturesForStage(
             texture, sampler,
             used_fallback ? 1 : 0, expected_type, lookup_type, bind_call,
             sample_program_name, vertex_program_name,
-            is_fragment ? fragment_program_name : 0u, used_sampled_copy ? 1 : 0,
+            is_fragment ? fragment_program_name : 0u,
             direct_texture_for_trace,
-            sampled_copy_for_trace,
             &s_focused_sampled_logs[is_fragment ? 1 : 0],
             &s_trace_file_sampled_logs[is_fragment ? 1 : 0]);
 
@@ -1218,12 +1046,8 @@ static void *mglSsCacheImageUnitView(ImageUnit *iu, void *fallback, void *view)
     if (!view) {
         return fallback;
     }
-    if (iu->mtl_image_view) {
-        mglRenderReleaseMetalObject(iu->mtl_image_view);
-        iu->mtl_image_view = NULL;
-    }
-    iu->mtl_image_view = view; /* +1 from newTextureView */
-    return iu->mtl_image_view;
+    mglImageUnitSetView(iu, view); /* +1 from newTextureView */
+    return view;
 }
 
 /* BindImageTexture <format> -> PixelFormatView (CTS advanced-cast). */
@@ -1234,8 +1058,17 @@ static uint32_t mglSsImageBindPixelFormat(const ImageUnit *iu,
         return native_format;
     }
     const uint32_t bind_format = mtlFormatForGLInternalFormat(iu->internalformat);
-    return mglRenderImageBindPixelFormat(iu->internalformat, native_format,
-                                         bind_format);
+    const uint32_t mapped = mglRenderImageBindPixelFormat(
+        iu->internalformat, native_format, bind_format);
+    /* Metal cannot view depth/stencil as color (CTS sparse Lookup fills
+     * DEPTH_COMPONENT16 via BindImageTexture(GL_R16)).  Keep the native
+     * depth format so imageStore writes the depth plane directly. */
+    if (mapped != native_format &&
+        mglMetalPixelFormatIsDepthOrStencil(native_format) !=
+            mglMetalPixelFormatIsDepthOrStencil(mapped)) {
+        return native_format;
+    }
+    return mapped;
 }
 
 static int mglSsHasActiveEncoder(const MGLEncodeContext *enc_ctx)
@@ -1263,8 +1096,8 @@ void *mglRendererStorageImageTexture(void *base_texture, ImageUnit *iu)
     if (!texture || !iu) {
         return base_texture;
     }
-    if (iu->mtl_image_view) {
-        return iu->mtl_image_view;
+    if (mglImageUnitView(iu)) {
+        return mglImageUnitView(iu);
     }
     const MGLRenderTextureInfo info = mglSsTextureInfo(texture);
     if (info.width == 0u) {
@@ -1330,8 +1163,8 @@ void *mglRendererStorageImageTexture(void *base_texture, ImageUnit *iu)
 bool mglBindTexturesToCurrentRenderEncoder(void *renderer,
                                            const MGLEncodeContext *enc_ctx)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     void *binding_state_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
@@ -1362,18 +1195,18 @@ bool mglBindTexturesToCurrentRenderEncoder(void *renderer,
     if (mglTraceLogIsEnabled()) {
         mglTraceFragmentTextureTraceBindings("CLEAR",
                                              "bind_textures_begin",
-                                             areas.fragment_trace_bindings,
+                                             mglRendererFragmentTraceBindings(renderer),
                                              TEXTURE_UNITS,
                                              ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
                                              areas.pipeline_cache->pipelineProgramName);
 
         /* The areas field is a pointer, so sizeof() would zero 8 bytes; the
          * .m original zeroed the whole TEXTURE_UNITS-entry array. */
-        memset(areas.fragment_trace_bindings, 0,
-               sizeof(*areas.fragment_trace_bindings) * TEXTURE_UNITS);
+        memset(mglRendererFragmentTraceBindings(renderer), 0,
+               sizeof(*mglRendererFragmentTraceBindings(renderer)) * TEXTURE_UNITS);
     } else {
         mglClearFragmentTextureTraceFunctionalFlags(
-            areas.fragment_trace_bindings, TEXTURE_UNITS);
+            mglRendererFragmentTraceBindings(renderer), TEXTURE_UNITS);
     }
 
     const int vertexResourceStage = areas.tess_native_tes_active
@@ -1387,20 +1220,45 @@ bool mglBindTexturesToCurrentRenderEncoder(void *renderer,
 
     void *default_sampler = mglTextureFallbackSamplerState(renderer);
     if (default_sampler) {
-        if (vertexProgram) {
-            (void)mglProgramSamplesTextureUnit(vertexProgram, 0);
-        }
-        if (fragmentProgram && fragmentProgram != vertexProgram) {
-            (void)mglProgramSamplesTextureUnit(fragmentProgram, 0);
-        }
+        /* Rebuild masks only when the per-binding-state latch misses or the
+         * program mask was invalidated (uniform/relink). */
+        int warmup_gen_unchanged =
+            binding_state_owner &&
+            (!vertexProgram || vertexProgram->sampled_texture_unit_mask_valid) &&
+            (!fragmentProgram ||
+             fragmentProgram->sampled_texture_unit_mask_valid) &&
+            mglRenderBindingWarmupUnchanged(
+                binding_state_owner, vertexProgram, fragmentProgram,
+                vertexProgram ? vertexProgram->sampled_texture_unit_mask : NULL,
+                (fragmentProgram && fragmentProgram != vertexProgram)
+                    ? fragmentProgram->sampled_texture_unit_mask
+                    : NULL);
         MGLSamplerWarmupPlan warm = {0};
-        mglBindingTexturePlanSamplerWarmup(
-            1, vertexProgram ? 1 : 0, fragmentProgram ? 1 : 0,
-            vertexProgram ? vertexProgram->sampled_texture_unit_mask : NULL,
-            (fragmentProgram && fragmentProgram != vertexProgram)
-                ? fragmentProgram->sampled_texture_unit_mask
-                : NULL,
-            (uint32_t)TEXTURE_UNITS, (uint32_t)kMaxFragmentSamplerSlots, &warm);
+        if (!warmup_gen_unchanged) {
+            if (vertexProgram) {
+                (void)mglProgramSamplesTextureUnit(vertexProgram, 0);
+            }
+            if (fragmentProgram && fragmentProgram != vertexProgram) {
+                (void)mglProgramSamplesTextureUnit(fragmentProgram, 0);
+            }
+            if (binding_state_owner) {
+                mglRenderBindingStoreWarmup(
+                    binding_state_owner, vertexProgram, fragmentProgram,
+                    vertexProgram ? vertexProgram->sampled_texture_unit_mask
+                                  : NULL,
+                    (fragmentProgram && fragmentProgram != vertexProgram)
+                        ? fragmentProgram->sampled_texture_unit_mask
+                        : NULL);
+            }
+            mglBindingTexturePlanSamplerWarmup(
+                1, vertexProgram ? 1 : 0, fragmentProgram ? 1 : 0,
+                vertexProgram ? vertexProgram->sampled_texture_unit_mask : NULL,
+                (fragmentProgram && fragmentProgram != vertexProgram)
+                    ? fragmentProgram->sampled_texture_unit_mask
+                    : NULL,
+                (uint32_t)TEXTURE_UNITS, (uint32_t)kMaxFragmentSamplerSlots,
+                &warm);
+        }
         for (uint32_t s = 0; s < warm.warmup_count; s++) {
             if (warm.mode == MGL_SW_MODE_MASK &&
                 !mglBindingTextureSamplerWarmupSlotActive(warm.mask, s)) {
@@ -1487,5 +1345,8 @@ bool mglBindTexturesToCurrentRenderEncoder(void *renderer,
             (unsigned)separateSamplerCount, (unsigned)boundSeparateSamplers);
     }
 
+    if (binding_state_owner) {
+        mglRenderBindingClearSampledNeedsBind(binding_state_owner);
+    }
     return true;
 }

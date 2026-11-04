@@ -29,22 +29,31 @@
 #include "mgl_readback_policy.h"  /* mglRenderMSAAArrayLayerStride */
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_render_pass_manager.h"
-#include "mgl_renderer_ports.h"
+#include "mgl_ports_present.h"
+#include "mgl_ports_batch_flush.h"
+#include "mgl_renderer_state_areas.h"
 #include "mgl_trace_log.h"
 #include "mgl_vertex_format.h"    /* mgl*DescriptorSignatureFromState */
 #include "mgl_vertex_layout.h"    /* mglRendererUpdateBlendStateCache */
 
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+
+#include "mgl_render_api_binding.h"
+
+#include "mgl_render_api_texture.h"
+
+#include "mgl_render_api_query.h"
+
+#include "mgl_render_api_lifecycle.h"
 
 #include <stdio.h>
 #include <stdlib.h>   /* getenv (MGL_TOPO_TRACE) */
 #include <string.h>
+#include "mgl_program_backend.h"
 
 /* Objective-C private header declarations restated for C. */
 extern Program *mglResolveProgramFromState(GLMContext ctx);
 extern void mglWriteProgramMSLDump(Program *program, const char *reason);
-extern Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx,
-                                                      const char *where);
 extern GLuint mglRendererSafeFramebufferName(GLMContext ctx);
 
 /* The renderer's alpha-should-be-one guard for the ultimate fallback. */
@@ -99,7 +108,7 @@ static uint32_t mglPdStubFSValueClass(uint32_t fmt)
 /* The .m wrapped every cache create in @try/@catch: a throwing create must
  * enter the fallback path instead of escaping into C. */
 typedef struct MglPdPsoCreateCtx_t {
-    MGLRendererStateAreas *areas;
+    MGLPipelineCachePort cache;
     const MGLRenderPipelineDescriptorState *state;
     void *vertex_function;
     void *fragment_function;
@@ -113,8 +122,8 @@ static int mglPdPsoCreateBody(void *renderer, void *rawCtx)
 {
     MglPdPsoCreateCtx *ctx = (MglPdPsoCreateCtx *)rawCtx;
     (void)renderer;
-    ctx->result = ctx->areas->pipeline_cache_create_pso(
-        ctx->areas->pipeline_cache_object, ctx->state, ctx->vertex_function,
+    ctx->result = ctx->cache.create_pso(
+        ctx->cache.object, ctx->state, ctx->vertex_function,
         ctx->fragment_function, ctx->pso_out, ctx->error_text,
         ctx->error_capacity);
     return 1;
@@ -124,7 +133,7 @@ static int mglPdPsoCreateBody(void *renderer, void *rawCtx)
  * when the call threw. */
 static int mglPdPsoCreateGuarded(void *renderer, MglPdPsoCreateCtx *ctx)
 {
-    if (!ctx->areas->pipeline_cache_create_pso) {
+    if (!ctx->cache.create_pso) {
         return -1;
     }
     if (!mglPlatformShellGuardedCallCtx(renderer, "pipeline creation",
@@ -140,25 +149,26 @@ void mglRenderPassInsertPipelineStateIntoCache(
     uint64_t vertexSig, const struct MGLRenderPipelineDescriptorState *state,
     void *vertexFunction, void *fragmentFunction, int stateFromCache)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
+    const MGLPipelineCachePort cache = mglRendererPipelineCachePort(renderer);
     (void)pipelineSig;
     (void)vertexSig;
 
-    if (pipelineCacheKeyWords && areas.pipeline_cache &&
-        areas.pipeline_cache->pipelineState) {
-        if (areas.pipeline_cache_store_pipeline) {
-            areas.pipeline_cache_store_pipeline(
-                areas.pipeline_cache_object,
-                areas.pipeline_cache->pipelineState, vertexFunction,
+    if (pipelineCacheKeyWords && cache.state &&
+        cache.state->pipelineState) {
+        if (cache.store_pipeline) {
+            cache.store_pipeline(
+                cache.object,
+                cache.state->pipelineState, vertexFunction,
                 fragmentFunction, pipelineCacheKeyWords);
         }
 
         /* Cache the descriptor state for future PSO cache misses.  Only cache if
          * state was generated (not from cache). */
-        if (!stateFromCache && state && areas.pipeline_cache_store_descriptor_state) {
-            areas.pipeline_cache_store_descriptor_state(
-                areas.pipeline_cache_object, state, pipelineCacheKeyWords);
+        if (!stateFromCache && state && cache.store_descriptor_state) {
+            cache.store_descriptor_state(
+                cache.object, state, pipelineCacheKeyWords);
         }
     }
 }
@@ -172,31 +182,27 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
     uint32_t builtStencilFormat, unsigned int currentProgramName,
     CFTimeInterval now)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
+    const MGLPipelineCachePort cache = mglRendererPipelineCachePort(renderer);
     GLMContext ctx = areas.ctx;
-    GLMState *state = areas.core && areas.core->activeState
-                          ? areas.core->activeState
-                          : (ctx ? ctx->active_state : NULL);
+    GLMState *state = areas.ctx ? areas.ctx->active_state : NULL;
     MGLGPURecoveryState *recovery = areas.gpu_recovery;
     Program *currentProgram = mglResolveProgramFromState(ctx);
     Program *currentVertexProgram =
         mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     Program *currentFragmentProgram =
         mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
-    VertexArray *currentVAO = state->vao;
-    Framebuffer *currentFBO = mglRendererGetValidatedFramebuffer(
-        ctx, "buildPipelineCacheOnCacheMiss.currentFBO");
-    const GLuint currentFBOName = currentFBO ? currentFBO->name : 0;
+    const GLuint currentFBOName = mglRendererSafeFramebufferName(ctx);
 
     MGLRenderPipelineDescriptorState finalState = *pipelineState;
     int stateFromCache = 0;
 
     /* Check descriptor state cache on PSO miss; cache new states for reuse. */
-    if (pipelineCacheKeyWords && areas.pipeline_cache_descriptor_state_for_words) {
+    if (pipelineCacheKeyWords && cache.descriptor_state_for_words) {
         MGLRenderPipelineDescriptorState cachedState = {0};
-        if (areas.pipeline_cache_descriptor_state_for_words(
-                areas.pipeline_cache_object, pipelineCacheKeyWords,
+        if (cache.descriptor_state_for_words(
+                cache.object, pipelineCacheKeyWords,
                 &cachedState)) {
             /* Descriptor cache hit - reuse cached state instead of regenerating */
             finalState = cachedState;
@@ -219,7 +225,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
     MGLRenderPipelineDescriptorState successfulState = {0};
     int haveSuccessfulState = 0;
     void *previousPipelineState =
-        areas.pipeline_cache ? areas.pipeline_cache->pipelineState : NULL;
+        cache.state ? cache.state->pipelineState : NULL;
     void *compiledPSO = NULL;
     int pipelineReusedPrevious = 0;
     /* Set when the PSO below came from the virtualized-AGX emergency stub
@@ -241,7 +247,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
              (s_pipelineCreateBeginCount % 500ull) == 0ull)) {
             fprintf(stderr,
                     "MGL PIPELINE CREATE begin program=%u vao=%p fbo=%u\n",
-                    (unsigned)currentProgramName, (void *)currentVAO,
+                    (unsigned)currentProgramName, (void *)state->vao,
                     (unsigned)currentFBOName);
         }
 
@@ -261,9 +267,12 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
         } else {
             psoPtr = NULL;
             cppError[0] = '\0';
-            MglPdPsoCreateCtx createCtx = {&areas,  &finalState, vertexFunction,
-                                           fragmentFunction, &psoPtr, cppError,
-                                           sizeof(cppError), 0};
+            MglPdPsoCreateCtx createCtx = {
+                .cache = mglRendererPipelineCachePort(renderer),
+                .state = &finalState, .vertex_function = vertexFunction,
+                .fragment_function = fragmentFunction, .pso_out = &psoPtr,
+                .error_text = cppError, .error_capacity = sizeof(cppError),
+                .result = 0};
             const int createResult = mglPdPsoCreateGuarded(renderer, &createCtx);
             if (createResult < 0) {
                 failed = 1; /* a throwing create takes the fallback path */
@@ -297,21 +306,21 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
                     mglWriteProgramMSLDump(currentProgram, errText);
                 }
                 const int sameProgram =
-                    (areas.pipeline_cache->pipelineProgramName != 0 &&
-                     areas.pipeline_cache->pipelineProgramName ==
+                    (cache.state->pipelineProgramName != 0 &&
+                     cache.state->pipelineProgramName ==
                          currentProgramName &&
-                     areas.pipeline_cache->pipelineVertexFunction ==
+                     cache.state->pipelineVertexFunction ==
                          vertexFunction &&
-                     areas.pipeline_cache->pipelineFragmentFunction ==
+                     cache.state->pipelineFragmentFunction ==
                          fragmentFunction);
                 const int colorCompatible = mglRenderPipelineFormatCompatible(
-                    (uint32_t)areas.pipeline_cache->pipelineColor0Format,
+                    (uint32_t)cache.state->pipelineColor0Format,
                     builtColor0Format) != 0;
                 const int depthCompatible = mglRenderPipelineFormatCompatible(
-                    (uint32_t)areas.pipeline_cache->pipelineDepthFormat,
+                    (uint32_t)cache.state->pipelineDepthFormat,
                     builtDepthFormat) != 0;
                 const int stencilCompatible = mglRenderPipelineFormatCompatible(
-                    (uint32_t)areas.pipeline_cache->pipelineStencilFormat,
+                    (uint32_t)cache.state->pipelineStencilFormat,
                     builtStencilFormat) != 0;
 
                 if (previousPipelineState && sameProgram && colorCompatible &&
@@ -440,8 +449,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
                          recovery->interfaceMismatchRetryAfter)
                             ? recovery->interfaceMismatchBlockedUntil
                             : recovery->interfaceMismatchRetryAfter;
-                    state->dirty_bits &=
-                        ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+                    mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
                     return 0;
                 }
             }
@@ -479,9 +487,11 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
                 psoPtr = NULL;
                 cppError[0] = '\0';
                 MglPdPsoCreateCtx simpleCtx = {
-                    &areas,          &simpleState, vertexFunction,
-                    fragmentFunction, &psoPtr,    cppError,
-                    sizeof(cppError), 0};
+                    .cache = mglRendererPipelineCachePort(renderer),
+                    .state = &simpleState, .vertex_function = vertexFunction,
+                    .fragment_function = fragmentFunction, .pso_out = &psoPtr,
+                    .error_text = cppError, .error_capacity = sizeof(cppError),
+                    .result = 0};
                 if (mglPdPsoCreateGuarded(renderer, &simpleCtx) == 0 && psoPtr) {
                     compiledPSO = psoPtr;
                 }
@@ -513,6 +523,43 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
         } else {
             fprintf(stderr,
                     "MGL CRITICAL: VIRTUALIZED AGX - Metal pipeline creation crashed\n");
+            /* MGL_DUMP_SHADER_DIR: record the vertex layout and attachment
+             * formats the failing pipeline was built with, next to the
+             * program's dumped shaders. */
+            const char *dumpDir = getenv("MGL_DUMP_SHADER_DIR");
+            if (dumpDir && dumpDir[0]) {
+                char path[1024];
+                snprintf(path, sizeof path, "%s/prog%u_pso.txt", dumpDir,
+                         (unsigned)currentProgramName);
+                FILE *df = fopen(path, "w");
+                if (df) {
+                    fprintf(df, "attrib_count %u\n",
+                            (unsigned)finalState.attrib_count);
+                    for (uint32_t i = 0; i < finalState.attrib_count && i < 32;
+                         i++) {
+                        fprintf(df,
+                                "attr %u format %u offset %u buffer %u "
+                                "stride %u step %u rate %u\n",
+                                (unsigned)i,
+                                (unsigned)finalState.attrib_format[i],
+                                (unsigned)finalState.attrib_offset[i],
+                                (unsigned)finalState.attrib_buffer_index[i],
+                                (unsigned)finalState.attrib_stride[i],
+                                (unsigned)finalState.attrib_step_function[i],
+                                (unsigned)finalState.attrib_step_rate[i]);
+                    }
+                    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+                        fprintf(df, "color %d format %u mask %u\n", i,
+                                (unsigned)finalState.color_format[i],
+                                (unsigned)finalState.color_write_mask[i]);
+                    }
+                    fprintf(df, "depth %u stencil %u samples %u\n",
+                            (unsigned)finalState.depth_format,
+                            (unsigned)finalState.stencil_format,
+                            (unsigned)finalState.raster_sample_count);
+                    fclose(df);
+                }
+            }
             if (cppError[0]) {
                 fprintf(stderr, "MGL CRITICAL: %s\n", cppError);
             }
@@ -525,7 +572,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
             mglRenderPassInvalidateCurrentPipelineState(
                 renderer, "pipeline creation exception");
             recovery->pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.25;
-            state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+            mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
             return 0;
         }
 
@@ -579,9 +626,12 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
             if (unusedFS) mglReleaseMetalObjNoNull(unusedFS);
             psoPtr = NULL;
             cppError[0] = '\0';
-            MglPdPsoCreateCtx safeCtx = {&areas,   &safeState, safeVS,
-                                         safeFSFunction, &psoPtr, cppError,
-                                         sizeof(cppError), 0};
+            MglPdPsoCreateCtx safeCtx = {
+                .cache = mglRendererPipelineCachePort(renderer),
+                .state = &safeState, .vertex_function = safeVS,
+                .fragment_function = safeFSFunction, .pso_out = &psoPtr,
+                .error_text = cppError, .error_capacity = sizeof(cppError),
+                .result = 0};
             if (mglPdPsoCreateGuarded(renderer, &safeCtx) == 0 && psoPtr) {
                 compiledPSO = psoPtr;
             }
@@ -605,7 +655,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
             mglRenderPassInvalidateCurrentPipelineState(
                 renderer, "all pipeline fallbacks failed");
             recovery->pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.25;
-            state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+            mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
             return 0;
         }
     }
@@ -619,7 +669,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
         mglRenderPassInvalidateCurrentPipelineState(
             renderer, "pipeline state is nil after creation");
         recovery->pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.10;
-        state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+        mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
         return 0;
     }
 
@@ -638,9 +688,9 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
         recovery->interfaceMismatchDepthFormat = mglRenderInvalidPixelFormat();
         recovery->interfaceMismatchStencilFormat = mglRenderInvalidPixelFormat();
         recovery->interfaceMismatchRetryAfter = 0.0;
-        if (areas.pipeline_cache_activate) {
-            areas.pipeline_cache_activate(
-                areas.pipeline_cache_object, compiledPSO, builtColor0Format,
+        if (cache.activate) {
+            cache.activate(
+                cache.object, compiledPSO, builtColor0Format,
                 builtDepthFormat, builtStencilFormat, currentProgramName,
                 vertexFunction, fragmentFunction);
         }
@@ -705,26 +755,11 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
  * framebufferTextureLayer attachments keep their fixed slice. */
 static uint32_t mglPdGeometryPassthroughLayerStride(GLMContext context)
 {
-    if (!context || !context->active_state ||
-        !context->active_state->framebuffer) {
+    if (!context || !context->active_state) {
         return 1u;
     }
-    Framebuffer *fbo = context->active_state->framebuffer;
-    for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS; i++) {
-        const FBOAttachment *attachment = &fbo->color_attachments[i];
-        uint32_t stride = mglRenderMSAAArrayLayerStride(
-            attachment->layered ? 1 : 0, (uint32_t)attachment->textarget);
-        if (stride > 1u) {
-            return stride;
-        }
-    }
-    uint32_t depthStride = mglRenderMSAAArrayLayerStride(
-        fbo->depth.layered ? 1 : 0, (uint32_t)fbo->depth.textarget);
-    if (depthStride > 1u) {
-        return depthStride;
-    }
-    return mglRenderMSAAArrayLayerStride(
-        fbo->stencil.layered ? 1 : 0, (uint32_t)fbo->stencil.textarget);
+    return mglFramebufferMultisampleLayerStride(
+        context->active_state->framebuffer);
 }
 
 /* mglGeometryPipelineFunctionKey() from MGLRenderer+RenderPass.m: the backend
@@ -737,13 +772,13 @@ static uint64_t mglPdGeometryPipelineFunctionKey(
 {
     uint64_t hash = 1469598103934665603ull;
     hash = mglHashStepU64(hash,
-                          vertexProgram ? vertexProgram->pipeline_cache_instance_id : 0u);
+                          vertexProgram ? mglProgramBackendView(vertexProgram)->pipeline_cache_instance_id : 0u);
     hash = mglHashStepU64(hash,
-                          vertexProgram ? vertexProgram->pipeline_cache_generation : 0u);
+                          vertexProgram ? mglProgramBackendView(vertexProgram)->pipeline_cache_generation : 0u);
     hash = mglHashStepU64(hash,
-                          geometryProgram ? geometryProgram->pipeline_cache_instance_id : 0u);
+                          geometryProgram ? mglProgramBackendView(geometryProgram)->pipeline_cache_instance_id : 0u);
     hash = mglHashStepU64(hash,
-                          geometryProgram ? geometryProgram->pipeline_cache_generation : 0u);
+                          geometryProgram ? mglProgramBackendView(geometryProgram)->pipeline_cache_generation : 0u);
     return mglHashStepU64(hash, layerStride);
 }
 
@@ -767,19 +802,18 @@ static int mglPdBindingStatePipelineMatches(void *owner, void *pipeline)
 int mglRenderPassSyncPipelineState(void *renderer,
                                    int deferredBufferMapForPipelineBuild)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
+    const MGLPipelineCachePort cache = mglRendererPipelineCachePort(renderer);
     GLMContext ctx = areas.ctx;
-    GLMState *state = areas.core && areas.core->activeState
-                          ? areas.core->activeState
-                          : (ctx ? ctx->active_state : NULL);
+    GLMState *state = areas.ctx ? areas.ctx->active_state : NULL;
     MGLGPURecoveryState *recovery = areas.gpu_recovery;
-    const MGLPipelineCacheState *cacheState = areas.pipeline_cache;
+    const MGLPipelineCacheState *cacheState = cache.state;
     /* areas.binding_state_owner is the ADDRESS of the owner slot (rule 59). */
     void *bindingOwner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
-    MGLTessellationState *tessellation = areas.tessellation;
-    MGLGeometryState *geometry = areas.geometry;
+    const MGLTessellationState *tessellation = areas.tessellation;
+    const MGLGeometryState *geometry = areas.geometry;
     void *currentPipelineState = cacheState ? cacheState->pipelineState : NULL;
 
     /* Force a rebind of the pipeline state on the next setRenderPipelineState
@@ -811,10 +845,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
     Program *currentFragmentProgram =
         mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
     GLuint currentProgramName = mglCurrentRenderProgramKey(ctx);
-    VertexArray *currentVAO = state->vao;
-    Framebuffer *currentFBO = mglRendererGetValidatedFramebuffer(
-        ctx, "processGLState.currentFBO");
-    GLuint currentFBOName = currentFBO ? currentFBO->name : 0;
+    GLuint currentFBOName = mglRendererSafeFramebufferName(ctx);
 
     /* Program-level breaker (independent of render-pass signature) to avoid
      * mismatch storms where color/depth/stencil signatures keep changing. */
@@ -832,7 +863,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
                     "MGL WARNING: Program-level mismatch breaker active (program=%u, %.2fs remaining), skipping draw\n",
                     (unsigned)currentProgramName, remaining);
         }
-        state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+        mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
         return 0;
     }
 
@@ -845,7 +876,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
 
         if (retryAppliesToCurrentProgram) {
             if (currentPipelineState) {
-                state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+                mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
                 /* Keep existing pipeline, but do not early-return before
                  * setRenderPipelineState. */
                 skipPipelineBuild = 1;
@@ -878,15 +909,23 @@ int mglRenderPassSyncPipelineState(void *renderer,
         uint32_t builtStencilFormat = mglRenderInvalidPixelFormat();
 
         mglRendererUpdateBlendStateCache(renderer);
-        state->dirty_bits &= ~DIRTY_ALPHA_STATE;
-        if (getenv("MGL_TOPO_TRACE") != NULL) {
-            fprintf(stderr,
-                    "MGLTOPO tessCompute=%d active=%d prog=%p topology=%u\n",
-                    (int)((tessellation && tessellation->tessComputeActive) ? 1 : 0),
-                    (int)((tessellation && tessellation->tessVertexRenderActive) ? 1 : 0),
-                    (void *)(tessellation ? tessellation->tessComputeProgram : NULL),
-                    (unsigned)psoState.input_primitive_topology);
-            fflush(stderr);
+        mglClearRendererDirtyBits(state, DIRTY_ALPHA_STATE);
+        {
+            /* Cached once: this sync runs per batch and getenv would take
+             * the environment lock every call. */
+            static int s_topoTraceCached = -1;
+            if (s_topoTraceCached < 0) {
+                s_topoTraceCached = getenv("MGL_TOPO_TRACE") != NULL ? 1 : 0;
+            }
+            if (s_topoTraceCached) {
+                fprintf(stderr,
+                        "MGLTOPO tessCompute=%d active=%d prog=%p topology=%u\n",
+                        (int)((tessellation && tessellation->tessComputeActive) ? 1 : 0),
+                        (int)((tessellation && tessellation->tessVertexRenderActive) ? 1 : 0),
+                        (void *)(tessellation ? tessellation->tessComputeProgram : NULL),
+                        (unsigned)psoState.input_primitive_topology);
+                fflush(stderr);
+            }
         }
         MGLRenderPassPipelineFunctions psoFunctions = { NULL, NULL };
         if (!mglRenderPassGeneratePipelineDescriptorState(
@@ -918,7 +957,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
             builtColor0Format == recovery->interfaceMismatchColor0Format &&
             builtDepthFormat == recovery->interfaceMismatchDepthFormat &&
             builtStencilFormat == recovery->interfaceMismatchStencilFormat) {
-            state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+            mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
             return 0;
         }
 
@@ -958,7 +997,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
                                  | ((tessellation && tessellation->tessComputeActive) ? (1ull << 19) : 0ull)
                                  | ((tessellation && tessellation->tessVertexRenderActive) ? (1ull << 18) : 0ull));
             uint64_t vertexInstance = currentVertexProgram
-                ? currentVertexProgram->pipeline_cache_instance_id : 0u;
+                ? mglProgramBackendView(currentVertexProgram)->pipeline_cache_instance_id : 0u;
             if (geometry && geometry->expansionActive && geometry->program) {
                 /* The raster vertex function is generated from both the real
                  * VS/FS interface and the GS output record.  Fold both program
@@ -970,11 +1009,11 @@ int mglRenderPassSyncPipelineState(void *renderer,
                     mglPdGeometryPassthroughLayerStride(ctx));
             }
             uint64_t vertexGeneration = currentVertexProgram
-                ? currentVertexProgram->pipeline_cache_generation : 0u;
+                ? mglProgramBackendView(currentVertexProgram)->pipeline_cache_generation : 0u;
             uint64_t fragmentInstance = currentFragmentProgram
-                ? currentFragmentProgram->pipeline_cache_instance_id : 0u;
+                ? mglProgramBackendView(currentFragmentProgram)->pipeline_cache_instance_id : 0u;
             uint64_t fragmentGeneration = currentFragmentProgram
-                ? currentFragmentProgram->pipeline_cache_generation : 0u;
+                ? mglProgramBackendView(currentFragmentProgram)->pipeline_cache_generation : 0u;
             keyWords[0] = primaryKey;
             keyWords[1] = vertexInstance;
             keyWords[2] = vertexGeneration;
@@ -997,10 +1036,10 @@ int mglRenderPassSyncPipelineState(void *renderer,
             void *cachedVertexFunction = NULL;
             void *cachedFragmentFunction = NULL;
             int cachedFunctionMetadataPresent = 0;
-            if (areas.pipeline_cache_lookup_pipeline) {
+            if (cache.lookup_pipeline) {
                 cachedFunctionMetadataPresent =
-                    areas.pipeline_cache_lookup_pipeline(
-                        areas.pipeline_cache_object, keyWords, &cachedPipeline,
+                    cache.lookup_pipeline(
+                        cache.object, keyWords, &cachedPipeline,
                         &cachedVertexFunction, &cachedFragmentFunction);
             }
             if (cachedPipeline) {
@@ -1013,16 +1052,16 @@ int mglRenderPassSyncPipelineState(void *renderer,
                      (s_pipelineCacheHitCount % 1000ull) == 0ull)) {
                     fprintf(stderr,
                             "MGL PIPELINE CACHE hit program=%u vao=%p fbo=%u key=%016llx/%016llx/%016llx\n",
-                            (unsigned)currentProgramName, (void *)currentVAO,
+                            (unsigned)currentProgramName, (void *)state->vao,
                             (unsigned)currentFBOName,
                             (unsigned long long)keyWords[0],
                             (unsigned long long)keyWords[5],
                             (unsigned long long)keyWords[6]);
                 }
 
-                if (areas.pipeline_cache_activate) {
-                    areas.pipeline_cache_activate(
-                        areas.pipeline_cache_object, cachedPipeline,
+                if (cache.activate) {
+                    cache.activate(
+                        cache.object, cachedPipeline,
                         builtColor0Format, builtDepthFormat, builtStencilFormat,
                         currentProgramName,
                         cachedFunctionMetadataPresent ? cachedVertexFunction
@@ -1079,7 +1118,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
             deferredBufferMapForPipelineBuild = 0;
         }
 
-        state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+        mglClearRendererDirtyBits(state, DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
     }
 
     return 1;

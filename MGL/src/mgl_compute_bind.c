@@ -32,7 +32,9 @@
 #include "mgl_texture_bind.h"        /* mglRendererBindMTLTexture */
 #include "mgl_sampled_sampler.h" /* sampler materialize (log 151) */
 #include "mgl_stage_copy_back.h"
-#include "mgl_renderer_ports.h"     /* state areas + the host entries */
+#include "mgl_ports_batch_flush.h"
+#include "mgl_ports_present.h"
+#include "mgl_renderer_state_areas.h"     /* state areas + the host entries */
 #include "mgl_renderer_backend.h"   /* program binding sizes */
 #include "mgl_binding_policy.h"
 #include "mgl_binding_stage.h"      /* bind plan for a map entry */
@@ -43,13 +45,17 @@
 #include "mgl_texture_compat.h"    /* mglTextureUnitForSampledResource */
 #include "mgl_shader_resource.h"   /* mglMetalResourceSlot */
 #include "mgl_env_flag.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_readback.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_program_backend.h"
+#include "mgl_texture_backend.h"
+#include "mgl_buffer_backend.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
-static GLMState *mglComputeBindState(const MGLRendererStateAreas *areas)
+static GLMState *mglComputeBindState(const MGLRendererStateView *areas)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 
@@ -142,8 +148,8 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
         return false;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglComputeBindState(&areas);
 
@@ -200,8 +206,8 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
             map->has_metal_binding ? (int32_t)map->metal_binding_index : -1,
             (int32_t)map->buffer_base_index, (uint32_t)map->resource_type,
             map->offset, ptr->size, /*has_buffer=*/1,
-            ptr->data.buffer_data ? 1 : 0, ptr->data.mtl_data ? 1 : 0,
-            (const void *)(uintptr_t)ptr->data.buffer_data, ptr->data.mtl_data,
+            ptr->data.buffer_data ? 1 : 0, mglBufferMtl(ptr) ? 1 : 0,
+            (const void *)(uintptr_t)ptr->data.buffer_data, mglBufferMtl(ptr),
             /*cpu_dirty=*/0, ptr->gpu_write_target ? 1 : 0,
             /*allow_isolate_when_gpu=*/1, /*attrib_reserved=*/0,
             (uint32_t)kMGLMaxMetalVertexBufferCount,
@@ -253,9 +259,9 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
                                                  (uint64_t)metalBindingIndex);
 
         /* ---- materialize the Metal backing the plan asked for ---- */
-        if (ptr->data.mtl_data) {
+        if (mglBufferMtl(ptr)) {
             MGLRenderBufferInfo existingInfo = {0};
-            if (mglRenderGetBufferInfo(ptr->data.mtl_data, &existingInfo) == 0 &&
+            if (mglRenderGetBufferInfo(mglBufferMtl(ptr), &existingInfo) == 0 &&
                 mglRenderMetalBackingTooSmall(ptr->size, existingInfo.length)) {
                 /* A plain-uniform buffer may grow after another stage has
                  * materialized a short backing store.  The dirty-update path
@@ -264,7 +270,7 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
                 mglRenderReleaseBufferMetalData(ctx, ptr);
             }
         }
-        if (!ptr->data.mtl_data) {
+        if (!mglBufferMtl(ptr)) {
             mglRendererBindMTLBuffer(renderer, ptr);
         }
         if (mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
@@ -288,7 +294,7 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
             mglRenderClearCPUWriteRange(ptr);
         }
 
-        void *buffer = ptr->data.mtl_data;
+        void *buffer = mglBufferMtl(ptr);
         MGLRenderBufferInfo bufferInfo = {0};
         const bool hasBufferInfo = buffer &&
             mglRenderGetBufferInfo(buffer, &bufferInfo) == 0;
@@ -297,7 +303,7 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
             : 0u;
 
         mglBindingStageFillMapEntryPostMtl(
-            &bin, ptr->data.mtl_data ? 1 : 0, ptr->data.mtl_data,
+            &bin, mglBufferMtl(ptr) ? 1 : 0, mglBufferMtl(ptr),
             hasBufferInfo ? 1 : 0, hasBufferInfo ? bufferInfo.length : 0u,
             (uint64_t)availableBytes, /*binding_state_valid=*/0,
             /*buffer_matches=*/0);
@@ -374,7 +380,7 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
     {
         Program *computeProgram = mglResolveProgramForStageFromState(ctx, stage);
         if (computeProgram &&
-            computeProgram->modules[stage].needs_runtime_array_size_buffer)
+            mglProgramModuleView(computeProgram, stage)->needs_runtime_array_size_buffer)
         {
             const GLuint runtimeSizeSlot =
                 mglRuntimeArraySizeBufferIndexForProgram(computeProgram, stage);
@@ -469,8 +475,8 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
         return false;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglComputeBindState(&areas);
 
@@ -602,11 +608,11 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                 if (ptr)
                 {
                     RETURN_FALSE_ON_FAILURE(mglRendererBindMTLTexture(renderer, ptr));
-                    if (!ptr->mtl_data) {
+                    if (!mglTextureMtl(ptr)) {
                         continue;
                     }
 
-                    void *texture = ptr->mtl_data;
+                    void *texture = mglTextureMtl(ptr);
                     if (!texture) {
                         continue;
                     }
@@ -707,12 +713,12 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                 Texture *ptr = mglTextureForSampledResource(
                     ctx, resource, metalSlot, stage, expectedType, glUnit);
                 if (!ptr || !mglRendererBindMTLTexture(renderer, ptr) ||
-                    !ptr->mtl_data) {
+                    !mglTextureMtl(ptr)) {
                     continue;
                 }
 
                 void *texture = mglSampledTextureViewForBaseLevel(
-                    ptr, ptr->mtl_data);
+                    ptr, mglTextureMtl(ptr));
                 /* Same shared port as the loop above.  This path used to
                  * skip the "dirty sampler" release the others do, so a
                  * re-parameterized sampler could keep its old Metal object;

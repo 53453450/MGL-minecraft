@@ -28,13 +28,23 @@
 #include "mgl_draw_issue.h"
 #include "mgl_draw_tess.h"    /* mglDrawHostRunVertexCaptureIndexed */
 #include "mgl_draw_mode.h"    /* mglRenderDrawModeProducesPolygons */
-#include "mgl_renderer_ports.h"   /* state areas, mglRendererProcessBuffer */
-#include "mgl_render.h"
+#include "mgl_renderer_attachment.h"
+#include "mgl_ports_batch_flush.h"
+#include "mgl_renderer_state_areas.h"   /* state areas, mglRendererProcessBuffer */
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_draw.h"
+#include "mgl_render_api_query.h"
+#include "mgl_pso_format_class.h"
 #include "mgl_state_compat.h"     /* mglLogRenderStateRepair */
 #include "error.h"                /* mglDispatchError */
 
 #include <math.h>
 #include <stdio.h>
+#include "mgl_texture_backend.h"
+#include "mgl_buffer_backend.h"
 
 /* Declared in the Objective-C MGLRenderer+DrawSupportUtil.h. */
 extern int mglDrawSupportEncodeContextIsActive(const MGLEncodeContext *encCtx);
@@ -47,6 +57,15 @@ extern Buffer *getIndirectBuffer(GLMContext ctx);
 int mglDrawResolveIndirectBuffer(void *renderer, const char *label,
                                  GLMContext ctx, Buffer **gl_out,
                                  void **mtl_out)
+{
+    return mglDrawResolveIndirectBufferSpan(renderer, label, ctx, 0u, 0u,
+                                            gl_out, mtl_out);
+}
+
+int mglDrawResolveIndirectBufferSpan(void *renderer, const char *label,
+                                     GLMContext ctx, uint64_t offset,
+                                     uint64_t need_bytes, Buffer **gl_out,
+                                     void **mtl_out)
 {
     Buffer *gl_indirect_buffer = getIndirectBuffer(ctx);
     if (!gl_indirect_buffer) {
@@ -64,13 +83,37 @@ int mglDrawResolveIndirectBuffer(void *renderer, const char *label,
         return 0;
     }
 
-    void *indirectBuffer = gl_indirect_buffer->data.mtl_data;
+    void *indirectBuffer = mglBufferMtl(gl_indirect_buffer);
     if (!indirectBuffer) {
         fprintf(stderr,
                 "MGL WARNING: %s skipped because indirect buffer %u has no Metal buffer\n",
                 label ? label : "indirect draw",
                 gl_indirect_buffer->name);
         return 0;
+    }
+
+    /* AUDIT-032: when the caller knows the indirect args span, reject
+     * offset+sizeof that exceeds the Metal buffer length. */
+    if (need_bytes != 0u) {
+        uint64_t metal_len = 0u;
+        void *contents = NULL;
+        if (mglRenderGetBufferContents(indirectBuffer, &contents, &metal_len) !=
+                0 ||
+            offset > metal_len || need_bytes > metal_len - offset) {
+            fprintf(stderr,
+                    "MGL WARNING: %s skipped because indirect span "
+                    "offset=%llu need=%llu exceeds Metal length=%llu\n",
+                    label ? label : "indirect draw",
+                    (unsigned long long)offset,
+                    (unsigned long long)need_bytes,
+                    (unsigned long long)metal_len);
+            if (ctx) {
+                mglDispatchError(
+                    ctx, label ? label : "resolveIndirectBufferForDraw",
+                    (GLenum)mglRenderErrorInvalidOperation());
+            }
+            return 0;
+        }
     }
 
     if (gl_out) {
@@ -84,8 +127,8 @@ int mglDrawResolveIndirectBuffer(void *renderer, const char *label,
 
 int mglDrawRasterizationIsEmpty(void *renderer)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *cs = areas.command;
     if (!ctx || !cs) {
@@ -154,8 +197,8 @@ int mglDrawRasterizationIsEmpty(void *renderer)
 
 void mglDrawApplyPolygonOffset(void *renderer, uint32_t mode)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *cs = areas.command;
     if (!ctx || !cs) {
@@ -211,8 +254,8 @@ void mglDrawApplyPolygonOffset(void *renderer, uint32_t mode)
 
 int mglDrawModeIsFullyCulled(void *renderer, uint32_t mode)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
     if (!ctx) {
         return 0;
@@ -323,9 +366,9 @@ Texture *mglDrawEmulatedMSAttachmentTexture(GLMContext ctx, FBOAttachment *att)
      * mtl_data may still be nil. All MS targets are emulated as array sample
      * planes (a multisample renderbuffer's backing included), so the GL
      * target/samples check is sufficient. */
-    if (tex->mtl_data) {
+    if (mglTextureMtl(tex)) {
         MGLRenderTextureInfo info = {0};
-        (void)mglRenderGetTextureInfo(tex->mtl_data, &info);
+        (void)mglRenderGetTextureInfo(mglTextureMtl(tex), &info);
         if (info.texture_type != MGLTextureType2DArray) {
             return NULL;
         }
@@ -341,8 +384,8 @@ void mglDrawBindCullDistanceEmulationBuffers(void *renderer, uint32_t mode,
                                              uint32_t explicitVertexCount,
                                              const MGLEncodeContext *encCtx)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     if (!areas.ctx || !mglDrawSupportEncodeContextIsActive(encCtx)) {
         return;
     }
@@ -391,10 +434,10 @@ void mglDrawBindCullDistanceEmulationBuffers(void *renderer, uint32_t mode,
                 areas.ctx, vao, attribs[i], "bindCullDistanceEmu", &resolved)) {
             continue;
         }
-        if (!resolved.buffer || !resolved.buffer->data.mtl_data) {
+        if (!resolved.buffer || !mglBufferMtl(resolved.buffer)) {
             continue;
         }
-        ports[portCount].mtl_buffer = resolved.buffer->data.mtl_data;
+        ports[portCount].mtl_buffer = mglBufferMtl(resolved.buffer);
         ports[portCount].binding_offset = resolved.binding_offset;
         ports[portCount].stride = resolved.stride;
         ports[portCount].relativeoffset = resolved.relativeoffset;

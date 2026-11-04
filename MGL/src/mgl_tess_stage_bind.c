@@ -21,7 +21,7 @@
  *
  * The rules the translation follows are the ones the earlier cuts settled:
  * `self` becomes the renderer handle, `_renderPassManager->state` and the
- * tessellation record arrive through MGLRendererStateAreas, `ctx` is
+ * tessellation record arrive through MGLRendererStateView, `ctx` is
  * `areas.ctx`, `MGL_STATE(ctx)` becomes the C twin below, "[self ...]" becomes
  * the C entry of mgl_renderer_ports.h, and the NSMutableArray of temporaries
  * becomes the handle of mglRendererTemporariesCreate (which is exactly the
@@ -38,7 +38,10 @@
 #include "mgl_stage_copy_back.h"
 #include "mgl_renderer_ports.h"     /* state areas + stage-binding host entries */
 #include "mgl_renderer_backend.h"   /* program binding sizes, storage-image texture */
-#include "mgl_render.h"             /* buffer/texture creation, copy encoding */
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_binding.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_buffer.h"
 #include "mgl_buffer_map.h"         /* map entries, dirty update, mglNoteBufferEncoded */
 #include "mgl_buffer_slots.h"       /* mglRuntimeArraySizeBufferIndexForProgram */
 #include "mgl_binding_stage.h"      /* bind plan for a map entry */
@@ -48,6 +51,10 @@
 #include "mgl_metal_ref.h"          /* mglSafeReleaseMetalObj */
 #include "mgl_thread_affinity.h"    /* MGL_ASSERT_GL_THREAD */
 #include "mgl_types_texture.h"      /* Texture, Sampler */
+#include "mgl_texture_binding_resolve.h" /* mglSamplerBackend* */
+#include "mgl_program_backend.h"
+#include "mgl_texture_backend.h"
+#include "mgl_buffer_backend.h"
 
 /* Declared next to its definition in the Objective-C
  * MGLRenderer+RenderPass_Private.h, which a .c file cannot include; repeated
@@ -55,23 +62,20 @@
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C (the same twin as
  * mgl_compute_bind.c). */
-static GLMState *mglTessStageBindState(const MGLRendererStateAreas *areas)
+static GLMState *mglTessStageBindState(const MGLRendererStateView *areas)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 
 /* The command record the render pass manager publishes. */
 static void *mglTessStageBindCommandBufferOwner(
-    const MGLRendererStateAreas *areas)
+    const MGLRendererStateView *areas)
 {
     return areas->command ? areas->command->currentCommandBufferOwner : NULL;
 }
 
 static void *mglTessStageBindRenderEncoderOwner(
-    const MGLRendererStateAreas *areas)
+    const MGLRendererStateView *areas)
 {
     return areas->command ? areas->command->currentRenderEncoderOwner : NULL;
 }
@@ -215,8 +219,8 @@ bool mglTessPrepareStageBufferBindings(void *renderer,
         return false;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     BufferMapList stage_buffer_map = {0};
     if (!mglRendererMapGLBuffersToMTLBufferMap(renderer, &stage_buffer_map,
@@ -228,7 +232,7 @@ bool mglTessPrepareStageBufferBindings(void *renderer,
      * encoder. bindMTLBuffer: may itself need an encoder. */
     for (GLuint i = 0; i < stage_buffer_map.count; i++) {
         Buffer *ptr = stage_buffer_map.buffers[i].buf;
-        if (ptr && !ptr->data.mtl_data) {
+        if (ptr && !mglBufferMtl(ptr)) {
             mglRendererBindMTLBuffer(renderer, ptr);
         }
     }
@@ -249,7 +253,7 @@ bool mglTessPrepareStageBufferBindings(void *renderer,
         }
         mglClearStageBindingCopyBackAtIndex(renderer, copy_backs,
                                                  metal_binding_index);
-        void *buffer = ptr->data.mtl_data;
+        void *buffer = mglBufferMtl(ptr);
         if (buffer && mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
             /* Consume the CPU-side initialization before a tessellation
              * stage can write the same Metal backing. Otherwise a later
@@ -257,7 +261,7 @@ bool mglTessPrepareStageBufferBindings(void *renderer,
             if (!mglRendererUpdateDirtyBuffer(renderer, ptr)) {
                 return false;
             }
-            buffer = ptr->data.mtl_data;
+            buffer = mglBufferMtl(ptr);
         }
         MGLTessIsolatedBindingPlan bind_plan = {0};
         GLsizeiptr storage_remaining = mglBufferMapStorageRemaining(map);
@@ -336,7 +340,7 @@ bool mglTessPrepareStageBufferBindings(void *renderer,
 
     Program *stage_program = mglResolveProgramForStageFromState(areas.ctx, stage);
     if (stage_program &&
-        stage_program->modules[stage].needs_runtime_array_size_buffer) {
+        mglProgramModuleView(stage_program, stage)->needs_runtime_array_size_buffer) {
         bindings->size_buffer_index =
             mglRuntimeArraySizeBufferIndexForProgram(stage_program, stage);
         uint32_t size_constants[kMGLMaxBufferSlots] = {0};
@@ -423,8 +427,8 @@ bool mglTessFlushStageBindingInitializationBlit(
         return false;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     MGLRenderBufferCopyEntry copy_entries[kMGLMaxBufferSlots] = {0};
     uint32_t copy_entry_count = 0u;
@@ -514,8 +518,8 @@ bool mglTessPlanTextureBinds(void *renderer, const MGLTessTextureBind *binds,
                              MGLRenderComputeExecutionPlan *plan,
                              void *temporaries)
 {
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
 
     if (!binds || !plan || !ctx || !ctx->active_state) {
         return binds == NULL || count == 0u;
@@ -528,13 +532,13 @@ bool mglTessPlanTextureBinds(void *renderer, const MGLTessTextureBind *binds,
         if (mglTessTextureBindIsStorage(bind->kind)) {
             ptr = state->image_units[bind->gl_unit].tex;
             if (ptr) {
-                texture = ptr->mtl_data;
+                texture = mglTextureMtl(ptr);
                 texture = mglRendererStorageImageTexture(
                     texture, &state->image_units[bind->gl_unit]);
             }
         } else {
             ptr = state->active_textures[bind->gl_unit];
-            texture = ptr ? ptr->mtl_data : NULL;
+            texture = ptr ? mglTextureMtl(ptr) : NULL;
             /* GL 4.6 §8.23.1: STENCIL_INDEX mode needs an X32/X24_Stencil8
              * view — same as VS/FS bind. Tess used to bind raw mtl_data. */
             if (ptr && texture)
@@ -552,18 +556,19 @@ bool mglTessPlanTextureBinds(void *renderer, const MGLTessTextureBind *binds,
         int created_sampler = 0;
         if (state->texture_samplers[bind->gl_unit]) {
             Sampler *gl_sampler = state->texture_samplers[bind->gl_unit];
-            if (gl_sampler->dirty_bits && gl_sampler->mtl_data) {
-                mglSafeReleaseMetalObj((void **)&gl_sampler->mtl_data);
+            if (gl_sampler->dirty_bits) {
+                mglSamplerBackendResetState(gl_sampler);
             }
-            if (!gl_sampler->mtl_data && ptr) {
-                /* The C creation hands back +1; the field owns it. */
-                gl_sampler->mtl_data = mglTextureCreateSamplerForTexParam(
-                    &gl_sampler->params, ptr->target);
+            if (!mglSamplerBackendState(gl_sampler) && ptr) {
+                /* The C creation hands back +1; the backend state owns it. */
+                mglSamplerBackendSetState(
+                    gl_sampler, mglTextureCreateSamplerForTexParam(
+                                    &gl_sampler->params, ptr->target));
                 gl_sampler->dirty_bits = 0;
             }
-            sampler = gl_sampler->mtl_data;
-        } else if (ptr && ptr->params.mtl_data) {
-            sampler = ptr->params.mtl_data;
+            sampler = mglSamplerBackendState(gl_sampler);
+        } else if (ptr && mglTextureSamplerState(ptr)) {
+            sampler = mglTextureSamplerState(ptr);
         }
         if (!sampler) {
             sampler = mglTessStageBindCreateSampler();

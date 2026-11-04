@@ -15,9 +15,9 @@
  */
 
 #include "mgl_texture_sampler.h"
-#include "mgl_renderer_ports.h"
+#include "mgl_renderer_state_areas.h"
 #include "mgl_draw_issue.h"        /* mglDrawHostDevice */
-#include "mgl_render.h"
+#include "mgl_render_api_texture.h"
 #include "mgl_metal_ref.h"
 #include "glm_context.h"
 
@@ -95,7 +95,7 @@ void *mglTextureCreateSamplerForTexParam(const TextureParameter *tex_param,
 
 void *mglTextureFallbackSamplerState(void *renderer)
 {
-    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas; mglRendererFillStateView(renderer, &areas);
     void *cached = mglRendererBackendGetFallbackResource(
         areas.backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLER);
     if (cached) {

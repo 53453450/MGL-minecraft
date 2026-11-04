@@ -25,7 +25,10 @@
  * case is: link once, draw thousands of times against the cached plan.
  *
  * Cached per (stage, resource_type, resource_index):
- *   - metal_binding_base  (mglMetalResourceSlot, == res->binding)
+ *   - metal_binding_base  (the slot reflection assigned from the stage's
+ *                          buffer layout, mgl_buffer_layout.h; this plan only
+ *                          caches it per draw -- the allocation is the
+ *                          layout's)
  *   - client_binding_base  (mglClientBufferBindingForResource, incl. the
  *                           Minecraft plain-uniform name table lookup)
  *   - element_count        (mglStageBufferResourceElementCount)
@@ -49,7 +52,7 @@
 #ifndef MGL_BUFFER_PLAN_H
 #define MGL_BUFFER_PLAN_H
 
-#include "glm_context.h"
+#include "mgl_types_program.h" /* Program *, GLuint — G5: no full glm_context.h */
 
 #ifdef __cplusplus
 extern "C" {

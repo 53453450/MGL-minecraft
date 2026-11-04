@@ -1,0 +1,2727 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
+/*
+ * Copyright (C) Michael Larson on 1/6/2022
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * draw_buffers.c
+ * MGL
+ *
+ */
+
+#include <mach/mach_vm.h>
+#include <mach/mach_init.h>
+#include <mach/vm_map.h>
+#include <math.h>
+#include <stdint.h>
+#include <stdlib.h> /* calloc / getenv: include what this unit uses, not what
+                     * mgl_trace_log.h happens to pull in through objc.h */
+#include <string.h>
+
+#include "glm_context.h"
+#include "draw_command.h"
+#include "mgl.h"
+#include "mgl_draw_tess.h"
+#include "mgl_safety.h"
+#include "mgl_program_reflection.h"
+#include "vertex_arrays.h"
+#include "mgl_render_api_query.h" /* mglRenderIsEmulatedMSPlaneTarget */
+#include "mgl_render_api_draw.h"  /* mglRenderCheckedProduct (AUDIT-059) */
+
+extern void mglInvalidateColorShadowsForDraw(GLMContext ctx);
+extern Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
+#include "mgl_trace_log.h"
+
+static bool mglSkipOrRecordConditionalDraw(GLMContext ctx)
+{
+    if (mglShouldSkipConditionalRender(ctx))
+        return true;
+    mglRecordActiveSampleQueryDraw(ctx);
+    return false;
+}
+
+/* Read DRAW_INDIRECT_BUFFER command(s) and accumulate pipeline-stat counters.
+ * arrays=true → DrawArraysIndirectCommand; false → DrawElementsIndirectCommand. */
+static void mglRecordPipelineStatsFromIndirect(GLMContext ctx, GLenum mode,
+                                               const void *indirect,
+                                               GLsizei drawcount,
+                                               GLsizei stride, bool arrays)
+{
+    Buffer *buf;
+    const uint8_t *base;
+    GLsizeiptr commandSize;
+    GLsizeiptr commandStride;
+    GLsizei i;
+
+    if (!ctx || drawcount <= 0)
+        return;
+    buf = STATE(buffers[_DRAW_INDIRECT_BUFFER]);
+    if (!buf || !buf->data.buffer_data || buf->size <= 0)
+        return;
+    commandSize = arrays ? (GLsizeiptr)sizeof(DrawArraysIndirectCommand)
+                         : (GLsizeiptr)sizeof(DrawElementsIndirectCommand);
+    commandStride = stride ? (GLsizeiptr)stride : commandSize;
+    base = (const uint8_t *)buf->data.buffer_data + (intptr_t)indirect;
+    for (i = 0; i < drawcount; i++) {
+        const uint8_t *cmd = base + (GLsizeiptr)i * commandStride;
+        GLuint count;
+        GLuint instanceCount;
+        if (arrays) {
+            const DrawArraysIndirectCommand *c =
+                (const DrawArraysIndirectCommand *)(const void *)cmd;
+            count = c->count;
+            instanceCount = c->instanceCount;
+        } else {
+            const DrawElementsIndirectCommand *c =
+                (const DrawElementsIndirectCommand *)(const void *)cmd;
+            count = c->count;
+            instanceCount = c->instanceCount;
+        }
+        if (count == 0u || instanceCount == 0u)
+            continue;
+        mglRecordActivePipelineStatisticsQueryDraw(
+            ctx, mode, (GLsizei)count, (GLsizei)instanceCount,
+            arrays ? GL_FALSE : GL_TRUE);
+    }
+}
+
+static GLuint mglTraceDrawProgram(GLMContext ctx)
+{
+    return ctx ? STATE(program_name) : 0u;
+}
+
+static bool mglValidateDrawIndirectCommands(GLMContext ctx,
+                                            const char *label,
+                                            const void *indirect,
+                                            GLsizei drawcount,
+                                            GLsizei stride,
+                                            GLsizeiptr commandSize)
+{
+    Buffer *buf = ctx ? STATE(buffers[_DRAW_INDIRECT_BUFFER]) : NULL;
+    const char *caller = label ? label : "DRAW_INDIRECT";
+    intptr_t baseOffset = (intptr_t)indirect;
+    GLsizeiptr commandStride;
+    GLsizeiptr lastOffset;
+
+    if (!buf) {
+        mglTraceLogExternal("%s_SKIP reason=no_draw_indirect_buffer program=%u",
+                            caller,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return false;
+    }
+    if (buf->mapped && !(buf->access_flags & GL_MAP_PERSISTENT_BIT)) {
+        mglTraceLogExternal("%s_SKIP reason=draw_indirect_buffer_mapped buffer=%u program=%u",
+                            caller,
+                            (unsigned)buf->name,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return false;
+    }
+    if (baseOffset < 0 || (baseOffset & 3) != 0) {
+        mglTraceLogExternal("%s_SKIP reason=bad_indirect_offset offset=%lld program=%u",
+                            caller,
+                            (long long)baseOffset,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglDispatchError(ctx, caller, GL_INVALID_VALUE);
+        return false;
+    }
+    if (drawcount < 0 || stride < 0 || (stride & 3) != 0) {
+        mglTraceLogExternal("%s_SKIP reason=bad_drawcount_or_stride drawcount=%d stride=%d program=%u",
+                            caller,
+                            (int)drawcount,
+                            (int)stride,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglDispatchError(ctx, caller, GL_INVALID_VALUE);
+        return false;
+    }
+    if (drawcount == 0) {
+        return true;
+    }
+    if (commandSize <= 0 || buf->size < 0 || baseOffset > buf->size) {
+        mglTraceLogExternal("%s_SKIP reason=bad_indirect_range offset=%lld size=%lld commandSize=%lld program=%u",
+                            caller,
+                            (long long)baseOffset,
+                            (long long)(buf ? buf->size : -1),
+                            (long long)commandSize,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return false;
+    }
+
+    commandStride = stride ? (GLsizeiptr)stride : commandSize;
+    if (drawcount > 1 &&
+        commandStride > 0 &&
+        (GLsizeiptr)(drawcount - 1) > (GLsizeiptr)((INTPTR_MAX - baseOffset) / commandStride)) {
+        mglTraceLogExternal("%s_SKIP reason=indirect_offset_overflow offset=%lld drawcount=%d stride=%lld program=%u",
+                            caller,
+                            (long long)baseOffset,
+                            (int)drawcount,
+                            (long long)commandStride,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return false;
+    }
+
+    lastOffset = (GLsizeiptr)baseOffset + (GLsizeiptr)(drawcount - 1) * commandStride;
+    if (lastOffset > buf->size || commandSize > buf->size - lastOffset) {
+        mglTraceLogExternal("%s_SKIP reason=indirect_range_oob buffer=%u offset=%lld drawcount=%d stride=%lld commandSize=%lld size=%lld program=%u",
+                            caller,
+                            (unsigned)buf->name,
+                            (long long)baseOffset,
+                            (int)drawcount,
+                            (long long)commandStride,
+                            (long long)commandSize,
+                            (long long)buf->size,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return false;
+    }
+
+    return true;
+}
+
+static Buffer *mglResolveVertexAttribBufferForDraw(VertexArray *vao, GLuint attrib)
+{
+    if (!vao || attrib >= MAX_ATTRIBS)
+        return NULL;
+
+    VertexAttrib *a = &vao->attrib[attrib];
+    if (a->buffer_bindingindex < MGL_MAX_VERTEX_ATTRIB_BINDINGS &&
+        vao->bindings[a->buffer_bindingindex].buffer) {
+        return vao->bindings[a->buffer_bindingindex].buffer;
+    }
+
+    return a->buffer;
+}
+
+static bool should_log_throttled(uint64_t *counter, uint64_t burst_limit, uint64_t every_n)
+{
+    (*counter)++;
+    return (*counter <= burst_limit) || ((*counter % every_n) == 0);
+}
+
+static bool should_skip_indexed_draw_no_element_buffer(GLMContext ctx, const char *caller)
+{
+    static uint64_t missing_element_buffer_count = 0;
+    VertexArray *vao = mglGetSafeCurrentVAO(ctx, caller);
+
+    if (!vao || vao->element_array.buffer) {
+        return false;
+    }
+
+    if (should_log_throttled(&missing_element_buffer_count, 8, 1000)) {
+        fprintf(stderr,
+                "MGL Warning: %s: missing element buffer, skipping indexed draw (occurrence=%llu)\n",
+                caller,
+                (unsigned long long)missing_element_buffer_count);
+    }
+
+    return true;
+}
+
+/* Upload DrawElements client-memory indices into a context scratch EBO and
+ * bind it to the current VAO.  Call before building MGLDrawCommand so the
+ * full 64-bit client pointer is not truncated into indexBufferOffset. */
+static bool mglUploadClientElementIndices(GLMContext ctx, GLsizei count,
+                                          GLenum type, const void *indices)
+{
+    VertexArray *vao;
+    GLuint elem_size;
+    GLsizeiptr bytes;
+
+    if (!ctx || !indices || count <= 0) {
+        return false;
+    }
+    vao = mglGetSafeCurrentVAO(ctx, "mglUploadClientElementIndices");
+    if (!vao) {
+        return false;
+    }
+    switch (type) {
+        case GL_UNSIGNED_BYTE: elem_size = 1u; break;
+        case GL_UNSIGNED_SHORT: elem_size = 2u; break;
+        case GL_UNSIGNED_INT: elem_size = 4u; break;
+        default: return false;
+    }
+    bytes = (GLsizeiptr)count * (GLsizeiptr)elem_size;
+    if (bytes <= 0) {
+        return false;
+    }
+    if (ctx->client_element_array_buffer == 0u) {
+        mglGenBuffers(ctx, 1, &ctx->client_element_array_buffer);
+        if (ctx->client_element_array_buffer == 0u) {
+            return false;
+        }
+    }
+    mglBindBuffer(ctx, GL_ELEMENT_ARRAY_BUFFER, ctx->client_element_array_buffer);
+    if (STATE(error) != GL_NO_ERROR) {
+        return false;
+    }
+    mglBufferData(ctx, GL_ELEMENT_ARRAY_BUFFER, bytes, indices, GL_STREAM_DRAW);
+    if (STATE(error) != GL_NO_ERROR) {
+        return false;
+    }
+    return vao->element_array.buffer != NULL;
+}
+
+/* If no user EBO is bound, treat indices as a client pointer and stage it.
+ * Our scratch EBO left bound from a prior client-memory draw must not be
+ * treated as a user ELEMENT_ARRAY_BUFFER — otherwise the next client pointer
+ * is misread as a byte offset (CTS XFB DrawElements does this repeatedly). */
+static bool mglEnsureElementBufferForDraw(GLMContext ctx, GLsizei count,
+                                          GLenum type, const void **indices_io)
+{
+    VertexArray *vao;
+    Buffer *ebo;
+
+    if (!ctx || !indices_io) {
+        return false;
+    }
+    vao = mglGetSafeCurrentVAO(ctx, "mglEnsureElementBufferForDraw");
+    if (!vao) {
+        return false;
+    }
+    ebo = vao->element_array.buffer;
+    if (ebo &&
+        (ctx->client_element_array_buffer == 0u ||
+         ebo->name != ctx->client_element_array_buffer)) {
+        return true; /* user EBO: indices is a buffer offset */
+    }
+    if (!*indices_io) {
+        return false;
+    }
+    if (!mglUploadClientElementIndices(ctx, count, type, *indices_io)) {
+        return false;
+    }
+    *indices_io = NULL; /* bound scratch EBO; draw uses offset 0 */
+    return true;
+}
+
+static Buffer *mglCurrentElementBuffer(GLMContext ctx, const char *caller)
+{
+    VertexArray *vao = mglGetSafeCurrentVAO(ctx, caller);
+    return vao ? vao->element_array.buffer : NULL;
+}
+
+static GLuint mglCurrentElementBufferName(GLMContext ctx, const char *caller)
+{
+    Buffer *buf = mglCurrentElementBuffer(ctx, caller);
+    return buf ? buf->name : 0u;
+}
+
+bool check_draw_modes(GLenum mode)
+{
+    switch(mode)
+    {
+        case GL_POINTS:
+        case GL_LINE_STRIP:
+        case GL_LINE_LOOP:
+        case GL_LINES:
+        case GL_LINE_STRIP_ADJACENCY:
+        case GL_LINES_ADJACENCY:
+        case GL_TRIANGLE_STRIP:
+        case GL_TRIANGLE_FAN:
+        case GL_TRIANGLES:
+        case GL_TRIANGLE_STRIP_ADJACENCY:
+        case GL_TRIANGLES_ADJACENCY:
+        case GL_PATCHES:
+            return true;
+    }
+
+    // need to verify against geometry shaders when I get there
+
+    return false;
+}
+
+bool check_element_type(GLenum mode)
+{
+    switch(mode)
+    {
+        case GL_UNSIGNED_BYTE:
+        case GL_UNSIGNED_SHORT:
+        case GL_UNSIGNED_INT:
+            return true;
+    }
+
+    return false;
+}
+
+bool processVAO(GLMContext ctx)
+{
+    VertexArray *vao;
+
+    vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
+    if (!vao) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+
+    if (vao->dirty_bits & DIRTY_VAO_BUFFER_BASE)
+    {
+        // map buffer bindings to vertex array
+        for(int i=0; i<STATE(max_vertex_attribs); i++)
+        {
+            if (vao->enabled_attribs & (0x1 << i))
+            {
+                if (mglResolveVertexAttribBufferForDraw(vao, (GLuint)i) == NULL)
+                {
+                    // no buffer bound to active attrib...
+                    return false;
+                }
+            }
+
+            // early out
+            if ((vao->enabled_attribs >> (i+1)) == 0)
+                break;
+        }
+
+        // clear buffer base dirty bits as we have mapped buffers to attribs
+        vao->dirty_bits &= ~DIRTY_VAO_BUFFER_BASE;
+    }
+
+    return true;
+}
+
+bool validate_vao(GLMContext ctx, bool uses_elements)
+{
+    VertexArray *vao;
+
+    if (!ctx)
+        return false;
+
+    vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
+    if (!vao) {
+        /* GLES 3.2 §2.10 keeps a default vertex array object alive, so a draw
+         * with nothing explicitly bound is legal there; GL 4.6 Core §10.3.1
+         * requires one.  (The ES smoke test draws exactly this way.) */
+        return ctx->is_es ? true : false;
+    }
+    /* Context-private attrib default is not a user-bound VAO; draws must
+     * fail with INVALID_OPERATION (KHR-GL46.draw_indirect.negative-noVAO-*).
+     * ES keeps the default VAO usable instead. */
+    if (ctx->core_attrib_default_vao != 0u &&
+        vao->name == ctx->core_attrib_default_vao) {
+        /* Context-private attrib default: desktop core rejects the draw, ES
+         * keeps the default VAO usable. */
+        return ctx->is_es ? true : false;
+    }
+
+    // no attribs enabled..
+    // if (VAO_STATE(enabled_attribs) == 0)
+    //    return false;
+
+    if (vao->dirty_bits)
+    {
+        if (!processVAO(ctx)) {
+            fprintf(stderr, "MGL Error: validate_vao: processVAO failed\n");
+            return false;
+        }
+    }
+
+    unsigned int enabled_attribs;
+
+    enabled_attribs = vao->enabled_attribs;
+
+    int i=0;
+    do
+    {
+        if (enabled_attribs & 0x1)
+        {
+            // Mapped buffers cannot be used during draw calls unless
+            // mapped persistently (GL_MAP_PERSISTENT_BIT), which GL 4.5
+            // explicitly allows for simultaneous mapping and rendering.
+            Buffer *attrib_buffer = mglResolveVertexAttribBufferForDraw(vao, (GLuint)i);
+            if (!attrib_buffer || (attrib_buffer->mapped &&
+                !(attrib_buffer->access_flags & GL_MAP_PERSISTENT_BIT))) {
+                fprintf(stderr, "MGL Error: validate_vao: attrib %d buffer mapped (non-persistent)\n", i);
+                return false;
+            }
+        }
+
+        i++;
+        enabled_attribs >>= 1;
+    } while(enabled_attribs);
+
+    if (uses_elements)
+    {
+        if (!vao->element_array.buffer) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* GL 4.6 §11.2: a program object linking both a tessellation control and a
+ * tessellation evaluation shader is required before GL_PATCHES may be used,
+ * and a program object carrying a tessellation control shader without a
+ * tessellation evaluation shader cannot be used to draw at all.  A
+ * GL_PATCHES draw whose bound program or pipeline supplies TCS but no TES
+ * therefore generates INVALID_OPERATION (KHR-GL46.tessellation_shader.single.
+ * xfb_captures_data_from_correct_stage, negative {VS,TCS,FS} pipeline case). */
+static bool program_missing_tes_for_patches(GLMContext ctx, GLenum mode)
+{
+    GLMState *st = ctx ? ctx->active_state : NULL;
+    if (!st || mode != GL_PATCHES) return false;
+
+    Program *program = st->program;
+    if (program && program->shader_slots[_TESS_CONTROL_SHADER])
+        return program->shader_slots[_TESS_EVALUATION_SHADER] == NULL;
+
+    ProgramPipeline *pipeline = st->program_pipeline;
+    if (pipeline && pipeline->stage_programs[_TESS_CONTROL_SHADER])
+        return pipeline->stage_programs[_TESS_EVALUATION_SHADER] == NULL;
+
+    return false;
+}
+
+bool validate_program(GLMContext ctx, GLenum mode)
+{
+    GLMState *st = ctx ? ctx->active_state : NULL;
+    Program *program = st ? st->program : NULL;
+
+    if (program) {
+        /* st->program_name is the known name for the state's program pointer
+         * (kept in sync by mglUseProgram); name==0 with a non-NULL pointer is
+         * an inconsistent state — fail closed, no probe (decision D6). */
+        if (st->program_name == 0u ||
+            !mglProgramPointerUsableForName(ctx, program, st->program_name)) {
+            fprintf(stderr, "MGL WARNING: validate_program dropping invalid cached program pointer %p\n",
+                    (void *)program);
+            st->program = NULL;
+            st->program_name = 0;
+            program = NULL;
+        }
+    }
+
+    /* GL 4.6 §7.4: missing pipeline stages are undefined, no error.
+     * A program linked with extra stages that are not all bound to that
+     * same program is INVALID_OPERATION on a vertex-transferring command. */
+    if (!program && st && !st->program_name) {
+        ProgramPipeline *pipeline = st->program_pipeline;
+        if (pipeline &&
+            mglProgramPipelineHasOrphanedLinkedStages(
+                pipeline->stage_programs)) {
+            return false;
+        }
+    }
+
+    if (program_missing_tes_for_patches(ctx, mode)) {
+        fprintf(stderr,
+                "MGL WARNING: draw rejected: GL_PATCHES draw has a tessellation "
+                "control shader but no tessellation evaluation shader\n");
+        return false;
+    }
+
+    if (program) {
+        if (program->shader_slots[_GEOMETRY_SHADER]) {
+            static uint64_t s_geometryShaderProgramNoticeCount = 0;
+            uint64_t hit = ++s_geometryShaderProgramNoticeCount;
+            if (hit <= 16ull || (hit % 512ull) == 0ull) {
+                fprintf(stderr,
+                        "MGL WARNING: validate_program allowing geometry shader program=%u hit=%llu\n",
+                        program->name,
+                        (unsigned long long)hit);
+            }
+        }
+    }
+
+    // Allow NULL program (MGLRenderer handles it by using cached pipeline or program pipeline)
+    return true;
+}
+
+GLsizei getTypeSize(GLenum type)
+{
+    switch(type)
+    {
+        case GL_UNSIGNED_BYTE:
+            return sizeof(unsigned char);
+
+        case GL_UNSIGNED_SHORT:
+            return sizeof(unsigned short);
+
+        case GL_UNSIGNED_INT:
+            return sizeof(unsigned int);
+    }
+
+    fprintf(stderr, "MGL WARNING: unsupported index type 0x%x\n", type);
+
+    return 0;
+}
+
+
+static bool mglResolveVertexAttribForCPUFeedback(VertexArray *vao,
+                                                 GLuint attribIndex,
+                                                 Buffer **bufferOut,
+                                                 GLintptr *bindingOffsetOut,
+                                                 GLuint *strideOut,
+                                                 GLuint *divisorOut,
+                                                 GLintptr *relativeOffsetOut)
+{
+    if (!vao || attribIndex >= MAX_ATTRIBS) {
+        return false;
+    }
+
+    VertexAttrib *attrib = &vao->attrib[attribIndex];
+    Buffer *buffer = attrib->buffer;
+    GLintptr bindingOffset = attrib->binding_offset;
+    GLuint stride = attrib->stride;
+    GLuint divisor = attrib->divisor;
+
+    if (attrib->buffer_bindingindex < MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
+        BufferBinding *binding = &vao->bindings[attrib->buffer_bindingindex];
+        if (binding->buffer) {
+            buffer = binding->buffer;
+            bindingOffset = binding->offset;
+            stride = binding->stride > 0 ? binding->stride : attrib->stride;
+            divisor = binding->divisor;
+        }
+    }
+
+    if (!buffer || !buffer->data.buffer_data || buffer->size <= 0) {
+        return false;
+    }
+
+    if (bufferOut) *bufferOut = buffer;
+    if (bindingOffsetOut) *bindingOffsetOut = bindingOffset;
+    if (strideOut) *strideOut = stride;
+    if (divisorOut) *divisorOut = divisor;
+    if (relativeOffsetOut) *relativeOffsetOut = attrib->relativeoffset;
+    return true;
+}
+
+static size_t mglCPUAttribComponentSize(GLenum type)
+{
+    switch (type) {
+        case GL_BYTE:
+        case GL_UNSIGNED_BYTE:
+            return 1;
+        case GL_SHORT:
+        case GL_UNSIGNED_SHORT:
+        case GL_HALF_FLOAT:
+            return 2;
+        case GL_INT:
+        case GL_UNSIGNED_INT:
+        case GL_FLOAT:
+        case GL_FIXED:
+            return 4;
+        case GL_DOUBLE:
+            return 8;
+        default:
+            return 0;
+    }
+}
+
+static float mglCPUAttribReadComponent(const void *src, GLenum type, GLboolean normalized)
+{
+    switch (type) {
+        case GL_BYTE: {
+            int v = *(const GLbyte *)src;
+            return normalized ? fmaxf((float)v / 127.0f, -1.0f) : (float)v;
+        }
+        case GL_UNSIGNED_BYTE: {
+            unsigned int v = *(const GLubyte *)src;
+            return normalized ? (float)v / 255.0f : (float)v;
+        }
+        case GL_SHORT: {
+            int v = *(const GLshort *)src;
+            return normalized ? fmaxf((float)v / 32767.0f, -1.0f) : (float)v;
+        }
+        case GL_UNSIGNED_SHORT: {
+            unsigned int v = *(const GLushort *)src;
+            return normalized ? (float)v / 65535.0f : (float)v;
+        }
+        case GL_INT: {
+            GLint v = *(const GLint *)src;
+            return normalized ? fmaxf((float)v / 2147483647.0f, -1.0f) : (float)v;
+        }
+        case GL_UNSIGNED_INT: {
+            GLuint v = *(const GLuint *)src;
+            return normalized ? (float)((double)v / 4294967295.0) : (float)v;
+        }
+        case GL_FLOAT:
+            return *(const GLfloat *)src;
+        case GL_DOUBLE:
+            return (float)*(const GLdouble *)src;
+        case GL_FIXED: {
+            GLint v = *(const GLint *)src;
+            return (float)v / 65536.0f;
+        }
+        default:
+            return 0.0f;
+    }
+}
+
+static void mglCPUFeedbackReadAttrib(GLMContext ctx,
+                                     VertexArray *vao,
+                                     GLuint attribIndex,
+                                     GLint first,
+                                     GLuint vertexInDraw,
+                                     GLuint instance,
+                                     GLuint baseInstance,
+                                     float out[4])
+{
+    out[0] = 0.0f;
+    out[1] = 0.0f;
+    out[2] = 0.0f;
+    out[3] = 1.0f;
+
+    if (!vao || attribIndex >= MAX_ATTRIBS) {
+        return;
+    }
+
+    VertexAttrib *attrib = &vao->attrib[attribIndex];
+    if (((vao->enabled_attribs >> attribIndex) & 1u) == 0u) {
+        CurrentVertexAttrib *current = &STATE(current_vertex_attrib)[attribIndex];
+        out[0] = current->f[0];
+        out[1] = current->f[1];
+        out[2] = current->f[2];
+        out[3] = current->f[3];
+        return;
+    }
+
+    Buffer *buffer = NULL;
+    GLintptr bindingOffset = 0;
+    GLintptr relativeOffset = 0;
+    GLuint stride = 0;
+    GLuint divisor = 0;
+    if (!mglResolveVertexAttribForCPUFeedback(vao,
+                                              attribIndex,
+                                              &buffer,
+                                              &bindingOffset,
+                                              &stride,
+                                              &divisor,
+                                              &relativeOffset)) {
+        return;
+    }
+
+    size_t compSize = mglCPUAttribComponentSize(attrib->type);
+    if (compSize == 0 || attrib->size == 0 || attrib->size > 4) {
+        return;
+    }
+    if (stride == 0) {
+        stride = (GLuint)(compSize * attrib->size);
+    }
+
+    GLuint element = (GLuint)(first + (GLint)vertexInDraw);
+    if (divisor > 0) {
+        element = (instance + baseInstance) / divisor;
+    }
+
+    GLintptr byteOffset = bindingOffset + relativeOffset + (GLintptr)((uint64_t)element * stride);
+    size_t readBytes = compSize * attrib->size;
+    if (byteOffset < 0 ||
+        (uint64_t)byteOffset + readBytes > (uint64_t)buffer->size) {
+        return;
+    }
+
+    const uint8_t *src = (const uint8_t *)(uintptr_t)buffer->data.buffer_data + byteOffset;
+    for (GLuint c = 0; c < attrib->size; c++) {
+        out[c] = mglCPUAttribReadComponent(src + c * compSize,
+                                           attrib->type,
+                                           attrib->normalized ? GL_TRUE : GL_FALSE);
+    }
+}
+
+static MGLShaderResource *mglCPUFeedbackFindVertexOutput(Program *program, const char *name)
+{
+    if (!program || !name) {
+        return NULL;
+    }
+
+    MGLShaderResourceList *outputs =
+        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES];
+    for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
+        MGLShaderResource *output = &outputs->list[i];
+        if (output->name && strcmp(output->name, name) == 0) {
+            return output;
+        }
+    }
+    return NULL;
+}
+
+static MGLShaderResource *mglCPUFeedbackFindVertexInputAtLocation(Program *program, GLuint location)
+{
+    if (!program) {
+        return NULL;
+    }
+
+    MGLShaderResourceList *inputs =
+        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
+    for (GLuint i = 0; inputs->list && i < inputs->count; i++) {
+        if (inputs->list[i].location == location) {
+            return &inputs->list[i];
+        }
+    }
+    return NULL;
+}
+
+static MGLShaderResource *mglCPUFeedbackFindVertexInputByName(Program *program, const char *name)
+{
+    if (!program || !name) {
+        return NULL;
+    }
+
+    MGLShaderResourceList *inputs =
+        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
+    for (GLuint i = 0; inputs->list && i < inputs->count; i++) {
+        if (inputs->list[i].name && strcmp(inputs->list[i].name, name) == 0) {
+            return &inputs->list[i];
+        }
+    }
+    return NULL;
+}
+
+/* (deleted mglCPUFeedbackReadPositionBlock — test-specific: hardcoded UBO
+ * names "index" / "PositionBlock". Removed as part of the CTS-cheat cleanup.) */
+
+static GLuint mglCPUFeedbackGLTypeComponents(GLenum type)
+{
+    switch (type) {
+        case GL_FLOAT_VEC2:
+        case GL_INT_VEC2:
+        case GL_UNSIGNED_INT_VEC2:
+        case GL_DOUBLE_VEC2:
+            return 2;
+        case GL_FLOAT_VEC3:
+        case GL_INT_VEC3:
+        case GL_UNSIGNED_INT_VEC3:
+        case GL_DOUBLE_VEC3:
+            return 3;
+        case GL_FLOAT_VEC4:
+        case GL_INT_VEC4:
+        case GL_UNSIGNED_INT_VEC4:
+        case GL_DOUBLE_VEC4:
+            return 4;
+        default:
+            return 1;
+    }
+}
+
+static size_t mglCPUFeedbackGLTypeComponentBytes(GLenum type)
+{
+    switch (type) {
+        case GL_DOUBLE:
+        case GL_DOUBLE_VEC2:
+        case GL_DOUBLE_VEC3:
+        case GL_DOUBLE_VEC4:
+            return sizeof(GLdouble);
+        default:
+            return sizeof(GLint);
+    }
+}
+
+static void mglCPUFeedbackWriteValues(uint8_t *dst, GLenum type, GLuint components, const float values[4])
+{
+    switch (type) {
+        case GL_INT:
+        case GL_INT_VEC2:
+        case GL_INT_VEC3:
+        case GL_INT_VEC4:
+            for (GLuint c = 0; c < components; c++) {
+                ((GLint *)(void *)dst)[c] = (GLint)lrintf(values[c]);
+            }
+            break;
+        case GL_UNSIGNED_INT:
+        case GL_UNSIGNED_INT_VEC2:
+        case GL_UNSIGNED_INT_VEC3:
+        case GL_UNSIGNED_INT_VEC4:
+            for (GLuint c = 0; c < components; c++) {
+                ((GLuint *)(void *)dst)[c] = (GLuint)llrintf(values[c]);
+            }
+            break;
+        case GL_DOUBLE:
+        case GL_DOUBLE_VEC2:
+        case GL_DOUBLE_VEC3:
+        case GL_DOUBLE_VEC4:
+            for (GLuint c = 0; c < components; c++) {
+                ((GLdouble *)(void *)dst)[c] = (GLdouble)values[c];
+            }
+            break;
+        default:
+            for (GLuint c = 0; c < components; c++) {
+                ((GLfloat *)(void *)dst)[c] = values[c];
+            }
+            break;
+    }
+}
+
+extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuint64 written);
+extern void mglRecordActivePrimitivesGeneratedVsOnly(GLMContext ctx, GLenum mode,
+                                                     GLsizei count,
+                                                     GLsizei instanceCount);
+
+static bool mglCPUReadIndexValue(const uint8_t *src, GLenum type, GLuint index, GLuint *value)
+{
+    if (!src || !value) {
+        return false;
+    }
+    switch (type) {
+        case GL_UNSIGNED_BYTE:
+            *value = src[index];
+            return true;
+        case GL_UNSIGNED_SHORT:
+            *value = ((const GLushort *)(const void *)src)[index];
+            return true;
+        case GL_UNSIGNED_INT:
+            *value = ((const GLuint *)(const void *)src)[index];
+            return true;
+        default:
+            return false;
+    }
+}
+
+/* (deleted mglCPUFeedbackEvaluateCTSGeometryVarying,                *
+ *          mglCPUFeedbackInputVerticesPerPrimitive,                   *
+ *          mglCPUFeedbackOutputVerticesPerInputPrimitive — all were   *
+ *          test-specific: substring-matched GS source and hardcoded   *
+ *          varying names / magic values like 256.0f / 1024.0f.        *
+ *          Removed as part of the CTS-cheat cleanup. A general VS-    *
+ *          passthrough path replaces them; GS XFB is honestly not      *
+ *          supported on Metal (no geometry-shader stage).)            */
+
+/* Forward declarations — definitions live further down in this file. */
+static bool mglCPUFeedbackResolveXFBSlot(GLMContext ctx,
+                                         GLuint varying,
+                                         Buffer **bufferOut,
+                                         GLintptr *offsetOut,
+                                         GLsizeiptr *sizeOut);
+static GLuint64 mglCPUFeedbackPrimitiveCount(GLenum mode, GLuint64 vertices);
+static bool mglCPUFeedbackIsPassthroughProgram(Program *program);
+
+/* (deleted mglCPUFeedbackEvaluateSimpleVarying and                 *
+ *  mglCPUFeedbackCanEvaluateProgram — test-specific substring/name *
+ *  gates. Replaced by mglCPUFeedbackIsPassthroughProgram above.)   */
+
+static GLuint64 mglCPUFeedbackPrimitiveCount(GLenum mode, GLuint64 vertices)
+{
+    switch (mode) {
+        case GL_POINTS: return vertices;
+        case GL_LINES: return vertices / 2u;
+        case GL_LINE_STRIP: return vertices > 1u ? vertices - 1u : 0u;
+        case GL_LINE_LOOP: return vertices > 1u ? vertices : 0u;
+        case GL_TRIANGLES: return vertices / 3u;
+        case GL_TRIANGLE_STRIP:
+        case GL_TRIANGLE_FAN: return vertices > 2u ? vertices - 2u : 0u;
+        default: return vertices;
+    }
+}
+
+static bool mglCPUFeedbackResolveXFBSlot(GLMContext ctx,
+                                         GLuint varying,
+                                         Buffer **bufferOut,
+                                         GLintptr *offsetOut,
+                                         GLsizeiptr *sizeOut)
+{
+    GLuint slotIndex = 0;
+    if (STATE(program) &&
+        STATE(program)->transform_feedback_buffer_mode == GL_SEPARATE_ATTRIBS) {
+        slotIndex = varying;
+    }
+    if (slotIndex >= MAX_BINDABLE_BUFFERS) {
+        return false;
+    }
+    BufferBaseTarget *slot = &STATE(buffer_base)[_TRANSFORM_FEEDBACK_BUFFER].buffers[slotIndex];
+    Buffer *buffer = slot->buf;
+    if (!buffer || !buffer->data.buffer_data || buffer->size <= 0) {
+        return false;
+    }
+    GLintptr offset = slot->offset;
+    GLsizeiptr size = slot->size;
+    if (offset < 0 || offset > buffer->size) {
+        return false;
+    }
+    if (size <= 0 || size > buffer->size - offset) {
+        size = buffer->size - offset;
+    }
+    if (size <= 0) {
+        return false;
+    }
+    if (bufferOut) *bufferOut = buffer;
+    if (offsetOut) *offsetOut = offset;
+    if (sizeOut) *sizeOut = size;
+    return true;
+}
+
+/* Determine whether a program's transform-feedback varyings can be captured
+ * by the CPU passthrough path.
+ *
+ * A program is passthrough-capturable when EVERY captured varying is provably
+ * a 1:1 copy of a vertex-shader INPUT attribute: the VS must declare an output
+ * with the same name (or base name, for "foo[0]") at some location L and type
+ * T, AND must declare a stage INPUT at the same location L with the same type
+ * T. Under that assumption the captured value equals the input attribute value
+ * for that vertex, which the CPU can read directly from the VAO without
+ * interpreting the shader body.
+ *
+ * Limitations (honest, not cheated):
+ *  - Only vertex-shader programs. Geometry/tessellation XFB is not capturable
+ *    on the CPU (Metal has no geometry stage; tess-factor evaluation isn't
+ *    reproducible on the CPU). The TES GPU path in MGLRenderer.m handles TES
+ *    XFB independently. GS XFB is simply unsupported.
+ *  - A VS that transforms an input but keeps the location would satisfy this
+ *    check yet capture the wrong value; we accept that risk rather than parse
+ *    GLSL. Non-passthrough XFB requires the GPU capture path (follow-up).
+ */
+static bool mglCPUFeedbackIsPassthroughProgram(Program *program)
+{
+    if (!program ||
+        program->transform_feedback_varying_count <= 0 ||
+        program->transform_feedback_varying_count >
+            (GLsizei)MGL_MAX_TRANSFORM_FEEDBACK_VARYINGS) {
+        return false;
+    }
+
+    /* Reject any program with a pre-fragment stage other than the vertex
+     * shader (GS / TCS / TES). Those need a real geometry/tessellation
+     * path, which the CPU cannot provide. */
+    if (program->attached_shader_mask &
+        (GEOMETRY_SHADER_MASK_BIT |
+         TESS_CONTROL_SHADER_MASK_BIT |
+         TESS_EVALUATION_SHADER_MASK_BIT)) {
+        return false;
+    }
+
+    for (GLsizei i = 0; i < program->transform_feedback_varying_count; i++) {
+        const char *name = program->transform_feedback_varying_names[i];
+        if (!name || name[0] == '\0') {
+            return false;
+        }
+
+        /* Strip "[N]" subscript -> base name (mirrors
+         * mglValidateTransformFeedbackVaryings in program.c). */
+        char base_name[96];
+        strncpy(base_name, name, sizeof(base_name) - 1);
+        base_name[sizeof(base_name) - 1] = '\0';
+        char *bracket = strchr(base_name, '[');
+        if (bracket) {
+            *bracket = '\0';
+        }
+
+        MGLShaderResource *output = mglCPUFeedbackFindVertexOutput(program, base_name);
+        if (!output) {
+            return false;
+        }
+
+        /* True passthrough only: an input with the same name as the captured
+         * output.  Matching by location is wrong — VS in/out location spaces
+         * are independent, so out "result" @0 must not bind to in "a_0" @0. */
+        MGLShaderResource *input =
+            mglCPUFeedbackFindVertexInputByName(program, base_name);
+        if (!input || input->gl_type != output->gl_type) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* Resolve the XFB slot for a given varying index and record it in the
+ * touched-buffer list (used to flush + dirty-track after the capture loop). */
+static bool mglCPUFeedbackNoteXFBSlot(GLMContext ctx,
+                                      GLuint varying,
+                                      Buffer *touchedBuffers[],
+                                      GLintptr touchedOffsets[],
+                                      GLsizeiptr touchedSizes[],
+                                      GLuint *touchedCountInOut,
+                                      Buffer **xfbOut,
+                                      GLintptr *offsetOut,
+                                      GLsizeiptr *sizeOut)
+{
+    Buffer *xfb = NULL;
+    GLintptr offset = 0;
+    GLsizeiptr size = 0;
+    if (!mglCPUFeedbackResolveXFBSlot(ctx, varying, &xfb, &offset, &size)) {
+        return false;
+    }
+    GLuint touchedCount = *touchedCountInOut;
+    bool alreadyTouched = false;
+    for (GLuint t = 0; t < touchedCount; t++) {
+        if (touchedBuffers[t] == xfb) {
+            alreadyTouched = true;
+            break;
+        }
+    }
+    if (!alreadyTouched && touchedCount < MAX_ATTRIBS) {
+        touchedBuffers[touchedCount] = xfb;
+        touchedOffsets[touchedCount] = offset;
+        touchedSizes[touchedCount] = size;
+        *touchedCountInOut = touchedCount + 1;
+    }
+    *xfbOut = xfb;
+    *offsetOut = offset;
+    *sizeOut = size;
+    return true;
+}
+
+/* Flush captured XFB buffers back to the Metal buffer and update dirty
+ * tracking + query counters. Shared by the arrays and elements paths. */
+static void mglCPUFeedbackFlushAndCount(GLMContext ctx,
+                                        Buffer *touchedBuffers[],
+                                        GLintptr touchedOffsets[],
+                                        GLsizeiptr touchedSizes[],
+                                        GLuint touchedCount,
+                                        GLuint64 totalVertices,
+                                        GLuint64 capturedVertices)
+{
+    for (GLuint t = 0; t < touchedCount; t++) {
+        Buffer *xfb = touchedBuffers[t];
+        GLintptr dstOffset = touchedOffsets[t];
+        GLsizeiptr writeSize = touchedSizes[t];
+        if (!xfb) {
+            continue;
+        }
+        mglRendererBufferSubData(ctx,
+                                 xfb,
+                                 (size_t)dstOffset,
+                                 (size_t)writeSize,
+                                 (uint8_t *)(uintptr_t)xfb->data.buffer_data + dstOffset);
+        xfb->cpu_shadow_pending = GL_TRUE;
+        xfb->data.dirty_bits |= DIRTY_BUFFER_DATA;
+        xfb->ever_written = GL_TRUE;
+        xfb->has_initialized_data = GL_TRUE;
+        if (xfb->written_min < 0 || dstOffset < xfb->written_min) {
+            xfb->written_min = dstOffset;
+        }
+        GLintptr writeEnd = dstOffset + writeSize;
+        if (xfb->written_max < 0 || writeEnd > xfb->written_max) {
+            xfb->written_max = writeEnd;
+        }
+        xfb->last_init_source = kInitMapWrite;
+        xfb->last_write_offset = dstOffset;
+        xfb->last_write_size = writeSize;
+        xfb->last_write_src_ptr = NULL;
+        xfb->last_write_src_hash = 0;
+    }
+
+    GLuint64 generated = mglCPUFeedbackPrimitiveCount(
+        STATE(transform_feedback)->primitive_mode, totalVertices);
+    GLuint64 written = mglCPUFeedbackPrimitiveCount(
+        STATE(transform_feedback)->primitive_mode, capturedVertices);
+    STATE(transform_feedback)->primitives_generated = generated;
+    STATE(transform_feedback)->primitives_written = written;
+    mglRecordActivePrimitiveQueryDraw(ctx, generated, written);
+}
+
+/* Compute the per-varying layout (type, components, byte offset within an
+ * interleaved vertex) for a passthrough program. Returns false if any varying
+ * cannot be laid out (unknown type). */
+static bool mglCPUFeedbackLayoutVaryings(Program *program,
+                                         GLenum varyingTypes[MAX_ATTRIBS],
+                                         GLuint varyingComponents[MAX_ATTRIBS],
+                                         size_t varyingOffsets[MAX_ATTRIBS],
+                                         size_t *vertexBytesOut)
+{
+    GLsizei varyingCount = program->transform_feedback_varying_count;
+    size_t vertexBytes = 0;
+    for (GLsizei varying = 0; varying < varyingCount; varying++) {
+        const char *name = program->transform_feedback_varying_names[varying];
+        char base_name[96];
+        strncpy(base_name, name ? name : "", sizeof(base_name) - 1);
+        base_name[sizeof(base_name) - 1] = '\0';
+        char *bracket = strchr(base_name, '[');
+        if (bracket) {
+            *bracket = '\0';
+        }
+
+        MGLShaderResource *output = mglCPUFeedbackFindVertexOutput(program, base_name);
+        GLenum type = output ? output->gl_type : GL_FLOAT_VEC4;
+        GLuint components = mglCPUFeedbackGLTypeComponents(type);
+
+        /* TODO(xfb-layout): this naive packed layout matches the TES GPU path
+         * (program.c mglFixMSLTesAsComputeKernel Step 6). It does NOT apply
+         * GL's std140 vec3->vec4 padding, matrix strides, or double alignment.
+         * Programs using those will lay out incorrectly; the honest outcome
+         * is a wrong-data failure rather than a silent cheat. */
+        varyingOffsets[varying] = vertexBytes;
+        varyingTypes[varying] = type;
+        varyingComponents[varying] = components;
+        vertexBytes += (size_t)components * mglCPUFeedbackGLTypeComponentBytes(type);
+    }
+    *vertexBytesOut = vertexBytes;
+    return true;
+}
+
+/* Resolve + bounds-clamp the XFB slot capacity for every varying, returning
+ * the minimum vertex capacity across all slots (the number of vertices that
+ * actually fit). */
+static bool mglCPUFeedbackClampCapacity(GLMContext ctx,
+                                        Program *program,
+                                        const GLenum varyingTypes[MAX_ATTRIBS],
+                                        const GLuint varyingComponents[MAX_ATTRIBS],
+                                        size_t vertexBytes,
+                                        GLuint64 totalVertices,
+                                        GLuint64 *capturedVerticesOut)
+{
+    GLsizei varyingCount = program->transform_feedback_varying_count;
+    GLuint64 capturedVertices = totalVertices;
+    for (GLsizei varying = 0; varying < varyingCount; varying++) {
+        Buffer *xfb = NULL;
+        GLintptr dstOffset = 0;
+        GLsizeiptr dstSize = 0;
+        if (!mglCPUFeedbackResolveXFBSlot(ctx, (GLuint)varying, &xfb, &dstOffset, &dstSize)) {
+            return false;
+        }
+        size_t bytesPerVertex =
+            program->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS
+                ? vertexBytes
+                : (size_t)varyingComponents[varying] *
+                      mglCPUFeedbackGLTypeComponentBytes(varyingTypes[varying]);
+        if (bytesPerVertex == 0) {
+            return false;
+        }
+        uint64_t slotVertices = (uint64_t)dstSize / (uint64_t)bytesPerVertex;
+        if (slotVertices < capturedVertices) {
+            capturedVertices = slotVertices;
+        }
+        if (program->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS) {
+            break;
+        }
+    }
+    *capturedVerticesOut = capturedVertices;
+    return true;
+}
+
+/* Capture one output vertex's varyings into the resolved XFB buffers. */
+static void mglCPUFeedbackCaptureVertex(GLMContext ctx,
+                                        Program *program,
+                                        VertexArray *vao,
+                                        GLuint linearVertex,
+                                        GLuint attribVertex,
+                                        GLuint instance,
+                                        GLuint baseInstance,
+                                        GLint first,
+                                        const GLenum varyingTypes[MAX_ATTRIBS],
+                                        const GLuint varyingComponents[MAX_ATTRIBS],
+                                        const size_t varyingOffsets[MAX_ATTRIBS],
+                                        size_t vertexBytes)
+{
+    GLsizei varyingCount = program->transform_feedback_varying_count;
+    for (GLsizei varying = 0; varying < varyingCount; varying++) {
+        const char *name = program->transform_feedback_varying_names[varying];
+        char base_name[96];
+        strncpy(base_name, name ? name : "", sizeof(base_name) - 1);
+        base_name[sizeof(base_name) - 1] = '\0';
+        char *bracket = strchr(base_name, '[');
+        if (bracket) {
+            *bracket = '\0';
+        }
+
+        MGLShaderResource *output = mglCPUFeedbackFindVertexOutput(program, base_name);
+        MGLShaderResource *input =
+            output ? mglCPUFeedbackFindVertexInputByName(program, base_name) : NULL;
+        if (!input) {
+            continue;
+        }
+
+        float values[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        mglCPUFeedbackReadAttrib(ctx,
+                                 vao,
+                                 input->location,
+                                 first,
+                                 attribVertex,
+                                 instance,
+                                 baseInstance,
+                                 values);
+
+        GLenum writeType = varyingTypes[varying];
+        GLuint writeComponents = varyingComponents[varying];
+
+        Buffer *xfb = NULL;
+        GLintptr dstOffset = 0;
+        GLsizeiptr dstSize = 0;
+        if (!mglCPUFeedbackResolveXFBSlot(ctx, (GLuint)varying, &xfb, &dstOffset, &dstSize)) {
+            continue;
+        }
+
+        size_t dstOffsetBytes;
+        uint64_t span = 0;
+        if (program->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS) {
+            /* AUDIT-059: linearVertex * vertexBytes must not wrap. */
+            if (mglRenderCheckedProduct((uint64_t)linearVertex, (uint64_t)vertexBytes,
+                                        &span) != 0 ||
+                span > UINT64_MAX - (uint64_t)dstOffset ||
+                span + (uint64_t)dstOffset > UINT64_MAX - (uint64_t)varyingOffsets[varying]) {
+                continue;
+            }
+            dstOffsetBytes = (size_t)dstOffset + (size_t)span + varyingOffsets[varying];
+        } else {
+            size_t bytesPerVertex =
+                (size_t)writeComponents * mglCPUFeedbackGLTypeComponentBytes(writeType);
+            if (mglRenderCheckedProduct((uint64_t)linearVertex, (uint64_t)bytesPerVertex,
+                                        &span) != 0 ||
+                span > UINT64_MAX - (uint64_t)dstOffset) {
+                continue;
+            }
+            dstOffsetBytes = (size_t)dstOffset + (size_t)span;
+        }
+        {
+            size_t writeBytes =
+                (size_t)writeComponents * mglCPUFeedbackGLTypeComponentBytes(writeType);
+            if (writeBytes > SIZE_MAX - dstOffsetBytes ||
+                dstOffsetBytes + writeBytes > (size_t)dstOffset + (size_t)dstSize) {
+                continue;
+            }
+        }
+        mglCPUFeedbackWriteValues(
+            (uint8_t *)(uintptr_t)xfb->data.buffer_data + dstOffsetBytes,
+            writeType,
+            writeComponents,
+            values);
+    }
+}
+
+/* Common gate for both arrays and elements CPU capture paths. */
+/* F27/P41: every rejection in this gate used to be a bare `return false`, so
+ * "the CPU capture was skipped" and "the capture ran but produced zeros" were
+ * indistinguishable from outside -- the caller only ever saw a zeroed XFB
+ * buffer.  Counting by reason makes the family triageable in one run instead
+ * of by elimination.  Rate-limited so it is useful without flooding. */
+static const char *const kMglXfbGateReasons[] = {
+    "transform feedback not active",
+    "pipeline carries GS/TCS/TES",
+    "no program / varying count / buffer mode / not passthrough",
+    "draw primitive mode != XFB primitive mode",
+    "no vertex array object",
+};
+static uint64_t s_mglXfbGateRejects[5];
+
+static void mglCPUFeedbackGateReject(unsigned reason)
+{
+    uint64_t n;
+    if (reason >= (unsigned)(sizeof(s_mglXfbGateRejects) / sizeof(s_mglXfbGateRejects[0]))) {
+        reason = 2u;
+    }
+    n = ++s_mglXfbGateRejects[reason];
+    /* Log the first few rejections per reason only: vanilla workloads reject
+     * every frame, and the periodic every-512 pulse spammed megabytes of
+     * stderr per session.  The counters stay queryable for diagnostics. */
+    if (n <= 4u) {
+        fprintf(stderr, "MGL XFB GATE: capture skipped (%s) count=%llu\n",
+                kMglXfbGateReasons[reason], (unsigned long long)n);
+    }
+}
+
+static bool mglCPUFeedbackCaptureGate(GLMContext ctx,
+                                      GLenum mode,
+                                      Program **programOut,
+                                      VertexArray **vaoOut)
+{
+    if (!ctx ||
+        !STATE(transform_feedback) ||
+        !STATE(transform_feedback)->active ||
+        STATE(transform_feedback)->paused) {
+        mglCPUFeedbackGateReject(0u);
+        return false;
+    }
+
+    /* A bound program pipeline supersedes the program object binding, so
+     * resolve the vertex-stage program from the pipeline when one is active
+     * (GL spec §2.11.1: useProgram(0) + bindProgramPipeline keeps draws
+     * valid).  A pipeline carrying GS/tessellation stages needs those
+     * stages executed on the GPU path, so CPU passthrough capture must not
+     * swallow such draws. */
+    Program *program = NULL;
+    if (STATE(program_pipeline)) {
+        ProgramPipeline *pipeline = STATE(program_pipeline);
+        if (pipeline->stage_programs[_GEOMETRY_SHADER] ||
+            pipeline->stage_programs[_TESS_CONTROL_SHADER] ||
+            pipeline->stage_programs[_TESS_EVALUATION_SHADER]) {
+            mglCPUFeedbackGateReject(1u);
+            return false;
+        }
+        program = pipeline->stage_programs[_VERTEX_SHADER];
+    } else {
+        program = STATE(program);
+    }
+    if (!program ||
+        program->transform_feedback_varying_count <= 0 ||
+        (program->transform_feedback_buffer_mode != GL_INTERLEAVED_ATTRIBS &&
+         program->transform_feedback_buffer_mode != GL_SEPARATE_ATTRIBS) ||
+        !mglCPUFeedbackIsPassthroughProgram(program)) {
+        mglCPUFeedbackGateReject(2u);
+        return false;
+    }
+    /* GL spec: for a program without a geometry shader, the draw primitive
+     * mode must match the transform-feedback primitive mode. */
+    if (!program->shader_slots[_GEOMETRY_SHADER] &&
+        mode != STATE(transform_feedback)->primitive_mode) {
+        mglCPUFeedbackGateReject(3u);
+        return false;
+    }
+
+    VertexArray *vao = STATE(vao);
+    if (!vao) {
+        /* Core profile: no VAO bound ⇒ fail the XFB capture gate
+         * (draw path already rejects via validate_vao). */
+        mglCPUFeedbackGateReject(4u);
+        return false;
+    }
+
+    *programOut = program;
+    *vaoOut = vao;
+    return true;
+}
+
+bool mglTryCPUTransformFeedbackCapture(GLMContext ctx,
+                                       GLenum mode,
+                                       GLint first,
+                                       GLsizei count,
+                                       GLsizei instancecount,
+                                       GLuint baseInstance)
+{
+    Program *program = NULL;
+    VertexArray *vao = NULL;
+    if (!mglCPUFeedbackCaptureGate(ctx, mode, &program, &vao)) {
+        return false;
+    }
+    if (count <= 0) {
+        /* Nothing to capture, but XFB is active: record zero primitives. */
+        STATE(transform_feedback)->primitives_generated = 0;
+        STATE(transform_feedback)->primitives_written = 0;
+        mglRecordActivePrimitiveQueryDraw(ctx, 0, 0);
+        return true;
+    }
+    if (instancecount <= 0) {
+        instancecount = 1;
+    }
+
+    GLenum varyingTypes[MAX_ATTRIBS] = {0};
+    GLuint varyingComponents[MAX_ATTRIBS] = {0};
+    size_t varyingOffsets[MAX_ATTRIBS] = {0};
+    size_t vertexBytes = 0;
+    if (!mglCPUFeedbackLayoutVaryings(program, varyingTypes, varyingComponents,
+                                      varyingOffsets, &vertexBytes)) {
+        return false;
+    }
+
+    /* VS-only passthrough: one output vertex per input vertex. */
+    uint64_t totalVertices = (uint64_t)count * (uint64_t)instancecount;
+    uint64_t capturedVertices = 0;
+    if (!mglCPUFeedbackClampCapacity(ctx, program, varyingTypes, varyingComponents,
+                                     vertexBytes, totalVertices, &capturedVertices)) {
+        return false;
+    }
+
+    Buffer *touchedBuffers[MAX_ATTRIBS] = {0};
+    GLintptr touchedOffsets[MAX_ATTRIBS] = {0};
+    GLsizeiptr touchedSizes[MAX_ATTRIBS] = {0};
+    GLuint touchedCount = 0;
+    /* Pre-resolve every slot once so the per-vertex loop only does lookups,
+     * and so the flush tail knows the full dirty range. */
+    for (GLsizei varying = 0; varying < program->transform_feedback_varying_count; varying++) {
+        Buffer *xfb = NULL;
+        GLintptr offset = 0;
+        GLsizeiptr size = 0;
+        if (!mglCPUFeedbackNoteXFBSlot(ctx, (GLuint)varying, touchedBuffers,
+                                       touchedOffsets, touchedSizes, &touchedCount,
+                                       &xfb, &offset, &size)) {
+            return false;
+        }
+        if (program->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS) {
+            break;
+        }
+    }
+
+    GLuint64 linearVertex = 0;
+    for (GLsizei inst = 0; inst < instancecount; inst++) {
+        for (GLint v = 0; v < count; v++) {
+            if (linearVertex >= capturedVertices) {
+                break;
+            }
+            GLuint attribVertex = (GLuint)((GLint)v + first);
+            mglCPUFeedbackCaptureVertex(ctx, program, vao, (GLuint)linearVertex,
+                                        attribVertex, (GLuint)inst, baseInstance,
+                                        first, varyingTypes, varyingComponents,
+                                        varyingOffsets, vertexBytes);
+            linearVertex++;
+        }
+        if (linearVertex >= capturedVertices) {
+            break;
+        }
+    }
+
+    mglCPUFeedbackFlushAndCount(ctx, touchedBuffers, touchedOffsets, touchedSizes,
+                                touchedCount, totalVertices, capturedVertices);
+    return true;
+}
+
+/* General indexed-draw CPU transform-feedback capture. Handles every element
+ * type and draw mode; resolves the index buffer from the VAO element_array.
+ * Honors basevertex (added to each index) and baseinstance (for instanced
+ * attribute divisor math, applied inside mglCPUFeedbackReadAttrib). */
+bool mglTryCPUTransformFeedbackCaptureElements(GLMContext ctx,
+                                               GLenum mode,
+                                               GLsizei count,
+                                               GLenum type,
+                                               const void *indices,
+                                               GLsizei instancecount,
+                                               GLint basevertex,
+                                               GLuint baseinstance)
+{
+    Program *program = NULL;
+    VertexArray *vao = NULL;
+    if (!mglCPUFeedbackCaptureGate(ctx, mode, &program, &vao)) {
+        return false;
+    }
+    if (count <= 0) {
+        STATE(transform_feedback)->primitives_generated = 0;
+        STATE(transform_feedback)->primitives_written = 0;
+        mglRecordActivePrimitiveQueryDraw(ctx, 0, 0);
+        return true;
+    }
+    if (instancecount <= 0) {
+        instancecount = 1;
+    }
+
+    if (!vao->element_array.buffer ||
+        !vao->element_array.buffer->data.buffer_data) {
+        return false;
+    }
+    Buffer *indexBuffer = vao->element_array.buffer;
+    uintptr_t indexOffset = (uintptr_t)indices;
+    size_t indexTypeSize =
+        (type == GL_UNSIGNED_BYTE) ? 1u :
+        (type == GL_UNSIGNED_SHORT) ? 2u :
+        (type == GL_UNSIGNED_INT) ? 4u : 0u;
+    if (indexTypeSize == 0) {
+        return false;
+    }
+    size_t indexBytes = (size_t)count * indexTypeSize;
+    if ((uint64_t)indexOffset + indexBytes > (uint64_t)indexBuffer->size) {
+        return false;
+    }
+    const uint8_t *indexData =
+        (const uint8_t *)(uintptr_t)indexBuffer->data.buffer_data + indexOffset;
+
+    GLenum varyingTypes[MAX_ATTRIBS] = {0};
+    GLuint varyingComponents[MAX_ATTRIBS] = {0};
+    size_t varyingOffsets[MAX_ATTRIBS] = {0};
+    size_t vertexBytes = 0;
+    if (!mglCPUFeedbackLayoutVaryings(program, varyingTypes, varyingComponents,
+                                      varyingOffsets, &vertexBytes)) {
+        return false;
+    }
+
+    uint64_t totalVertices = (uint64_t)count * (uint64_t)instancecount;
+    uint64_t capturedVertices = 0;
+    if (!mglCPUFeedbackClampCapacity(ctx, program, varyingTypes, varyingComponents,
+                                     vertexBytes, totalVertices, &capturedVertices)) {
+        return false;
+    }
+
+    Buffer *touchedBuffers[MAX_ATTRIBS] = {0};
+    GLintptr touchedOffsets[MAX_ATTRIBS] = {0};
+    GLsizeiptr touchedSizes[MAX_ATTRIBS] = {0};
+    GLuint touchedCount = 0;
+    for (GLsizei varying = 0; varying < program->transform_feedback_varying_count; varying++) {
+        Buffer *xfb = NULL;
+        GLintptr offset = 0;
+        GLsizeiptr size = 0;
+        if (!mglCPUFeedbackNoteXFBSlot(ctx, (GLuint)varying, touchedBuffers,
+                                       touchedOffsets, touchedSizes, &touchedCount,
+                                       &xfb, &offset, &size)) {
+            return false;
+        }
+        if (program->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS) {
+            break;
+        }
+    }
+
+    GLuint64 linearVertex = 0;
+    for (GLsizei inst = 0; inst < instancecount; inst++) {
+        for (GLsizei i = 0; i < count; i++) {
+            if (linearVertex >= capturedVertices) {
+                break;
+            }
+            GLuint idx = 0;
+            if (!mglCPUReadIndexValue(indexData, type, (GLuint)i, &idx)) {
+                return false;
+            }
+            GLuint attribVertex = (GLuint)((GLint)idx + basevertex);
+            mglCPUFeedbackCaptureVertex(ctx, program, vao, (GLuint)linearVertex,
+                                        attribVertex, (GLuint)inst, baseinstance,
+                                        /*first=*/0, varyingTypes, varyingComponents,
+                                        varyingOffsets, vertexBytes);
+            linearVertex++;
+        }
+        if (linearVertex >= capturedVertices) {
+            break;
+        }
+    }
+
+    mglCPUFeedbackFlushAndCount(ctx, touchedBuffers, touchedOffsets, touchedSizes,
+                                touchedCount, totalVertices, capturedVertices);
+    return true;
+}
+
+
+/* ================================================================== */
+/* Unified Draw Frontend: mglDrawDispatch                  */
+/* ================================================================== */
+/* All "normal" draw entries (arrays / elements / instanced /         */
+/* basevertex / baseinstance / range) funnel through this single     */
+/* function.  Indirect and multidraw entries are NOT unified (see     */
+/* docs/stage1_entry_step_matrix.md §B).                              */
+/*                                                                    */
+/* Design rules:                                                      */
+/*  - Pure C, no Metal calls (core principle 1)                       */
+/*  - Behaviour aligns with the original mglDrawArrays reference     */
+/*    (conditional check BEFORE program validation, per GL spec)      */
+
+/* True for element-indexed draw command types. */
+static inline bool mglCmdIsIndexed(MGLDrawCommandType t)
+{
+    return t == MGL_CMD_DRAW_ELEMENTS                       ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED             ||
+           t == MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX           ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE         ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE;
+}
+
+/* True for instanced draw command types (instanceCount > 1 expected). */
+static inline bool mglCmdIsInstanced(MGLDrawCommandType t)
+{
+    return t == MGL_CMD_DRAW_ARRAYS_INSTANCED                        ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED                      ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX          ||
+           t == MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE          ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE        ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE;
+}
+
+static Program *mglCurrentGeometryDrawProgram(GLMContext ctx)
+{
+    if (!ctx) {
+        return NULL;
+    }
+    if (STATE(program_name) != 0u) {
+        Program *program = STATE(program);
+        return program && program->shader_slots[_GEOMETRY_SHADER]
+            ? program : NULL;
+    }
+    ProgramPipeline *pipeline = STATE(program_pipeline);
+    return pipeline ? pipeline->stage_programs[_GEOMETRY_SHADER] : NULL;
+}
+
+static Program *mglCurrentExpandedGeometryDrawProgram(GLMContext ctx)
+{
+    return mglCurrentGeometryDrawProgram(ctx);
+}
+
+/* MultiDraw* must stamp gl_DrawID per sub-draw; the deferred DRAW_ARRAYS /
+ * DRAW_ELEMENTS expansion loses that index. */
+static int mglCurrentProgramUsesShaderDrawParams(GLMContext ctx)
+{
+    Program *vs = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    return vs && vs->uses_shader_draw_params;
+}
+
+/* The 8-step unified draw frontend (S1-S11 + S14/S15). */
+static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
+{
+    const bool indexed   = mglCmdIsIndexed(cmd->type);
+    const bool instanced = mglCmdIsInstanced(cmd->type);
+
+    /* S1: mode validation */
+    if (!check_draw_modes(cmd->mode)) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    /* S2: parameter validation */
+    if (!indexed) {
+        if (cmd->first < 0) {
+            ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        }
+    }
+    if (cmd->count < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (cmd->count == 0) return;
+    if (instanced) {
+        if (cmd->instanceCount < 0) {
+            ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        }
+        if (cmd->instanceCount == 0) return;
+    }
+
+    /* S2.5: draw framebuffer completeness (GL 4.6 §9.4.4 / §10.4). */
+    if (!mglValidateDrawFramebuffer(ctx))
+        return;
+
+    /* S3+S4: element-specific validation (indexed only) */
+    if (indexed) {
+        if (!check_element_type(cmd->indexType)) {
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+        }
+        if (should_skip_indexed_draw_no_element_buffer(ctx, "mglDrawDispatch")) {
+            /* Entry points should have staged client indices already. */
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+    }
+
+    /* S5: VAO validation */
+    if (!validate_vao(ctx, indexed)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    /* S6: conditional render check (BEFORE program — matches mglDrawArrays
+     * reference; per GL spec, conditional skip should short-circuit). */
+    if (mglShouldSkipConditionalRender(ctx))
+        return;
+
+    /* S7: program validation */
+    if (!validate_program(ctx, cmd->mode)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    /* S7.25: XFB active without GS/tess — draw mode must match
+     * BeginTransformFeedback primitiveMode (GL 4.6 §13.2.2).  With
+     * tessellation the draw mode is GL_PATCHES and the XFB mode matches
+     * the TES/GS output primitive instead.  UseProgram takes precedence;
+     * with UseProgram(0) inspect pipeline stage slots, not the VS program
+     * (a VS-only separable object has no tess slots even when TCS/TES are
+     * bound on the pipeline). */
+    Program *mono = STATE(program);
+    ProgramPipeline *pp = (!mono && STATE(program_name) == 0u)
+        ? STATE(program_pipeline) : NULL;
+    int has_gs = 0, has_tcs = 0, has_tes = 0;
+    Program *vs = NULL;
+    if (mono) {
+        vs = mono;
+        has_gs = mono->shader_slots[_GEOMETRY_SHADER] != NULL;
+        has_tcs = mono->shader_slots[_TESS_CONTROL_SHADER] != NULL;
+        has_tes = mono->shader_slots[_TESS_EVALUATION_SHADER] != NULL;
+    } else if (pp) {
+        Program *gs = pp->stage_programs[_GEOMETRY_SHADER];
+        Program *tcs = pp->stage_programs[_TESS_CONTROL_SHADER];
+        Program *tes = pp->stage_programs[_TESS_EVALUATION_SHADER];
+        vs = pp->stage_programs[_VERTEX_SHADER];
+        has_gs = gs && gs->shader_slots[_GEOMETRY_SHADER];
+        has_tcs = tcs && tcs->shader_slots[_TESS_CONTROL_SHADER];
+        has_tes = tes && tes->shader_slots[_TESS_EVALUATION_SHADER];
+    }
+    bool xfb_capturing = STATE(transform_feedback) &&
+        STATE(transform_feedback)->active &&
+        !STATE(transform_feedback)->paused;
+    if (xfb_capturing) {
+        if (!has_gs && !has_tcs && !has_tes && vs &&
+            !mglXfbPrimitiveModeAccepts(
+                STATE(transform_feedback)->primitive_mode, cmd->mode)) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+    }
+
+    /* S7.5: refresh state-derived uniforms (legacy clip planes) from the
+     * GL state — the only GL-state → uniform mechanism in MGL. */
+    mglRefreshLegacyStateUniforms(ctx);
+
+    /* S8: active query draw recording */
+    mglRecordActiveSampleQueryDraw(ctx);
+    mglRecordActivePipelineStatisticsQueryDraw(
+        ctx, cmd->mode, cmd->count,
+        instanced ? cmd->instanceCount : 1,
+        indexed ? GL_TRUE : GL_FALSE);
+    if (!xfb_capturing && !has_gs && !has_tcs && !has_tes)
+        mglRecordActivePrimitivesGeneratedVsOnly(
+            ctx, cmd->mode, cmd->count,
+            instanced ? cmd->instanceCount : 1);
+
+    /* S9: CPU transform feedback capture */
+    if (!indexed) {
+        if (mglTryCPUTransformFeedbackCapture(ctx, cmd->mode, cmd->first,
+                                               cmd->count, cmd->instanceCount,
+                                               cmd->baseInstance))
+            return;
+    } else {
+        if (mglTryCPUTransformFeedbackCaptureElements(ctx, cmd->mode, cmd->count,
+                                                       cmd->indexType,
+                                                       (const void *)(uintptr_t)cmd->indexBufferOffset,
+                                                       cmd->instanceCount,
+                                                       cmd->baseVertex,
+                                                       cmd->baseInstance))
+            return;
+    }
+
+    /* S10: color shadow invalidation (always called — no-op when no
+     * rgb10a2_shadow textures exist; fixes omission in 7/11 old entries). */
+    mglInvalidateColorShadowsForDraw(ctx);
+
+    /* S11: GL_PATCHES bypasses deferred (tessellation compute kernel path /
+     * native TES).  All draw shapes — arrays, indexed, base-vertex, instanced
+     * — route through the renderer's tessellation handler, which either runs
+     * the AIR compute/native path or reports a GL error for unsupported
+     * shapes.  Batch replay has no tessellation expansion, so recording an
+     * indexed patch draw here would drop the patch stream silently. */
+    if (cmd->mode == GL_PATCHES) {
+        switch (cmd->type) {
+            case MGL_CMD_DRAW_ARRAYS:
+                mglRendererDrawArrays(
+                    ctx, cmd->mode, cmd->first, cmd->count);
+                return;
+            case MGL_CMD_DRAW_ARRAYS_INSTANCED:
+                mglRendererDrawArraysInstanced(
+                    ctx, cmd->mode, cmd->first, cmd->count,
+                    cmd->instanceCount);
+                return;
+            case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
+                mglRendererDrawArraysInstancedBaseInstance(
+                    ctx, cmd->mode, cmd->first, cmd->count,
+                    cmd->instanceCount, cmd->baseInstance);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS:
+                mglRendererDrawElements(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
+                mglRendererDrawElementsInstanced(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
+                mglRendererDrawElementsBaseVertex(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->baseVertex);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
+                mglRendererDrawElementsInstancedBaseVertex(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount, cmd->baseVertex);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
+                mglRendererDrawElementsInstancedBaseInstance(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount, cmd->baseInstance);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE:
+                mglRendererDrawElementsInstancedBaseVertexBaseInstance(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount, cmd->baseVertex, cmd->baseInstance);
+                return;
+            default:
+                break;
+        }
+    }
+
+    /* Geometry expansion rotates render/compute encoders and therefore cannot
+     * be replayed as an ordinary deferred render draw.  Preserve ordering by
+     * draining older commands only when a deferred batch actually exists;
+     * calling the full flush entry point for an empty batch needlessly breaks
+     * the current defer window.  The renderer's GS helper then runs the AIR
+     * compute route for both array and indexed shapes. */
+    Program *geometryProgram = mglCurrentExpandedGeometryDrawProgram(ctx);
+    if (geometryProgram) {
+        if (ctx->draw_command_buffer.batch_count > 0u) {
+            mglFlushCommandBuffer(ctx);
+        }
+        switch (cmd->type) {
+            case MGL_CMD_DRAW_ARRAYS:
+                mglRendererDrawArrays(
+                    ctx, cmd->mode, cmd->first, cmd->count);
+                return;
+            case MGL_CMD_DRAW_ARRAYS_INSTANCED:
+                mglRendererDrawArraysInstanced(
+                    ctx, cmd->mode, cmd->first, cmd->count,
+                    cmd->instanceCount);
+                return;
+            case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
+                mglRendererDrawArraysInstancedBaseInstance(
+                    ctx, cmd->mode, cmd->first, cmd->count,
+                    cmd->instanceCount, cmd->baseInstance);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS:
+                mglRendererDrawElements(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
+                mglRendererDrawElementsInstanced(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
+                mglRendererDrawElementsBaseVertex(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->baseVertex);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
+                mglRendererDrawElementsInstancedBaseVertex(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount, cmd->baseVertex);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
+                mglRendererDrawElementsInstancedBaseInstance(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount, cmd->baseInstance);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE:
+                mglRendererDrawElementsInstancedBaseVertexBaseInstance(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount, cmd->baseVertex, cmd->baseInstance);
+                return;
+            default:
+                break;
+        }
+    }
+
+    /* S14: deferred path — record command for batch replay.  Transform
+     * feedback capture is stateful and ordered: the renderer's per-vertex
+     * capture handler only runs on the immediate path, so a capturable
+     * draw (vertex-stage-only program with an XFB layout) must not be
+     * parked in a replay batch whose handlers skip the capture. */
+    bool xfbImmediate = false;
+    if (STATE(transform_feedback) &&
+        STATE(transform_feedback)->active &&
+        !STATE(transform_feedback)->paused &&
+        mglXfbPrimitiveModeAccepts(STATE(transform_feedback)->primitive_mode,
+                                   cmd->mode) &&
+        (cmd->type == MGL_CMD_DRAW_ARRAYS ||
+         cmd->type == MGL_CMD_DRAW_ARRAYS_INSTANCED ||
+         cmd->type == MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE ||
+         cmd->type == MGL_CMD_DRAW_ELEMENTS ||
+         cmd->type == MGL_CMD_DRAW_ELEMENTS_INSTANCED ||
+         cmd->type == MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX ||
+         cmd->type == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX ||
+         cmd->type == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE ||
+         cmd->type ==
+             MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE)) {
+        /* VS-only XFB capture runs on the immediate issue path
+         * (mglDrawHostHandleXFB / HandleXFBElements). Batch replay skips it. */
+        Program *vs_prog = STATE(program_pipeline)
+            ? STATE(program_pipeline)->stage_programs[_VERTEX_SHADER]
+            : (STATE(program_name) != 0u ? STATE(program) : NULL);
+        xfbImmediate = vs_prog &&
+                       !vs_prog->shader_slots[_GEOMETRY_SHADER] &&
+                       !vs_prog->shader_slots[_TESS_CONTROL_SHADER] &&
+                       !vs_prog->shader_slots[_TESS_EVALUATION_SHADER] &&
+                       vs_prog->transform_feedback_layout_valid &&
+                       vs_prog->transform_feedback_varying_count > 0;
+    }
+    /* Emulated MS color targets (texture2d_array sample planes) need the
+     * immediate draw path so the renderer can broadcast planes or redraw
+     * per-sample. Batch replay encodes draws without those hooks. */
+    bool msImmediate = false;
+    {
+        Framebuffer *fbo = STATE(framebuffer);
+        FBOAttachment *atts[3] = {
+            fbo && (fbo->color_attachment_bitfield & 1u)
+                ? &fbo->color_attachments[0] : NULL,
+            fbo ? &fbo->depth : NULL,
+            fbo ? &fbo->stencil : NULL};
+        for (int ai = 0; ai < 3 && !msImmediate; ai++) {
+            FBOAttachment *att = atts[ai];
+            Texture *tex = NULL;
+            if (!att)
+                continue;
+            if (att->textarget == GL_RENDERBUFFER && att->buf.rbo)
+                tex = att->buf.rbo->tex;
+            else
+                tex = att->buf.tex;
+            if (tex &&
+                mglRenderIsEmulatedMSPlaneTarget((uint32_t)tex->target,
+                                                 (int32_t)tex->samples)) {
+                msImmediate = true;
+                if (ctx->draw_command_buffer.batch_count > 0u)
+                    mglFlushCommandBuffer(ctx);
+            }
+        }
+    }
+    if (ctx->draw_defer_enabled && !xfbImmediate && !msImmediate) {
+        mglTraceLogExternal("DRAW_DISPATCH_FRONTEND type=%u mode=0x%x first=%d count=%d "
+                            "inst=%d bv=%d bi=%u program=%u defer=1",
+                            (unsigned)cmd->type, (unsigned)cmd->mode, (int)cmd->first,
+                            (int)cmd->count, (int)cmd->instanceCount, (int)cmd->baseVertex,
+                            (unsigned)cmd->baseInstance,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglRecordDrawCommand(ctx, cmd);
+        return;
+    }
+
+    /* S15: immediate path — dispatch to Metal bridge */
+    mglTraceLogExternal("DRAW_DISPATCH_FRONTEND type=%u mode=0x%x first=%d count=%d "
+                        "inst=%d bv=%d bi=%u program=%u defer=0",
+                        (unsigned)cmd->type, (unsigned)cmd->mode, (int)cmd->first,
+                        (int)cmd->count, (int)cmd->instanceCount, (int)cmd->baseVertex,
+                        (unsigned)cmd->baseInstance,
+                        (unsigned)mglTraceDrawProgram(ctx));
+    if (getenv("MGL_CULL_DBG")) fprintf(stderr, "MGL_CULL_DBG: mglDrawDispatch immediate\n");
+
+    switch (cmd->type) {
+        case MGL_CMD_DRAW_ARRAYS:
+            mglRendererDrawArrays(ctx, cmd->mode, cmd->first, cmd->count);
+            break;
+        case MGL_CMD_DRAW_ELEMENTS:
+            mglRendererDrawElements(ctx, cmd->mode, cmd->count, cmd->indexType,
+                                           (const void *)(uintptr_t)cmd->indexBufferOffset);
+            break;
+        case MGL_CMD_DRAW_ARRAYS_INSTANCED:
+            mglRendererDrawArraysInstanced(ctx, cmd->mode, cmd->first, cmd->count,
+                                                  cmd->instanceCount);
+            break;
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
+            mglRendererDrawElementsInstanced(ctx, cmd->mode, cmd->count, cmd->indexType,
+                                                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                                                    cmd->instanceCount);
+            break;
+        case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
+            /* DrawRangeElementsBaseVertex also lands here; range is kept on
+             * cmd for attrib/read tracking (AUDIT-034). */
+            mglRendererDrawElementsBaseVertex(ctx, cmd->mode, cmd->count, cmd->indexType,
+                                                     (const void *)(uintptr_t)cmd->indexBufferOffset,
+                                                     cmd->baseVertex);
+            break;
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
+            mglRendererDrawElementsInstancedBaseVertex(ctx, cmd->mode, cmd->count,
+                                                              cmd->indexType,
+                                                              (const void *)(uintptr_t)cmd->indexBufferOffset,
+                                                              cmd->instanceCount,
+                                                              cmd->baseVertex);
+            break;
+        case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
+            mglRendererDrawArraysInstancedBaseInstance(ctx, cmd->mode, cmd->first,
+                                                              cmd->count, cmd->instanceCount,
+                                                              cmd->baseInstance);
+            break;
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
+            mglRendererDrawElementsInstancedBaseInstance(ctx, cmd->mode, cmd->count,
+                                                                cmd->indexType,
+                                                                (const void *)(uintptr_t)cmd->indexBufferOffset,
+                                                                cmd->instanceCount,
+                                                                cmd->baseInstance);
+            break;
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE:
+            mglRendererDrawElementsInstancedBaseVertexBaseInstance(ctx, cmd->mode, cmd->count,
+                                                                          cmd->indexType,
+                                                                          (const void *)(uintptr_t)cmd->indexBufferOffset,
+                                                                          cmd->instanceCount,
+                                                                          cmd->baseVertex,
+                                                                          cmd->baseInstance);
+            break;
+        default:
+            /* Unreachable — indirect/multidraw types never enter dispatch. */
+            fprintf(stderr, "MGL Error: mglDrawDispatch unknown type %u\n",
+                    (unsigned)cmd->type);
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            break;
+    }
+}
+
+
+void mglDrawArrays(GLMContext ctx, GLenum mode, GLint first, GLsizei count)
+{
+    MGLDrawCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type          = MGL_CMD_DRAW_ARRAYS;
+    cmd.mode          = mode;
+    cmd.first         = first;
+    cmd.count         = count;
+    cmd.instanceCount = 1;
+    mglDrawDispatch(ctx, &cmd);
+}
+
+void mglDrawElements(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices)
+{
+    MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
+    cmd.instanceCount     = 1;
+    mglDrawDispatch(ctx, &cmd);
+}
+
+void mglDrawRangeElements(GLMContext ctx, GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices)
+{
+    /* GL 4.6 §10.3.7: indices outside [start, end] are undefined; keep the
+     * span on the command so attrib/read tracking can use it (AUDIT-034). */
+    if (end < start) { ERROR_RETURN(GL_INVALID_VALUE); return; }
+
+    MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
+    cmd.instanceCount     = 1;
+    cmd.range_start       = start;
+    cmd.range_end         = end;
+    cmd.has_index_range   = 1u;
+    mglDrawDispatch(ctx, &cmd);
+}
+
+void mglDrawArraysInstanced(GLMContext ctx, GLenum mode, GLint first, GLsizei count, GLsizei instancecount)
+{
+    MGLDrawCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type          = MGL_CMD_DRAW_ARRAYS_INSTANCED;
+    cmd.mode          = mode;
+    cmd.first         = first;
+    cmd.count         = count;
+    cmd.instanceCount = instancecount;
+    mglDrawDispatch(ctx, &cmd);
+}
+
+void mglDrawElementsInstanced(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount)
+{
+    MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS_INSTANCED;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
+    cmd.instanceCount     = instancecount;
+    mglDrawDispatch(ctx, &cmd);
+}
+
+void mglDrawElementsBaseVertex(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLint basevertex)
+{
+    MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
+    cmd.baseVertex        = basevertex;
+    cmd.instanceCount     = 1;
+    mglDrawDispatch(ctx, &cmd);
+}
+
+void mglDrawRangeElementsBaseVertex(GLMContext ctx, GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices, GLint basevertex)
+{
+    if (end < start) { ERROR_RETURN(GL_INVALID_VALUE); return; }
+
+    MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
+    cmd.baseVertex        = basevertex;
+    cmd.instanceCount     = 1;
+    cmd.range_start       = start;
+    cmd.range_end         = end;
+    cmd.has_index_range   = 1u;
+    mglDrawDispatch(ctx, &cmd);
+}
+
+void mglDrawElementsInstancedBaseVertex(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLint basevertex)
+{
+    MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
+    cmd.instanceCount     = instancecount;
+    cmd.baseVertex        = basevertex;
+    mglDrawDispatch(ctx, &cmd);
+}
+
+void mglDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirect)
+{
+    mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_ENTRY mode=0x%x indirect=%p program=%u",
+                        (unsigned)mode, indirect, (unsigned)mglTraceDrawProgram(ctx));
+
+    if (!check_draw_modes(mode)) {
+        mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=bad_mode mode=0x%x program=%u",
+                            (unsigned)mode, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    if (!mglValidateDrawIndirectCommands(ctx,
+                                         "DRAW_ARRAYS_INDIRECT_FRONTEND",
+                                         indirect,
+                                         1,
+                                         0,
+                                         (GLsizeiptr)sizeof(DrawArraysIndirectCommand))) {
+        return;
+    }
+
+    /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
+    if (!mglValidateDrawFramebuffer(ctx)) {
+        mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=incomplete_fbo program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
+
+    if(validate_vao(ctx, false) == false)
+    {
+        mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=validate_vao program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (!validate_program(ctx, mode)) {
+        mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=validate_program program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (mglSkipOrRecordConditionalDraw(ctx)) {
+        mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=conditional_render program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
+    mglRecordPipelineStatsFromIndirect(ctx, mode, indirect, 1, 0, true);
+
+    mglFlushCommandBuffer(ctx);
+    mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_DISPATCH mode=0x%x indirect=%p program=%u",
+                        (unsigned)mode, indirect, (unsigned)mglTraceDrawProgram(ctx));
+    mglRendererDrawArraysIndirect(ctx, mode, indirect);
+}
+
+void mglDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, const void *indirect)
+{
+    mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_ENTRY mode=0x%x type=0x%x indirect=%p program=%u",
+                        (unsigned)mode, (unsigned)type, indirect, (unsigned)mglTraceDrawProgram(ctx));
+
+    if (!check_draw_modes(mode)) {
+        mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=bad_mode mode=0x%x program=%u",
+                            (unsigned)mode, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    if (!mglValidateDrawIndirectCommands(ctx,
+                                         "DRAW_ELEMENTS_INDIRECT_FRONTEND",
+                                         indirect,
+                                         1,
+                                         0,
+                                         (GLsizeiptr)sizeof(DrawElementsIndirectCommand))) {
+        return;
+    }
+
+    if (!check_element_type(type)) {
+        mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=bad_type type=0x%x program=%u",
+                            (unsigned)type, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
+        mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=no_element_buffer program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
+
+    /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
+    if (!mglValidateDrawFramebuffer(ctx)) {
+        mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=incomplete_fbo program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
+
+    if(validate_vao(ctx, true) == false)
+    {
+        mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=validate_vao program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (!validate_program(ctx, mode)) {
+        mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=validate_program program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (mglSkipOrRecordConditionalDraw(ctx)) {
+        mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=conditional_render program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
+    mglRecordPipelineStatsFromIndirect(ctx, mode, indirect, 1, 0, false);
+
+    mglFlushCommandBuffer(ctx);
+    mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_DISPATCH mode=0x%x type=0x%x indirect=%p program=%u",
+                        (unsigned)mode, (unsigned)type, indirect, (unsigned)mglTraceDrawProgram(ctx));
+    mglRendererDrawElementsIndirect(ctx, mode, type, indirect);
+}
+
+void mglDrawArraysInstancedBaseInstance(GLMContext ctx, GLenum mode, GLint first, GLsizei count, GLsizei instancecount, GLuint baseinstance)
+{
+    MGLDrawCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type          = MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE;
+    cmd.mode          = mode;
+    cmd.first         = first;
+    cmd.count         = count;
+    cmd.instanceCount = instancecount;
+    cmd.baseInstance  = baseinstance;
+    mglDrawDispatch(ctx, &cmd);
+}
+
+void mglDrawElementsInstancedBaseInstance(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLuint baseinstance)
+{
+    MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
+    cmd.instanceCount     = instancecount;
+    cmd.baseInstance      = baseinstance;
+    mglDrawDispatch(ctx, &cmd);
+}
+
+void mglDrawElementsInstancedBaseVertexBaseInstance(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLint basevertex, GLuint baseinstance)
+{
+    MGLDrawCommand cmd;
+    if (!mglEnsureElementBufferForDraw(ctx, count, type, &indices)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
+    cmd.instanceCount     = instancecount;
+    cmd.baseVertex        = basevertex;
+    cmd.baseInstance      = baseinstance;
+    mglDrawDispatch(ctx, &cmd);
+}
+
+/* MultiDraw's defer path records sub-draws into a batch whose replay skips
+ * VS-only XFB capture (same gate as mglDrawDispatch's xfbImmediate). */
+static bool mglMultiDrawNeedsXfbImmediate(GLMContext ctx)
+{
+    if (!STATE(transform_feedback) || !STATE(transform_feedback)->active ||
+        STATE(transform_feedback)->paused) {
+        return false;
+    }
+    Program *vs_prog = STATE(program_pipeline)
+                           ? STATE(program_pipeline)->stage_programs[_VERTEX_SHADER]
+                           : (STATE(program_name) != 0u ? STATE(program) : NULL);
+    return mglXfbVsOnlyEligible(vs_prog);
+}
+
+void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const GLsizei *count, GLsizei drawcount)
+{
+    ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
+    ERROR_CHECK_RETURN(drawcount >= 0, GL_INVALID_VALUE);
+    if (drawcount == 0) return;
+    ERROR_CHECK_RETURN(first != NULL && count != NULL, GL_INVALID_VALUE);
+    for (GLsizei i = 0; i < drawcount; i++)
+    {
+        ERROR_CHECK_RETURN(first[i] >= 0, GL_INVALID_VALUE);
+        ERROR_CHECK_RETURN(count[i] >= 0, GL_INVALID_VALUE);
+    }
+
+    /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
+    if (!mglValidateDrawFramebuffer(ctx))
+        return;
+
+    if(validate_vao(ctx, false) == false)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+    }
+
+    ERROR_CHECK_RETURN(validate_program(ctx, mode), GL_INVALID_OPERATION);
+
+
+
+    if (mglCurrentExpandedGeometryDrawProgram(ctx)) {
+        /* GS expansion cannot be replayed as a deferred batch; forward
+         * to the renderer which decodes each sub-draw through the GS path. */
+        mglRendererMultiDrawArrays(ctx, mode, first, count, drawcount);
+        return;
+    }
+
+    if (ctx->draw_defer_enabled && mode != GL_PATCHES &&
+        !mglCurrentProgramUsesShaderDrawParams(ctx) &&
+        !mglMultiDrawNeedsXfbImmediate(ctx)) {
+        for (GLsizei i = 0; i < drawcount; i++) {
+            if (count[i] == 0) {
+                continue;
+            }
+
+            MGLDrawCommand cmd;
+            memset(&cmd, 0, sizeof(cmd));
+            cmd.type = MGL_CMD_DRAW_ARRAYS;
+            cmd.mode = mode;
+            cmd.first = first[i];
+            cmd.count = count[i];
+            cmd.instanceCount = 1;
+            mglRecordDrawCommand(ctx, &cmd);
+        }
+        return;
+    }
+
+    mglRendererMultiDrawArrays(ctx, mode, first, count, drawcount);
+}
+
+void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLenum type, const void *const*indices, GLsizei drawcount)
+{
+    ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
+    /* GL 4.6 §10.4: bad type → INVALID_ENUM; check before pointer guards. */
+    ERROR_CHECK_RETURN(check_element_type(type), GL_INVALID_ENUM);
+
+    ERROR_CHECK_RETURN(drawcount >= 0, GL_INVALID_VALUE);
+    if (drawcount == 0) return;
+    ERROR_CHECK_RETURN(count != NULL && indices != NULL, GL_INVALID_VALUE);
+    for (GLsizei i = 0; i < drawcount; i++)
+    {
+        ERROR_CHECK_RETURN(count[i] >= 0, GL_INVALID_VALUE);
+    }
+
+    /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
+    if (!mglValidateDrawFramebuffer(ctx))
+        return;
+
+    if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
+        return;
+    }
+
+    if(validate_vao(ctx, true) == false)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    ERROR_CHECK_RETURN(validate_program(ctx, mode), GL_INVALID_OPERATION);
+
+
+
+    if (mglCurrentExpandedGeometryDrawProgram(ctx)) {
+        /* GS expansion cannot be replayed as a deferred batch. */
+        mglRendererMultiDrawElements(ctx, mode, count, type, indices,
+                                            drawcount);
+        return;
+    }
+
+    if (ctx->draw_defer_enabled && mode != GL_PATCHES &&
+        !mglCurrentProgramUsesShaderDrawParams(ctx) &&
+        !mglMultiDrawNeedsXfbImmediate(ctx)) {
+        Buffer *elementBuffer = mglCurrentElementBuffer(ctx, __func__);
+        for (GLsizei i = 0; i < drawcount; i++) {
+            if (count[i] == 0) {
+                continue;
+            }
+
+            MGLDrawCommand cmd;
+            memset(&cmd, 0, sizeof(cmd));
+            cmd.type = MGL_CMD_DRAW_ELEMENTS;
+            cmd.mode = mode;
+            cmd.count = count[i];
+            cmd.indexType = type;
+            cmd.indexBufferOffset = (GLuint)(uintptr_t)indices[i];
+            cmd.element_buffer_name = elementBuffer ? elementBuffer->name : 0u;
+            cmd.instanceCount = 1;
+            mglRecordDrawCommand(ctx, &cmd);
+        }
+        return;
+    }
+
+    mglRendererMultiDrawElements(ctx, mode, count, type, indices, drawcount);
+}
+
+void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *count, GLenum type, const void *const*indices, GLsizei drawcount, const GLint *basevertex)
+{
+    ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
+    /* GL 4.6 §10.4 MultiDrawElementsBaseVertex: type → INVALID_ENUM
+     * (same as DrawElementsBaseVertex). Check before NULL-pointer guards. */
+    ERROR_CHECK_RETURN(check_element_type(type), GL_INVALID_ENUM);
+
+    ERROR_CHECK_RETURN(drawcount >= 0, GL_INVALID_VALUE);
+    if (drawcount == 0) return;
+    ERROR_CHECK_RETURN(count != NULL && indices != NULL && basevertex != NULL, GL_INVALID_VALUE);
+    for (GLsizei i = 0; i < drawcount; i++)
+    {
+        ERROR_CHECK_RETURN(count[i] >= 0, GL_INVALID_VALUE);
+    }
+
+    /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
+    if (!mglValidateDrawFramebuffer(ctx))
+        return;
+
+    if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
+        return;
+    }
+
+    if(validate_vao(ctx, true) == false)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    ERROR_CHECK_RETURN(validate_program(ctx, mode), GL_INVALID_OPERATION);
+
+
+
+    if (mglCurrentExpandedGeometryDrawProgram(ctx)) {
+        /* GS expansion cannot be replayed as a deferred batch. */
+        mglRendererMultiDrawElementsBaseVertex(ctx, mode, count, type,
+                                                      indices, drawcount,
+                                                      basevertex);
+        return;
+    }
+
+    if (ctx->draw_defer_enabled && mode != GL_PATCHES &&
+        !mglMultiDrawNeedsXfbImmediate(ctx)) {
+        Buffer *elementBuffer = mglCurrentElementBuffer(ctx, __func__);
+        for (GLsizei i = 0; i < drawcount; i++) {
+            if (count[i] == 0) {
+                continue;
+            }
+
+            MGLDrawCommand cmd;
+            memset(&cmd, 0, sizeof(cmd));
+            cmd.type = MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX;
+            cmd.mode = mode;
+            cmd.count = count[i];
+            cmd.indexType = type;
+            cmd.indexBufferOffset = (GLuint)(uintptr_t)indices[i];
+            cmd.element_buffer_name = elementBuffer ? elementBuffer->name : 0u;
+            cmd.baseVertex = basevertex[i];
+            cmd.instanceCount = 1;
+            mglRecordDrawCommand(ctx, &cmd);
+        }
+        return;
+    }
+
+    mglRendererMultiDrawElementsBaseVertex(ctx, mode, count, type, indices, drawcount, basevertex);
+}
+
+void mglMultiDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirect, GLsizei drawcount, GLsizei stride)
+{
+    mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_ENTRY mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
+                        (unsigned)mode, indirect, (int)drawcount, (int)stride, (unsigned)mglTraceDrawProgram(ctx));
+
+    if (!check_draw_modes(mode)) {
+        mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=bad_mode mode=0x%x program=%u",
+                            (unsigned)mode, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    if (drawcount < 0) {
+        mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=bad_drawcount drawcount=%d program=%u",
+                            (int)drawcount, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    /* GL 4.6 §10.4: INVALID_VALUE if drawcount is not positive. */
+    if (drawcount == 0) {
+        mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=zero_drawcount program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (stride % 4 != 0) {
+        mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=bad_stride stride=%d program=%u",
+                            (int)stride, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
+    if (!mglValidateDrawFramebuffer(ctx)) {
+        mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=incomplete_fbo program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
+
+    if(validate_vao(ctx, false) == false)
+    {
+        mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=validate_vao program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (!validate_program(ctx, mode)) {
+        mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=validate_program program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (!mglValidateDrawIndirectCommands(ctx,
+                                         "MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND",
+                                         indirect,
+                                         drawcount,
+                                         stride,
+                                         (GLsizeiptr)sizeof(DrawArraysIndirectCommand))) {
+        return;
+    }
+
+
+
+    mglFlushCommandBuffer(ctx);
+    mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_DISPATCH mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
+                        (unsigned)mode, indirect, (int)drawcount, (int)stride, (unsigned)mglTraceDrawProgram(ctx));
+    mglRendererMultiDrawArraysIndirect(ctx, mode, indirect, drawcount, stride);
+}
+
+void mglMultiDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, const void *indirect, GLsizei drawcount, GLsizei stride)
+{
+    mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_ENTRY mode=0x%x type=0x%x indirect=%p drawcount=%d stride=%d program=%u",
+                        (unsigned)mode, (unsigned)type, indirect, (int)drawcount, (int)stride, (unsigned)mglTraceDrawProgram(ctx));
+
+    if (!check_draw_modes(mode)) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=bad_mode mode=0x%x program=%u",
+                            (unsigned)mode, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    if (drawcount < 0) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=bad_drawcount drawcount=%d program=%u",
+                            (int)drawcount, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    /* GL 4.6 §10.4: INVALID_VALUE if drawcount is not positive. */
+    if (drawcount == 0) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=zero_drawcount program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (stride % 4 != 0) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=bad_stride stride=%d program=%u",
+                            (int)stride, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (!check_element_type(type)) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=bad_type type=0x%x program=%u",
+                            (unsigned)type, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    /* GL 4.6 §9.4.4 / §10.4: incomplete draw framebuffer. */
+    if (!mglValidateDrawFramebuffer(ctx)) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=incomplete_fbo program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
+
+    if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=no_element_buffer program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
+
+    if(validate_vao(ctx, true) == false)
+    {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=validate_vao program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (!validate_program(ctx, mode)) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=validate_program program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (!mglValidateDrawIndirectCommands(ctx,
+                                         "MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND",
+                                         indirect,
+                                         drawcount,
+                                         stride,
+                                         (GLsizeiptr)sizeof(DrawElementsIndirectCommand))) {
+        return;
+    }
+
+
+
+    mglFlushCommandBuffer(ctx);
+    mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_DISPATCH mode=0x%x type=0x%x indirect=%p drawcount=%d stride=%d program=%u",
+                        (unsigned)mode, (unsigned)type, indirect, (int)drawcount, (int)stride, (unsigned)mglTraceDrawProgram(ctx));
+    mglRendererMultiDrawElementsIndirect(ctx, mode, type, indirect, drawcount, stride);
+}

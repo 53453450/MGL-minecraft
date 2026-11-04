@@ -38,6 +38,7 @@
 typedef struct GLMContextRec_t *GLMContext;
 
 #include "mgl_types_program.h"
+#include "mgl_subroutine_table.h"
 
 /* ---------------------------------------------------------------------------
  * AIR codegen epoch
@@ -58,10 +59,13 @@ typedef struct GLMContextRec_t *GLMContext;
  *       slot too low, colliding with the last varying's argument index.
  *   2 - argument indices derived from the real parameter slots, plus a
  *       structural verification guard over the emitted argument metadata.
+ *   5 - subroutine dispatch chain falls through to the first implementation
+ *       when the loaded selection matches no implementation (the ARB
+ *       default-selection case), instead of executing nothing.
  */
 /* Plain integer (no u suffix): the pipeline archive key stringizes this macro,
  * and a suffix would end up inside the file name. */
-#define MGL_AIR_CODEGEN_EPOCH 2
+#define MGL_AIR_CODEGEN_EPOCH 5
 
 #ifdef __cplusplus
 extern "C" {
@@ -111,6 +115,10 @@ enum {
     MGL_AIR_BUILTIN_BASE_VERTEX    = 1u << 17, /* gl_BaseVertex(ARB)         */
     MGL_AIR_BUILTIN_BASE_INSTANCE  = 1u << 18, /* gl_BaseInstance(ARB)       */
     MGL_AIR_BUILTIN_DRAW_ID        = 1u << 19, /* gl_DrawID(ARB)             */
+    /* dFdy* / interpolateAtOffset / interpolateAtSample: their Y direction
+     * follows the target's row order, which the stage learns at draw time
+     * from the fragment parameter buffer. */
+    MGL_AIR_BUILTIN_DERIV_Y        = 1u << 20,
 };
 
 typedef struct MGLAIRStageInfo {
@@ -150,6 +158,8 @@ typedef struct MGLAIRStageInfo {
     uint32_t compute_local_size_y;
     uint32_t compute_local_size_z;
     uint32_t shared_memory_bytes;
+    /* GLSL 4.0: types, implementations and subroutine uniforms of this stage. */
+    MGLAIRSubroutineTable subroutines;
 } MGLAIRStageInfo;
 
 /* Fixed inter-stage record shared by VS capture, TCS, TES and the GS compute
@@ -442,6 +452,10 @@ int mglAirCompileGLSLWithReflectInfoEx(
 
 /* Free bytes returned by mglShaderCompileGLSL. */
 void mglShaderFree(void *bytes);
+
+/* LLVM IR text of a metallib produced by this backend (null when the bitcode
+ * cannot be read back).  Free with mglShaderFree. */
+char *mglAirMetallibToIRText(const unsigned char *bytes, size_t size);
 
 /* Compare the vertex/fragment shader interfaces: uniforms always, and the
  * VS outputs against the FS inputs when `adjacent` (no geometry or

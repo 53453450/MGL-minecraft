@@ -25,7 +25,7 @@
 #define MGL_RENDER_PASS_CLEAR_H
 
 #include <stdint.h>
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
 
 #ifdef __cplusplus
 extern "C" {

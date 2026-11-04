@@ -16,6 +16,7 @@
 #include "mgl_types_program.h"
 
 struct MGLTranslationUnit;
+typedef struct MGLTranslationUnit MGLTranslationUnit;
 
 #ifdef __cplusplus
 extern "C" {
@@ -105,6 +106,17 @@ int mglCompileArtifactFromGLSL(const char *src, int stage,
                                MGLCompileArtifact *art_out,
                                char *err_buf, size_t err_cap);
 
+/* Parse/sema only (no AIR). Used when CompileShader must succeed for a
+ * multi-TU stage before link merges definitions (GLSL 4.60 §1.2.1).
+ * On success *tu_out is owned; free with mglCompileTranslationUnitDestroy. */
+int mglCompileArtifactParseGLSL(const char *src, int stage,
+                                struct MGLTranslationUnit **tu_out,
+                                char *err_buf, size_t err_cap);
+
+void mglCompileTranslationUnitDestroy(struct MGLTranslationUnit *tu);
+uint32_t mglCompileFrontendParseCount(void);
+void mglCompileFrontendNoteReuse(void);
+
 /* True when a CompileShader-cached artifact can be published at link
  * without recompiling (no variant flags, peers, or VS attrib remaps). */
 int mglCompileArtifactCanReuseAtLink(const MGLCompileArtifact *art,
@@ -112,6 +124,14 @@ int mglCompileArtifactCanReuseAtLink(const MGLCompileArtifact *art,
                                      uint32_t air_flags,
                                      const void *iface_peers,
                                      const char *const *attrib_names);
+
+/* Opaque TranslationUnit queries for FE (no mgl_glsl_ast.h). */
+int mglCompileTUHasNamedFunction(const struct MGLTranslationUnit *tu,
+                                 const char *name);
+void mglCompileTUGetComputeLocalSize(const struct MGLTranslationUnit *tu,
+                                     int32_t *x, int32_t *y, int32_t *z);
+int mglCompileTUBuiltinUsed(const struct MGLTranslationUnit *tu,
+                            const char *name);
 
 #ifdef __cplusplus
 }

@@ -3,16 +3,49 @@
 #define MGL_RENDER_API_READBACK_H
 
 /* Declarations for the readback slice of the renderer facade.
- * Value layouts live in mgl_render.h. Standalone include pulls
- * mgl_render_fwd.h (incomplete types) instead of the full facade. */
+ * Value layouts are defined here; types of other subsystems that are only
+ * passed by pointer are incomplete (mgl_render_fwd.h). */
 
-#ifndef MGL_RENDER_H
 #include "mgl_render_fwd.h"
-#endif
+#include "glcorearb.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* C1: CopyRows + CopyDepthTextureBytesToFloat -> mgl_readback_policy.h */
+
+/* copy GL BGRA8 rows into a BGRA8-compatible Metal pixel
+ * format (RGBA8Unorm / BGRA8Unorm / RGB9E5Float / RGB10A2Unorm /
+ * BGR10A2Unorm) with optional Y-flip.  Pure CPU data transform shared by
+ * both gates — mirrors the ObjC
+ * mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes exactly (1 on
+ * success, 0 on bad args / unsupported format). */
+int mglRenderCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+    const void *src, uint64_t src_bytes_per_row,
+    void *dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint32_t pixel_format, int flip_y);
+
+/* RGB10A2Unorm texture bytes -> GL format/type,
+ * bypassing the lossy BGRA8 UNORM intermediate.  Mirrors the ObjC
+ * sourceIsRGB10A2Direct path (1 on success, 0 on bad args / unsupported). */
+int mglRenderCopyRGB10A2TextureBytesToGL(
+    const void *src, uint64_t src_bytes_per_row,
+    void *dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint32_t pixel_format, uint32_t format, uint32_t type, int flip_y);
+
+typedef struct MGLRenderReadTextureRegionClip_t {
+    int32_t copy_w;
+    int32_t copy_h;
+    int32_t dst_x;
+    int32_t dst_y;
+    int32_t metal_src_x;
+    int32_t metal_src_y;
+    int empty;   /* copyW <= 0 || copyH <= 0 (nothing to copy) */
+} MGLRenderReadTextureRegionClip;
+
 
 /* readback bytes-per-pixel table (MGLPixelFormat ABI value
  * -> bytes).  Pure CPU table shared by both gates — mirrors the ObjC
@@ -57,21 +90,49 @@ int mglRenderReadbackPixelFormatIsBGRA8(uint32_t pixel_format);
 
 uint32_t mglRenderReadbackBGRA8CarrierFormat(void);
 
-int mglRenderClearMaskHasColor(uint32_t mask);
+/* Clear-mask bits are client vocabulary; the helpers live here so the
+ * backends ask a question instead of spelling GL_*_BUFFER_BIT. */
+static inline int mglRenderClearMaskHasColor(uint32_t mask)
+{
+    return (mask & GL_COLOR_BUFFER_BIT) != 0 ? 1 : 0;
+}
 
-int mglRenderClearMaskHasDepth(uint32_t mask);
+static inline int mglRenderClearMaskHasDepth(uint32_t mask)
+{
+    return (mask & GL_DEPTH_BUFFER_BIT) != 0 ? 1 : 0;
+}
 
-int mglRenderClearMaskHasStencil(uint32_t mask);
+static inline int mglRenderClearMaskHasStencil(uint32_t mask)
+{
+    return (mask & GL_STENCIL_BUFFER_BIT) != 0 ? 1 : 0;
+}
 
-int mglRenderClearMaskHasDepthStencil(uint32_t mask);
+static inline int mglRenderClearMaskHasDepthStencil(uint32_t mask)
+{
+    return mglRenderClearMaskHasDepth(mask) || mglRenderClearMaskHasStencil(mask)
+               ? 1
+               : 0;
+}
 
-uint32_t mglRenderClearMaskDepthStencilBits(uint32_t mask);
+static inline uint32_t mglRenderClearMaskDepthStencilBits(uint32_t mask)
+{
+    return mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+}
 
-uint32_t mglRenderClearMaskClearColor(uint32_t mask);
+static inline uint32_t mglRenderClearMaskClearColor(uint32_t mask)
+{
+    return mask & ~GL_COLOR_BUFFER_BIT;
+}
 
-uint32_t mglRenderClearMaskClearDepth(uint32_t mask);
+static inline uint32_t mglRenderClearMaskClearDepth(uint32_t mask)
+{
+    return mask & ~GL_DEPTH_BUFFER_BIT;
+}
 
-uint32_t mglRenderClearMaskClearStencil(uint32_t mask);
+static inline uint32_t mglRenderClearMaskClearStencil(uint32_t mask)
+{
+    return mask & ~GL_STENCIL_BUFFER_BIT;
+}
 
 int mglRenderClearMaskHasAny(uint32_t mask);
 

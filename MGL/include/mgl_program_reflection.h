@@ -44,6 +44,9 @@ MGLShaderResource *mglFindVaryingByLocation(MGLShaderResourceList *list,
                                         const MGLShaderResource *type_peer);
 void mglBridgeSkippedGeometryShaderVaryings(Program *program);
 
+/* Apply GLSL uniform default initializers after link (ARCH-008). */
+void mglSeedUniformInitializers(GLMContext ctx, Program *pptr);
+
 /* Geometry shaders always use the compute expansion path. */
 static inline GLboolean mglProgramHasPassthroughGeometryShader(
     Program *program)

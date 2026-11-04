@@ -13,15 +13,18 @@
  * shell forwarders. */
 
 #include "mgl_ms_sample_loop.h"
-#include "mgl_renderer_ports.h"
+#include "mgl_ports_present.h"
+#include "mgl_renderer_state_areas.h"
 #include "mgl_render_pass_manager_ops.h"  /* mglRendererEndRenderEncodingLocked */
 #include "mgl_draw_support.h"          /* mglDrawEmulatedMSColor0Texture, … */
-#include "mgl_render.h"
+#include "mgl_render_api_command.h"
+#include "mgl_render_api_texture.h"
 #include "mgl_metal_ref.h"
 #include "mgl_sync.h"                  /* mglMetalAttachmentSubresourceForAttachment */
 #include "mgl_texture_compat.h"        /* mglMarkTextureLevelRenderTargetWrittenImpl */
 
 #include <stdint.h>
+#include "mgl_texture_backend.h"
 
 extern int mglPlatformShellMSSampleInLoop(void *renderer);
 extern void mglPlatformShellSetMSSampleState(void *renderer, int in_loop,
@@ -85,15 +88,15 @@ static void mglBroadcastMSPlanes(void *blit, Texture *tex, FBOAttachment *att)
     const uint64_t baseSlice = sub.slice;
     const uint64_t level = sub.level;
     MGLRenderTextureInfo info = {0};
-    (void)mglRenderGetTextureInfo(tex->mtl_data, &info);
+    (void)mglRenderGetTextureInfo(mglTextureMtl(tex), &info);
     if (samples <= 1u || info.width == 0u || info.height == 0u ||
         baseSlice + samples > info.array_length) {
         return;
     }
     for (uint64_t s = 1u; s < samples; s++) {
         (void)mglRenderBlitCopyTexture(
-            blit, tex->mtl_data, baseSlice, level, 0u, 0u, 0u, info.width,
-            info.height, 1u, tex->mtl_data, baseSlice + s, level, 0u, 0u, 0u);
+            blit, mglTextureMtl(tex), baseSlice, level, 0u, 0u, 0u, info.width,
+            info.height, 1u, mglTextureMtl(tex), baseSlice + s, level, 0u, 0u, 0u);
     }
     mglMarkTextureLevelRenderTargetWrittenImpl(tex, (GLuint)level, __func__, __LINE__);
 }
@@ -118,7 +121,7 @@ void mglRendererBroadcastEmulatedMSSamplePlanesAfterDrawIfNeeded(void *renderer,
         texs[2] = NULL;
     }
     for (int i = 0; i < 3; i++) {
-        if (texs[i] && !texs[i]->mtl_data) {
+        if (texs[i] && !mglTextureMtl(texs[i])) {
             texs[i] = NULL;
         }
     }
@@ -130,8 +133,8 @@ void mglRendererBroadcastEmulatedMSSamplePlanesAfterDrawIfNeeded(void *renderer,
         return;
     }
 
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs) {
         return;

@@ -20,7 +20,8 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "mgl_tess_compute_ops.h"
-#include "mgl_renderer_ports.h"   /* state areas + keep-alive set */
+#include "mgl_ports_present.h"
+#include "mgl_renderer_state_areas.h"   /* state areas + keep-alive set */
 #include "mgl_buffer_slots.h"     /* kMGLPointSizeBufferIndex */
 #include "mgl_draw_tess.h"        /* mglTessFillPointSizeParams */
 #include "mgl_types_program.h"    /* _MAX_SHADER_TYPES */
@@ -68,11 +69,9 @@ void mglTessBindPointSizeParamsToComputeEncoder(
     if (!program->uses_point_size_params) {
         return;
     }
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
-    GLMState *state = areas.core && areas.core->activeState
-        ? areas.core->activeState
-        : (areas.ctx ? areas.ctx->active_state : NULL);
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
+    GLMState *state = areas.ctx ? areas.ctx->active_state : NULL;
 
     float pointSizeParams[2] = {0.f, 0.f};
     mglTessFillPointSizeParams(

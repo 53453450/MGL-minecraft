@@ -84,18 +84,6 @@ static void test_sampled_plan(void)
     expect(plan.action == MGL_ST_ACTION_TYPE_FALLBACK, "type fb");
 
     memset(&in, 0, sizeof(in));
-    in.phase = MGL_ST_PHASE_RT;
-    in.is_render_target = 1;
-    in.yflip = 1; /* SAMPLED_COPY */
-    in.has_sampled_copy = 1;
-    in.copy_fresh = 1;
-    in.can_use_rt_copy = 1;
-    in.copy_type_ok = 1;
-    in.copy_kind_ok = 1;
-    expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "rt");
-    expect(plan.action == MGL_ST_ACTION_RT_USE_COPY, "use copy");
-
-    memset(&in, 0, sizeof(in));
     in.phase = MGL_ST_PHASE_FINAL;
     in.has_bound_texture = 1;
     in.has_resource = 1;
@@ -246,31 +234,8 @@ static void test_sampler_materialize_plan(void)
            "cd fill copies every fact");
 }
 
-static void test_sampled_diag_and_rt_ports(void)
+static void test_sampled_diag_ports(void)
 {
-    MGLSampledTextureBindInput in;
-    MGLSampledTextureBindPlan plan;
-    memset(&in, 0, sizeof(in));
-    in.phase = MGL_ST_PHASE_RT;
-    in.is_render_target = 1;
-    in.yflip = 0; /* ORIGINAL */
-    in.want_base_level_on_original = 1;
-    expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "rt orig");
-    expect(plan.action == MGL_ST_ACTION_RT_ORIGINAL, "rt orig act");
-    expect(plan.apply_base_level_view == 1, "base view");
-
-    memset(&in, 0, sizeof(in));
-    in.phase = MGL_ST_PHASE_RT;
-    in.is_render_target = 1;
-    in.yflip = 1;
-    in.has_sampled_copy = 1;
-    in.copy_fresh = 1;
-    in.can_use_rt_copy = 1;
-    in.copy_type_ok = 1;
-    in.copy_kind_ok = 1;
-    expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "rt copy");
-    expect(plan.apply_base_level_view == 1, "copy view");
-
     MGLSampledDiagGateInput din;
     MGLSampledDiagGatePlan dplan;
     memset(&din, 0, sizeof(din));
@@ -385,10 +350,10 @@ void mglBindingLogTexBufferBind(uint64_t a, uint32_t b, uint32_t c, uint32_t d,
 { (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;(void)j;(void)k;(void)l;(void)m;(void)n;(void)o; }
 void mglBindingLogRTSampleCopySample(uint64_t a, uint64_t b, uint32_t c, uint32_t d,
     uint32_t e, const char *f, uint32_t g, uint32_t h, uint32_t i, const char *j,
-    int k, int l, const void *m, const void *n, const void *o, const void *p,
-    uint64_t q, uint64_t r, uint64_t s, uint64_t t, uint32_t u, uint32_t v,
-    const void *w, const void *x)
-{ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;(void)j;(void)k;(void)l;(void)m;(void)n;(void)o;(void)p;(void)q;(void)r;(void)s;(void)t;(void)u;(void)v;(void)w;(void)x; }
+    int k, const void *l, const void *m, const void *n,
+    uint64_t o, uint64_t p, uint64_t q, uint64_t r, uint32_t s, uint32_t t,
+    const void *u, const void *v)
+{ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;(void)j;(void)k;(void)l;(void)m;(void)n;(void)o;(void)p;(void)q;(void)r;(void)s;(void)t;(void)u;(void)v; }
 void mglBindingLogMipDiagFrag(uint32_t a, uint32_t b, uint32_t c, uint32_t d,
     const char *e, uint32_t f, uint32_t g, double h, double i, double j, uint32_t k,
     uint32_t l, uint32_t m, uint64_t n, uint64_t o, uint64_t p, const void *q, int r,
@@ -401,10 +366,6 @@ static void test_o33_fill_emit_ports(void)
     mglBindingTextureFillSamplerMaterializeInput(&sm, 0, 1, 1, 0, 1, 0, 0);
     expect(sm.has_gl_sampler == 1 && sm.unit_in_range == 1, "sm fill");
 
-    MGLSampledTextureBindInput rt;
-    mglBindingTextureFillSampledRTInput(&rt, 0, 1, 1, 1, 1, 1, 1, 1, 1);
-    expect(rt.phase == MGL_ST_PHASE_RT && rt.copy_fresh == 1, "rt fill");
-
     MGLStorageImageBindInput si;
     mglBindingTextureFillStorageImageInput(&si, MGL_SI_PASS_BIND, 0, 1, 2, 1, 9,
                                            1, 0, 0, 3, 4, 5, 32);
@@ -412,17 +373,16 @@ static void test_o33_fill_emit_ports(void)
 
     uint8_t frag[128];
     memset(frag, 0xab, sizeof(frag));
-    mglBindingTextureWriteFragTrace(frag, 7, 3, 2, 11, 100, 200, (void *)1,
-                                    (void *)2, (void *)3, (void *)4, 64, 32, 9, 2,
-                                    1, 0);
+    mglBindingTextureWriteFragTrace(frag, 7, 3, 2, 11, 100, (void *)1,
+                                    (void *)2, (void *)3, 64, 32, 9, 2, 0);
     expect(frag[0] != 0xab, "frag trace wrote");
 
     MGLSampledDiagEmitInput ein;
     memset(&ein, 0, sizeof(ein));
     mglBindingTextureFillSampledDiagEmitCore(
         &ein, "fragment", 1, 2, 3, "InSampler", 0, 1, -1, 0, 13, 0xde1, 1, 2, 2,
-        0, 0, 0, 0, 0, 2, 16, 16, 0, 4, 4, 1, 16, 1, 1, 0, 0, 0, 0, 0, 13, 1, 0, 0,
-        0, 0, 0, 1, 0, 1, 10, 0, 0, 0, 0);
+        0, 0, 0, 0, 0, 2, 16, 16, 0, 4, 4, 1, 16, 1, 1, 0, 0, 0, 0, NULL, 0, 13,
+        1, 0, 0, 0, 0, 0, 1, 0, 1, 10, 0, 0, 0);
     expect(ein.stage_is_fragment == 1 && ein.gl_tex == 13u, "diag core");
     MGLSampledDiagEmitResult eres;
     mglBindingTextureEmitSampledDiagPorts(&ein, &eres);
@@ -447,7 +407,7 @@ int main(void)
     test_attrib_plan();
     test_warmup_gates();
     test_sampler_materialize_plan();
-    test_sampled_diag_and_rt_ports();
+    test_sampled_diag_ports();
     test_sampled_final_helpers();
     test_sampled_gate_compat_fill();
     test_apply_masks();

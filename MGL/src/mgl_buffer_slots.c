@@ -20,6 +20,8 @@
 #include "mgl_buffer_slots.h"
 #include "glm_context.h"  /* brings in Program after GLMContext typedef */
 #include <stddef.h>  /* NULL */
+#include <string.h>
+#include "mgl_program_backend.h"
 
 /* Shader stage indices — must match the enum order in glm_context.h
  * (_MAX_SHADER_TYPES: VERTEX=0, TESS_CONTROL=1, TESS_EVALUATION=2,
@@ -189,20 +191,48 @@ GLuint mglRuntimeArraySizeBufferIndexForProgram(const Program *program,
     return MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX;
 }
 
-GLboolean mglBufferSlotConflictsForProgram(const Program *program,
-                                           GLuint slot,
-                                           int stage)
+void mglBufferSlotFactsFromProgram(const Program *program, int stage,
+                                   MGLBufferSlotFacts *out)
 {
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->stage = stage;
     if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        out->stage = -1;
+        return;
+    }
+    out->runtime_array_size_slot =
+        mglRuntimeArraySizeBufferIndexForProgram(program, stage);
+    out->needs_runtime_array_size_buffer =
+        mglProgramModuleView(program, stage)->needs_runtime_array_size_buffer ? 1 : 0;
+    out->stage_has_samplers = mglProgramStageHasSamplers(program, stage) ? 1 : 0;
+    out->uses_point_size_params = program->uses_point_size_params ? 1 : 0;
+    out->uses_shader_draw_params = program->uses_shader_draw_params ? 1 : 0;
+    out->uses_cull_distance = program->uses_cull_distance ? 1 : 0;
+    out->vertex_has_stage_inputs =
+        program->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES].count >
+        0u;
+    out->tess_eval_render_vertex = program->tess_eval_render_vertex ? 1 : 0;
+    out->tess_eval_compute = program->tess_eval_compute ? 1 : 0;
+    out->gs_compute_route = program->gs_route == MGL_GS_ROUTE_COMPUTE ? 1 : 0;
+    out->uses_frag_coord_params = program->usesFragCoordParams ? 1 : 0;
+}
+
+GLboolean mglBufferSlotConflicts(const MGLBufferSlotFacts *facts, GLuint slot)
+{
+    if (!facts || facts->stage < 0 || facts->stage >= _MAX_SHADER_TYPES) {
         return GL_FALSE;
     }
+    const int stage = facts->stage;
 
     /* The AIR backend exposes the runtime-array byte-size table at a fixed
      * Metal slot.  A reflected user buffer at that slot would be overwritten
      * when the stage binds the hidden table, so reject the collision at link
      * time rather than allowing a draw/dispatch-time data corruption. */
-    if (slot == mglRuntimeArraySizeBufferIndexForProgram(program, stage) &&
-        program->modules[stage].needs_runtime_array_size_buffer) {
+    if (slot == facts->runtime_array_size_slot &&
+        facts->needs_runtime_array_size_buffer) {
         return GL_TRUE;
     }
 
@@ -215,23 +245,22 @@ GLboolean mglBufferSlotConflictsForProgram(const Program *program,
         if (slot == kMGLSamplerWrapBufferIndex) {
             return GL_TRUE;
         }
-        if (slot == kMGLLodBiasMaxBufferIndex &&
-            mglProgramStageHasSamplers(program, stage)) {
+        if (slot == kMGLLodBiasMaxBufferIndex && facts->stage_has_samplers) {
             return GL_TRUE;
         }
     }
 
     switch (stage) {
         case _VERTEX_SHADER:
-            if (program->uses_point_size_params &&
+            if (facts->uses_point_size_params &&
                 slot == kMGLPointSizeBufferIndex) {
                 return GL_TRUE;
             }
-            if (program->uses_shader_draw_params &&
+            if (facts->uses_shader_draw_params &&
                 slot == kMGLShaderDrawParamsBufferIndex) {
                 return GL_TRUE;
             }
-            if (program->uses_cull_distance &&
+            if (facts->uses_cull_distance &&
                 mglBufferSlotIsReservedForCullDistance(slot)) {
                 return GL_TRUE;
             }
@@ -242,12 +271,11 @@ GLboolean mglBufferSlotConflictsForProgram(const Program *program,
              * buffer-index namespace as the kernel's own buffer arguments.
              * Only reserve the region when the stage declares vertex inputs:
              * a program without stage inputs maps no attribute stream, so the
-             * same numeric slot stays legal there — which also keeps the
+             * same numeric slot stays legal there -- which also keeps the
              * per-path reservations above discriminating instead of being
              * shadowed by a blanket range. */
             if (slot >= kMGLVertexAttribBufferBase &&
-                program->shader_resources_list[_VERTEX_SHADER]
-                                              [_STAGE_INPUT_RES].count > 0u) {
+                facts->vertex_has_stage_inputs) {
                 return GL_TRUE;
             }
             break;
@@ -263,7 +291,7 @@ GLboolean mglBufferSlotConflictsForProgram(const Program *program,
             break;
 
         case _TESS_EVALUATION_SHADER:
-            if (program->tess_eval_render_vertex) {
+            if (facts->tess_eval_render_vertex) {
                 /* TES-vertex (isolines / point_mode as a render vertex
                  * function) binds slot 26/27/28/30 in the render encoder and
                  * keeps the runtime-array size table at the compute-ABI slot
@@ -271,7 +299,7 @@ GLboolean mglBufferSlotConflictsForProgram(const Program *program,
                 if (slot == 23u || (slot >= 26u && slot <= 30u)) {
                     return GL_TRUE;
                 }
-            } else if (program->tess_eval_compute) {
+            } else if (facts->tess_eval_compute) {
                 /* Compute TES (isolines / point_mode / XFB-forced) occupies
                  * every slot in [24, 30] plus the XFB stream at 22. */
                 if (slot == 22u || (slot >= 24u && slot <= 30u)) {
@@ -284,14 +312,14 @@ GLboolean mglBufferSlotConflictsForProgram(const Program *program,
             break;
 
         case _GEOMETRY_SHADER:
-            if (program->gs_route == MGL_GS_ROUTE_COMPUTE &&
+            if (facts->gs_compute_route &&
                 mglBufferSlotIsReservedForGeometry(slot)) {
                 return GL_TRUE;
             }
             break;
 
         case _FRAGMENT_SHADER:
-            if (program->usesFragCoordParams &&
+            if (facts->uses_frag_coord_params &&
                 mglBufferSlotIsReservedForFragCoordFixup(slot)) {
                 return GL_TRUE;
             }
@@ -302,6 +330,42 @@ GLboolean mglBufferSlotConflictsForProgram(const Program *program,
     }
 
     return GL_FALSE;
+}
+
+GLboolean mglBufferSlotConflictsForProgram(const Program *program,
+                                           GLuint slot,
+                                           int stage)
+{
+    MGLBufferSlotFacts facts;
+    mglBufferSlotFactsFromProgram(program, stage, &facts);
+    return mglBufferSlotConflicts(&facts, slot);
+}
+
+int mglBufferSlotCheckResource(const MGLBufferSlotFacts *facts,
+                               uint32_t binding, uint32_t element_count,
+                               uint32_t *bad_slot)
+{
+    if (bad_slot) {
+        *bad_slot = binding;
+    }
+    if (element_count == 0u) {
+        element_count = 1u;
+    }
+    for (uint32_t element = 0; element < element_count; element++) {
+        /* The sum cannot wrap: the walk stops at the first slot past the
+         * limit, which comes before any element could reach 2^32. */
+        const uint32_t slot = binding + element;
+        if (bad_slot) {
+            *bad_slot = slot;
+        }
+        if (slot >= (uint32_t)kMGLMaxMetalUserBufferCount) {
+            return MGL_BUFFER_SLOT_EXCEEDS_LIMIT;
+        }
+        if (mglBufferSlotConflicts(facts, slot)) {
+            return MGL_BUFFER_SLOT_RESERVED;
+        }
+    }
+    return MGL_BUFFER_SLOT_OK;
 }
 
 const char *mglBufferSlotReservedName(GLuint slot)
