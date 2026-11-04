@@ -671,6 +671,14 @@ void mglRenderReleaseBufferBackend(Buffer* buffer) {
     free(backend);
 }
 
+extern "C" int mglRenderBufferOwnsCPUStorage(const Buffer* buffer) {
+    return mglBufferBackendOwnsCPUStorage(buffer);
+}
+
+extern "C" void* mglRenderBufferHandle(const Buffer* buffer) {
+    return mglBufferMtl(buffer);
+}
+
 Buffer* mglRenderAcquirePackedStructBuffer(const void* data,
                                                size_t size,
                                                char* err,

@@ -40,11 +40,9 @@
 #include "mgl_render_api_texture.h"  /* mglRenderTextureDropBacking */
 #include "draw_command.h"
 #include "mgl_safety.h"
-#include "mgl_metal_ref.h"
 #include "mgl_pixel_format.h"
 #include "pixel_utils.h"
 #include "utils.h"
-#include "mgl_texture_backend.h"
 
 /* GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS is defined in GLES but not in desktop
  * GL headers; define it here for FBO completeness checks. */
@@ -1117,7 +1115,7 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
                                 (unsigned)c_ever,
                                 (unsigned)c_full,
                                 (unsigned)c_source,
-                                color_tex ? (unsigned)mglTextureWriteVersion(color_tex) : 0u,
+                                color_tex ? (unsigned)mglRenderTextureWriteVersion(color_tex) : 0u,
                                 0u,
                                 color0 ? (unsigned)color0->clear_bitmask : 0u,
                                 depth ? (unsigned)depth->texture : 0u,
@@ -1130,7 +1128,7 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
                                 (unsigned)d_ever,
                                 (unsigned)d_full,
                                 (unsigned)d_source,
-                                depth_tex ? (unsigned)mglTextureWriteVersion(depth_tex) : 0u,
+                                depth_tex ? (unsigned)mglRenderTextureWriteVersion(depth_tex) : 0u,
                                 0u,
                                 depth ? (unsigned)depth->clear_bitmask : 0u,
                                 (int)STATE(viewport)[0],

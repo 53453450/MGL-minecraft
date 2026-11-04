@@ -37,7 +37,6 @@
 #include "glm_context.h"
 #include "mgl_glsl_parser.h"
 #include "mgl_compile_artifact.h"
-#include "mgl_metal_ref.h"
 #include "mgl_shader_abi.h"
 #include "mgl_glsl_ast.h"
 #include "mgl_frontend_session.h"

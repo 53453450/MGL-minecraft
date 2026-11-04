@@ -156,6 +156,12 @@ void mglRenderReleaseBufferMetalData(GLMContext glm_ctx, Buffer *buffer);
  * index copy) and free it; the buffer keeps no backend state afterwards. */
 void mglRenderReleaseBufferBackend(Buffer *buffer);
 
+/* FE-safe: whether backend no-copy MTLBuffer owns BufferData CPU range. */
+int mglRenderBufferOwnsCPUStorage(const Buffer *buffer);
+
+/* FE-safe: borrowed Metal buffer handle, or NULL. */
+void *mglRenderBufferHandle(const Buffer *buffer);
+
 void mglRenderBufferSubData(GLMContext glm_ctx,
                                Buffer *buffer,
                                size_t offset,

@@ -38,7 +38,6 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "glm_context.h"
-#include "mgl_metal_ref.h"
 #include "buffers.h"
 #include "vertex_arrays.h"
 #include "mgl_byte_hash.h"
@@ -50,7 +49,6 @@
 // Used to recover from a corrupted context pointer (e.g. small non-NULL values like 0x2f)
 extern void mgl_lazy_init(void);
 #include "mgl_trace_log.h"
-#include "mgl_buffer_backend.h"
 
 void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access);
 
@@ -140,7 +138,7 @@ static void mglBufferMarkWrite(Buffer *ptr,
 static int mglBufferNeedsGpuSyncForCpuRead(Buffer *ptr)
 {
     return ptr && ptr->gpu_write_target && !ptr->cpu_shadow_pending &&
-           mglBufferMtl(ptr) && ptr->data.buffer_data;
+           mglRenderBufferHandle(ptr) && ptr->data.buffer_data;
 }
 
 static void mglSyncBufferForCpuRead(GLMContext ctx, Buffer *ptr,
@@ -183,7 +181,7 @@ static void mglPrepareGpuWrittenBufferForCpuShadowWrite(GLMContext ctx,
                                                         GLsizeiptr size)
 {
     if (!ctx || !ptr || !ptr->gpu_write_target || ptr->cpu_shadow_pending ||
-        !ptr->data.buffer_data || !mglBufferMtl(ptr) || size <= 0) {
+        !ptr->data.buffer_data || !mglRenderBufferHandle(ptr) || size <= 0) {
         return;
     }
     if (offset < 0 || !mgl_range_ok_glsize(offset, size, ptr->size)) {
@@ -384,7 +382,7 @@ void mglReleaseBufferStorage(Buffer *buf)
 {
     if (!buf) return;
 
-    GLboolean metal_owns_cpu_backing = mglBufferBackendOwnsCPUStorage(buf);
+    GLboolean metal_owns_cpu_backing = mglRenderBufferOwnsCPUStorage(buf);
     /* The Metal buffer belongs to the backend record; it is released when
      * mglRenderReleaseBufferBackend tears that record down below. */
 
@@ -1120,7 +1118,7 @@ bool clearBufferData(GLMContext ctx, Buffer *ptr, GLenum internalformat, GLintpt
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
 
-    if (mglBufferBackendOwnsCPUStorage(ptr)) {
+    if (mglRenderBufferOwnsCPUStorage(ptr)) {
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
     }
@@ -2264,7 +2262,7 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
 
-    if (mglBufferBackendOwnsCPUStorage(ptr)) {
+    if (mglRenderBufferOwnsCPUStorage(ptr)) {
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
     }
@@ -2379,7 +2377,7 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
                                 (long long)size,
                                 src_hash,
                                 src_preview,
-                                mglBufferMtl(ptr));
+                                mglRenderBufferHandle(ptr));
         }
         /* Mark before the Metal upload so gpu_write_target snapshots include
          * this range in their shadow overlay. */
@@ -2443,7 +2441,7 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
 
-    if (mglBufferBackendOwnsCPUStorage(ptr)) {
+    if (mglRenderBufferOwnsCPUStorage(ptr)) {
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
     }
@@ -2491,7 +2489,7 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
                            data,
                            src_hash_for_meta);
 
-        if (mglBufferMtl(ptr))
+        if (mglRenderBufferHandle(ptr))
         {
             // use use metal to do the subdata call
             mglRendererBufferSubData(ctx, ptr, offset, size, data);
@@ -2598,7 +2596,7 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
     mglFlushPendingDrawsForBufferRange(ctx, dst_buf, writeOffset, size);
     mglFlushPendingDrawsForBufferRange(ctx, src_buf, readOffset, size);
 
-    if (mglBufferBackendOwnsCPUStorage(dst_buf)) {
+    if (mglRenderBufferOwnsCPUStorage(dst_buf)) {
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
     }
@@ -2612,7 +2610,7 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
     /* Atomic / SSBO / XFB writes land in the Metal store; the CPU shadow still
      * holds ClearBufferData zeros.  Pull the GPU range before memcpy so
      * sparse_buffer case_e (and similar) see the increments. */
-    if (src_buf->gpu_write_target && mglBufferMtl(src_buf) &&
+    if (src_buf->gpu_write_target && mglRenderBufferHandle(src_buf) &&
         src_buf->data.buffer_data && !src_buf->cpu_shadow_pending) {
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
@@ -4138,7 +4136,7 @@ void mglBufferPageCommitmentARB(GLMContext ctx, GLenum target, GLintptr offset,
         memset((uint8_t *)(uintptr_t)ptr->data.buffer_data + (size_t)offset, 0,
                (size_t)size);
         ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
-        if (mglBufferMtl(ptr))
+        if (mglRenderBufferHandle(ptr))
             mglRendererBufferSubData(ctx, ptr, offset, size,
                                      (const void *)((uintptr_t)ptr->data.buffer_data +
                                                     (uintptr_t)offset));

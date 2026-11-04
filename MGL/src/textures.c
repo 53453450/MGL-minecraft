@@ -71,7 +71,6 @@ extern void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width,
                           void *pixels);
 extern bool getParam(GLMContext ctx, TextureParameter *tex_params, GLenum pname, GLint *iparam, GLfloat *fparam);
 #include "mgl_trace_log.h"
-#include "mgl_texture_backend.h"
 extern GLint mglTexLevelCanonicalInternalFormat(GLint internalformat);
 extern bool mglTexLevelInternalFormatCompressed(GLint internalformat);
 extern GLint mglCompressedInternalFormatToSizedUncompressed(GLint internalformat);
@@ -1114,7 +1113,7 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
             }
             free(tex->sparse_commits);
             tex->sparse_commits = NULL;
-            mglTextureBackendRelease(ctx, tex);
+            mglRenderTextureReleaseBackend(ctx, tex);
             free(tex);
         }
     }
@@ -1701,13 +1700,13 @@ void generateMipmaps(GLMContext ctx, GLuint texture, GLenum target)
     ptr->num_levels = MAX(ptr->num_levels, level_count);
     ptr->mipmap_levels = MAX(ptr->mipmap_levels, level_count);
 
-    needs_storage_update = (!mglTextureMtl(ptr) || !ptr->mipmapped || !ptr->genmipmaps);
-    if (needs_storage_update && mglTextureMtl(ptr) &&
+    needs_storage_update = (!mglRenderTextureHandle(ptr) || !ptr->mipmapped || !ptr->genmipmaps);
+    if (needs_storage_update && mglRenderTextureHandle(ptr) &&
         mglTextureHasGPUContent(ptr)) {
         /* A rendered texture whose Metal storage already holds the whole chain
          * has nothing to rebuild; rebuilding would drop its GPU content. */
         MGLRenderTextureInfo mtlInfo = {0};
-        if (mglRenderGetTextureInfo(mglTextureMtl(ptr), &mtlInfo) == 0 &&
+        if (mglRenderGetTextureInfo(mglRenderTextureHandle(ptr), &mtlInfo) == 0 &&
             mtlInfo.mipmap_level_count >= level_count) {
             needs_storage_update = GL_FALSE;
         }
@@ -1758,7 +1757,7 @@ void mglGenerateTextureMipmap(GLMContext ctx, GLuint texture)
 
 void mglInvalidateTextureBaseLevelView(GLMContext ctx, Texture *tex)
 {
-    mglTextureBackendDropBaseLevelView(ctx, tex);
+    mglRenderTextureDropBaseLevelView(ctx, tex);
 }
 
 void invalidateTexture(GLMContext ctx, Texture *tex)
@@ -1787,22 +1786,22 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
                         tex->target,
                         tex->index,
                         level_count,
-                        mglTextureMtl(tex));
+                        mglRenderTextureHandle(tex));
 
-    if (mglTextureMtl(tex))
+    if (mglRenderTextureHandle(tex))
     {
-        mglRendererDeleteMetalObject(ctx, mglTextureMtl(tex));
-        mglTextureForgetMtlData(tex);
+        mglRendererDeleteMetalObject(ctx, mglRenderTextureHandle(tex));
+        mglRenderTextureForgetHandle(tex);
     }
 
-    if (mglTextureSamplerState(tex))
+    if (mglRenderTextureSamplerHandle(tex))
     {
-        mglRendererDeleteMetalObject(ctx, mglTextureSamplerState(tex));
-        mglTextureBackendEnsure(tex)->sampler_state = NULL;
+        mglRendererDeleteMetalObject(ctx, mglRenderTextureSamplerHandle(tex));
+        mglRenderTextureClearSamplerHandle(tex);
     }
 
     /* release the cached base-level view */
-    mglTextureBackendDropBaseLevelView(ctx, tex);
+    mglRenderTextureDropBaseLevelView(ctx, tex);
 
     for(int face=0; face<_CUBE_MAP_MAX_FACE; face++)
     {
@@ -4355,7 +4354,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         if (buf == NULL)
             continue;
 
-        if (mglTextureMtl(tex) == NULL)
+        if (mglRenderTextureHandle(tex) == NULL)
             continue;
 
         if (src_pitch < unpack_layout.row_copy_bytes) {
@@ -4435,13 +4434,13 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
 
     /* A view family reads its shared store from Metal, so a deferred CPU
      * upload would never be applied. */
-    if ((tex->view_root || tex->view_count) && !mglTextureMtl(tex)) {
+    if ((tex->view_root || tex->view_count) && !mglRenderTextureHandle(tex)) {
         mglRendererBindTexture(ctx, tex);
     }
     bool uploaded_direct = false;
     bool had_pending_texture_data_before_direct = (tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0;
     if (!resolved_unpack_buf &&
-        mglTextureMtl(tex) &&
+        mglRenderTextureHandle(tex) &&
         (tex->dirty_bits & DIRTY_TEXTURE_LEVEL) == 0 &&
         upload_rect_valid) {
         size_t upload_src_image_size = dst_pitch * (size_t)MAX(height, 1);
@@ -5151,7 +5150,7 @@ void texStorage(GLMContext ctx, Texture *tex, GLuint faces, GLsizei levels, GLbo
      * installs a non-NULL gradient substitute on failure, so the one "loud"
      * failure report in the texture-creation paths was defeated by the very
      * mechanism it was meant to catch.  Reject the substitute too. */
-    ERROR_CHECK_RETURN(mglTextureMtl(tex) && !mglTextureStorageIsFallback(tex), GL_OUT_OF_MEMORY);
+    ERROR_CHECK_RETURN(mglRenderTextureHandle(tex) && !mglRenderTextureStorageIsFallback(tex), GL_OUT_OF_MEMORY);
 }
 
 void mglTexStorage1D(GLMContext ctx, GLenum target, GLsizei levels, GLenum internalformat, GLsizei width)
@@ -5400,7 +5399,7 @@ static void mglCommitSparsePages(GLMContext ctx, Texture *tex, GLint level,
             tex->sparse_heap_next_tile += tiles_x * tiles_y * slices;
         }
         (void)mglRenderSparseTextureCommit(
-            tex->sparse_heap, mglTextureMtl(tex),
+            tex->sparse_heap, mglRenderTextureHandle(tex),
             (uint32_t)xoffset, (uint32_t)yoffset, commit_z,
             (uint32_t)width, (uint32_t)height, commit_d,
             (uint32_t)level, commit ? 1 : 0, heap_off);
@@ -5465,7 +5464,7 @@ static void mglSparseScrubTextureLevel(Texture *tex, GLint level, int clear)
     lvl = &tex->faces[0].levels[level];
     if (!lvl || lvl->width == 0)
         return;
-    mtl = mglTextureMtl(tex);
+    mtl = mglRenderTextureHandle(tex);
     if (!mtl)
         return;
 
@@ -6783,7 +6782,7 @@ static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
      * used as a render target; CPU lvl->data can disagree with Metal layout. */
     if (!render_target_needs_readback &&
         mglInternalFormatIsCombinedDepthStencil(tex->internalformat) &&
-        (mglTextureMtl(tex) || (tex->dirty_bits & DIRTY_TEXTURE_DATA))) {
+        (mglRenderTextureHandle(tex) || (tex->dirty_bits & DIRTY_TEXTURE_DATA))) {
         render_target_needs_readback = true;
     }
 
@@ -6816,8 +6815,8 @@ static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
         target == GL_TEXTURE_CUBE_MAP_ARRAY) {
         /* Levels without CPU data (e.g. from GenerateMipmap) live only in
          * Metal storage. */
-        if (render_target_needs_readback || mglTextureMtl(tex)) {
-            if (!mglTextureMtl(tex)) {
+        if (render_target_needs_readback || mglRenderTextureHandle(tex)) {
+            if (!mglRenderTextureHandle(tex)) {
                 ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
             }
@@ -6873,7 +6872,7 @@ static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
     /* If the texture has no Metal data, try the CPU data fallback first.
      * If that fails, let mtlGetTexImage handle Metal texture creation via
      * bindMTLTexture. */
-    if (!mglTextureMtl(tex)) {
+    if (!mglRenderTextureHandle(tex)) {
         /* CPU data fallback: use stored CPU data directly if available */
         if (lvl->data && lvl->pitch >= (size_t)width * pixel_size &&
             (tex->internalformat == GL_RGBA8 || tex->internalformat == GL_RGB8) &&
@@ -7112,7 +7111,7 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
         return;
     }
 
-    if (!mglTextureMtl(tex)) {
+    if (!mglRenderTextureHandle(tex)) {
         memset((uint8_t *)pixels + pack_layout.skip_offset_bytes, 0, pack_layout.write_span_bytes);
         return;
     }
@@ -7527,9 +7526,9 @@ static bool mglTextureViewUnlink(GLMContext ctx, Texture *tex)
                 break;
             }
         }
-        if (mglTextureViewParent(tex)) {
-            mglRendererDeleteMetalObject(ctx, mglTextureViewParent(tex));
-            mglTextureBackendEnsure(tex)->view_parent = NULL;
+        if (mglRenderTextureViewParentHandle(tex)) {
+            mglRendererDeleteMetalObject(ctx, mglRenderTextureViewParentHandle(tex));
+            mglRenderTextureClearViewParentHandle(tex);
         }
         if (root->view_root_deleted && root->view_count == 0u) {
             free(root->views);
@@ -7615,7 +7614,7 @@ void mglTextureView(GLMContext ctx, GLuint texture, GLenum target, GLuint origte
         if (root_ms) {
             root->is_render_target = GL_FALSE;
         }
-        ERROR_CHECK_RETURN(mglTextureMtl(root) && !mglTextureStorageIsFallback(root),
+        ERROR_CHECK_RETURN(mglRenderTextureHandle(root) && !mglRenderTextureStorageIsFallback(root),
                            GL_OUT_OF_MEMORY);
         root->metal_data_authoritative = GL_TRUE;
     }
@@ -7674,7 +7673,7 @@ void mglTextureView(GLMContext ctx, GLuint texture, GLenum target, GLuint origte
             return;
         }
         mglRendererBindTexture(ctx, view);
-        ERROR_CHECK_RETURN(mglTextureMtl(view) != NULL, GL_OUT_OF_MEMORY);
+        ERROR_CHECK_RETURN(mglRenderTextureHandle(view) != NULL, GL_OUT_OF_MEMORY);
     } else {
         texStorage(ctx, view, target == GL_TEXTURE_CUBE_MAP ? 6u : 1u,
                    (GLsizei)levels, is_array, internalformat, (GLsizei)width,
@@ -7786,9 +7785,9 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
 
     if (buffer == 0)
     {
-        if (mglTextureMtl(tex))
+        if (mglRenderTextureHandle(tex))
         {
-            mglRendererDeleteMetalObject(ctx, mglTextureMtl(tex));
+            mglRendererDeleteMetalObject(ctx, mglRenderTextureHandle(tex));
         }
 
         tex->texture_buffer = NULL;
@@ -7800,7 +7799,7 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
         tex->height = 1;
         tex->depth = 1;
         tex->complete = GL_FALSE;
-        mglTextureForgetMtlData(tex);
+        mglRenderTextureForgetHandle(tex);
         tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX | DIRTY_TEX_BINDING);
         return;
@@ -7864,10 +7863,10 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
         return;
     }
 
-    if (mglTextureMtl(tex))
+    if (mglRenderTextureHandle(tex))
     {
-        mglRendererDeleteMetalObject(ctx, mglTextureMtl(tex));
-        mglTextureForgetMtlData(tex);
+        mglRendererDeleteMetalObject(ctx, mglRenderTextureHandle(tex));
+        mglRenderTextureForgetHandle(tex);
     }
 
     tex->texture_buffer = buf;

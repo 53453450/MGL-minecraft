@@ -6,6 +6,61 @@
 
 #include "mgl_texture_backend.h"
 #include "mgl_render_api_lifecycle.h" /* mglRenderReleaseMetalObject */
+#include "mgl_render_api_texture.h"
+
+void *mglRenderTextureHandle(const Texture *texture)
+{
+    return mglTextureMtl(texture);
+}
+
+void *mglRenderTextureSamplerHandle(const Texture *texture)
+{
+    return mglTextureSamplerState(texture);
+}
+
+void *mglRenderTextureViewParentHandle(const Texture *texture)
+{
+    return mglTextureViewParent(texture);
+}
+
+void mglRenderTextureForgetHandle(Texture *texture)
+{
+    mglTextureForgetMtlData(texture);
+}
+
+void mglRenderTextureClearSamplerHandle(Texture *texture)
+{
+    if (texture) {
+        mglTextureBackendEnsure(texture)->sampler_state = NULL;
+    }
+}
+
+void mglRenderTextureClearViewParentHandle(Texture *texture)
+{
+    if (texture) {
+        mglTextureBackendEnsure(texture)->view_parent = NULL;
+    }
+}
+
+void mglRenderTextureDropBaseLevelView(GLMContext ctx, Texture *texture)
+{
+    mglTextureBackendDropBaseLevelView(ctx, texture);
+}
+
+void mglRenderTextureReleaseBackend(GLMContext ctx, Texture *texture)
+{
+    mglTextureBackendRelease(ctx, texture);
+}
+
+int mglRenderTextureStorageIsFallback(const Texture *texture)
+{
+    return mglTextureStorageIsFallback(texture);
+}
+
+uint32_t mglRenderTextureWriteVersion(const Texture *texture)
+{
+    return mglTextureWriteVersion(texture);
+}
 
 void mglTextureBackendDropBaseLevelView(GLMContext ctx, Texture *texture)
 {

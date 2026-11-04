@@ -45,7 +45,6 @@
 #include "buffers.h"
 #include "mgl_safety.h"
 #include "mgl_buffer_slots.h"
-#include "mgl_metal_ref.h"
 #include "mgl_uniform_reflection.h"
 #include "mgl_program_reflection.h"
 #include "mgl_program_resource.h"

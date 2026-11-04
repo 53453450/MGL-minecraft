@@ -705,6 +705,18 @@ int mglRenderCreateFilterSampler(uint32_t nearest, void **sampler_out);
  * the storage description changes, e.g. a renderbuffer's sample count). */
 void mglRenderTextureDropBacking(Texture *texture);
 
+/* FE-safe texture backend accessors (ARCH-007): no mgl_texture_backend.h. */
+void *mglRenderTextureHandle(const Texture *texture);
+void *mglRenderTextureSamplerHandle(const Texture *texture);
+void *mglRenderTextureViewParentHandle(const Texture *texture);
+void mglRenderTextureForgetHandle(Texture *texture);
+void mglRenderTextureClearSamplerHandle(Texture *texture);
+void mglRenderTextureClearViewParentHandle(Texture *texture);
+void mglRenderTextureDropBaseLevelView(GLMContext ctx, Texture *texture);
+void mglRenderTextureReleaseBackend(GLMContext ctx, Texture *texture);
+int mglRenderTextureStorageIsFallback(const Texture *texture);
+uint32_t mglRenderTextureWriteVersion(const Texture *texture);
+
 int mglRenderCreateSamplerForGL(const TextureParameter *params,
                                    uint32_t target,
                                    void **sampler_out,
