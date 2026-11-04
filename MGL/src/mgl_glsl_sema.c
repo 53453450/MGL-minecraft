@@ -2612,9 +2612,24 @@ static MGLIRType *builtin_call_type(const char *name,
     }
     if (name && strncmp(name, "sparse", 6) == 0 && strstr(name, "ARB")) {
         *known = 1;
-        if (argc >= 2)
-            return mglIRTypeScalar(MGLIR_SCALAR_INT);
-        return NULL;
+        if (argc < 2)
+            return NULL;
+        /* GLSL §8.9 / ARB_sparse_texture2: optional bias on sparseTexture*
+         * and sparseTextureOffset* is fragment-shader only (same rule as
+         * texture* bias).  Detect by trailing float beyond the out-texel
+         * arity: Texture=3, TextureOffset=4. */
+        if (stage != MGL_STAGE_FRAGMENT && arg_types && arg_types[argc - 1u] &&
+            arg_types[argc - 1u]->kind == MGLIR_TYPE_SCALAR &&
+            arg_types[argc - 1u]->scalar == MGLIR_SCALAR_FLOAT) {
+            int base = 0;
+            if (strcmp(name, "sparseTextureARB") == 0)
+                base = 3;
+            else if (strcmp(name, "sparseTextureOffsetARB") == 0)
+                base = 4;
+            if (base && (int)argc > base)
+                return NULL;
+        }
+        return mglIRTypeScalar(MGLIR_SCALAR_INT);
     }
     if (name && strstr(name, "ClampARB") &&
         (strncmp(name, "texture", 7) == 0 ||
