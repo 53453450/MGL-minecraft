@@ -423,6 +423,14 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
     bool deferredBufferMapForPipelineBuild = plan.defer_buffer_map;
     if (plan.has_dirty)
     {
+        /* Encoder sampled/image bind is independent of BatchBindActiveTextures:
+         * DIRTY_PROGRAM / IMAGE_UNIT change resource→unit maps without TEX*.
+         * Latch before dirty_bits are cleared at the end of this function. */
+        if (mglPdStateView(&areas)->dirty_bits &
+            (DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER |
+             DIRTY_PROGRAM | DIRTY_IMAGE_UNIT_STATE)) {
+            mglRendererBindingMarkSampledNeedsBind(renderer);
+        }
         if (plan.sync_render_pass)
         {
             RETURN_FALSE_ON_FAILURE(mglRenderPassSyncRenderPassStateForContext(renderer, ctx));

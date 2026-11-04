@@ -37,6 +37,8 @@ void mglRendererBindingInvalidateLastBoundVertexBufferAtIndex(void *renderer,
 void mglRendererBindingInvalidateLastBoundFragmentBufferAtIndex(
     void *renderer, uint64_t index);
 
+void mglRendererBindingMarkSampledNeedsBind(void *renderer);
+
 /* === Resource binding sync ==============================================
  * Work already performed by processDirtyStateDomainsLocked within the same
  * processGLState invocation; the sync entry skips these steps instead of

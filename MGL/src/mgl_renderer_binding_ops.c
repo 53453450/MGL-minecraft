@@ -66,6 +66,11 @@ void mglRendererBindingInvalidateLastBoundFragmentBufferAtIndex(
                                              (uint32_t)index);
 }
 
+void mglRendererBindingMarkSampledNeedsBind(void *renderer)
+{
+    mglRenderBindingMarkSampledNeedsBind(mglRendererBindingOwner(renderer));
+}
+
 /* MGL_STATE() from MGLRenderer_Private.h, in C; the argument is the caller's
  * context, exactly as the method's MGL_STATE(glm_ctx) was. */
 static GLMState *mglRendererBindingDerivedState(const MGLRendererStateView *areas,
@@ -112,6 +117,19 @@ bool mglRendererSyncResourceBindingsForContext(
     RETURN_FALSE_ON_FAILURE(
         mglRenderPassRestoreRenderEncoderAfterTextureUpload(
             renderer, "final-active-texture-bind"));
+    /* Skip encoder-side sampled/image rebind when GL dirty domains that
+     * affect them were not touched and BindingState still owns a live
+     * encoder cache (invalidate / SetValid(0) set sampledNeedsBind). */
+    void *binding_owner = mglRendererBindingOwner(renderer);
+    uint32_t binding_valid = 0u;
+    const int can_skip_sampled =
+        binding_owner &&
+        mglRenderBindingSampledNeedsBind(binding_owner) == 0 &&
+        mglRenderBindingGetValid(binding_owner, &binding_valid) == 0 &&
+        binding_valid != 0u;
+    if (can_skip_sampled) {
+        return true;
+    }
     if (!mglBindTexturesToCurrentRenderEncoder(renderer, &encCtx)) {
         RETURN_FALSE_ON_FAILURE(
             mglRenderPassRestoreRenderEncoderAfterTextureUpload(
