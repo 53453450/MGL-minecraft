@@ -44,6 +44,31 @@ ArrayCacheEntry g_fan;
 ArrayCacheEntry g_strip;
 ArrayCacheEntry g_quad;
 ArrayCacheEntry g_quad_line;
+struct AdjacencyArrayCacheEntry {
+    void *buffer = nullptr;
+    GLenum mode = 0;
+    size_t vertex_count = 0;
+    size_t index_count = 0;
+};
+AdjacencyArrayCacheEntry g_adjacency_array;
+struct AdjacencyElementCacheEntry {
+    void *buffer = nullptr;
+    GLenum mode = 0;
+    GLenum type = 0;
+    size_t source_count = 0;
+    uint64_t source_hash = 0;
+    size_t index_count = 0;
+};
+AdjacencyElementCacheEntry g_adjacency_element;
+
+static uint64_t hashIndexBytes(const uint8_t *source, size_t byte_count) {
+    uint64_t hash = 1469598103934665603ull;
+    for (size_t i = 0; i < byte_count; ++i) {
+        hash ^= static_cast<uint64_t>(source[i]);
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
 struct LineLoopEntry {
     size_t first = 0;
     size_t count = 0;
@@ -151,11 +176,90 @@ void *cachedPrefix(void *device, ArrayCacheEntry &entry, size_t requested,
     return prepared;
 }
 
-void *expandElement(void *device, const uint8_t *source, GLenum type,
-                    size_t source_count, size_t *out_count,
+static int elementExpandCacheEligible(const Buffer *gl_buffer)
+{
+    return gl_buffer && gl_buffer->data.buffer_data &&
+           !(gl_buffer->storage_flags & GL_MAP_PERSISTENT_BIT);
+}
+
+static MGLBufferBackend *elementExpandCacheBackend(Buffer *gl_buffer)
+{
+    if (!elementExpandCacheEligible(gl_buffer)) {
+        return nullptr;
+    }
+    MGLBufferBackend *cache = gl_buffer->backend;
+    if (!cache) {
+        cache = static_cast<MGLBufferBackend *>(calloc(1, sizeof(MGLBufferBackend)));
+        gl_buffer->backend = cache;
+    }
+    return cache;
+}
+
+static void *elementExpandCacheLookup(Buffer *gl_buffer, size_t index_byte_offset,
+                                      size_t source_count, GLenum type,
+                                      uint32_t kind, uint32_t mode,
+                                      uint32_t restart_index, size_t *out_count)
+{
+    if (out_count) *out_count = 0u;
+    MGLBufferBackend *cache = elementExpandCacheBackend(gl_buffer);
+    if (!cache || !cache->element_emulation_data) {
+        return nullptr;
+    }
+    if (cache->element_emulation_content_version != gl_buffer->content_version ||
+        cache->element_emulation_byte_offset != index_byte_offset ||
+        cache->element_emulation_index_count != source_count ||
+        cache->element_emulation_type != static_cast<uint32_t>(type) ||
+        cache->element_emulation_kind != kind ||
+        cache->element_emulation_mode != mode ||
+        cache->element_emulation_restart_index != restart_index) {
+        return nullptr;
+    }
+    if (out_count) {
+        *out_count = cache->element_emulation_out_index_count;
+    }
+    return cache->element_emulation_data;
+}
+
+static void elementExpandCacheStore(Buffer *gl_buffer, size_t index_byte_offset,
+                                    size_t source_count, GLenum type,
+                                    uint32_t kind, uint32_t mode,
+                                    uint32_t restart_index, size_t out_index_count,
+                                    void *buffer)
+{
+    MGLBufferBackend *cache = elementExpandCacheBackend(gl_buffer);
+    if (!cache || !buffer) {
+        return;
+    }
+    if (cache->element_emulation_data) {
+        releaseObject(cache->element_emulation_data);
+    }
+    static_cast<NS::Object *>(buffer)->retain();
+    cache->element_emulation_data = buffer;
+    cache->element_emulation_content_version = gl_buffer->content_version;
+    cache->element_emulation_byte_offset = index_byte_offset;
+    cache->element_emulation_index_count = source_count;
+    cache->element_emulation_type = static_cast<uint32_t>(type);
+    cache->element_emulation_kind = kind;
+    cache->element_emulation_mode = mode;
+    cache->element_emulation_restart_index = restart_index;
+    cache->element_emulation_out_index_count = out_index_count;
+}
+
+void *expandElement(void *device, Buffer *gl_buffer, size_t index_byte_offset,
+                    uint32_t restart_index, uint32_t kind, uint32_t mode,
+                    const uint8_t *source, GLenum type, size_t source_count,
+                    size_t *out_count,
                     int (*expand)(const uint8_t *, uint32_t, uint32_t,
                                   uint32_t **, uint64_t *)) {
     if (out_count) *out_count = 0u;
+    if (gl_buffer) {
+        void *cached = elementExpandCacheLookup(
+            gl_buffer, index_byte_offset, source_count, type, kind, mode,
+            restart_index, out_count);
+        if (cached) {
+            return cached;
+        }
+    }
     const uint32_t width = elementWidth(type);
     if (!device || !source || width == 0u || source_count == 0u ||
         source_count > UINT32_MAX) return nullptr;
@@ -168,7 +272,15 @@ void *expandElement(void *device, const uint8_t *source, GLenum type,
     }
     void *buffer = copyIndices(device, expanded, static_cast<size_t>(count));
     std::free(expanded);
-    if (buffer && out_count) *out_count = static_cast<size_t>(count);
+    if (!buffer) {
+        return nullptr;
+    }
+    if (gl_buffer) {
+        elementExpandCacheStore(gl_buffer, index_byte_offset, source_count, type,
+                                kind, mode, restart_index,
+                                static_cast<size_t>(count), buffer);
+    }
+    if (out_count) *out_count = static_cast<size_t>(count);
     return buffer;
 }
 
@@ -232,6 +344,19 @@ MGLIndexMetalHandle mglNewAdjacencyArrayIndexBuffer(
         !mglRenderEmulateAdjacency((uint32_t)mode)) {
         return nullptr;
     }
+    {
+        os_unfair_lock_lock(&g_cache_lock);
+        if (g_adjacency_array.buffer && g_adjacency_array.mode == mode &&
+            g_adjacency_array.vertex_count == vertex_count) {
+            if (out_count) {
+                *out_count = g_adjacency_array.index_count;
+            }
+            void *cached = g_adjacency_array.buffer;
+            os_unfair_lock_unlock(&g_cache_lock);
+            return cached;
+        }
+        os_unfair_lock_unlock(&g_cache_lock);
+    }
     uint32_t *expanded = nullptr;
     uint64_t count = 0;
     if (mglRenderExpandAdjacencyArrayIndices(
@@ -245,8 +370,21 @@ MGLIndexMetalHandle mglNewAdjacencyArrayIndexBuffer(
     }
     void *buffer = copyIndices(device, expanded, static_cast<size_t>(count));
     std::free(expanded);
-    if (buffer && out_count) *out_count = static_cast<size_t>(count);
-    return buffer;
+    if (!buffer) {
+        return nullptr;
+    }
+    os_unfair_lock_lock(&g_cache_lock);
+    if (g_adjacency_array.buffer) {
+        deferReleaseObject(g_adjacency_array.buffer);
+    }
+    g_adjacency_array.buffer = buffer;
+    g_adjacency_array.mode = mode;
+    g_adjacency_array.vertex_count = vertex_count;
+    g_adjacency_array.index_count = static_cast<size_t>(count);
+    if (out_count) *out_count = g_adjacency_array.index_count;
+    void *prepared = g_adjacency_array.buffer;
+    os_unfair_lock_unlock(&g_cache_lock);
+    return prepared;
 }
 
 MGLIndexMetalHandle mglNewLineLoopArrayIndexBuffer(
@@ -297,29 +435,44 @@ MGLIndexMetalHandle mglNewLineLoopArrayIndexBuffer(
 
 MGLIndexMetalHandle mglNewTriangleFanElementIndexBuffer(
     MGLIndexMetalHandle device, const uint8_t *source, GLenum type,
-    size_t count, size_t *out_count) {
-    return expandElement(device, source, type, count, out_count,
-                          mglRenderExpandTriangleFanIndices);
+    size_t count, size_t *out_count, Buffer *gl_buffer,
+    size_t index_byte_offset, uint32_t restart_index) {
+    return expandElement(device, gl_buffer, index_byte_offset, restart_index,
+                         MGL_ELEMENT_EXPAND_TRIANGLE_FAN, 0u, source, type,
+                         count, out_count, mglRenderExpandTriangleFanIndices);
 }
 
 MGLIndexMetalHandle mglNewTriangleStripElementIndexBuffer(
     MGLIndexMetalHandle device, const uint8_t *source, GLenum type,
-    size_t count, size_t *out_count) {
-    return expandElement(device, source, type, count, out_count,
-                          mglRenderExpandTriangleStripIndices);
+    size_t count, size_t *out_count, Buffer *gl_buffer,
+    size_t index_byte_offset, uint32_t restart_index) {
+    return expandElement(device, gl_buffer, index_byte_offset, restart_index,
+                         MGL_ELEMENT_EXPAND_TRIANGLE_STRIP, 0u, source, type,
+                         count, out_count, mglRenderExpandTriangleStripIndices);
 }
 
 MGLIndexMetalHandle mglNewLineLoopElementIndexBuffer(
     MGLIndexMetalHandle device, const uint8_t *source, GLenum type,
-    size_t count, size_t *out_count) {
-    return expandElement(device, source, type, count, out_count,
-                          mglRenderExpandLineLoopIndices);
+    size_t count, size_t *out_count, Buffer *gl_buffer,
+    size_t index_byte_offset, uint32_t restart_index) {
+    return expandElement(device, gl_buffer, index_byte_offset, restart_index,
+                         MGL_ELEMENT_EXPAND_LINE_LOOP, 0u, source, type, count,
+                         out_count, mglRenderExpandLineLoopIndices);
 }
 
 MGLIndexMetalHandle mglNewQuadElementIndexBuffer(
     MGLIndexMetalHandle device, const uint8_t *source, GLenum type,
-    size_t source_count, size_t *out_count) {
+    size_t source_count, size_t *out_count, Buffer *gl_buffer,
+    size_t index_byte_offset, uint32_t restart_index) {
     if (out_count) *out_count = 0u;
+    if (gl_buffer) {
+        void *cached = elementExpandCacheLookup(
+            gl_buffer, index_byte_offset, source_count, type,
+            MGL_ELEMENT_EXPAND_QUAD, 0u, restart_index, out_count);
+        if (cached) {
+            return cached;
+        }
+    }
     const uint32_t width = elementWidth(type);
     const size_t quads = source_count / 4u;
     if (!device || !source || width == 0u || quads == 0u || quads > UINT32_MAX) return nullptr;
@@ -332,14 +485,31 @@ MGLIndexMetalHandle mglNewQuadElementIndexBuffer(
     }
     void *buffer = copyIndices(device, expanded, static_cast<size_t>(count));
     std::free(expanded);
-    if (buffer && out_count) *out_count = static_cast<size_t>(count);
+    if (!buffer) {
+        return nullptr;
+    }
+    if (gl_buffer) {
+        elementExpandCacheStore(gl_buffer, index_byte_offset, source_count, type,
+                                MGL_ELEMENT_EXPAND_QUAD, 0u, restart_index,
+                                static_cast<size_t>(count), buffer);
+    }
+    if (out_count) *out_count = static_cast<size_t>(count);
     return buffer;
 }
 
 MGLIndexMetalHandle mglNewQuadElementLineIndexBuffer(
     MGLIndexMetalHandle device, const uint8_t *source, GLenum type,
-    size_t source_count, size_t *out_count) {
+    size_t source_count, size_t *out_count, Buffer *gl_buffer,
+    size_t index_byte_offset, uint32_t restart_index) {
     if (out_count) *out_count = 0u;
+    if (gl_buffer) {
+        void *cached = elementExpandCacheLookup(
+            gl_buffer, index_byte_offset, source_count, type,
+            MGL_ELEMENT_EXPAND_QUAD_LINE, 0u, restart_index, out_count);
+        if (cached) {
+            return cached;
+        }
+    }
     const uint32_t width = elementWidth(type);
     const size_t quads = source_count / 4u;
     if (!device || !source || width == 0u || quads == 0u || quads > UINT32_MAX) return nullptr;
@@ -352,18 +522,54 @@ MGLIndexMetalHandle mglNewQuadElementLineIndexBuffer(
     }
     void *buffer = copyIndices(device, expanded, static_cast<size_t>(count));
     std::free(expanded);
-    if (buffer && out_count) *out_count = static_cast<size_t>(count);
+    if (!buffer) {
+        return nullptr;
+    }
+    if (gl_buffer) {
+        elementExpandCacheStore(gl_buffer, index_byte_offset, source_count, type,
+                                MGL_ELEMENT_EXPAND_QUAD_LINE, 0u, restart_index,
+                                static_cast<size_t>(count), buffer);
+    }
+    if (out_count) *out_count = static_cast<size_t>(count);
     return buffer;
 }
 
 MGLIndexMetalHandle mglNewAdjacencyElementIndexBuffer(
     MGLIndexMetalHandle device, GLenum mode, const uint8_t *source, GLenum type,
-    size_t source_count, size_t *out_count) {
+    size_t source_count, size_t *out_count, Buffer *gl_buffer,
+    size_t index_byte_offset, uint32_t restart_index) {
     if (out_count) *out_count = 0u;
     const uint32_t width = elementWidth(type);
     if (!device || !source || width == 0u || source_count > UINT32_MAX ||
         !mglRenderEmulateAdjacency((uint32_t)mode)) {
         return nullptr;
+    }
+    if (gl_buffer) {
+        void *cached = elementExpandCacheLookup(
+            gl_buffer, index_byte_offset, source_count, type,
+            MGL_ELEMENT_EXPAND_ADJACENCY, static_cast<uint32_t>(mode),
+            restart_index, out_count);
+        if (cached) {
+            return cached;
+        }
+    }
+    const size_t source_bytes = source_count * static_cast<size_t>(width);
+    const uint64_t source_hash = hashIndexBytes(source, source_bytes);
+    {
+        os_unfair_lock_lock(&g_cache_lock);
+        if (g_adjacency_element.buffer &&
+            g_adjacency_element.mode == mode &&
+            g_adjacency_element.type == type &&
+            g_adjacency_element.source_count == source_count &&
+            g_adjacency_element.source_hash == source_hash) {
+            if (out_count) {
+                *out_count = g_adjacency_element.index_count;
+            }
+            void *cached = g_adjacency_element.buffer;
+            os_unfair_lock_unlock(&g_cache_lock);
+            return cached;
+        }
+        os_unfair_lock_unlock(&g_cache_lock);
     }
     uint32_t *expanded = nullptr;
     uint64_t count = 0;
@@ -379,8 +585,29 @@ MGLIndexMetalHandle mglNewAdjacencyElementIndexBuffer(
     }
     void *buffer = copyIndices(device, expanded, static_cast<size_t>(count));
     std::free(expanded);
-    if (buffer && out_count) *out_count = static_cast<size_t>(count);
-    return buffer;
+    if (!buffer) {
+        return nullptr;
+    }
+    if (gl_buffer) {
+        elementExpandCacheStore(gl_buffer, index_byte_offset, source_count, type,
+                                MGL_ELEMENT_EXPAND_ADJACENCY,
+                                static_cast<uint32_t>(mode), restart_index,
+                                static_cast<size_t>(count), buffer);
+    }
+    os_unfair_lock_lock(&g_cache_lock);
+    if (g_adjacency_element.buffer) {
+        deferReleaseObject(g_adjacency_element.buffer);
+    }
+    g_adjacency_element.buffer = buffer;
+    g_adjacency_element.mode = mode;
+    g_adjacency_element.type = type;
+    g_adjacency_element.source_count = source_count;
+    g_adjacency_element.source_hash = source_hash;
+    g_adjacency_element.index_count = static_cast<size_t>(count);
+    if (out_count) *out_count = g_adjacency_element.index_count;
+    void *prepared = g_adjacency_element.buffer;
+    os_unfair_lock_unlock(&g_cache_lock);
+    return prepared;
 }
 
 MGLIndexMetalHandle mglNewUInt16IndexBufferFromUInt8(
@@ -477,9 +704,12 @@ MGLIndexMetalHandle mglPreparedElementIndexBuffer(
     const bool eligible = gl_buffer && gl_buffer->data.buffer_data &&
         !(gl_buffer->storage_flags & GL_MAP_PERSISTENT_BIT);
     MGLBufferBackend *cache = gl_buffer ? gl_buffer->backend : nullptr;
+    const uint64_t expand_cache_key =
+        gl_buffer->last_write_src_hash != 0u
+            ? gl_buffer->last_write_src_hash
+            : gl_buffer->content_version;
     if (eligible && cache && cache->uint16_expanded_data &&
-        cache->uint16_expanded_src_hash == gl_buffer->last_write_src_hash &&
-        cache->uint16_expanded_src_hash != 0u &&
+        cache->uint16_expanded_src_hash == expand_cache_key &&
         cache->uint16_expanded_byte_count == source_count) {
         if (io_offset) {
             if (source_offset > SIZE_MAX / sizeof(uint16_t)) return nullptr;
@@ -501,7 +731,7 @@ MGLIndexMetalHandle mglPreparedElementIndexBuffer(
         }
         static_cast<NS::Object *>(expanded)->retain();
         cache->uint16_expanded_data = expanded;
-        cache->uint16_expanded_src_hash = gl_buffer->last_write_src_hash;
+        cache->uint16_expanded_src_hash = expand_cache_key;
         cache->uint16_expanded_byte_count = source_count;
     }
     if (io_offset) {

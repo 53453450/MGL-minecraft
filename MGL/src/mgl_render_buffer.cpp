@@ -665,6 +665,9 @@ void mglRenderReleaseBufferBackend(Buffer* buffer) {
     if (backend->uint16_expanded_data) {
         static_cast<NS::Object*>(backend->uint16_expanded_data)->release();
     }
+    if (backend->element_emulation_data) {
+        static_cast<NS::Object*>(backend->element_emulation_data)->release();
+    }
     free(backend);
 }
 
@@ -875,7 +878,16 @@ int mglRenderSnapshotSharedDirtyBuffer(Buffer* buffer,
                    uploadLength);
         }
     } else {
-        memcpy(snapshotData, cpuData, snapshotLength);
+        memcpy(snapshotData, current->contents(), metalLength);
+        size_t uploadOffset = 0;
+        size_t uploadLength = 0;
+        if (mgl::bufferDirtyShadowRange(
+                buffer, snapshotLength, &uploadOffset, &uploadLength)) {
+            memcpy(snapshotData + uploadOffset, cpuData + uploadOffset,
+                   uploadLength);
+        } else {
+            memcpy(snapshotData, cpuData, snapshotLength);
+        }
         if (snapshotLength < metalLength) {
             memset(snapshotData + snapshotLength, 0,
                    metalLength - snapshotLength);

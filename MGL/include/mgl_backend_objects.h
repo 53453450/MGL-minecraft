@@ -137,6 +137,18 @@ struct MGLBufferBackend {
     void *uint16_expanded_data;
     uint64_t uint16_expanded_src_hash;
     size_t uint16_expanded_byte_count;
+    /* Primitive-restart / draw-mode element emulation (line loop, fan, …).
+     * Keyed on content_version + byte offset + count + type + kind + mode +
+     * restart index; same eligibility as uint16_expanded_data. */
+    void *element_emulation_data;
+    uint64_t element_emulation_content_version;
+    size_t element_emulation_byte_offset;
+    size_t element_emulation_index_count;
+    uint32_t element_emulation_type;
+    uint32_t element_emulation_kind;
+    uint32_t element_emulation_mode;
+    uint32_t element_emulation_restart_index;
+    size_t element_emulation_out_index_count;
     /* The no-copy MTLBuffer's deallocator owns the CPU range in BufferData. */
     uint8_t owns_cpu_storage;
 };

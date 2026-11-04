@@ -193,6 +193,10 @@ typedef struct Buffer_t {
     uint8_t     scan_cache_restart_enabled;
     uint8_t     scan_cache_valid;       /* entry holds a completed scan */
     uint8_t     scan_cache_live_valid;  /* scan saw a non-restart index */
+    /* PERF-024: skip restart-index rescans when this draw range had no restart
+     * markers (Metal has no HW primitive restart; encode splits segments). */
+    uint64_t    restart_absent_encode_key;
+    uint8_t     restart_absent_encode_valid;
     /* Backend state kept beside the buffer's own storage (CoW snapshot pool,
      * expanded index copy).  Opaque here; see mgl_backend_objects.h.  Release
      * only through mglRenderReleaseBufferBackend. */

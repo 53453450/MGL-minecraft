@@ -18,12 +18,41 @@
 
 #include "mgl_draw_encode.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include "mgl_env_flag.h"
 #include "mgl_render_api_command.h"
 #include "mgl_render_api_pixel.h"
 #include "mgl_render_api_draw.h"
 #include "mgl_render_api_query.h"
+#include "mgl_types_buffer.h"
+#include "mgl_trace_log.h"
+#include "glcorearb.h"
+
+#define MGL_DRAW_ENCODE_DIAG(FMT, ...)                                         \
+    do {                                                                       \
+        if (mglTraceLogIsEnabled()) {                                          \
+            fprintf(stderr, FMT, ##__VA_ARGS__);                               \
+        }                                                                      \
+    } while (0)
+
+static uint64_t mglRestartAbsentEncodeKey(const Buffer *buf, size_t indexOffset,
+                                          GLsizei count, GLenum glIndexType,
+                                          uint32_t restartIndex)
+{
+    uint64_t key = buf ? buf->content_version : 0u;
+    key ^= (uint64_t)indexOffset * UINT64_C(0x9e3779b97f4a7c15);
+    key ^= (uint64_t)(uint32_t)count * UINT64_C(0xbf58476d1ce4e5b9);
+    key ^= (uint64_t)glIndexType * UINT64_C(0x94d049bb133111eb);
+    key ^= (uint64_t)restartIndex;
+    return key;
+}
+
+static int mglRestartAbsentCacheEligible(const Buffer *buf)
+{
+    return buf && buf->data.buffer_data &&
+           !(buf->storage_flags & GL_MAP_PERSISTENT_BIT);
+}
 
 static void mglDrawEncodePrimitives(void *renderEncoderOwner,
                                     uint32_t primitiveType,
@@ -84,7 +113,7 @@ static bool mglEncodeArrayLineLoopTarget(void *renderEncoderOwner,
         return true;
     }
     if (firstVertex < 0) {
-        fprintf(stderr, "MGL WARNING: %s line loop array emulation invalid first=%d",
+        MGL_DRAW_ENCODE_DIAG("MGL WARNING: %s line loop array emulation invalid first=%d",
               label ? label : "draw",
               (int)firstVertex);
         if (drawCtx) {
@@ -99,7 +128,7 @@ static bool mglEncodeArrayLineLoopTarget(void *renderEncoderOwner,
                                                                    (size_t)count,
                                                                    &loopIndexCount);
     if (!loopIndexBuffer || loopIndexCount == 0u) {
-        fprintf(stderr, "MGL WARNING: %s line loop array emulation failed count=%d first=%d",
+        MGL_DRAW_ENCODE_DIAG("MGL WARNING: %s line loop array emulation failed count=%d first=%d",
               label ? label : "draw",
               (int)count,
               (int)firstVertex);
@@ -130,7 +159,7 @@ static bool mglEncodeArrayTriangleFanTarget(void *renderEncoderOwner,
                                                                      (size_t)count,
                                                                      &fanIndexCount);
     if (!fanIndexBuffer || fanIndexCount == 0u) {
-        fprintf(stderr, "MGL WARNING: %s triangle fan array emulation failed count=%d baseVertex=%d",
+        MGL_DRAW_ENCODE_DIAG("MGL WARNING: %s triangle fan array emulation failed count=%d baseVertex=%d",
               label ? label : "draw",
               (int)count,
               (int)baseVertex);
@@ -185,6 +214,7 @@ static bool mglEncodeElementLineLoopTarget(void *renderEncoderOwner,
                                      size_t instanceCount,
                                      int64_t baseVertex,
                                      size_t baseInstance,
+                                     uint32_t cacheRestartIndex,
                                      const char *label)
 {
     if (count < 2) {
@@ -201,9 +231,12 @@ static bool mglEncodeElementLineLoopTarget(void *renderEncoderOwner,
                                                                      loopSource,
                                                                      glIndexType,
                                                                      (size_t)count,
-                                                                     &loopIndexCount);
+                                                                     &loopIndexCount,
+                                                                     glElementBuffer,
+                                                                     indexOffset,
+                                                                     cacheRestartIndex);
     if (!loopIndexBuffer || loopIndexCount == 0u) {
-        fprintf(stderr, "MGL WARNING: %s line loop element emulation failed ebo=%u count=%d offset=%lu source=%p",
+        MGL_DRAW_ENCODE_DIAG("MGL WARNING: %s line loop element emulation failed ebo=%u count=%d offset=%lu source=%p",
               label ? label : "draw",
               glElementBuffer ? glElementBuffer->name : 0u,
               (int)count,
@@ -229,6 +262,7 @@ static bool mglEncodeElementTriangleFanTarget(void *renderEncoderOwner,
                                         size_t instanceCount,
                                         int64_t baseVertex,
                                         size_t baseInstance,
+                                        uint32_t cacheRestartIndex,
                                         const char *label)
 {
     if (count < 3) {
@@ -245,9 +279,12 @@ static bool mglEncodeElementTriangleFanTarget(void *renderEncoderOwner,
                                                                        fanSource,
                                                                        glIndexType,
                                                                        (size_t)count,
-                                                                       &fanIndexCount);
+                                                                       &fanIndexCount,
+                                                                       glElementBuffer,
+                                                                       indexOffset,
+                                                                       cacheRestartIndex);
     if (!fanIndexBuffer || fanIndexCount == 0u) {
-        fprintf(stderr, "MGL WARNING: %s triangle fan element emulation failed ebo=%u count=%d offset=%lu source=%p",
+        MGL_DRAW_ENCODE_DIAG("MGL WARNING: %s triangle fan element emulation failed ebo=%u count=%d offset=%lu source=%p",
               label ? label : "draw",
               glElementBuffer ? glElementBuffer->name : 0u,
               (int)count,
@@ -274,6 +311,7 @@ static bool mglEncodeElementAdjacencyTarget(void *renderEncoderOwner,
                                             size_t instanceCount,
                                             int64_t baseVertex,
                                             size_t baseInstance,
+                                            uint32_t cacheRestartIndex,
                                             const char *label)
 {
     if (count <= 0) {
@@ -288,7 +326,8 @@ static bool mglEncodeElementAdjacencyTarget(void *renderEncoderOwner,
         glElementBuffer, metalElementBuffer, glIndexType, indexOffset, count);
     size_t adjIndexCount = 0u;
     MGLDrawMetalHandle adjIndexBuffer = mglNewAdjacencyElementIndexBuffer(
-        device, mode, src, glIndexType, (size_t)count, &adjIndexCount);
+        device, mode, src, glIndexType, (size_t)count, &adjIndexCount,
+        glElementBuffer, indexOffset, cacheRestartIndex);
     if (!adjIndexBuffer || adjIndexCount == 0u) {
         return true;
     }
@@ -317,7 +356,7 @@ static bool mglEncodeArrayQuadsTarget(void *renderEncoderOwner,
         ? mglNewQuadArrayLineIndexBuffer(device, (size_t)count, &quadIndexCount)
         : mglNewQuadArrayIndexBuffer(device, (size_t)count, &quadIndexCount);
     if (!quadIndexBuffer || quadIndexCount == 0u) {
-        fprintf(stderr, "MGL WARNING: %s quad array emulation failed count=%d baseVertex=%d",
+        MGL_DRAW_ENCODE_DIAG("MGL WARNING: %s quad array emulation failed count=%d baseVertex=%d",
               label ? label : "draw",
               (int)count,
               (int)baseVertex);
@@ -342,6 +381,7 @@ static bool mglEncodeElementQuadsTarget(void *renderEncoderOwner,
                                   int64_t baseVertex,
                                   size_t baseInstance,
                                   bool lineMode,
+                                  uint32_t cacheRestartIndex,
                                   const char *label)
 {
     if (count < 4) {
@@ -355,10 +395,16 @@ static bool mglEncodeElementQuadsTarget(void *renderEncoderOwner,
                                                              count);
     size_t quadIndexCount = 0u;
     MGLDrawMetalHandle quadIndexBuffer = lineMode
-        ? mglNewQuadElementLineIndexBuffer(device, quadSource, glIndexType, (size_t)count, &quadIndexCount)
-        : mglNewQuadElementIndexBuffer(device, quadSource, glIndexType, (size_t)count, &quadIndexCount);
+        ? mglNewQuadElementLineIndexBuffer(device, quadSource, glIndexType,
+                                           (size_t)count, &quadIndexCount,
+                                           glElementBuffer, indexOffset,
+                                           cacheRestartIndex)
+        : mglNewQuadElementIndexBuffer(device, quadSource, glIndexType,
+                                       (size_t)count, &quadIndexCount,
+                                       glElementBuffer, indexOffset,
+                                       cacheRestartIndex);
     if (!quadIndexBuffer || quadIndexCount == 0u) {
-        fprintf(stderr, "MGL WARNING: %s quad element emulation failed ebo=%u count=%d offset=%lu source=%p",
+        MGL_DRAW_ENCODE_DIAG("MGL WARNING: %s quad element emulation failed ebo=%u count=%d offset=%lu source=%p",
               label ? label : "draw",
               glElementBuffer ? glElementBuffer->name : 0u,
               (int)count,
@@ -420,7 +466,7 @@ static bool mglEncodeArrayPolygonPointTarget(void *renderEncoderOwner,
     }
 
     if (!pointIndexBuffer || pointIndexCount == 0u) {
-        fprintf(stderr, "MGL WARNING: %s polygon point array emulation failed mode=0x%x count=%d first=%d",
+        MGL_DRAW_ENCODE_DIAG("MGL WARNING: %s polygon point array emulation failed mode=0x%x count=%d first=%d",
               label ? label : "draw",
               (unsigned)mode,
               (int)count,
@@ -447,6 +493,7 @@ static bool mglEncodeElementPolygonPointTarget(void *renderEncoderOwner,
                                          size_t instanceCount,
                                          int64_t baseVertex,
                                          size_t baseInstance,
+                                         uint32_t cacheRestartIndex,
                                          const char *label)
 {
     if (count < 3) {
@@ -494,25 +541,34 @@ static bool mglEncodeElementPolygonPointTarget(void *renderEncoderOwner,
                                                                source,
                                                                glIndexType,
                                                                (size_t)count,
-                                                               &pointIndexCount);
+                                                               &pointIndexCount,
+                                                               glElementBuffer,
+                                                               indexOffset,
+                                                               cacheRestartIndex);
     } else if (mglRenderDrawModeIsTriangleStrip((uint32_t)mode)) {
         pointIndexBuffer = mglNewTriangleStripElementIndexBuffer(device,
                                                                  source,
                                                                  glIndexType,
                                                                  (size_t)count,
-                                                                 &pointIndexCount);
+                                                                 &pointIndexCount,
+                                                                 glElementBuffer,
+                                                                 indexOffset,
+                                                                 cacheRestartIndex);
     } else if (mglRenderEmulateQuads((uint32_t)mode, 0)) {
         pointIndexBuffer = mglNewQuadElementIndexBuffer(device,
                                                         source,
                                                         glIndexType,
                                                         (size_t)count,
-                                                        &pointIndexCount);
+                                                        &pointIndexCount,
+                                                        glElementBuffer,
+                                                        indexOffset,
+                                                        cacheRestartIndex);
     } else {
         return false;
     }
 
     if (!pointIndexBuffer || pointIndexCount == 0u) {
-        fprintf(stderr, "MGL WARNING: %s polygon point element emulation failed mode=0x%x ebo=%u count=%d offset=%lu source=%p",
+        MGL_DRAW_ENCODE_DIAG("MGL WARNING: %s polygon point element emulation failed mode=0x%x ebo=%u count=%d offset=%lu source=%p",
               label ? label : "draw",
               (unsigned)mode,
               glElementBuffer ? glElementBuffer->name : 0u,
@@ -545,6 +601,7 @@ static bool mglEncodeRestartSegmentTarget(void *renderEncoderOwner,
                                     int64_t baseVertex,
                                     size_t baseInstance,
                                     bool lineMode,
+                                    uint32_t cacheRestartIndex,
                                     const char *label)
 {
     if (!mglPrimitiveModeHasDrawableSegment(mode, segmentIndexCount)) {
@@ -557,7 +614,7 @@ static bool mglEncodeRestartSegmentTarget(void *renderEncoderOwner,
                                    segmentStart,
                                    indexStride,
                                    &segmentGLByteOffset)) {
-        fprintf(stderr, "MGL WARNING: %s primitive restart segment offset overflow base=%lu start=%lu stride=%lu count=%lu",
+        MGL_DRAW_ENCODE_DIAG("MGL WARNING: %s primitive restart segment offset overflow base=%lu start=%lu stride=%lu count=%lu",
               label ? label : "draw",
               (unsigned long)baseIndexByteOffset,
               (unsigned long)segmentStart,
@@ -580,6 +637,7 @@ static bool mglEncodeRestartSegmentTarget(void *renderEncoderOwner,
                                             instanceCount,
                                             baseVertex,
                                             baseInstance,
+                                            cacheRestartIndex,
                                             label);
     }
 
@@ -594,6 +652,7 @@ static bool mglEncodeRestartSegmentTarget(void *renderEncoderOwner,
                                            instanceCount,
                                            baseVertex,
                                            baseInstance,
+                                           cacheRestartIndex,
                                            label);
     }
 
@@ -608,6 +667,7 @@ static bool mglEncodeRestartSegmentTarget(void *renderEncoderOwner,
                                         instanceCount,
                                         baseVertex,
                                         baseInstance,
+                                        cacheRestartIndex,
                                         label);
     }
 
@@ -623,6 +683,7 @@ static bool mglEncodeRestartSegmentTarget(void *renderEncoderOwner,
                                      baseVertex,
                                      baseInstance,
                                      lineMode,
+                                     cacheRestartIndex,
                                      label);
     }
 
@@ -631,14 +692,14 @@ static bool mglEncodeRestartSegmentTarget(void *renderEncoderOwner,
             renderEncoderOwner, device, glElementBuffer, metalElementBuffer,
             mode, glIndexType, segmentGLByteOffset,
             (GLsizei)segmentIndexCount, instanceCount, baseVertex,
-            baseInstance, label);
+            baseInstance, cacheRestartIndex, label);
     }
 
     size_t preparedByteOffset = 0u;
     if (!mglComputePreparedIndexByteOffset(glIndexType,
                                            segmentGLByteOffset,
                                            &preparedByteOffset)) {
-        fprintf(stderr, "MGL WARNING: %s primitive restart prepared offset overflow glType=0x%x byteOffset=%lu",
+        MGL_DRAW_ENCODE_DIAG("MGL WARNING: %s primitive restart prepared offset overflow glType=0x%x byteOffset=%lu",
               label ? label : "draw",
               (unsigned)glIndexType,
               (unsigned long)segmentGLByteOffset);
@@ -677,13 +738,22 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
         return MGLPrimitiveRestartEncodeHandled;
     }
 
+    if (mglRestartAbsentCacheEligible(glElementBuffer)) {
+        const uint64_t absentKey = mglRestartAbsentEncodeKey(
+            glElementBuffer, indexOffset, count, glIndexType, restartIndex);
+        if (glElementBuffer->restart_absent_encode_valid &&
+            glElementBuffer->restart_absent_encode_key == absentKey) {
+            return MGLPrimitiveRestartEncodeNotNeeded;
+        }
+    }
+
     const uint8_t *source = mglElementIndexSourceForDraw(glElementBuffer,
                                                          metalElementBuffer,
                                                          glIndexType,
                                                          indexOffset,
                                                          count);
     if (!source) {
-        fprintf(stderr, "MGL WARNING: %s primitive restart enabled but index bytes are not CPU-readable ebo=%u count=%d type=0x%x offset=%lu; skipping draw to avoid treating restart as a vertex",
+        MGL_DRAW_ENCODE_DIAG("MGL WARNING: %s primitive restart enabled but index bytes are not CPU-readable ebo=%u count=%d type=0x%x offset=%lu; skipping draw to avoid treating restart as a vertex",
               label ? label : "draw",
               glElementBuffer ? glElementBuffer->name : 0u,
               (int)count,
@@ -735,8 +805,19 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
             }
     }
     if (!sawRestart) {
+        if (mglRestartAbsentCacheEligible(glElementBuffer)) {
+            glElementBuffer->restart_absent_encode_key = mglRestartAbsentEncodeKey(
+                glElementBuffer, indexOffset, count, glIndexType, restartIndex);
+            glElementBuffer->restart_absent_encode_valid = 1u;
+        }
         return MGLPrimitiveRestartEncodeNotNeeded;
     }
+    if (glElementBuffer) {
+        glElementBuffer->restart_absent_encode_valid = 0u;
+    }
+
+    /* PERF-024: emulated segments reuse expanded IBOs via the element-buffer
+     * backend cache (content_version + offset + count + type + kind + restart). */
 
     bool emulatedMode = (mglRenderDrawModeNeedsEmulate((uint32_t)mode) ||
                          (primitiveType == MGL_DRAW_PRIMITIVE_POINT &&
@@ -780,7 +861,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                                          baseVertex,
                                          baseInstance,
                                          mglPolygonModeLineForDrawMode(ctx, mode),
-                                         label)) {
+                                         restartIndex, label)) {
                 encodedAllSegments = false;
                 break;
             }
@@ -799,7 +880,8 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                                                  glIndexType, preparedIndexType, indexOffset,
                                                  segmentStart, segmentCount, instanceCount,
                                                  baseVertex, baseInstance,
-                                                 mglPolygonModeLineForDrawMode(ctx, mode), label)) {
+                                                 mglPolygonModeLineForDrawMode(ctx, mode),
+                                                 restartIndex, label)) {
                         encodedAllSegments = false;
                         break;
                     }
@@ -816,7 +898,8 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                                                  glIndexType, preparedIndexType, indexOffset,
                                                  segmentStart, segmentCount, instanceCount,
                                                  baseVertex, baseInstance,
-                                                 mglPolygonModeLineForDrawMode(ctx, mode), label)) {
+                                                 mglPolygonModeLineForDrawMode(ctx, mode),
+                                                 restartIndex, label)) {
                         encodedAllSegments = false;
                         break;
                     }
@@ -833,7 +916,8 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                                                  glIndexType, preparedIndexType, indexOffset,
                                                  segmentStart, segmentCount, instanceCount,
                                                  baseVertex, baseInstance,
-                                                 mglPolygonModeLineForDrawMode(ctx, mode), label)) {
+                                                 mglPolygonModeLineForDrawMode(ctx, mode),
+                                                 restartIndex, label)) {
                         encodedAllSegments = false;
                         break;
                     }
@@ -860,7 +944,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                                                      baseVertex,
                                                      baseInstance,
                                                      mglPolygonModeLineForDrawMode(ctx, mode),
-                                                     label);
+                                                     restartIndex, label);
     }
 
     return encodedAllSegments ? MGLPrimitiveRestartEncodeHandled : MGLPrimitiveRestartEncodeFailed;
@@ -894,7 +978,7 @@ bool mglEncodeElementLineLoopForRenderEncoderOwner(
 {
     return mglEncodeElementLineLoopTarget(renderEncoderOwner, device, glElementBuffer,
         metalElementBuffer, glIndexType, indexOffset, count, instanceCount,
-        baseVertex, baseInstance, label);
+        baseVertex, baseInstance, 0u, label);
 }
 
 bool mglEncodeElementTriangleFanForRenderEncoderOwner(
@@ -906,7 +990,7 @@ bool mglEncodeElementTriangleFanForRenderEncoderOwner(
 {
     return mglEncodeElementTriangleFanTarget(renderEncoderOwner, device, glElementBuffer,
         metalElementBuffer, glIndexType, indexOffset, count, instanceCount,
-        baseVertex, baseInstance, label);
+        baseVertex, baseInstance, 0u, label);
 }
 
 bool mglEncodeArrayQuadsForRenderEncoderOwner(
@@ -929,7 +1013,7 @@ bool mglEncodeElementQuadsForRenderEncoderOwner(
 {
     return mglEncodeElementQuadsTarget(renderEncoderOwner, device, glElementBuffer,
         metalElementBuffer, glIndexType, indexOffset, count, instanceCount,
-        baseVertex, baseInstance, lineMode, label);
+        baseVertex, baseInstance, lineMode, 0u, label);
 }
 
 bool mglEncodeArrayPolygonPointForRenderEncoderOwner(
@@ -984,7 +1068,7 @@ bool mglEncodeDrawArraysForRenderEncoderOwner(
     const uint32_t primitiveType =
         mglRenderMTLPrimitiveTypeForGLMode((uint32_t)mode);
     if (primitiveType == 0xFFFFFFFFu) {
-        fprintf(stderr,
+        MGL_DRAW_ENCODE_DIAG(
                 "MGL WARNING: %s unsupported primitive mode=0x%x, skipping draw",
                 label ? label : "drawArrays",
                 (unsigned)mode);
@@ -1018,7 +1102,7 @@ bool mglEncodeDrawElementsForRenderEncoderOwner(
     const uint32_t metalIndexType =
         mglRenderMTLIndexTypeForGLType((uint32_t)glIndexType);
     if (metalIndexType == 0xFFFFFFFFu) {
-        fprintf(stderr,
+        MGL_DRAW_ENCODE_DIAG(
                 "MGL WARNING: %s unsupported index type=0x%x, skipping draw",
                 label ? label : "drawElements",
                 (unsigned)glIndexType);
@@ -1043,7 +1127,7 @@ bool mglEncodeDrawElementsForRenderEncoderOwner(
         primitiveType = mglRenderMTLPrimitiveTypeForGLMode((uint32_t)mode);
     }
     if (primitiveType == 0xFFFFFFFFu) {
-        fprintf(stderr,
+        MGL_DRAW_ENCODE_DIAG(
                 "MGL WARNING: %s unsupported primitive mode=0x%x, skipping draw",
                 label ? label : "drawElements",
                 (unsigned)mode);
@@ -1073,7 +1157,7 @@ bool mglEncodeDrawElementsForRenderEncoderOwner(
         return mglEncodeElementAdjacencyTarget(
             renderEncoderOwner, device, glElementBuffer, metalElementBuffer,
             mode, glIndexType, indexOffset, count, instanceCount, baseVertex,
-            baseInstance, label);
+            baseInstance, 0u, label);
     }
     if (mglRenderEmulateTriangleFan((uint32_t)mode, 0)) {
         return mglEncodeElementTriangleFanForRenderEncoderOwner(
@@ -1120,7 +1204,7 @@ bool mglEncodeElementPolygonPointForRenderEncoderOwner(
 {
     return mglEncodeElementPolygonPointTarget(renderEncoderOwner, device, glElementBuffer,
         metalElementBuffer, mode, glIndexType, metalIndexType, indexOffset,
-        count, instanceCount, baseVertex, baseInstance, label);
+        count, instanceCount, baseVertex, baseInstance, 0u, label);
 }
 
 MGLPrimitiveRestartEncodeResult
@@ -1155,7 +1239,7 @@ bool mglEncodeDrawArraysIndirectForRenderEncoderOwner(
             ? (uint32_t)MGL_DRAW_PRIMITIVE_POINT
             : mglRenderMTLPrimitiveTypeForGLMode((uint32_t)mode);
     if (primitiveType == 0xFFFFFFFFu) {
-        fprintf(stderr,
+        MGL_DRAW_ENCODE_DIAG(
                 "MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call\n",
                 (unsigned)mode);
         return false;
@@ -1188,7 +1272,7 @@ bool mglEncodeDrawElementsIndirectForRenderEncoderOwner(
     }
     uint32_t metalIndexType = mglRenderMTLIndexTypeForGLType((uint32_t)glIndexType);
     if (metalIndexType == 0xFFFFFFFFu) {
-        fprintf(stderr,
+        MGL_DRAW_ENCODE_DIAG(
                 "MGL WARNING: Unsupported index type=0x%x, skipping draw call\n",
                 (unsigned)glIndexType);
         return false;
@@ -1198,7 +1282,7 @@ bool mglEncodeDrawElementsIndirectForRenderEncoderOwner(
             ? (uint32_t)MGL_DRAW_PRIMITIVE_POINT
             : mglRenderMTLPrimitiveTypeForGLMode((uint32_t)mode);
     if (primitiveType == 0xFFFFFFFFu) {
-        fprintf(stderr,
+        MGL_DRAW_ENCODE_DIAG(
                 "MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call\n",
                 (unsigned)mode);
         return false;
