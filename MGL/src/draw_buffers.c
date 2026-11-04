@@ -45,6 +45,7 @@
 #include "mgl_program_reflection.h"
 #include "vertex_arrays.h"
 #include "mgl_render_api_query.h" /* mglRenderIsEmulatedMSPlaneTarget */
+#include "mgl_render_api_draw.h"  /* mglRenderCheckedProduct (AUDIT-059) */
 
 extern void mglInvalidateColorShadowsForDraw(GLMContext ctx);
 extern Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
@@ -1252,19 +1253,33 @@ static void mglCPUFeedbackCaptureVertex(GLMContext ctx,
         }
 
         size_t dstOffsetBytes;
+        uint64_t span = 0;
         if (program->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS) {
-            dstOffsetBytes = (size_t)dstOffset +
-                             (size_t)linearVertex * vertexBytes +
-                             varyingOffsets[varying];
+            /* AUDIT-059: linearVertex * vertexBytes must not wrap. */
+            if (mglRenderCheckedProduct((uint64_t)linearVertex, (uint64_t)vertexBytes,
+                                        &span) != 0 ||
+                span > UINT64_MAX - (uint64_t)dstOffset ||
+                span + (uint64_t)dstOffset > UINT64_MAX - (uint64_t)varyingOffsets[varying]) {
+                continue;
+            }
+            dstOffsetBytes = (size_t)dstOffset + (size_t)span + varyingOffsets[varying];
         } else {
             size_t bytesPerVertex =
                 (size_t)writeComponents * mglCPUFeedbackGLTypeComponentBytes(writeType);
-            dstOffsetBytes = (size_t)dstOffset + (size_t)linearVertex * bytesPerVertex;
+            if (mglRenderCheckedProduct((uint64_t)linearVertex, (uint64_t)bytesPerVertex,
+                                        &span) != 0 ||
+                span > UINT64_MAX - (uint64_t)dstOffset) {
+                continue;
+            }
+            dstOffsetBytes = (size_t)dstOffset + (size_t)span;
         }
-        if (dstOffsetBytes +
-                (size_t)writeComponents * mglCPUFeedbackGLTypeComponentBytes(writeType) >
-            (size_t)dstOffset + (size_t)dstSize) {
-            continue;
+        {
+            size_t writeBytes =
+                (size_t)writeComponents * mglCPUFeedbackGLTypeComponentBytes(writeType);
+            if (writeBytes > SIZE_MAX - dstOffsetBytes ||
+                dstOffsetBytes + writeBytes > (size_t)dstOffset + (size_t)dstSize) {
+                continue;
+            }
         }
         mglCPUFeedbackWriteValues(
             (uint8_t *)(uintptr_t)xfb->data.buffer_data + dstOffsetBytes,

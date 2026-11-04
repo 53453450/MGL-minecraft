@@ -29,6 +29,7 @@
 #include "mgl_pixel_format.h"
 #include "pixel_utils.h"
 #include "mgl_draw_tess.h" /* mglXfbPrimitiveModeAccepts */
+#include "mgl_render_api_draw.h" /* mglRenderCheckedProduct (AUDIT-061) */
 #include "mgl_pso_format_class.h"
 
 #include "mgl_trace_log.h"
@@ -7937,15 +7938,19 @@ void mglQueryCounter(GLMContext ctx, GLuint id, GLenum target)
 void mglReadnPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei bufSize, void *data)
 {
 	size_t bytes_per_pixel;
-	size_t needed;
-	if (!data || bufSize < 0)
+	uint64_t needed = 0;
+	uint64_t area = 0;
+	if (!data || bufSize < 0 || width < 0 || height < 0)
 	{
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	bytes_per_pixel = sizeForFormatType(format, type);
-	needed = (size_t)width * (size_t)height * bytes_per_pixel;
-	if ((GLsizei)needed > bufSize)
+	/* AUDIT-061: refuse wrapped width*height*bpp before comparing bufSize. */
+	if (mglRenderCheckedProduct((uint64_t)(GLsizei)width, (uint64_t)(GLsizei)height,
+	                            &area) != 0 ||
+	    mglRenderCheckedProduct(area, (uint64_t)bytes_per_pixel, &needed) != 0 ||
+	    needed > (uint64_t)(GLsizei)bufSize)
 	{
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;

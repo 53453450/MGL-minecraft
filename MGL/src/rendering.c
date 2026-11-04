@@ -48,6 +48,26 @@
 
 #include "mgl_trace_log.h"
 #include "mgl_texture_backend.h"
+#include "mgl_render_api_draw.h" /* mglRenderCheckedProduct */
+
+/* AUDIT-040/049: scissor origin+size is GLint and can wrap on addition. */
+static GLint mglScissorRight(GLMContext ctx)
+{
+    int64_t edge = (int64_t)STATE(var).scissor_box[0] +
+                   (int64_t)STATE(var).scissor_box[2];
+    if (edge > INT_MAX) return INT_MAX;
+    if (edge < INT_MIN) return INT_MIN;
+    return (GLint)edge;
+}
+
+static GLint mglScissorTop(GLMContext ctx)
+{
+    int64_t edge = (int64_t)STATE(var).scissor_box[1] +
+                   (int64_t)STATE(var).scissor_box[3];
+    if (edge > INT_MAX) return INT_MAX;
+    if (edge < INT_MIN) return INT_MIN;
+    return (GLint)edge;
+}
 
 static Texture *mglStencilAttachmentTexture(FBOAttachment *attachment)
 {
@@ -103,7 +123,20 @@ static GLboolean mglEnsureRGB10A2Shadow(Texture *texture)
         texture->rgb10a2_shadow_width == texture->width &&
         texture->rgb10a2_shadow_height == texture->height) return GL_TRUE;
     free(texture->rgb10a2_shadow);
-    texture->rgb10a2_shadow = calloc((size_t)texture->width * texture->height, 4u);
+    texture->rgb10a2_shadow = NULL;
+    {
+        /* AUDIT-049: width*height*4 must not wrap before calloc. */
+        uint64_t pixels = 0, bytes = 0;
+        if (mglRenderCheckedProduct((uint64_t)texture->width,
+                                    (uint64_t)texture->height, &pixels) != 0 ||
+            mglRenderCheckedProduct(pixels, 4u, &bytes) != 0 ||
+            bytes > (uint64_t)SIZE_MAX) {
+            texture->rgb10a2_shadow_width = 0u;
+            texture->rgb10a2_shadow_height = 0u;
+            return GL_FALSE;
+        }
+        texture->rgb10a2_shadow = calloc((size_t)bytes / 4u, 4u);
+    }
     texture->rgb10a2_shadow_width = texture->rgb10a2_shadow ? texture->width : 0u;
     texture->rgb10a2_shadow_height = texture->rgb10a2_shadow ? texture->height : 0u;
     return texture->rgb10a2_shadow ? GL_TRUE : GL_FALSE;
@@ -122,10 +155,10 @@ static void mglUpdateDepthShadowForClear(GLMContext ctx)
     if (STATE(caps).scissor_test) {
         if (x0 < STATE(var).scissor_box[0]) x0 = STATE(var).scissor_box[0];
         if (y0 < STATE(var).scissor_box[1]) y0 = STATE(var).scissor_box[1];
-        if (x1 > STATE(var).scissor_box[0] + STATE(var).scissor_box[2])
-            x1 = STATE(var).scissor_box[0] + STATE(var).scissor_box[2];
-        if (y1 > STATE(var).scissor_box[1] + STATE(var).scissor_box[3])
-            y1 = STATE(var).scissor_box[1] + STATE(var).scissor_box[3];
+        if (x1 > mglScissorRight(ctx))
+            x1 = mglScissorRight(ctx);
+        if (y1 > mglScissorTop(ctx))
+            y1 = mglScissorTop(ctx);
     }
     for (GLint y = y0; y < y1; y++)
         for (GLint x = x0; x < x1; x++)
@@ -161,8 +194,8 @@ void mglBlitDepthShadow(GLMContext ctx,
             if (STATE(caps).scissor_test &&
                 (x < STATE(var).scissor_box[0] ||
                  y < STATE(var).scissor_box[1] ||
-                 x >= STATE(var).scissor_box[0] + STATE(var).scissor_box[2] ||
-                 y >= STATE(var).scissor_box[1] + STATE(var).scissor_box[3])) {
+                 x >= mglScissorRight(ctx) ||
+                 y >= mglScissorTop(ctx))) {
                 continue;
             }
             GLint sx = srcX0 + ((x - dstX0) * srcW) / dstW;
@@ -191,10 +224,10 @@ static void mglUpdateStencilShadowForClear(GLMContext ctx)
     if (STATE(caps).scissor_test) {
         if (x0 < STATE(var).scissor_box[0]) x0 = STATE(var).scissor_box[0];
         if (y0 < STATE(var).scissor_box[1]) y0 = STATE(var).scissor_box[1];
-        if (x1 > STATE(var).scissor_box[0] + STATE(var).scissor_box[2])
-            x1 = STATE(var).scissor_box[0] + STATE(var).scissor_box[2];
-        if (y1 > STATE(var).scissor_box[1] + STATE(var).scissor_box[3])
-            y1 = STATE(var).scissor_box[1] + STATE(var).scissor_box[3];
+        if (x1 > mglScissorRight(ctx))
+            x1 = mglScissorRight(ctx);
+        if (y1 > mglScissorTop(ctx))
+            y1 = mglScissorTop(ctx);
     }
     GLubyte value = (GLubyte)STATE(var).stencil_clear_value;
     GLubyte writeMask = (GLubyte)STATE(var).stencil_writemask;
@@ -228,8 +261,8 @@ void mglBlitStencilShadow(GLMContext ctx,
             if (STATE(caps).scissor_test &&
                 (x < STATE(var).scissor_box[0] ||
                  y < STATE(var).scissor_box[1] ||
-                 x >= STATE(var).scissor_box[0] + STATE(var).scissor_box[2] ||
-                 y >= STATE(var).scissor_box[1] + STATE(var).scissor_box[3])) {
+                 x >= mglScissorRight(ctx) ||
+                 y >= mglScissorTop(ctx))) {
                 continue;
             }
             GLint sourceX = srcX0 + ((x - dstX0) * srcW) / dstW;
@@ -288,8 +321,8 @@ void mglBlitRGB10A2Shadow(GLMContext ctx,
                 if (STATE(caps).scissor_test &&
                     (x < STATE(var).scissor_box[0] ||
                      y < STATE(var).scissor_box[1] ||
-                     x >= STATE(var).scissor_box[0] + STATE(var).scissor_box[2] ||
-                     y >= STATE(var).scissor_box[1] + STATE(var).scissor_box[3])) continue;
+                     x >= mglScissorRight(ctx) ||
+                     y >= mglScissorTop(ctx))) continue;
                 GLint sx = srcX0 + ((x - dstX0) * srcW) / dstW;
                 GLint sy = srcY0 + ((y - dstY0) * srcH) / dstH;
                 if (x < 0 || y < 0 || sx < 0 || sy < 0 ||
@@ -536,10 +569,10 @@ static void mglUpdateRGB10A2ShadowForClear(GLMContext ctx, GLint only_slot,
         if (STATE(caps).scissor_test) {
             if (x0 < STATE(var).scissor_box[0]) x0 = STATE(var).scissor_box[0];
             if (y0 < STATE(var).scissor_box[1]) y0 = STATE(var).scissor_box[1];
-            if (x1 > STATE(var).scissor_box[0] + STATE(var).scissor_box[2])
-                x1 = STATE(var).scissor_box[0] + STATE(var).scissor_box[2];
-            if (y1 > STATE(var).scissor_box[1] + STATE(var).scissor_box[3])
-                y1 = STATE(var).scissor_box[1] + STATE(var).scissor_box[3];
+            if (x1 > mglScissorRight(ctx))
+                x1 = mglScissorRight(ctx);
+            if (y1 > mglScissorTop(ctx))
+                y1 = mglScissorTop(ctx);
         }
         GLubyte clear[4] = {
             mglClearComponentToByte(color[2]),
