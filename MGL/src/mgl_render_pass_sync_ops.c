@@ -35,7 +35,8 @@
 #include "mgl_gpu_recovery.h"         /* mglPlatformShellGuardedCallCtxReason */
 #include "mgl_render_pass_manager.h"  /* mglPassManagerSetFboMatchCacheResult */
 #include "mgl_render_encoder_ops.h"  /* mglRenderPassNewRenderEncoderLockedWithReason */
-#include "mgl_air_loader.h"         /* MGLRenderDepthStencilDescriptorState */
+#include "mgl_render_api_lifecycle.h" /* MGLRenderDepthStencilDescriptorState,
+                                       * mglRenderLoadAIRMainFunction */
 #include "mgl_trace_log.h"           /* kMGLDiagnosticStateLogs */
 #include "mgl_vertex_layout.h"       /* mglBindingSet*IfNeeded */
 #include "mgl_state_log.h"           /* mglLogRenderStateRepair */

@@ -27,7 +27,8 @@
 #include "mgl_renderer_binding_ops.h"  /* mglRendererBindActiveTexturesToMTL */
 #include "mgl_stage_encode_drivers.h" /* stage encode bind drivers */
 #include "mgl_frame_activity.h"     /* MGL_ENC_REASON_* */
-#include "mgl_air_loader.h"        /* MGLRenderPipelineDescriptorState */
+#include "mgl_render_api_query.h"  /* MGLRenderPipelineDescriptorState */
+#include "mgl_render_api_lifecycle.h" /* mglRenderLoadAIRMainFunction */
 #include "mgl_byte_hash.h"         /* mglHashStepU64 */
 #include "mgl_draw_tess.h"         /* mglTessRasterGLMode */
 #include "mgl_vertex_layout.h"     /* mglRendererGenerateVertexDescriptorState */

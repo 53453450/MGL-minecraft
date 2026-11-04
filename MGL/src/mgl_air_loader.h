@@ -19,54 +19,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "mgl_render_api_query.h" /* MGLRenderPipelineDescriptorState */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* Value-state input for render-pipeline construction. Objective-C fills this
- * structure without exposing MTLRenderPipelineDescriptor. */
-typedef struct MGLRenderPipelineDescriptorState {
-    uint64_t vertex_program_instance;
-    uint64_t vertex_program_generation;
-    uint64_t fragment_program_instance;
-    uint64_t fragment_program_generation;
-    uint32_t color_count;
-    uint32_t color_format[8];   /* MGLPixelFormat ABI values. */
-    uint32_t depth_format;      /* MGLPixelFormatInvalid is zero. */
-    uint32_t stencil_format;    /* MGLPixelFormat ABI value. */
-    int      rasterization_enabled;
-    int      icb_enabled;       /* indirect command buffers */
-    int      alpha_to_coverage_enabled;
-    int      alpha_to_one_enabled;
-    uint32_t input_primitive_topology;
-    /* AIR vertex layout. */
-    uint32_t attrib_count;
-    uint32_t attrib_format[32];
-    uint32_t attrib_offset[32];
-    uint32_t attrib_stride[32];
-    uint32_t attrib_buffer_index[32];
-    uint32_t attrib_step_function[32];
-    uint32_t attrib_step_rate[32];
-    uint32_t color_write_mask[8];
-    uint32_t source_rgb_blend_factor[8];
-    uint32_t destination_rgb_blend_factor[8];
-    uint32_t source_alpha_blend_factor[8];
-    uint32_t destination_alpha_blend_factor[8];
-    uint32_t rgb_blend_operation[8];
-    uint32_t alpha_blend_operation[8];
-    uint32_t blending_enabled_mask;
-    uint32_t raster_sample_count;
-    uint32_t tessellation_partition_mode;
-    uint32_t max_tessellation_factor;
-    int      tessellation_factor_scale_enabled;
-    uint32_t tessellation_factor_format;
-    uint32_t tessellation_control_point_index_type;
-    uint32_t tessellation_factor_step_function;
-    uint32_t tessellation_output_winding_order;
-} MGLRenderPipelineDescriptorState;
-
-/* Compatibility alias retained for existing callers. */
-typedef MGLRenderPipelineDescriptorState MGLPipelineDescriptorState;
 
 /* device is an internal MTL::Device*. bytes contains a metallib image.
  * Returns 0 with an owned library on success. */

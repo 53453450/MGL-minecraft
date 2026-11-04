@@ -383,7 +383,7 @@ uint64_t mglVertexDescriptorSignature(const void *vertexDescriptor);
 uint64_t mglPipelineDescriptorSignature(const void *pipelineStateDescriptor);
 
 /* Value-state signature. Field order must remain stable because it defines the
- * pipeline-cache key. The complete state is defined in mgl_air_loader.h. */
+ * pipeline-cache key. The complete state is defined in mgl_render_api_query.h. */
 typedef struct MGLRenderPipelineDescriptorState
     MGLRenderPipelineDescriptorState;
 uint64_t mglVertexDescriptorSignatureFromState(

@@ -2,7 +2,5 @@
 # Format: rule path count. Counts may only go down; --update after paying debt.
 # See docs/MGL-architecture-design.md §9.
 
-Lyr-FE-Compiler MGL/src/mgl_render_pass_manager_ops.c 1
-Lyr-FE-Compiler MGL/src/mgl_render_pass_sync_ops.c 1
 Lyr-FE-Compiler MGL/src/program.c 2
 Lyr-FE-Compiler MGL/src/shaders.c 2
