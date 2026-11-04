@@ -85,9 +85,6 @@ extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx,
  * mgl_compute_bind.c). */
 static GLMState *mglTessDispatchState(const MGLRendererStateAreas *areas) /* C5-EXEMPT: read helper for the write side */
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 

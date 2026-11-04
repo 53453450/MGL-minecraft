@@ -39,9 +39,6 @@
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
 static GLMState *mglSizeConstantsState(const MGLRendererStateView *areas)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 

@@ -70,9 +70,7 @@ void mglTessBindPointSizeParamsToComputeEncoder(
     }
     MGLRendererStateView areas;
     mglRendererFillStateView(renderer, &areas);
-    GLMState *state = areas.core && areas.core->activeState
-        ? areas.core->activeState
-        : (areas.ctx ? areas.ctx->active_state : NULL);
+    GLMState *state = areas.ctx ? areas.ctx->active_state : NULL;
 
     float pointSizeParams[2] = {0.f, 0.f};
     mglTessFillPointSizeParams(

@@ -89,9 +89,6 @@ extern int mglRenderVertexBufferIndexForAttribute(GLMContext ctx, GLMState *stat
  * active pointer wins, NULL means "the context's own state". */
 static GLMState *mglBufferMapState(const MGLRendererStateView *areas)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 

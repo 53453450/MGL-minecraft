@@ -66,7 +66,7 @@ static int fOracleEq(void *v, uint32_t b) { return mglStateKeysEqual(&FB(v, b)->
 static void fOracle(void *v) { (void)v; MGL_PERF_INC(g_mglSameKeyOracleWouldSkipSinceSwap); }
 static void fApplySkip(void *v, uint32_t b)
 { (void)b; FCtx *c = v; MGLRendererStateView areas; mglRendererFillStateView(c->r, &areas);
-  if (areas.core && areas.core->activeState != c->replay)
+  if (c->ctx && c->ctx->active_state != c->replay)
       mglRendererSetActiveState(c->r, c->replay);
   mglClearAllRendererDirtyBits(c->replay); MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap); }
 static void fSetAbs(void *v, int w)

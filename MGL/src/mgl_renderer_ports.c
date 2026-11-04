@@ -349,9 +349,8 @@ void mglRendererSetActiveState(void *renderer, GLMState *state)
 {
     MGLRendererStateAreas areas; /* C5-EXEMPT: writes through the areas */
     mglRendererFillStateAreas(renderer, &areas);
-    if (areas.core) {
-        areas.core->activeState = state;
-    }
+    /* ARCH-003: single pointer — ctx->active_state only. */
+    mglContextSetActiveState(areas.ctx, state);
 }
 
 void mglRendererSetTraceReplayIdentity(void *renderer, uint64_t flush_id,

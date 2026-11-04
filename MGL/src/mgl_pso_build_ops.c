@@ -184,9 +184,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
     mglRendererFillStateView(renderer, &areas);
     const MGLPipelineCachePort cache = mglRendererPipelineCachePort(renderer);
     GLMContext ctx = areas.ctx;
-    GLMState *state = areas.core && areas.core->activeState
-                          ? areas.core->activeState
-                          : (ctx ? ctx->active_state : NULL);
+    GLMState *state = areas.ctx ? areas.ctx->active_state : NULL;
     MGLGPURecoveryState *recovery = areas.gpu_recovery;
     Program *currentProgram = mglResolveProgramFromState(ctx);
     Program *currentVertexProgram =
@@ -806,9 +804,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
     mglRendererFillStateView(renderer, &areas);
     const MGLPipelineCachePort cache = mglRendererPipelineCachePort(renderer);
     GLMContext ctx = areas.ctx;
-    GLMState *state = areas.core && areas.core->activeState
-                          ? areas.core->activeState
-                          : (ctx ? ctx->active_state : NULL);
+    GLMState *state = areas.ctx ? areas.ctx->active_state : NULL;
     MGLGPURecoveryState *recovery = areas.gpu_recovery;
     const MGLPipelineCacheState *cacheState = cache.state;
     /* areas.binding_state_owner is the ADDRESS of the owner slot (rule 59). */

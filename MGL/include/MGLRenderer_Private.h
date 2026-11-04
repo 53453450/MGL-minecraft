@@ -167,35 +167,9 @@ static inline double mglNowSeconds(void)
 #define METAL_LOCK()   do { MGL_ASSERT_GL_THREAD(); } while (0)
 #define METAL_UNLOCK() do { } while (0)
 
-/* Returns the active GLMState pointer for Metal-layer sync functions.
- *
- * DUAL-PROXY INVARIANT: _activeState (ivar) and ctx->active_state (context
- * pointer) must always refer to the same logical GLMState.  They are two
- * proxies for the same concept:
- *   - ctx->active_state: used by STATE()/STATE_VAR()/VAO() macros in the
- *     C GL layer (glm_context.h)
- *   - _activeState: used by MGL_STATE() in the Metal layer
- *
- * Two valid configurations:
- *   (A) _activeState == NULL  -> MGL_STATE() falls through to ctx->active_state
- *                                (the default / post-teardown mode; both
- *                                conceptually refer to &ctx->state)
- *   (B) _activeState != NULL  -> _activeState MUST equal ctx->active_state
- *                                (the redirected mode used during batch replay)
- *
- * Enforcement: all writes to either proxy MUST go through the centralized
- * helpers declared below this macro:
- *   - mglRestoreLiveActiveStateForContext:     -> config (A)
- *   - mglAssertDualProxyInSyncForContext:      -> debug-mode checkpoint
- * These prevent proxy desync — a caller writing one proxy without the other.
- *
- * Checkpoints (NSCAssert, compiled out in release): flushDrawBuffer entry,
- * restoreStateForBatch entry, teardownBatchReplayForContext entry/exit.
- *
- * A desync causes STATE() and MGL_STATE() to read different GLMState objects,
- * producing wrong binds/dirty bits — intermittent render errors that are
- * extremely hard to debug. */
-#define MGL_STATE(context)  (_activeState ? _activeState : (context)->active_state)
+/* Returns the active GLMState pointer (ARCH-003 / Phase 2: single source).
+ * Identical to STATE() on the C side: always ctx->active_state. */
+#define MGL_STATE(context)  ((context)->active_state)
 
 /* C-ABI accessors that return the Metal-facing sub-objects of a MGLRenderer for
  * use by file-scope C functions in the encode ports (mgl_draw_metal_port.m,
@@ -267,18 +241,8 @@ static inline double mglNowSeconds(void)
 - (bool)flushStageBindingCopyBacks:(MGLStageBindingCopyBackList *)copyBacks
               requireCPUVisibility:(BOOL)requireCPUVisibility;
 
-/* DUAL-PROXY INVARIANT HELPERS: centralize writes to _core.activeState and
- * ctx->active_state to prevent desync.  See the DUAL-PROXY INVARIANT comment
- * above MGL_STATE() for the invariant definition.
- *
- * Use these instead of writing either proxy directly:
- *   - mglActivateReplayStateForContext:     batch flush begin (point both
- *                                          proxies at ctx->replay_state)
- *   - mglRestoreLiveActiveStateForContext:  batch replay teardown (revert to
- *                                          live ctx->state, ivar = NULL)
- *   - mglAssertDualProxyInSyncForContext:   debug-mode checkpoint
- *                                          (NSCAssert compiled out in release)
- */
+/* Active-state helpers live in mgl_renderer_core_state.h /
+ * mglContextSetActiveState (glm_context.h). */
 
 /* Locked variant of flushDrawBuffer: — caller must hold METAL_LOCK.
  * Defined in mgl_batch_flush_restore_encode.c, called from already-locked callers
@@ -305,7 +269,6 @@ static inline double mglNowSeconds(void)
 #define _view self.view
 #define _layer self.layer
 #define _drawable self.drawable
-#define _activeState _core.activeState
 #define _device ((__bridge id) \
     mglRendererBackendGetDevice(_backend))
 #define _capability _core.capability

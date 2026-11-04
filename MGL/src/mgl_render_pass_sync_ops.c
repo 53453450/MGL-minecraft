@@ -108,17 +108,11 @@ extern void mglLogRenderPassLifecycle(const char *tag, uint64_t call,
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
 static GLMState *mglRsStateView(const MGLRendererStateView *view)
 {
-    if (view->core && view->core->activeState) {
-        return view->core->activeState;
-    }
     return view->ctx ? view->ctx->active_state : NULL;
 }
 
 static GLMState *mglRsState(const MGLRendererStateAreas *areas) /* C5-EXEMPT: read helper for the write side */
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 

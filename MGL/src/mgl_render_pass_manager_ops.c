@@ -381,18 +381,12 @@ extern Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx,
 /* MGL_STATE() from MGLRenderer_Private.h, in C (same twin as mgl_tess_dispatch.c). */
 static GLMState *mglPdState(const MGLRendererStateAreas *areas) /* C5-EXEMPT: read helper for the write side */
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 
 /* Same question from the read-only view (same two fields). */
 static GLMState *mglPdStateView(const MGLRendererStateView *view)
 {
-    if (view->core && view->core->activeState) {
-        return view->core->activeState;
-    }
     return view->ctx ? view->ctx->active_state : NULL;
 }
 
@@ -4291,7 +4285,7 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
         }
         return 0;
     }
-    /* T0-1: processGLState reads via mglPdState (core->activeState prefer);
+    /* T0-1: processGLState reads via mglPdState (ctx->active_state);
      * dual-proxy must already agree with ctx->active_state. */
     mglCoreAssertDualProxy(areas.core, ctx);
 

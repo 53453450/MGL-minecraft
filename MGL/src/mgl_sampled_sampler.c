@@ -70,9 +70,7 @@ extern signed char mglEnvFlagEnabled(const char *name);
 /* MGL_STATE() from MGLRenderer_Private.h, in C (same twin as mgl_tess_dispatch.c). */
 static GLMState *mglSsState(const MGLRendererCoreState *core, GLMContext ctx)
 {
-    if (core && core->activeState) {
-        return core->activeState;
-    }
+    (void)core;
     return ctx ? ctx->active_state : NULL;
 }
 

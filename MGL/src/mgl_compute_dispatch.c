@@ -55,9 +55,7 @@
 static GLMState *mglComputeDispatchState(const MGLRendererStateView *areas,
                                          GLMContext context)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
+    (void)areas;
     return context ? context->active_state : NULL;
 }
 

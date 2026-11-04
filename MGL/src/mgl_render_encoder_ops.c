@@ -79,9 +79,6 @@ static bool mglPdShouldTraceCall(uint64_t count)
 /* MGL_STATE(ctx) twin. */
 static GLMState *mglPdStateOf(const MGLRendererStateView *areas)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 

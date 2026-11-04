@@ -112,9 +112,7 @@ int mglRendererBindActiveTexturesToMTL(void *renderer, GLMContext glm_ctx)
 static GLMState *mglRendererBindingDerivedState(const MGLRendererStateView *areas,
                                              GLMContext glm_ctx)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
+    (void)areas;
     return glm_ctx ? glm_ctx->active_state : NULL;
 }
 

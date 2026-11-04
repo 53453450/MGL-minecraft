@@ -64,9 +64,6 @@
  * mgl_compute_bind.c). */
 static GLMState *mglTessStageBindState(const MGLRendererStateView *areas)
 {
-    if (areas->core && areas->core->activeState) {
-        return areas->core->activeState;
-    }
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 

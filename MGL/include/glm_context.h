@@ -262,6 +262,20 @@ static inline int mglCtxActiveIsReplayWorkspace(GLMContext ctx)
     return ctx && ctx->active_state && ctx->active_state != &ctx->state;
 }
 
+/* ARCH-003 / Phase 2: single write path for the active GLMState pointer. */
+static inline void mglContextSetActiveState(GLMContext ctx, GLMState *state)
+{
+    if (ctx) {
+        ctx->active_state = state;
+    }
+}
+
+static inline void mglContextAssertActiveState(GLMContext ctx)
+{
+    assert(ctx && ctx->active_state &&
+           "ARCH-003: ctx->active_state must be non-NULL");
+}
+
 /* Profile selector.  A build still has one default profile (the ES image
  * defaults to ES so libmgl_es.dylib keeps working), but the caller can now ask
  * for either one explicitly -- that is what lets a single image serve both. */

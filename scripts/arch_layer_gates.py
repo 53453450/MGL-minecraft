@@ -18,8 +18,8 @@ Rules:
                     (only pass_public.h) (ARCH-004/016).
   Lyr-No-Private    MGL/src must not #include/#import *Private* (ARCH-009;
                     Phase 0: baseline allow; Phase 8: empty baseline).
-  Lyr-DualProxyDoc  Informational: hand assignment to core->activeState outside
-                    mgl_renderer_core_state.c / documented setters (ARCH-003).
+  Lyr-DualProxy     Ban assignment to core/_core->activeState anywhere
+                    (ARCH-003 / Phase 2: single ctx->active_state).
 
 Usage:
   python3 scripts/arch_layer_gates.py
@@ -165,20 +165,13 @@ def collect() -> dict[tuple[str, str], list[tuple[int, str]]]:
         path = os.path.join(SRC, name)
         add("Lyr-No-Private", path, scan_file(path, PRIVATE_INC))
 
-    # Lyr-DualProxy hand writes (baseline allow core helpers)
+    # Lyr-DualProxy: Phase 2 forbids any core.activeState assignment.
     for dirpath, _, files in os.walk(os.path.join(ROOT, "MGL")):
         for name in files:
-            if not name.endswith((".c", ".cpp", ".h", ".hpp")):
+            if not name.endswith((".c", ".cpp", ".h", ".hpp", ".m", ".mm")):
                 continue
             path = os.path.join(dirpath, name)
-            found = scan_file(path, ACTIVE_STATE_ASSIGN)
-            # Always allow the dual-proxy helpers themselves.
-            if os.path.basename(path) in (
-                "mgl_renderer_core_state.c",
-                "mgl_renderer_core_state.h",
-            ):
-                continue
-            add("Lyr-DualProxy", path, found)
+            add("Lyr-DualProxy", path, scan_file(path, ACTIVE_STATE_ASSIGN))
 
     return hits
 
