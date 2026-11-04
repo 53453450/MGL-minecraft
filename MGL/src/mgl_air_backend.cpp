@@ -1186,6 +1186,20 @@ llvm::Value *tryFoldConst(Codegen &cg, uint32_t op, llvm::Value *l,
 llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
                               llvm::Value *r, const MType &lt,
                               const MType &rt) {
+    /* AGX double is an i64 payload with no f64 ALU.  Soft-float any operand
+     * typed DOUBLE (or carrying i64) before arithmetic / ordered compares so
+     * we never integer-add IEEE bit patterns or ICmp mismatched widths. */
+    const bool l_double = lt.scalar == MGLIR_SCALAR_DOUBLE ||
+        (l->getType()->isIntOrIntVectorTy() &&
+         l->getType()->getScalarSizeInBits() == 64);
+    const bool r_double = rt.scalar == MGLIR_SCALAR_DOUBLE ||
+        (r->getType()->isIntOrIntVectorTy() &&
+         r->getType()->getScalarSizeInBits() == 64);
+    const bool soft_double = l_double || r_double;
+    if (soft_double) {
+        l = coerceScalar(cg, l, MGLIR_SCALAR_FLOAT, lt.scalar);
+        r = coerceScalar(cg, r, MGLIR_SCALAR_FLOAT, rt.scalar);
+    }
     bool lfp = l->getType()->isFPOrFPVectorTy();
     bool rfp = r->getType()->isFPOrFPVectorTy();
     if (lfp != rfp) {
@@ -1206,15 +1220,21 @@ llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
     }
     bool fp = l->getType()->isFPOrFPVectorTy();
     bool uns = lt.scalar == MGLIR_SCALAR_UINT || rt.scalar == MGLIR_SCALAR_UINT;
+    auto widen_double = [&](llvm::Value *v) -> llvm::Value * {
+        return soft_double ? coerceScalar(cg, v, MGLIR_SCALAR_DOUBLE) : v;
+    };
     llvm::CmpInst::Predicate pred;
     switch (op) {
-    case MGL_OP_ADD: return fp ? cg.b->CreateFAdd(l, r) : cg.b->CreateAdd(l, r);
-    case MGL_OP_SUB: return fp ? cg.b->CreateFSub(l, r) : cg.b->CreateSub(l, r);
-    case MGL_OP_MUL: return fp ? cg.b->CreateFMul(l, r) : cg.b->CreateMul(l, r);
-    case MGL_OP_DIV: return fp ? cg.b->CreateFDiv(l, r)
-                   : uns ? cg.b->CreateUDiv(l, r) : cg.b->CreateSDiv(l, r);
-    case MGL_OP_MOD: return fp ? cg.b->CreateFRem(l, r)
-                   : uns ? cg.b->CreateURem(l, r) : cg.b->CreateSRem(l, r);
+    case MGL_OP_ADD: return widen_double(fp ? cg.b->CreateFAdd(l, r)
+                                            : cg.b->CreateAdd(l, r));
+    case MGL_OP_SUB: return widen_double(fp ? cg.b->CreateFSub(l, r)
+                                            : cg.b->CreateSub(l, r));
+    case MGL_OP_MUL: return widen_double(fp ? cg.b->CreateFMul(l, r)
+                                            : cg.b->CreateMul(l, r));
+    case MGL_OP_DIV: return widen_double(fp ? cg.b->CreateFDiv(l, r)
+                   : uns ? cg.b->CreateUDiv(l, r) : cg.b->CreateSDiv(l, r));
+    case MGL_OP_MOD: return widen_double(fp ? cg.b->CreateFRem(l, r)
+                   : uns ? cg.b->CreateURem(l, r) : cg.b->CreateSRem(l, r));
     case MGL_OP_SHL: return cg.b->CreateShl(l, r);
     case MGL_OP_SHR: return uns ? cg.b->CreateLShr(l, r) : cg.b->CreateAShr(l, r);
     case MGL_OP_AND: return cg.b->CreateAnd(l, r);
@@ -2537,6 +2557,16 @@ llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
         } else {
             llvm::Value *idx = emitExpr(cg, pe->u.index.index, mod, locals);
             if (!idx) return nullptr;
+            /* OOB dynamic indices are undefined in GLSL; clamp to the
+             * declared upper bound so a wild index cannot GEP past the
+             * SSBO (same policy as atomic-counter / UBO instance). */
+            auto clampUIndex = [&](llvm::Value *i,
+                                   uint32_t maxInclusive) -> llvm::Value * {
+                i = cg.b->CreateSExtOrTrunc(i, cg.b->getInt64Ty());
+                return cg.b->CreateBinaryIntrinsic(
+                    llvm::Intrinsic::umin, i,
+                    cg.b->getInt64(maxInclusive));
+            };
             /* An index on a vector-typed element selects one scalar
              * component.  The previous code treated it as another array
              * hop and walked into the vector's NULL elem_type, which
@@ -2544,7 +2574,8 @@ llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
              * shader doing g_buffer.vec[expr][component]). */
             if (ty->kind == MGLIR_TYPE_VECTOR) {
                 uint32_t scalarSize = mglAirScalarByteSize(ty->scalar);
-                idx = cg.b->CreateSExtOrTrunc(idx, cg.b->getInt64Ty());
+                uint32_t nComp = ty->cols > 0u ? ty->cols : 1u;
+                idx = clampUIndex(idx, nComp - 1u);
                 base = cg.b->CreateGEP(
                     cg.b->getInt8Ty(), base,
                     cg.b->CreateAdd(cg.b->getInt64(off),
@@ -2574,7 +2605,8 @@ llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
                         (comps <= 2u ? comps : 4u) * 4u;
                     stride = (baseBytes + 15u) & ~15u;
                 }
-                idx = cg.b->CreateSExtOrTrunc(idx, cg.b->getInt64Ty());
+                uint32_t nCol = ty->cols > 0u ? ty->cols : 1u;
+                idx = clampUIndex(idx, nCol - 1u);
                 base = cg.b->CreateGEP(
                     cg.b->getInt8Ty(), base,
                     cg.b->CreateAdd(cg.b->getInt64(off),
@@ -2601,7 +2633,11 @@ llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
             }
             uint32_t stride = ty->layout.array_stride;
             if (!stride) stride = ty->layout.size;
-            idx = cg.b->CreateSExtOrTrunc(idx, cg.b->getInt64Ty());
+            /* Unsized last member (array_size==0): no static upper bound. */
+            if (ty->array_size > 0u)
+                idx = clampUIndex(idx, ty->array_size - 1u);
+            else
+                idx = cg.b->CreateSExtOrTrunc(idx, cg.b->getInt64Ty());
             base = cg.b->CreateGEP(
                 cg.b->getInt8Ty(), base,
                 cg.b->CreateAdd(cg.b->getInt64(off),
@@ -2838,12 +2874,37 @@ void emitSSBOWrite(Codegen &cg, const MGLExpr *e, const MGLIRSymbol *sb,
     cg.b->CreateAlignedStore(v, p, align);
 }
 
-/* Matrix uniform -> SSA [N x <rows x float>] array value. */
+/* Soft-truncate one IEEE754 binary64 (i64 bits) to binary32 without f64 ALU. */
+static llvm::Value *softTruncI64ToFloat(Codegen &cg, llvm::Value *bits)
+{
+    return encodeFloatCarrier(cg, bits, MGLIR_SCALAR_DOUBLE);
+}
+
+/* Matrix uniform -> SSA [N x <rows x float>] array value.
+ * Float mats use 16-byte columns; double mats store binary64 with std140
+ * column stride (dvec2:16, dvec3/dvec4:32) and soft-truncate into float SSA. */
 llvm::Value *emitMatrixUniform(Codegen &cg, const Uniform &u) {
-    llvm::Type *colTy = llvm::FixedVectorType::get(llvm::Type::getFloatTy(*cg.ctx),
-                                              u.type.rows);
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Type *colTy = llvm::FixedVectorType::get(f32, u.type.rows);
     llvm::Value *arr = llvm::UndefValue::get(
         llvm::ArrayType::get(colTy, u.type.cols));
+    if (u.type.scalar == MGLIR_SCALAR_DOUBLE) {
+        /* glUniformMatrix*dv writes tightly packed columns into the
+         * per-location plain slot (no std140 column padding). */
+        const uint32_t stride = u.type.rows * 8u;
+        llvm::Type *i64 = llvm::Type::getInt64Ty(*cg.ctx);
+        for (uint32_t c = 0; c < u.type.cols; c++) {
+            llvm::Value *col = llvm::UndefValue::get(colTy);
+            for (uint32_t r = 0; r < u.type.rows; r++) {
+                llvm::Value *bits =
+                    bufferLoad(cg, u.offset + stride * c + 8u * r, i64);
+                llvm::Value *f = softTruncI64ToFloat(cg, bits);
+                col = cg.b->CreateInsertElement(col, f, cg.b->getInt32(r));
+            }
+            arr = cg.b->CreateInsertValue(arr, col, c);
+        }
+        return arr;
+    }
     for (uint32_t c = 0; c < u.type.cols; c++) {
         llvm::Value *col = bufferLoad(cg, u.offset + 16 * c, colTy);
         arr = cg.b->CreateInsertValue(arr, col, c);
@@ -2993,6 +3054,28 @@ static llvm::Value *emitUBOLeafLoad(Codegen &cg, llvm::Value *base,
         llvm::Value *word =
             cg.b->CreateAlignedLoad(i32, p, llvm::Align(4));
         return cg.b->CreateICmpNE(word, cg.b->getInt32(0));
+    }
+    /* Double vectors: memory is tightly packed binary64; SSA is floatN. */
+    if (vt.scalar == MGLIR_SCALAR_DOUBLE && vt.vec && !vt.isMatrix()) {
+        llvm::Type *i64 = llvm::Type::getInt64Ty(*cg.ctx);
+        llvm::Type *fvt = llvm::FixedVectorType::get(
+            llvm::Type::getFloatTy(*cg.ctx), vt.vec);
+        llvm::Value *res = llvm::UndefValue::get(fvt);
+        for (uint32_t i = 0; i < vt.vec; i++) {
+            llvm::Value *ep = cg.b->CreateGEP(
+                cg.b->getInt8Ty(), p, cg.b->getInt64((uint64_t)i * 8u));
+            ep = cg.b->CreateBitCast(ep, i64->getPointerTo(1));
+            llvm::Value *bits =
+                cg.b->CreateAlignedLoad(i64, ep, llvm::Align(8));
+            res = cg.b->CreateInsertElement(
+                res, softTruncI64ToFloat(cg, bits), cg.b->getInt32(i));
+        }
+        return res;
+    }
+    if (vt.scalar == MGLIR_SCALAR_DOUBLE && !vt.vec && !vt.isMatrix()) {
+        llvm::Type *i64 = llvm::Type::getInt64Ty(*cg.ctx);
+        p = cg.b->CreateBitCast(p, i64->getPointerTo(1));
+        return cg.b->CreateAlignedLoad(i64, p, llvm::Align(8));
     }
     p = cg.b->CreateBitCast(p, t->getPointerTo(1));
     return cg.b->CreateAlignedLoad(t, p, align);
@@ -5973,6 +6056,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (base == MGLIR_SCALAR_BOOL)
             return llvm::ConstantInt::get(llvm::Type::getInt1Ty(*cg.ctx),
                                           e->u.literal.value != 0.0);
+        /* AGX has no f64 ALU: LF / double literals are i64 IEEE754 payloads. */
+        if (base == MGLIR_SCALAR_DOUBLE) {
+            double d = e->u.literal.value;
+            uint64_t bits = 0;
+            memcpy(&bits, &d, sizeof(bits));
+            return llvm::ConstantInt::get(llvm::Type::getInt64Ty(*cg.ctx),
+                                          bits);
+        }
         return llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx),
                                      e->u.literal.value);
     }
@@ -6756,9 +6847,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             ov->type->kind == MGLIR_TYPE_ARRAY
                                 ? (uint32_t)ov->type->layout.array_stride
                                 : 0u;
+                        uint32_t elemCount =
+                            ov->type->kind == MGLIR_TYPE_ARRAY &&
+                                    ov->type->array_size > 0
+                                ? ov->type->array_size
+                                : 1u;
+                        /* OOB dynamic indices are undefined in GLSL; clamp
+                         * so a wild index cannot GEP past the plain pack
+                         * (AUDIT-017, same policy as SSBO/UBO). */
+                        llvm::Value *idx64 =
+                            cg.b->CreateSExt(elemIndex, cg.b->getInt64Ty());
+                        idx64 = cg.b->CreateBinaryIntrinsic(
+                            llvm::Intrinsic::umin, idx64,
+                            cg.b->getInt64(elemCount - 1u));
                         llvm::Value *byte = cg.b->CreateMul(
-                            cg.b->CreateSExt(elemIndex, cg.b->getInt64Ty()),
-                            cg.b->getInt64(stride));
+                            idx64, cg.b->getInt64(stride));
                         base = cg.b->CreateGEP(cg.b->getInt8Ty(), base,
                                                byte);
                     }
@@ -6974,9 +7077,19 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                             ov->type->kind == MGLIR_TYPE_ARRAY
                                 ? (uint32_t)ov->type->layout.array_stride
                                 : 0u;
+                        uint32_t elemCount =
+                            ov->type->kind == MGLIR_TYPE_ARRAY &&
+                                    ov->type->array_size > 0
+                                ? ov->type->array_size
+                                : 1u;
+                        /* AUDIT-017 store path: clamp like the load path. */
+                        llvm::Value *idx64 =
+                            cg.b->CreateSExt(elemIndex, cg.b->getInt64Ty());
+                        idx64 = cg.b->CreateBinaryIntrinsic(
+                            llvm::Intrinsic::umin, idx64,
+                            cg.b->getInt64(elemCount - 1u));
                         llvm::Value *byte = cg.b->CreateMul(
-                            cg.b->CreateSExt(elemIndex, cg.b->getInt64Ty()),
-                            cg.b->getInt64(stride));
+                            idx64, cg.b->getInt64(stride));
                         base = cg.b->CreateGEP(cg.b->getInt8Ty(), base,
                                                byte);
                     }
@@ -9599,8 +9712,7 @@ static bool emitCallConstructors(
         return (*out = res, true);
     }
     /* Scalar constructors / conversions.
-     * `double` maps to float (AGX has no FP64; capability probes often
-     * leave unused `double` temps). */
+     * `double` is an i64 IEEE754 payload (AGX has no f64 ALU). */
     if (strcmp(name, "float") == 0 || strcmp(name, "double") == 0 ||
         strcmp(name, "int") == 0 || strcmp(name, "uint") == 0 ||
         strcmp(name, "bool") == 0) {
@@ -9633,8 +9745,8 @@ static bool emitCallConstructors(
                 arg = col0;
             (void)arrTy;
         }
-        MGLIRScalar want = (name[0] == 'f' || name[0] == 'd')
-                         ? MGLIR_SCALAR_FLOAT
+        MGLIRScalar want = name[0] == 'f' ? MGLIR_SCALAR_FLOAT
+                         : name[0] == 'd' ? MGLIR_SCALAR_DOUBLE
                          : name[0] == 'u' ? MGLIR_SCALAR_UINT
                          : name[0] == 'b' ? MGLIR_SCALAR_BOOL
                                           : MGLIR_SCALAR_INT;
@@ -9647,7 +9759,7 @@ static bool emitCallConstructors(
                             exprType(cg, e->u.call.args[0], mod,
                                      locals).scalar), true);
     }
-    /* Vector constructors: [i]uvec/bvec/vec2..4. */
+    /* Vector constructors: [di]uvec/bvec/vec2..4. */
     const char *vn = name;
     MGLIRScalar velt = MGLIR_SCALAR_FLOAT;
     uint32_t vlanes = 0;
@@ -9656,6 +9768,10 @@ static bool emitCallConstructors(
         velt = vn[0] == 'i' ? MGLIR_SCALAR_INT
              : vn[0] == 'u' ? MGLIR_SCALAR_UINT
                             : MGLIR_SCALAR_BOOL;
+        vn += 4;
+    } else if (strncmp(vn, "dvec", 4) == 0) {
+        /* Float SSA carrier — AGX rejects <N x i64> (see llvmType). */
+        velt = MGLIR_SCALAR_FLOAT;
         vn += 4;
     } else if (strncmp(vn, "vec", 3) == 0) {
         vn += 3;
@@ -9752,23 +9868,41 @@ static bool emitCallConstructors(
         }
         return (*out = res, true);
     }
-    /* Matrix constructors: mat2..mat4 / matCxR. */
+    /* Matrix constructors: [d]mat2..mat4 / [d]matCxR.
+     * dmat uses the float SSA carrier (AGX rejects <N x i64>). */
     uint32_t mcols = 0, mrows = 0;
-    if (strncmp(name, "mat", 3) == 0) {
-        const char *m = name + 3;
-        if (m[0] >= '2' && m[0] <= '4' && m[1] == '\0') {
-            mcols = mrows = (uint32_t)(m[0] - '0');
-        } else if (m[0] >= '2' && m[0] <= '4' && m[1] == 'x' &&
-                   m[2] >= '2' && m[2] <= '4' && m[3] == '\0') {
-            mcols = (uint32_t)(m[0] - '0');
-            mrows = (uint32_t)(m[2] - '0');
+    MGLIRScalar melt = MGLIR_SCALAR_FLOAT;
+    {
+        const char *mname = name;
+        if (strncmp(mname, "dmat", 4) == 0) {
+            melt = MGLIR_SCALAR_FLOAT;
+            mname += 4;
+        } else if (strncmp(mname, "mat", 3) == 0) {
+            mname += 3;
+        } else {
+            mname = nullptr;
+        }
+        if (mname) {
+            if (mname[0] >= '2' && mname[0] <= '4' && mname[1] == '\0') {
+                mcols = mrows = (uint32_t)(mname[0] - '0');
+            } else if (mname[0] >= '2' && mname[0] <= '4' && mname[1] == 'x' &&
+                       mname[2] >= '2' && mname[2] <= '4' && mname[3] == '\0') {
+                mcols = (uint32_t)(mname[0] - '0');
+                mrows = (uint32_t)(mname[2] - '0');
+            }
         }
     }
     if (mcols) {
-        llvm::Type *colTy = llvm::FixedVectorType::get(
-            llvm::Type::getFloatTy(*cg.ctx), mrows);
+        llvm::Type *eltTy = llvmScalar(melt, *cg.ctx);
+        llvm::Type *colTy = llvm::FixedVectorType::get(eltTy, mrows);
         llvm::Type *arrTy = llvm::ArrayType::get(colTy, mcols);
         llvm::Value *arr = llvm::UndefValue::get(arrTy);
+        auto matOne = [&]() -> llvm::Constant * {
+            return llvm::ConstantFP::get(eltTy, 1.0);
+        };
+        auto matZero = [&]() -> llvm::Constant * {
+            return llvm::Constant::getNullValue(eltTy);
+        };
         if (e->u.call.arg_count == 1) {
             llvm::Value *s = emitExpr(cg, e->u.call.args[0], mod, locals);
             if (!s) return true;
@@ -9798,12 +9932,10 @@ static bool emitCallConstructors(
                                 cg.b->CreateExtractValue(s, c),
                                 llvm::ConstantInt::get(
                                     llvm::Type::getInt32Ty(*cg.ctx), r));
+                            x = coerceScalar(cg, x, melt);
                         } else {
-                            x = (r == c)
-                                ? llvm::ConstantFP::get(
-                                      llvm::Type::getFloatTy(*cg.ctx), 1.0)
-                                : llvm::ConstantFP::get(
-                                      llvm::Type::getFloatTy(*cg.ctx), 0.0);
+                            x = (r == c) ? (llvm::Value *)matOne()
+                                         : (llvm::Value *)matZero();
                         }
                         col = cg.b->CreateInsertElement(col, x,
                             llvm::ConstantInt::get(
@@ -9814,13 +9946,11 @@ static bool emitCallConstructors(
                 return (*out = arr, true);
             }
             /* matN(f): diagonal scale. */
-            s = coerceScalar(cg, s, MGLIR_SCALAR_FLOAT);
+            s = coerceScalar(cg, s, melt);
             for (uint32_t c = 0; c < mcols; c++) {
                 llvm::Value *col = llvm::UndefValue::get(colTy);
                 for (uint32_t r = 0; r < mrows; r++) {
-                    llvm::Value *x = (r == c) ? s
-                        : llvm::ConstantFP::get(
-                              llvm::Type::getFloatTy(*cg.ctx), 0.0);
+                    llvm::Value *x = (r == c) ? s : (llvm::Value *)matZero();
                     col = cg.b->CreateInsertElement(col, x,
                         llvm::ConstantInt::get(
                             llvm::Type::getInt32Ty(*cg.ctx), r));
@@ -9838,8 +9968,7 @@ static bool emitCallConstructors(
                                             mod, locals);
                 if (!arg) return true;
                 auto pushf = [&](llvm::Value *x) {
-                    comps.push_back(
-                        coerceScalar(cg, x, MGLIR_SCALAR_FLOAT));
+                    comps.push_back(coerceScalar(cg, x, melt));
                 };
                 if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
                         arg->getType())) {
@@ -12075,7 +12204,7 @@ static bool emitCallTextureSample(
             const char *cmpName = nullptr;
             if (sampleKind == MGLIR_TEX_2D || sampleKind == MGLIR_TEX_1D ||
                 sampleKind == MGLIR_TEX_2D_RECT) {
-                /* RECT is backed as texture2d; CTS Lookup uses GL_ALWAYS. */
+                /* RECT is backed as texture2d; compare uses the bound sampler. */
                 cmpName = "air.sample_compare_depth_2d.f32";
             } else if (sampleKind == MGLIR_TEX_2D_ARRAY ||
                        sampleKind == MGLIR_TEX_1D_ARRAY) {
@@ -13324,8 +13453,13 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     switch (e->kind) {
     case MGL_EXPR_LITERAL: {
         MGLIRScalar b = (MGLIRScalar)e->u.literal.base;
-        if (b == MGLIR_SCALAR_DOUBLE || b == MGLIR_SCALAR_HALF)
+        if (b == MGLIR_SCALAR_HALF)
             b = MGLIR_SCALAR_FLOAT;
+        /* Keep DOUBLE as i64 payload typing (matches emitExpr literal). */
+        if (b == MGLIR_SCALAR_DOUBLE) {
+            t.scalar = MGLIR_SCALAR_DOUBLE;
+            break;
+        }
         t.scalar = scalarIsFloat(b) ? MGLIR_SCALAR_FLOAT : b;
         break;
     }
@@ -13425,7 +13559,8 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (strcmp(name, "float") == 0 || strcmp(name, "double") == 0 ||
             strcmp(name, "int") == 0 || strcmp(name, "uint") == 0 ||
             strcmp(name, "bool") == 0) {
-            t.scalar = (name[0] == 'f' || name[0] == 'd') ? MGLIR_SCALAR_FLOAT
+            t.scalar = name[0] == 'f' ? MGLIR_SCALAR_FLOAT
+                     : name[0] == 'd' ? MGLIR_SCALAR_DOUBLE
                      : name[0] == 'u' ? MGLIR_SCALAR_UINT
                      : name[0] == 'b' ? MGLIR_SCALAR_BOOL
                                       : MGLIR_SCALAR_INT;
@@ -13440,6 +13575,9 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                      : vn[0] == 'u' ? MGLIR_SCALAR_UINT
                                     : MGLIR_SCALAR_BOOL;
             vn += 4;
+        } else if (strncmp(vn, "dvec", 4) == 0) {
+            t.scalar = MGLIR_SCALAR_DOUBLE;
+            vn += 4;
         } else if (strncmp(vn, "vec", 3) == 0) {
             vn += 3;
         } else {
@@ -13451,20 +13589,33 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 t.arr = e->u.call.arg_count;
             break;
         }
-        if (strncmp(name, "mat", 3) == 0) {
-            const char *m = name + 3;
-            if (m[0] >= '2' && m[0] <= '4' && m[1] == '\0') {
-                t.scalar = MGLIR_SCALAR_FLOAT;
-                t.cols = t.rows = (uint32_t)(m[0] - '0');
-            } else if (m[0] >= '2' && m[0] <= '4' && m[1] == 'x' &&
-                       m[2] >= '2' && m[2] <= '4' && m[3] == '\0') {
-                t.scalar = MGLIR_SCALAR_FLOAT;
-                t.cols = (uint32_t)(m[0] - '0');
-                t.rows = (uint32_t)(m[2] - '0');
+        {
+            const char *mname = name;
+            MGLIRScalar melt = MGLIR_SCALAR_FLOAT;
+            if (strncmp(mname, "dmat", 4) == 0) {
+                melt = MGLIR_SCALAR_DOUBLE;
+                mname += 4;
+            } else if (strncmp(mname, "mat", 3) == 0) {
+                mname += 3;
+            } else {
+                mname = nullptr;
             }
-            if (e->u.call.is_array_ctor)
-                t.arr = e->u.call.arg_count;
-        } else if (cg.structTypes.count(name)) {
+            if (mname) {
+                if (mname[0] >= '2' && mname[0] <= '4' && mname[1] == '\0') {
+                    t.scalar = melt;
+                    t.cols = t.rows = (uint32_t)(mname[0] - '0');
+                } else if (mname[0] >= '2' && mname[0] <= '4' &&
+                           mname[1] == 'x' && mname[2] >= '2' &&
+                           mname[2] <= '4' && mname[3] == '\0') {
+                    t.scalar = melt;
+                    t.cols = (uint32_t)(mname[0] - '0');
+                    t.rows = (uint32_t)(mname[2] - '0');
+                }
+                if (e->u.call.is_array_ctor)
+                    t.arr = e->u.call.arg_count;
+            }
+        }
+        if (cg.structTypes.count(name)) {
             if (e->u.call.is_array_ctor)
                 t.arr = e->u.call.arg_count;
         } else if (strcmp(name, "normalize") == 0 ||

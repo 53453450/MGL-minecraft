@@ -86,7 +86,12 @@ std::string pipelineKey(const void* device, const void* vs, const void* fs,
     appendKeyValue(key, d->depth_format);
     appendKeyValue(key, d->stencil_format);
     appendKeyValue(key, d->rasterization_enabled);
-    appendKeyValue(key, d->icb_enabled);
+    /* AUDIT-018: key must match PSO creation predicate. */
+    appendKeyValue(key,
+                   (d->icb_enabled &&
+                    mgl_batch_icb_support_indirect_command_buffers())
+                       ? 1
+                       : 0);
     appendKeyValue(key, d->alpha_to_coverage_enabled);
     appendKeyValue(key, d->alpha_to_one_enabled);
     appendKeyValue(key, d->input_primitive_topology);
@@ -195,8 +200,9 @@ MTL::RenderPipelineDescriptor* buildRenderPipelineDescriptor(
         NS::String::string("GLSL Pipeline", NS::UTF8StringEncoding));
 
     rpd->setRasterizationEnabled(desc->rasterization_enabled ? true : false);
-    /* O2.4: same gate as batch ICB path selection. */
-    if (mgl_batch_icb_support_indirect_command_buffers()) {
+    /* AUDIT-018: key uses desc->icb_enabled; PSO must use the same predicate
+     * (descriptor request AND the runtime batch gate), not the gate alone. */
+    if (desc->icb_enabled && mgl_batch_icb_support_indirect_command_buffers()) {
         rpd->setSupportIndirectCommandBuffers(true);
     }
     rpd->setAlphaToCoverageEnabled(desc->alpha_to_coverage_enabled ? true : false);
