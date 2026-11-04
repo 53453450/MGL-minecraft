@@ -1531,11 +1531,12 @@ int mglRenderPassRestoreRenderEncoderAfterTextureUpload(void *renderer,
      * pipeline, masks) live in MGLBindingState and survive the recreation, so
      * every "set if needed" would answer "already bound" and the new encoder
      * would keep sampling whatever it was created with — with per-draw texture
-     * changes that means every draw in the pass sees the last binding.  Drop the
-     * cache and mark the render state dirty so the next apply re-emits all of it
-     * unconditionally. */
+     * changes that means every draw in the pass sees the last binding.  Full
+     * invalidate (not only SetValid(0)): BindVertexBuffers later sets valid=1
+     * before BindTextures, so a valid=0-only path would still identity-skip
+     * set*Texture against stale slot pointers. */
     if (bindingOwner) {
-        mglRenderBindingSetValid((MGLBindingState *)bindingOwner, 0);
+        mglRenderBindingInvalidate((MGLBindingState *)bindingOwner);
     }
     mglMarkRendererDirtyBits(ctx->active_state, DIRTY_RENDER_STATE);
 
