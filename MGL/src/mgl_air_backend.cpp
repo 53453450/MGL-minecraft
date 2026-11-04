@@ -34,6 +34,7 @@
  * (docs/AIR_SHADER_BACKEND_DESIGN.md, verified PSO_OK).
  */
 
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -94,6 +95,16 @@
 #include "mgl_air_varsym.h"
 
 namespace {
+
+/* AUDIT-020: public compile APIs allow err_buf == NULL. */
+static void mglAirSetErr(char *err_buf, size_t err_cap, const char *fmt, ...)
+{
+    if (!err_buf || err_cap == 0 || !fmt) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(err_buf, err_cap, fmt, ap);
+    va_end(ap);
+}
 
 /* C1f moved callAirFn's definition into mgl_air_matrix.cpp (namespace
  * mgl::air) without leaving a visible declaration for the bare call
@@ -17155,7 +17166,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             cg.err = 1;
             cg.errmsg = std::string("codegen: in function '") + d->name +
                         "': " + fc.errmsg;
-            snprintf(err_buf, err_cap, "%s", cg.errmsg.c_str());
+            mglAirSetErr(err_buf, err_cap, "%s", cg.errmsg.c_str());
             if (own_session) mglFrontendSessionDestroy(sess);
             return -1;
         }
@@ -17508,9 +17519,9 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     }
 
     if (cg.err && cg.err != 2) {
-        snprintf(err_buf, err_cap, "%s",
-                 cg.errmsg.empty() ? "codegen: unsupported construct"
-                                   : cg.errmsg.c_str());
+        mglAirSetErr(err_buf, err_cap, "%s",
+                     cg.errmsg.empty() ? "codegen: unsupported construct"
+                                       : cg.errmsg.c_str());
         if (own_session) mglFrontendSessionDestroy(sess);
         return -1;
     }
@@ -18070,10 +18081,10 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
          * refuse to guess an index (guessing is what crashed the compiler)
          * and fail the compile. */
         if (hasBufferArgIdx == UINT32_MAX) {
-            snprintf(err_buf, err_cap,
-                     "AIR emit: pack buffer argument slot was not recorded "
-                     "(stage=%s)", isVS ? "vertex" : (isKernel ? "kernel"
-                                                                 : "fragment"));
+            mglAirSetErr(err_buf, err_cap,
+                         "AIR emit: pack buffer argument slot was not recorded "
+                         "(stage=%s)", isVS ? "vertex" : (isKernel ? "kernel"
+                                                                     : "fragment"));
             if (own_session) mglFrontendSessionDestroy(sess);
             return -1;
         }
@@ -19502,9 +19513,9 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                         verifyMsg.c_str());
         }
         if (problems && fatal) {
-            snprintf(err_buf, err_cap,
-                     "AIR argument metadata verification failed (%d problem(s);"
-                     " see MGL AIR VERIFY messages)", problems);
+            mglAirSetErr(err_buf, err_cap,
+                         "AIR argument metadata verification failed (%d problem(s);"
+                         " see MGL AIR VERIFY messages)", problems);
             if (own_session) mglFrontendSessionDestroy(sess);
             return -1;
         }
@@ -19611,10 +19622,10 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                     "is a codegen bug, not a shader bug\n",
                     poisonStage, poisonFields.size(), detail.c_str());
             if (mgl_env_flag_enabled("MGL_AIR_POISON_FAIL")) {
-                snprintf(err_buf, err_cap,
-                         "AIR output verification failed (%zu poison field(s)"
-                         " in the %s output aggregate)",
-                         poisonFields.size(), poisonStage);
+                mglAirSetErr(err_buf, err_cap,
+                             "AIR output verification failed (%zu poison field(s)"
+                             " in the %s output aggregate)",
+                             poisonFields.size(), poisonStage);
                 if (own_session) mglFrontendSessionDestroy(sess);
                 return -1;
             }
@@ -19643,7 +19654,14 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
          * its control points from record 0.  The caller passes the patch
          * vertex count (TCS output vertices, or glPatchParameteri without
          * a TCS); fall back to the GL default of 3. */
+        /* AUDIT-022: 4*cpc+kind is packed into uint8_t; GL max is 32. */
         uint32_t cpc = tessPatchVertices > 0u ? tessPatchVertices : 3u;
+        if (cpc > 32u) {
+            mglAirSetErr(err_buf, err_cap,
+                         "tessellation controlPointCount %u exceeds 32", cpc);
+            if (own_session) mglFrontendSessionDestroy(sess);
+            return -1;
+        }
         uint32_t kind = tu->layout_primitive == MGL_AST_TES_QUADS ? 2u : 1u;
         f.tessellation = (uint8_t)(4u * cpc + kind);
     }
@@ -19656,7 +19674,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
 
     unsigned char *out = (unsigned char *)malloc(mlib.size());
     if (!out) {
-        snprintf(err_buf, err_cap, "out of memory");
+        mglAirSetErr(err_buf, err_cap, "out of memory");
         if (own_session) mglFrontendSessionDestroy(sess);
         return -1;
     }
@@ -20081,12 +20099,12 @@ extern "C" int mglAirReflectGLSLStageInfo(
     if (fillStageInfo(tu, &mod, stage, esrc, stage_info) != 0) {
         mglIRModuleDestroy(&mod);
         mglGLSLTranslationUnitDestroy(tu);
-        snprintf(err_buf, err_cap,
-                 "subroutine tables exceed the MGL reflection capacity "
-                 "(max %d types / %d implementations per type / %d uniform "
-                 "locations)",
-                 MGL_AIR_MAX_SUBROUTINE_TYPES, MGL_AIR_MAX_SUBROUTINE_IMPLS,
-                 MGL_AIR_MAX_SUBROUTINE_UNIFORMS);
+        mglAirSetErr(err_buf, err_cap,
+                     "subroutine tables exceed the MGL reflection capacity "
+                     "(max %d types / %d implementations per type / %d uniform "
+                     "locations)",
+                     MGL_AIR_MAX_SUBROUTINE_TYPES, MGL_AIR_MAX_SUBROUTINE_IMPLS,
+                     MGL_AIR_MAX_SUBROUTINE_UNIFORMS);
         return -1;
     }
     mglIRModuleDestroy(&mod);
@@ -20113,28 +20131,33 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     mglFrontendSessionInit(&sess);
     sess.allow_matching_redecl =
         (flags & MGL_AIR_COMPILE_STAGE_LINK_MERGE) != 0;
-    if (mglFrontendSessionBuild(&sess, src, stage, err_buf, err_cap) != 0)
+    /* AUDIT-021: every early return after Init must Destroy. */
+    if (mglFrontendSessionBuild(&sess, src, stage, err_buf, err_cap) != 0) {
+        mglFrontendSessionDestroy(&sess);
         return -1;
+    }
 
     uint32_t tessPatchVertices = 0u;
     MGLAIRStageInfo filled = {};
     if (stage_info) {
         tessPatchVertices = stage_info->tess_patch_vertices;
         if (fillStageInfo(sess.tu, &sess.mod, stage, sess.src, stage_info) != 0) {
-            snprintf(err_buf, err_cap,
-                     "subroutine tables exceed the MGL reflection capacity "
-                     "(max %d types / %d implementations per type / %d uniform "
-                     "locations)",
-                     MGL_AIR_MAX_SUBROUTINE_TYPES, MGL_AIR_MAX_SUBROUTINE_IMPLS,
-                     MGL_AIR_MAX_SUBROUTINE_UNIFORMS);
+            mglAirSetErr(err_buf, err_cap,
+                         "subroutine tables exceed the MGL reflection capacity "
+                         "(max %d types / %d implementations per type / %d uniform "
+                         "locations)",
+                         MGL_AIR_MAX_SUBROUTINE_TYPES, MGL_AIR_MAX_SUBROUTINE_IMPLS,
+                         MGL_AIR_MAX_SUBROUTINE_UNIFORMS);
+            mglFrontendSessionDestroy(&sess);
             return -1;
         }
         stage_info->tess_patch_vertices = tessPatchVertices;
         filled = *stage_info;
     } else if (stage == MGL_STAGE_TESS_EVALUATION) {
         if (fillStageInfo(sess.tu, &sess.mod, stage, sess.src, &filled) != 0) {
-            snprintf(err_buf, err_cap,
-                     "subroutine tables exceed the MGL reflection capacity");
+            mglAirSetErr(err_buf, err_cap,
+                         "subroutine tables exceed the MGL reflection capacity");
+            mglFrontendSessionDestroy(&sess);
             return -1;
         }
     }

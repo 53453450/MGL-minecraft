@@ -19,6 +19,7 @@
 #include "mgl_metal.h"
 #include "mgl_batch_public.h"
 #include "mgl_air_loader.h"
+#include "mgl_buffer_slots.h"
 #include "mgl_env_flag.h"
 
 #include <dispatch/dispatch.h>
@@ -258,6 +259,10 @@ MTL::RenderPipelineDescriptor* buildRenderPipelineDescriptor(
             if (desc->attrib_format[i] ==
                 static_cast<uint32_t>(MTL::VertexFormatInvalid))
                 continue;
+            /* AUDIT-019: do not seed hole-fill from an OOB buffer index. */
+            if (desc->attrib_buffer_index[i] >
+                (uint32_t)kMGLMaxMetalVertexBufferIndex)
+                continue;
             fillFmt = desc->attrib_format[i];
             fillOff = desc->attrib_offset[i];
             fillBuf = desc->attrib_buffer_index[i];
@@ -281,6 +286,13 @@ MTL::RenderPipelineDescriptor* buildRenderPipelineDescriptor(
                 stride = fillStride;
                 step = fillStep;
                 rate = fillRate;
+            }
+            /* AUDIT-019: refuse out-of-range Metal vertex buffer indices
+             * before layouts()->object(bufIdx). */
+            if (bufIdx > (uint32_t)kMGLMaxMetalVertexBufferIndex) {
+                vd->attributes()->object(i)->setFormat(
+                    MTL::VertexFormatInvalid);
+                continue;
             }
             vd->attributes()->object(i)->setFormat(
                 (MTL::VertexFormat)fmt);

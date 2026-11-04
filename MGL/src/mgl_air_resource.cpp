@@ -66,7 +66,9 @@ int collectUniforms(const MGLIRModule *mod, std::vector<Uniform> *out,
             continue;
         uint32_t size = 0;
         if (mglIRComputeLayout(s->type, MGLIR_LAYOUT_STD140, &size) != 0) {
-            snprintf(err, errCap, "layout failed for uniform %s", s->name);
+            /* AUDIT-020: err may be NULL from public compile APIs. */
+            if (err && errCap)
+                snprintf(err, errCap, "layout failed for uniform %s", s->name);
             return -1;
         }
         off = (off + s->type->layout.alignment - 1) &
