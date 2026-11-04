@@ -302,6 +302,28 @@ bool mglBlitResolveIntegerMultisampleTexture(void *renderer, void *source_textur
         size.width == 0u || size.height == 0u) {
         return false;
     }
+    /* AUDIT-043: refuse negative origins and origin+size that wrap or leave
+     * the source/destination texture (matches the metal kernel's early-out). */
+    if (src_origin.x < 0 || src_origin.y < 0 ||
+        dst_origin.x < 0 || dst_origin.y < 0) {
+        return false;
+    }
+    {
+        MGLRenderTextureInfo src_info = mglBcTextureInfo(source_texture);
+        MGLRenderTextureInfo dst_info = mglBcTextureInfo(dest_texture);
+        uint64_t sox = (uint64_t)src_origin.x;
+        uint64_t soy = (uint64_t)src_origin.y;
+        uint64_t dox = (uint64_t)dst_origin.x;
+        uint64_t doy = (uint64_t)dst_origin.y;
+        if (sox >= src_info.width || soy >= src_info.height ||
+            dox >= dst_info.width || doy >= dst_info.height ||
+            size.width > src_info.width - sox ||
+            size.height > src_info.height - soy ||
+            size.width > dst_info.width - dox ||
+            size.height > dst_info.height - doy) {
+            return false;
+        }
+    }
 
     void *pipeline = mglBlitMsaaIntegerResolvePipeline(
         renderer,
