@@ -103,6 +103,27 @@ static uint64_t mglSsTextureMipmapLevelCount(void *texture)
     return info.mipmap_level_count;
 }
 
+static uint64_t mglSsSamplerParamsSig(const TextureParameter *params,
+                                      const Texture *tex)
+{
+    if (!params) {
+        return 0u;
+    }
+    uint64_t sig = (uint64_t)params->min_filter |
+                   ((uint64_t)params->mag_filter << 16) |
+                   ((uint64_t)params->wrap_s << 32) |
+                   ((uint64_t)params->wrap_t << 48);
+    sig ^= (uint64_t)(uint32_t)params->min_lod;
+    sig ^= (uint64_t)(uint32_t)params->max_lod << 32;
+    sig ^= (uint64_t)params->max_anisotropy << 16;
+    if (tex) {
+        sig ^= ((uint64_t)tex->params.base_level << 8) |
+               ((uint64_t)tex->params.max_level << 24);
+        sig ^= tex->identity_generation << 1;
+    }
+    return sig;
+}
+
 void *mglSampledSamplerMaterialize(void *renderer, Texture *ptr,
                                    GLuint texture_unit, void *default_sampler,
                                    int force_default, GLuint sampler_target,
@@ -112,10 +133,27 @@ void *mglSampledSamplerMaterialize(void *renderer, Texture *ptr,
     MGLRendererStateView areas;
     mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
+    void *binding_state_owner =
+        areas.binding_state_owner ? *areas.binding_state_owner : NULL;
 
     Sampler *gl_sampler = (texture_unit < TEXTURE_UNITS)
                               ? mglSsState(areas.core, areas.ctx)->texture_samplers[texture_unit]
                               : NULL;
+    if (force_default) {
+        return default_sampler;
+    }
+    /* Skip plan/create when this unit's MTL sampler identity is unchanged. */
+    if (binding_state_owner && texture_unit < TEXTURE_UNITS &&
+        !(gl_sampler && gl_sampler->dirty_bits)) {
+        const TextureParameter *cache_params =
+            gl_sampler ? &gl_sampler->params : (ptr ? &ptr->params : NULL);
+        uint64_t params_sig = mglSsSamplerParamsSig(cache_params, ptr);
+        void *cached = mglRenderBindingLookupSampledSampler(
+            binding_state_owner, texture_unit, ptr, gl_sampler, params_sig);
+        if (cached) {
+            return cached;
+        }
+    }
     MGLSamplerMaterializeInput in = {0};
     mglBindingTextureFillSamplerMaterializeInput(
         &in, force_default ? 1 : 0, texture_unit < TEXTURE_UNITS ? 1 : 0,
@@ -156,6 +194,11 @@ void *mglSampledSamplerMaterialize(void *renderer, Texture *ptr,
         params = &ptr->params;
     } else {
         return default_sampler;
+    }
+    if (binding_state_owner && texture_unit < TEXTURE_UNITS && sampler) {
+        mglRenderBindingStoreSampledSampler(
+            binding_state_owner, texture_unit, ptr, gl_sampler,
+            mglSsSamplerParamsSig(params, ptr), sampler);
     }
     if (params && mglTraceLogIsEnabled()) {
         mglBindingLogSamplerResolve(
@@ -1179,42 +1222,36 @@ bool mglBindTexturesToCurrentRenderEncoder(void *renderer,
 
     void *default_sampler = mglTextureFallbackSamplerState(renderer);
     if (default_sampler) {
-        static Program *s_warmup_vertex = NULL;
-        static Program *s_warmup_fragment = NULL;
-        static uint32_t s_warmup_vertex_mask[4];
-        static uint32_t s_warmup_fragment_mask[4];
+        /* Rebuild masks only when the per-binding-state latch misses or the
+         * program mask was invalidated (uniform/relink). */
         int warmup_gen_unchanged =
-            vertexProgram == s_warmup_vertex &&
-            fragmentProgram == s_warmup_fragment &&
-            (!vertexProgram ||
-             memcmp(vertexProgram->sampled_texture_unit_mask,
-                    s_warmup_vertex_mask, sizeof(s_warmup_vertex_mask)) == 0) &&
-            (!fragmentProgram || fragmentProgram == vertexProgram ||
-             memcmp(fragmentProgram->sampled_texture_unit_mask,
-                    s_warmup_fragment_mask,
-                    sizeof(s_warmup_fragment_mask)) == 0);
-        if (!warmup_gen_unchanged) {
-            s_warmup_vertex = vertexProgram;
-            s_warmup_fragment = fragmentProgram;
-            if (vertexProgram) {
-                memcpy(s_warmup_vertex_mask,
-                       vertexProgram->sampled_texture_unit_mask,
-                       sizeof(s_warmup_vertex_mask));
-            }
-            if (fragmentProgram && fragmentProgram != vertexProgram) {
-                memcpy(s_warmup_fragment_mask,
-                       fragmentProgram->sampled_texture_unit_mask,
-                       sizeof(s_warmup_fragment_mask));
-            }
-        }
-        if (vertexProgram) {
-            (void)mglProgramSamplesTextureUnit(vertexProgram, 0);
-        }
-        if (fragmentProgram && fragmentProgram != vertexProgram) {
-            (void)mglProgramSamplesTextureUnit(fragmentProgram, 0);
-        }
+            binding_state_owner &&
+            (!vertexProgram || vertexProgram->sampled_texture_unit_mask_valid) &&
+            (!fragmentProgram ||
+             fragmentProgram->sampled_texture_unit_mask_valid) &&
+            mglRenderBindingWarmupUnchanged(
+                binding_state_owner, vertexProgram, fragmentProgram,
+                vertexProgram ? vertexProgram->sampled_texture_unit_mask : NULL,
+                (fragmentProgram && fragmentProgram != vertexProgram)
+                    ? fragmentProgram->sampled_texture_unit_mask
+                    : NULL);
         MGLSamplerWarmupPlan warm = {0};
         if (!warmup_gen_unchanged) {
+            if (vertexProgram) {
+                (void)mglProgramSamplesTextureUnit(vertexProgram, 0);
+            }
+            if (fragmentProgram && fragmentProgram != vertexProgram) {
+                (void)mglProgramSamplesTextureUnit(fragmentProgram, 0);
+            }
+            if (binding_state_owner) {
+                mglRenderBindingStoreWarmup(
+                    binding_state_owner, vertexProgram, fragmentProgram,
+                    vertexProgram ? vertexProgram->sampled_texture_unit_mask
+                                  : NULL,
+                    (fragmentProgram && fragmentProgram != vertexProgram)
+                        ? fragmentProgram->sampled_texture_unit_mask
+                        : NULL);
+            }
             mglBindingTexturePlanSamplerWarmup(
                 1, vertexProgram ? 1 : 0, fragmentProgram ? 1 : 0,
                 vertexProgram ? vertexProgram->sampled_texture_unit_mask : NULL,
@@ -1310,5 +1347,8 @@ bool mglBindTexturesToCurrentRenderEncoder(void *renderer,
             (unsigned)separateSamplerCount, (unsigned)boundSeparateSamplers);
     }
 
+    if (binding_state_owner) {
+        mglRenderBindingClearSampledNeedsBind(binding_state_owner);
+    }
     return true;
 }
