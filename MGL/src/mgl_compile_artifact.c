@@ -13,6 +13,7 @@
 #include "mgl_air_reflect.h"
 #include "mgl_shader_abi.h"
 #include "mgl_glsl_parser.h"
+#include "mgl_frontend_session.h"
 #include "glm_limits.h"
 
 void mglCompileArtifactInit(MGLCompileArtifact *art)
@@ -154,4 +155,43 @@ int mglCompileArtifactFromGLSL(const char *src, int stage,
 {
     return mglCompileArtifactFromGLSLEx(src, stage, attrib_names, 0u, NULL,
                                         0u, art_out, err_buf, err_cap);
+}
+
+int mglCompileArtifactParseGLSL(const char *src, int stage,
+                                struct MGLTranslationUnit **tu_out,
+                                char *err_buf, size_t err_cap)
+{
+    if (tu_out) {
+        *tu_out = NULL;
+    }
+    if (!src || !tu_out) {
+        if (err_buf && err_cap) {
+            snprintf(err_buf, err_cap, "CompileArtifact parse: bad args");
+        }
+        return -1;
+    }
+    MGLFrontendSession sess;
+    mglFrontendSessionInit(&sess);
+    if (mglFrontendSessionBuild(&sess, src, stage, err_buf, err_cap) != 0) {
+        mglFrontendSessionDestroy(&sess);
+        return -1;
+    }
+    *tu_out = mglFrontendSessionStealTU(&sess);
+    mglFrontendSessionDestroy(&sess);
+    return *tu_out ? 0 : -1;
+}
+
+void mglCompileTranslationUnitDestroy(struct MGLTranslationUnit *tu)
+{
+    mglGLSLTranslationUnitDestroy(tu);
+}
+
+uint32_t mglCompileFrontendParseCount(void)
+{
+    return mglFrontendParseCount();
+}
+
+void mglCompileFrontendNoteReuse(void)
+{
+    mglFrontendNoteReuse();
 }

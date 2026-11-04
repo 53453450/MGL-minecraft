@@ -54,9 +54,8 @@
 #include "mgl_compile_artifact.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_env_flag.h"
-#include "mgl_glsl_parser.h"
-#include "mgl_glsl_ast.h"
-#include "mgl_frontend_session.h"
+#include "mgl_glsl_ast.h" /* Phase 4: uniform seed still walks TU (ARCH-008) */
+#include "mgl_frontend_session.h" /* mglFrontendBuiltinUsed until abi move */
 #include "mgl_render_api_program.h"
 
 
@@ -2107,7 +2106,7 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         cached->complete = 0;
         mglCompileArtifactFree(shader->cached_artifact);
         shader->cached_artifact = NULL;
-        mglFrontendNoteReuse();
+        mglCompileFrontendNoteReuse();
         air_rc = 0;
     } else {
         /* Every stage, including variant flags/peers, publishes through
@@ -2135,7 +2134,7 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             if (shader->frontend_valid &&
                 shader->frontend_stage == air_stage &&
                 air_flags == 0u && iface_peers == NULL) {
-                mglFrontendNoteReuse();
+                mglCompileFrontendNoteReuse();
             }
         } else {
             mglCompileArtifactDestroy(&art);

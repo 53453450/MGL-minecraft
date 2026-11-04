@@ -35,11 +35,8 @@
 #include <ctype.h>
 #include "shaders.h"
 #include "glm_context.h"
-#include "mgl_glsl_parser.h"
 #include "mgl_compile_artifact.h"
 #include "mgl_shader_abi.h"
-#include "mgl_glsl_ast.h"
-#include "mgl_frontend_session.h"
 #include "mgl_spirv_glsl.h"
 
 GLboolean mglIsProgram(GLMContext ctx, GLuint program);
@@ -185,11 +182,11 @@ GLuint mglCreateShader(GLMContext ctx, GLenum type)
 void mglShaderReplaceFrontendTU(Shader *ptr, struct MGLTranslationUnit *tu)
 {
     if (!ptr) {
-        mglGLSLTranslationUnitDestroy(tu);
+        mglCompileTranslationUnitDestroy(tu);
         return;
     }
     if (ptr->frontend_tu && ptr->frontend_tu != tu)
-        mglGLSLTranslationUnitDestroy(ptr->frontend_tu);
+        mglCompileTranslationUnitDestroy(ptr->frontend_tu);
     ptr->frontend_tu = tu;
 }
 
@@ -204,7 +201,7 @@ void mglFreeShader(GLMContext ctx, Shader *ptr)
     ptr->frontend_valid = GL_FALSE;
     mglCompileArtifactFree(ptr->cached_artifact);
     ptr->cached_artifact = NULL;
-    mglGLSLTranslationUnitDestroy(ptr->frontend_tu);
+    mglCompileTranslationUnitDestroy(ptr->frontend_tu);
     ptr->frontend_tu = NULL;
     mglShaderClearSpirV(ptr);
 
@@ -413,21 +410,18 @@ static void mglCompileShaderObject(GLMContext ctx, Shader *ptr)
          * definition lives in another shader object of the same stage.
          * Parse/sema success is enough for COMPILE_STATUS; AIR is emitted
          * at link after the units are merged. */
-        MGLFrontendSession sess;
-        mglFrontendSessionInit(&sess);
+        struct MGLTranslationUnit *tu = NULL;
         char parse_err[1024] = {0};
-        if (mglFrontendSessionBuild(&sess, ptr->src, air_stage, parse_err,
-                                    sizeof(parse_err)) == 0) {
+        if (mglCompileArtifactParseGLSL(ptr->src, air_stage, &tu, parse_err,
+                                        sizeof(parse_err)) == 0) {
             ptr->compile_success = GL_TRUE;
             ptr->frontend_stage = air_stage;
-            ptr->frontend_parse_generation = mglFrontendParseCount();
+            ptr->frontend_parse_generation = mglCompileFrontendParseCount();
             ptr->frontend_valid = GL_TRUE;
-            mglShaderReplaceFrontendTU(ptr, mglFrontendSessionStealTU(&sess));
-            mglFrontendSessionDestroy(&sess);
+            mglShaderReplaceFrontendTU(ptr, tu);
             ptr->dirty_bits |= DIRTY_SHADER;
             return;
         }
-        mglFrontendSessionDestroy(&sess);
         ptr->log = strdup(error_text[0]
             ? error_text
             : (parse_err[0] ? parse_err : "AIR shader compilation failed"));
@@ -438,7 +432,7 @@ static void mglCompileShaderObject(GLMContext ctx, Shader *ptr)
 
     ptr->compile_success = GL_TRUE;
     ptr->frontend_stage = air_stage;
-    ptr->frontend_parse_generation = mglFrontendParseCount();
+    ptr->frontend_parse_generation = mglCompileFrontendParseCount();
     ptr->frontend_valid = GL_TRUE;
     ptr->cached_artifact = art;
     mglShaderReplaceFrontendTU(ptr, art->tu);

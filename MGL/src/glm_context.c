@@ -39,7 +39,6 @@
 #include <assert.h>
 #include <CoreFoundation/CoreFoundation.h>
 
-#include "mgl_metal_ref.h"
 #include "mgl_debug_fbo_stats.h"
 
 #include "glm_context.h"

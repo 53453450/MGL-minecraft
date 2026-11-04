@@ -105,6 +105,17 @@ int mglCompileArtifactFromGLSL(const char *src, int stage,
                                MGLCompileArtifact *art_out,
                                char *err_buf, size_t err_cap);
 
+/* Parse/sema only (no AIR). Used when CompileShader must succeed for a
+ * multi-TU stage before link merges definitions (GLSL 4.60 §1.2.1).
+ * On success *tu_out is owned; free with mglCompileTranslationUnitDestroy. */
+int mglCompileArtifactParseGLSL(const char *src, int stage,
+                                struct MGLTranslationUnit **tu_out,
+                                char *err_buf, size_t err_cap);
+
+void mglCompileTranslationUnitDestroy(struct MGLTranslationUnit *tu);
+uint32_t mglCompileFrontendParseCount(void);
+void mglCompileFrontendNoteReuse(void);
+
 /* True when a CompileShader-cached artifact can be published at link
  * without recompiling (no variant flags, peers, or VS attrib remaps). */
 int mglCompileArtifactCanReuseAtLink(const MGLCompileArtifact *art,
