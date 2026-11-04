@@ -1537,63 +1537,71 @@ void mglTextureReUploadExisting(void *renderer, Texture *tex, void *texture,
 
             }
 
-            uint64_t alignment = mglRendererOptimalAlignmentForPixelFormat(pixelFormat);
-
+            /* Block-compressed levels store pitch as bytes per row-of-blocks.
+             * Padding that pitch to the linear-texture alignment (64) and
+             * iterating lvlHeight pixel rows over-reads the CPU shadow and
+             * hands Metal an illegal bytesPerRow (CTS 4x4 BPTC is pitch 16).
+             * Keep the tight block stride and only realign the pointer. */
+            const uint64_t blockH =
+                mglRenderMetalCompressedBlockHeight(pixelFormat);
+            const int is_block_compressed = (blockH > 1u);
+            uint64_t alignment =
+                mglRendererOptimalAlignmentForPixelFormat(pixelFormat);
             uint64_t alignedBytesPerRow = bytesPerRow;
-
-            if (alignedBytesPerRow % alignment != 0) {
-
-                alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
-
+            if (!is_block_compressed && alignedBytesPerRow % alignment != 0) {
+                alignedBytesPerRow =
+                    ((alignedBytesPerRow + alignment - 1) / alignment) *
+                    alignment;
             }
 
-
             uintptr_t addr = (uintptr_t)srcData;
-
             if (addr % alignment != 0 || alignedBytesPerRow != bytesPerRow) {
-
-                uint64_t rowCount = mglUpMax((uint64_t)lvlHeight, 1UL);
-
+                uint64_t rowCount =
+                    is_block_compressed
+                        ? mglMetalUploadRowsForPixelFormat(
+                              pixelFormat, mglUpMax((uint64_t)lvlHeight, 1UL))
+                        : mglUpMax((uint64_t)lvlHeight, 1UL);
+                if (rowCount == 0u) {
+                    rowCount = 1u;
+                }
                 uint64_t alignedSliceBPI = alignedBytesPerRow * rowCount;
-
                 uint64_t alignedSize = alignedSliceBPI * uploadDepth;
+                uint64_t srcRowStride =
+                    is_block_compressed ? bytesPerRow : bytesPerRow;
+                uint64_t srcSliceStride =
+                    is_block_compressed
+                        ? (bytesPerRow * rowCount)
+                        : singleSliceBPI;
 
                 if (alignedSize > 0 && alignedSize <= (512 * 1024 * 1024)) {
-
                     void *alignedData = aligned_alloc(alignment, alignedSize);
-
                     if (alignedData) {
-
                         memset(alignedData, 0, alignedSize);
-
                         for (uint64_t z = 0; z < uploadDepth; z++) {
-
                             for (uint64_t row = 0; row < rowCount; row++) {
-
-                                uint64_t copySize = mglUpMin(bytesPerRow, alignedBytesPerRow);
-
-                                memcpy((uint8_t *)alignedData + z * alignedSliceBPI + row * alignedBytesPerRow,
-
-                                       (const uint8_t *)srcData + z * singleSliceBPI + row * bytesPerRow, copySize);
-
+                                uint64_t copySize =
+                                    mglUpMin(bytesPerRow, alignedBytesPerRow);
+                                memcpy((uint8_t *)alignedData +
+                                           z * alignedSliceBPI +
+                                           row * alignedBytesPerRow,
+                                       (const uint8_t *)srcData +
+                                           z * srcSliceStride +
+                                           row * srcRowStride,
+                                       copySize);
                             }
-
                         }
-
                         mglTextureUploadSliceViaBlit(
-            renderer, texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedSliceBPI, lvlWidth, lvlHeight, uploadDepth, level, face, 0);
-
+                            renderer, texture, tex->name, tex->target,
+                            alignedData, alignedBytesPerRow, alignedSliceBPI,
+                            lvlWidth, lvlHeight, uploadDepth, level, face, 0);
                         free(alignedData);
-
                     }
-
                 }
-
             } else {
-
                 mglTextureUploadSliceViaBlit(
-            renderer, texture, tex->name, tex->target, srcData, bytesPerRow, bytesPerImage, lvlWidth, lvlHeight, uploadDepth, level, face, 0);
-
+                    renderer, texture, tex->name, tex->target, srcData,
+                    bytesPerRow, bytesPerImage, lvlWidth, lvlHeight,
+                    uploadDepth, level, face, 0);
             }
 
             free(expandedUploadData);
@@ -2694,9 +2702,17 @@ int mglTextureUploadDirtyNon3DLevel(void *renderer, Texture *tex, void *texture,
                             }
                         }
 
+                        /* Block-compressed pitch is bytes/row-of-blocks. Do not
+                         * pad it to the linear 64-byte alignment — Metal rejects
+                         * or mis-reads BC6H/BC7 uploads with a padded stride
+                         * (4x4 BPTC is pitch 16). */
+                        const uint64_t blockH2D =
+                            mglRenderMetalCompressedBlockHeight(pixelFormat);
+                        const int is_block_compressed_2d = (blockH2D > 1u);
                         uint64_t alignment = mglRendererOptimalAlignmentForPixelFormat(pixelFormat);
                         uint64_t alignedBytesPerRow = bytesPerRow;
-                        if (alignedBytesPerRow % alignment != 0) {
+                        if (!is_block_compressed_2d &&
+                            alignedBytesPerRow % alignment != 0) {
                             alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
                         }
 

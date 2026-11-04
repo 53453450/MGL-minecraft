@@ -99,6 +99,101 @@ static uint32_t mglTextureBindUploadLevelCount(uint64_t metal_levels,
 
 extern uint32_t mtlPixelFormatForGLTex(Texture *tex);
 
+static int mglInternalFormatIsBPTCFloat(GLenum internalformat)
+{
+    return internalformat == GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT ||
+           internalformat == GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT;
+}
+
+/* Apple Metal newTextureView between BC6H_RGBFloat and BC6H_RGBUfloat does
+ * not reliably reinterpret block bits the way GL TextureView requires.  Clone
+ * the root's compressed CPU shadow into an independent Metal texture in the
+ * view's format instead. */
+static bool mglTextureBindBPTCFloatCloneStorage(void *renderer, Texture *tex,
+                                                Texture *root)
+{
+    if (!renderer || !tex || !root) {
+        return false;
+    }
+    if (!mglRendererBindMTLTexture(renderer, root) || !mglTextureMtl(root)) {
+        return false;
+    }
+
+    TextureLevel *root_lvl =
+        (root->faces[0].levels && root->num_levels > 0u)
+            ? &root->faces[0].levels[0]
+            : NULL;
+    if (!root_lvl || !root_lvl->data || root_lvl->pitch == 0u ||
+        root_lvl->data_size == 0u) {
+        return false;
+    }
+
+    /* Already cloned into the view format? */
+    if (mglTextureMtl(tex) && mglTextureViewParent(tex) == NULL) {
+        MGLRenderTextureInfo info = {0};
+        const uint32_t want = mtlPixelFormatForGLTex(tex);
+        if (mglRenderGetTextureInfo(mglTextureMtl(tex), &info) == 0 &&
+            info.pixel_format == want) {
+            return true;
+        }
+    }
+
+    /* Point the view's level-0 CPU shadow at the root so create-from-GL and
+     * dirty upload see the compressed blocks under the view's IF. */
+    if (!tex->faces[0].levels || tex->num_levels == 0u) {
+        return false;
+    }
+    TextureLevel *view_lvl = &tex->faces[0].levels[0];
+    view_lvl->width = root_lvl->width;
+    view_lvl->height = root_lvl->height;
+    view_lvl->depth = root_lvl->depth;
+    view_lvl->pitch = root_lvl->pitch;
+    view_lvl->data = root_lvl->data;
+    view_lvl->data_size = root_lvl->data_size;
+    view_lvl->complete = GL_TRUE;
+    view_lvl->has_initialized_data = GL_TRUE;
+    view_lvl->ever_written = GL_TRUE;
+    view_lvl->metal_data_authoritative = GL_FALSE;
+    tex->compressed_internalformat = (GLenum)tex->internalformat;
+    mglTextureSetDirtyBits(tex, DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
+
+    mglSafeReleaseMetalObj((void **)&mglTextureBackendEnsure(tex)->mtl_data);
+    if (mglTextureViewParent(tex)) {
+        mglTextureBindReleaseAlias(mglTextureViewParent(tex));
+        mglTextureBackendEnsure(tex)->view_parent = NULL;
+    }
+
+    void *cloned = mglTextureCreateFromGLTexture(renderer, tex);
+    if (!cloned) {
+        view_lvl->data = 0;
+        view_lvl->data_size = 0u;
+        view_lvl->pitch = 0u;
+        return false;
+    }
+    /* create-from-GL may skip compressed uploads; push the root blocks now. */
+    const int uploaded = mglTextureUploadSliceViaBlit(
+        renderer, cloned, tex->name, (GLenum)mglTextureTargetOf(tex),
+        (const void *)(uintptr_t)root_lvl->data, root_lvl->pitch,
+        root_lvl->data_size, root_lvl->width, root_lvl->height, 1u, 0u, 0u, 0);
+    mglTextureBackendEnsure(tex)->mtl_data = cloned;
+    mglTextureClearDirtyBits(tex, DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
+    tex->metal_data_authoritative = GL_TRUE;
+    view_lvl->metal_data_authoritative = GL_TRUE;
+    /* Drop the borrowed CPU pointer so the view does not free the root's
+     * shadow on delete; GetTexImage still redirects via view_root. */
+    view_lvl->data = 0;
+    view_lvl->data_size = 0u;
+    view_lvl->pitch = root_lvl->pitch;
+    if (!uploaded) {
+        fprintf(stderr,
+                "MGL WARNING: BPTC float view %u clone upload failed "
+                "(root=%u %ux%u pitch=%zu)\n",
+                tex->name, root->name, root_lvl->width, root_lvl->height,
+                root_lvl->pitch);
+    }
+    return true;
+}
+
 /* §8.18: a view never owns storage.  Its Metal texture is a view of the
  * owner's, rebuilt only when the owner's Metal texture is replaced. */
 static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
@@ -108,6 +203,12 @@ static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
     if (!root->view_root_deleted) {
         if (!mglRendererBindMTLTexture(renderer, root) || !mglTextureMtl(root)) {
             return false;
+        }
+        /* BPTC float signed↔unsigned: clone instead of Metal format view. */
+        if (mglInternalFormatIsBPTCFloat((GLenum)tex->internalformat) &&
+            mglInternalFormatIsBPTCFloat((GLenum)root->internalformat) &&
+            (GLenum)tex->internalformat != (GLenum)root->internalformat) {
+            return mglTextureBindBPTCFloatCloneStorage(renderer, tex, root);
         }
         /* Any view may become an attachment, and a Metal view inherits its
          * parent's usage.  is_render_target is raised only for the
