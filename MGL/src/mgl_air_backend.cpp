@@ -15139,10 +15139,34 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     for (VarSym &v : syms) {
         if (v.kind == VarSym::SSBO) {
             const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
-            ssboCount += uniformBlockElementCount(us ? us->type : nullptr);
+            uint32_t nelems =
+                uniformBlockElementCount(us ? us->type : nullptr);
+            /* AUDIT-024: refuse instance-array expansion past Metal's
+             * per-function buffer budget before building LLVM args. */
+            if (nelems == 0u ||
+                nelems > (uint32_t)kMGLMaxMetalUserBufferCount ||
+                ssboCount > (uint32_t)kMGLMaxMetalUserBufferCount - nelems) {
+                if (err_buf && err_cap)
+                    snprintf(err_buf, err_cap,
+                             "SSBO instance array too large to expand");
+                if (own_session) mglFrontendSessionDestroy(sess);
+                return -1;
+            }
+            ssboCount += nelems;
         } else if (v.kind == VarSym::UBO) {
             const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
-            uboCount += uniformBlockElementCount(us ? us->type : nullptr);
+            uint32_t uelems =
+                uniformBlockElementCount(us ? us->type : nullptr);
+            if (uelems == 0u ||
+                uelems > (uint32_t)kMGLMaxMetalUserBufferCount ||
+                uboCount > (uint32_t)kMGLMaxMetalUserBufferCount - uelems) {
+                if (err_buf && err_cap)
+                    snprintf(err_buf, err_cap,
+                             "UBO instance array too large to expand");
+                if (own_session) mglFrontendSessionDestroy(sess);
+                return -1;
+            }
+            uboCount += uelems;
         } else if (v.kind == VarSym::ATOMIC_COUNTER) {
             acCount++;
         } else if (v.kind == VarSym::TEXTURE) {
@@ -19848,9 +19872,18 @@ static int fillSubroutineTable(const MGLTranslationUnit *tu,
                     uint32_t rowMajor[8];
                     uint32_t rows = dimCount > 8u ? 8u : dimCount;
                     for (uint32_t d = 0; d < rows; d++) {
-                        uint32_t stride = 1u;
-                        for (uint32_t k2 = d + 1u; k2 < rows; k2++)
-                            stride *= dims[k2] ? dims[k2] : 1u;
+                        /* AUDIT-026: refuse wrapped host-side stride product. */
+                        uint64_t stride64 = 1u;
+                        for (uint32_t k2 = d + 1u; k2 < rows; k2++) {
+                            uint32_t dim = dims[k2] ? dims[k2] : 1u;
+                            if (dim == 0u ||
+                                stride64 > UINT64_MAX / (uint64_t)dim)
+                                return -1;
+                            stride64 *= (uint64_t)dim;
+                        }
+                        if (stride64 > UINT32_MAX)
+                            return -1;
+                        uint32_t stride = (uint32_t)stride64;
                         rowMajor[d] = stride ? (remainder / stride) : 0u;
                         if (stride) remainder %= stride;
                     }
@@ -20244,8 +20277,14 @@ extern "C" void mglShaderFree(void *bytes) {
  * result with mglShaderFree. */
 extern "C" char *mglAirMetallibToIRText(const unsigned char *bytes,
                                         size_t size) {
+    /* AUDIT-025: only accept self-shaped MTLB containers within a hard
+     * size cap — do not hand arbitrary blobs to LLVM's bitcode parser. */
+    enum { kMglMaxMetallibDumpBytes = 64u * 1024u * 1024u };
+    static const unsigned char mtlib[4] = {'M', 'T', 'L', 'B'};
     static const unsigned char magic[4] = {'B', 'C', 0xC0, 0xDE};
-    if (!bytes || size < sizeof(magic)) return nullptr;
+    if (!bytes || size < sizeof(mtlib) || size > (size_t)kMglMaxMetallibDumpBytes)
+        return nullptr;
+    if (memcmp(bytes, mtlib, sizeof(mtlib)) != 0) return nullptr;
     size_t at = 0;
     while (at + sizeof(magic) <= size && memcmp(bytes + at, magic, 4) != 0) {
         at++;
