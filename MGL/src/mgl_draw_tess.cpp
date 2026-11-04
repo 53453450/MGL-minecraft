@@ -263,7 +263,8 @@ extern "C" bool mglTessPlanDrawPath(GLMContext ctx, GLenum mode, GLsizei count,
             mglTessEvalUsesRenderVertex(tes),
             tes && tes->tess_eval_compute ? 1 : 0, out->indexed ? 1 : 0,
             mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER") ? 1 : 0,
-            rasterizer_discard, needs_partner_cull);
+            rasterizer_discard, needs_partner_cull,
+            mglTessNativeBlockedByGeometry(gs) ? 1 : 0);
     }
     return true;
 }
@@ -773,14 +774,16 @@ extern "C" void mglTessPlanRasterQuery(const Program *tes,
 
 extern "C" int mglTessSelectAirExec(int tes_vertex, int tes_compute, int indexed,
                                     int vertex_gate_on, int rasterizer_discard,
-                                    int needs_partner_cull)
+                                    int needs_partner_cull, int has_gs)
 {
     /* TES-vertex only sees its own gl_CullDistance. Isolines need both
      * endpoints (partner = vertexId^1) before discarding a segment, so
      * force the compute expansion + passthrough VS that already implements
-     * that rule. point_mode keeps TES-vertex (per-vertex own < 0). */
-    if (tes_vertex && vertex_gate_on && !indexed && !needs_partner_cull &&
-        !(rasterizer_discard && tes_compute)) {
+     * that rule. point_mode keeps TES-vertex (per-vertex own < 0) unless a
+     * following GS needs the compute→record handoff (SSO GS is a separate
+     * PO, so link-time tess_eval_render_vertex stays set). */
+    if (!has_gs && tes_vertex && vertex_gate_on && !indexed &&
+        !needs_partner_cull && !(rasterizer_discard && tes_compute)) {
         return MGL_TESS_EXEC_TES_VERTEX;
     }
     if (tes_compute) {
@@ -985,10 +988,20 @@ extern "C" void mglTessPackXFBFieldFromCarrier(uint32_t gl_type, const void *src
     }
     if (gl_type == GL_UNSIGNED_INT || gl_type == GL_UNSIGNED_INT_VEC2 ||
         gl_type == GL_UNSIGNED_INT_VEC3 || gl_type == GL_UNSIGNED_INT_VEC4) {
+        /* uvecN rides a float carrier via bitcast (encodeFloatCarrier);
+         * reinterpret the bits.  Casting (uint32_t)f would round values
+         * above 2^24 (CTS structure_parameters_program_binary).  Scalar
+         * uint still uses UIToFP when the split-lane path is unavailable,
+         * so only vector types bitcast here. */
+        const int bitcast = (gl_type != GL_UNSIGNED_INT);
         for (uint32_t c = 0u; c < comps && c < 4u; c++) {
             float f = 0.f;
             memcpy(&f, in + c * 4u, sizeof(f));
-            const uint32_t uv = (uint32_t)f;
+            uint32_t uv;
+            if (bitcast)
+                memcpy(&uv, &f, sizeof(uv));
+            else
+                uv = (uint32_t)f;
             memcpy(out + c * 4u, &uv, sizeof(uv));
         }
         return;
@@ -3674,7 +3687,8 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
             tesProgram && tesProgram->tess_eval_compute ? 1 : 0,
             path.indexed ? 1 : 0,
             mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER") ? 1 : 0,
-            rasterizer_discard, needs_partner_cull);
+            rasterizer_discard, needs_partner_cull,
+            mglTessNativeBlockedByGeometry(gsProgram) ? 1 : 0);
         if (air_exec == MGL_TESS_EXEC_TES_VERTEX) {
             const int dispatched = ops->dispatch_air_tes_vertex(
                 ops->renderer, ctx, tesProgram, &contract, patchCount,
