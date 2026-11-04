@@ -1645,9 +1645,13 @@ int mglRenderCreateBuffer(uint64_t length,
     if (buffer_out) *buffer_out = nullptr;
     if (!buffer_out || length == 0) return -1;
     mgl::Renderer& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.mutex);
-    if (!renderer.device) return -1;
-    MTL::Buffer* buffer = renderer.device->newBuffer(
+    MTL::Device* device = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        if (!renderer.device) return -1;
+        device = renderer.device;
+    }
+    MTL::Buffer* buffer = device->newBuffer(
         static_cast<NS::UInteger>(length),
         static_cast<MTL::ResourceOptions>(resource_options));
     if (!buffer) return -1;
@@ -1667,9 +1671,13 @@ int mglRenderCreateBufferWithBytes(const void* bytes,
     if (buffer_out) *buffer_out = nullptr;
     if (!buffer_out || !bytes || length == 0) return -1;
     mgl::Renderer& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.mutex);
-    if (!renderer.device) return -1;
-    MTL::Buffer* buffer = renderer.device->newBuffer(
+    MTL::Device* device = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        if (!renderer.device) return -1;
+        device = renderer.device;
+    }
+    MTL::Buffer* buffer = device->newBuffer(
         bytes, static_cast<NS::UInteger>(length),
         static_cast<MTL::ResourceOptions>(resource_options));
     if (!buffer) return -1;

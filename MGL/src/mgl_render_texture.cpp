@@ -1316,13 +1316,20 @@ int mglRenderCreateTextureFromState(
     void** texture_out) {
     if (texture_out) *texture_out = nullptr;
     if (!texture_descriptor || !texture_out) return -1;
-    mgl::Renderer& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.mutex);
-    if (!renderer.device) return -1;
     MTL::TextureDescriptor* descriptor =
         mgl::newTextureDescriptor(texture_descriptor);
     if (!descriptor) return -1;
-    MTL::Texture* texture = renderer.device->newTexture(descriptor);
+    mgl::Renderer& renderer = mgl::renderer();
+    MTL::Device* device = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        if (!renderer.device) {
+            descriptor->release();
+            return -1;
+        }
+        device = renderer.device;
+    }
+    MTL::Texture* texture = device->newTexture(descriptor);
     descriptor->release();
     if (!texture) return -1;
     if (label && label[0]) {
@@ -1346,8 +1353,12 @@ extern "C" int mglRenderCreateSparseTextureFromState(
     if (texture_out) *texture_out = nullptr;
     if (!texture_descriptor || !heap_out || !texture_out) return -1;
     mgl::Renderer& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.mutex);
-    if (!renderer.device) return -1;
+    MTL::Device* device = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        if (!renderer.device) return -1;
+        device = renderer.device;
+    }
 
     MTL::TextureDescriptor* descriptor =
         mgl::newTextureDescriptor(texture_descriptor);
@@ -1397,7 +1408,7 @@ extern "C" int mglRenderCreateSparseTextureFromState(
     heap_descriptor->setSize(heap_size);
     heap_descriptor->setStorageMode(descriptor->storageMode());
     heap_descriptor->setCpuCacheMode(descriptor->cpuCacheMode());
-    MTL::Heap* heap = renderer.device->newHeap(heap_descriptor);
+    MTL::Heap* heap = device->newHeap(heap_descriptor);
     heap_descriptor->release();
     if (!heap) {
         descriptor->release();

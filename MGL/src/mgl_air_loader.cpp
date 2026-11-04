@@ -363,15 +363,13 @@ int createRenderPipelineInternal(
     const bool archiveMiss = archiveEligible && !pso;
     if (!pso) {
         nsErr = nullptr;
-        /* PERF-029 deferred: Metal-cpp exposes only synchronous PSO compile
-         * here; no async newRenderPipelineState API in-tree to adopt yet. */
+        /* PERF-029: sync compile; callers must not hold renderer.mutex here. */
         pso = dev->newRenderPipelineState(rpd, &nsErr);
     }
     if (archiveMiss && mglTraceLogIsEnabled()) {
         static std::atomic<int> s_loggedArchiveMiss{0};
         if (s_loggedArchiveMiss.exchange(1) == 0) {
-            mglTraceLog("MGL TRACE: binary archive PSO miss; compiled synchronously "
-                        "(PERF-029 deferred async compile)\n");
+            mglTraceLog("MGL TRACE: binary archive PSO miss; compiled synchronously\n");
         }
     }
     if (!pso) {
@@ -442,7 +440,7 @@ int mglAirLoadLibrary(const void* device, const unsigned char* bytes, size_t siz
         return -1;
     }
     NS::Error* nsErr = nullptr;
-    /* PERF-029 deferred: newLibrary is synchronous; no async loader in-tree. */
+    /* PERF-029: sync newLibrary; renderer.mutex is not held by callers. */
     MTL::Library* lib = dev->newLibrary(data, &nsErr);
     dispatch_release(data);
     if (!lib) {

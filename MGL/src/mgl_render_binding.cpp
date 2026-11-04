@@ -1158,14 +1158,20 @@ int mglRenderCreateRenderPipelineFromState(
         return -1;
     }
     mgl::Renderer& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.mutex);
-    if (!renderer.device) {
-        if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
-        return -1;
+    MTL::Device* device = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        if (!renderer.device) {
+            if (err && errcap) {
+                snprintf(err, errcap, "Metal-cpp renderer is not initialized");
+            }
+            return -1;
+        }
+        device = renderer.device;
     }
     return mglAirCreateRenderPipelineWithArchive(
-        renderer.device, vs_function, fs_function, state, binary_archive,
-        pipeline_out, err, errcap);
+        device, vs_function, fs_function, state, binary_archive, pipeline_out,
+        err, errcap);
 }
 
 int mglRenderCreateRenderPipelineFromStateWithArchiveOwner(MGLPipelineCacheOwner * owner_handle, void* vs_function, void* fs_function, const MGLRenderPipelineDescriptorState* state, void** pipeline_out, char* err, size_t errcap) {
@@ -1197,15 +1203,17 @@ int mglRenderCreateRenderPipelineState(
     if (!descriptor || !pipeline_out) return -1;
 
     mgl::Renderer& renderer = mgl::renderer();
-    /* PERF-033 deferred: coarse renderer.mutex — split only with proven
-     * lock-order / lifetime audit; compile stays under this lock today. */
-    std::lock_guard<std::mutex> lock(renderer.mutex);
-    if (!renderer.device) return -1;
+    MTL::Device* device = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        if (!renderer.device) return -1;
+        device = renderer.device;
+    }
 
     NS::Error* nsError = nullptr;
-    /* PERF-029 deferred: synchronous PSO compile (no async API wired). */
+    /* PERF-029: sync PSO compile; renderer.mutex is not held across Metal. */
     MTL::RenderPipelineState* pipeline =
-        renderer.device->newRenderPipelineState(descriptor, &nsError);
+        device->newRenderPipelineState(descriptor, &nsError);
     if (!pipeline) {
         mgl::copyError(nsError, err, errcap);
         return -1;
@@ -1232,9 +1240,12 @@ int mglRenderCreateRenderPipelineStateWithArchive(
     if (!descriptor || !pipeline_out) return -1;
 
     mgl::Renderer& renderer = mgl::renderer();
-    /* PERF-033 deferred: see sync PSO path above. */
-    std::lock_guard<std::mutex> lock(renderer.mutex);
-    if (!renderer.device) return -1;
+    MTL::Device* device = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        if (!renderer.device) return -1;
+        device = renderer.device;
+    }
 
     const bool archiveEligible = archive && descriptor->vertexFunction() &&
                                  descriptor->fragmentFunction();
@@ -1242,18 +1253,16 @@ int mglRenderCreateRenderPipelineStateWithArchive(
     NS::Error* nsError = nullptr;
     if (archiveEligible) {
         descriptor->setBinaryArchives(NS::Array::array(archive));
-        pipeline = renderer.device->newRenderPipelineState(
-            descriptor, MTL::PipelineOptionFailOnBinaryArchiveMiss,
-            nullptr, &nsError);
+        pipeline = device->newRenderPipelineState(
+            descriptor, MTL::PipelineOptionFailOnBinaryArchiveMiss, nullptr,
+            &nsError);
         if (pipeline && archive_hit_out) *archive_hit_out = 1;
     }
 
     const bool archiveMiss = archiveEligible && !pipeline;
     if (!pipeline) {
         nsError = nullptr;
-        /* PERF-029 deferred: sync compile fallback after archive miss. */
-        pipeline = renderer.device->newRenderPipelineState(
-            descriptor, &nsError);
+        pipeline = device->newRenderPipelineState(descriptor, &nsError);
     }
     if (!pipeline) {
         mgl::copyError(nsError, err, errcap);
@@ -1306,12 +1315,16 @@ int mglRenderCreateComputePipelineState(void* function,
     if (!computeFunction || !pipeline_out) return -1;
 
     mgl::Renderer& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.mutex);
-    if (!renderer.device) return -1;
+    MTL::Device* device = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        if (!renderer.device) return -1;
+        device = renderer.device;
+    }
 
     NS::Error* nsError = nullptr;
     MTL::ComputePipelineState* pipeline =
-        renderer.device->newComputePipelineState(computeFunction, &nsError);
+        device->newComputePipelineState(computeFunction, &nsError);
     if (!pipeline) {
         mgl::copyError(nsError, err, errcap);
         return -1;
@@ -1336,41 +1349,54 @@ int mglRenderGetOrCreateComputePipeline(
     }
 
     mgl::Renderer& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.mutex);
-    if (!renderer.device) {
-        if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
-        return -1;
-    }
-
-    mgl::ComputePipelineKey key = {
+    MTL::Device* device = nullptr;
+    const mgl::ComputePipelineKey key = {
         reinterpret_cast<uintptr_t>(function), program_instance,
         program_generation, stage};
-    if (cache_enabled) {
-        auto found = renderer.computePipelines.find(key);
-        if (found != renderer.computePipelines.end()) {
-            if (mgl_env_flag_enabled("MGL_METALCPP_DIAG")) {
-                fprintf(stderr,
-                        "MGL METALCPP: compute PSO cache hit "
-                        "program=%llu generation=%llu stage=%u function=%p\n",
-                        static_cast<unsigned long long>(program_instance),
-                        static_cast<unsigned long long>(program_generation),
-                        stage, function);
+    {
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        if (!renderer.device) {
+            if (err && errcap) {
+                snprintf(err, errcap, "Metal-cpp renderer is not initialized");
             }
-            found->second->retain();
-            *pipeline_out = found->second;
-            return 0;
+            return -1;
+        }
+        device = renderer.device;
+        if (cache_enabled) {
+            auto found = renderer.computePipelines.find(key);
+            if (found != renderer.computePipelines.end()) {
+                if (mgl_env_flag_enabled("MGL_METALCPP_DIAG")) {
+                    fprintf(stderr,
+                            "MGL METALCPP: compute PSO cache hit "
+                            "program=%llu generation=%llu stage=%u function=%p\n",
+                            static_cast<unsigned long long>(program_instance),
+                            static_cast<unsigned long long>(program_generation),
+                            stage, function);
+                }
+                found->second->retain();
+                *pipeline_out = found->second;
+                return 0;
+            }
         }
     }
 
     NS::Error* nsError = nullptr;
     MTL::ComputePipelineState* pipeline =
-        renderer.device->newComputePipelineState(
-            static_cast<MTL::Function*>(function), &nsError);
+        device->newComputePipelineState(static_cast<MTL::Function*>(function),
+                                        &nsError);
     if (!pipeline) {
         mgl::copyError(nsError, err, errcap);
         return -1;
     }
     if (cache_enabled) {
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        auto found = renderer.computePipelines.find(key);
+        if (found != renderer.computePipelines.end()) {
+            pipeline->release();
+            found->second->retain();
+            *pipeline_out = found->second;
+            return 0;
+        }
         pipeline->retain();
         renderer.computePipelines.emplace(key, pipeline);
     }
@@ -2193,25 +2219,7 @@ int getOrCreateAuxComputePipelineLocked(mgl::Renderer& renderer,
         return 0;
     }
     if (!function) return 1;
-
-    NS::Error* nsError = nullptr;
-    MTL::ComputePipelineState* pipeline =
-        renderer.device->newComputePipelineState(
-            static_cast<MTL::Function*>(function), &nsError);
-    if (!pipeline) {
-        mgl::copyError(nsError, err, errcap);
-        return -1;
-    }
-    pipeline->retain();
-    renderer.auxComputePipelines.emplace(key, pipeline);
-    if (mgl_env_flag_enabled("MGL_METALCPP_DIAG")) {
-        fprintf(stderr,
-                "MGL METALCPP: aux compute PSO create "
-                "kind=%u variant=%llu function=%p\n",
-                kind, static_cast<unsigned long long>(variant), function);
-    }
-    *pipeline_out = pipeline;
-    return 0;
+    return 1;
 }
 
 int mglRenderGetOrCreateAuxComputePipeline(
@@ -2228,13 +2236,51 @@ int mglRenderGetOrCreateAuxComputePipeline(
     }
 
     mgl::Renderer& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.mutex);
-    if (!renderer.device) {
-        if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
+    MTL::Device* device = nullptr;
+    const mgl::AuxComputePipelineKey key = {kind, variant};
+    {
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        if (!renderer.device) {
+            if (err && errcap) {
+                snprintf(err, errcap, "Metal-cpp renderer is not initialized");
+            }
+            return -1;
+        }
+        device = renderer.device;
+        int cached = getOrCreateAuxComputePipelineLocked(
+            renderer, function, kind, variant, pipeline_out, err, errcap);
+        if (cached != 1) return cached;
+    }
+    if (!function) return 1;
+
+    NS::Error* nsError = nullptr;
+    MTL::ComputePipelineState* pipeline =
+        device->newComputePipelineState(static_cast<MTL::Function*>(function),
+                                        &nsError);
+    if (!pipeline) {
+        mgl::copyError(nsError, err, errcap);
         return -1;
     }
-    return getOrCreateAuxComputePipelineLocked(
-        renderer, function, kind, variant, pipeline_out, err, errcap);
+    {
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        auto found = renderer.auxComputePipelines.find(key);
+        if (found != renderer.auxComputePipelines.end()) {
+            pipeline->release();
+            found->second->retain();
+            *pipeline_out = found->second;
+            return 0;
+        }
+        pipeline->retain();
+        renderer.auxComputePipelines.emplace(key, pipeline);
+    }
+    if (mgl_env_flag_enabled("MGL_METALCPP_DIAG")) {
+        fprintf(stderr,
+                "MGL METALCPP: aux compute PSO create "
+                "kind=%u variant=%llu function=%p\n",
+                kind, static_cast<unsigned long long>(variant), function);
+    }
+    *pipeline_out = pipeline;
+    return 0;
 }
 
 int mglRenderGetOrCreateAuxComputePipelineFromMetallib(
@@ -2253,21 +2299,59 @@ int mglRenderGetOrCreateAuxComputePipelineFromMetallib(
         return -1;
     }
     mgl::Renderer& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.mutex);
-    if (!renderer.device) {
-        if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
+    MTL::Device* device = nullptr;
+    const mgl::AuxComputePipelineKey key = {kind, variant};
+    MTL::Function* function = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        if (!renderer.device) {
+            if (err && errcap) {
+                snprintf(err, errcap, "Metal-cpp renderer is not initialized");
+            }
+            return -1;
+        }
+        device = renderer.device;
+        MTL::Library* library = loadAuxLibraryLocked(
+            renderer, bytes, size, asset_hash, err, errcap);
+        if (!library) return -1;
+        function = newAuxEntryFunction(library, entry_name, err, errcap);
+        if (!function) return -1;
+        int cached = getOrCreateAuxComputePipelineLocked(
+            renderer, function, kind, variant, pipeline_out, err, errcap);
+        if (cached != 1) {
+            function->release();
+            return cached;
+        }
+    }
+
+    NS::Error* nsError = nullptr;
+    MTL::ComputePipelineState* pipeline =
+        device->newComputePipelineState(function, &nsError);
+    function->release();
+    if (!pipeline) {
+        mgl::copyError(nsError, err, errcap);
         return -1;
     }
-    MTL::Library* library = loadAuxLibraryLocked(
-        renderer, bytes, size, asset_hash, err, errcap);
-    if (!library) return -1;
-    MTL::Function* function =
-        newAuxEntryFunction(library, entry_name, err, errcap);
-    if (!function) return -1;
-    int result = getOrCreateAuxComputePipelineLocked(
-        renderer, function, kind, variant, pipeline_out, err, errcap);
-    function->release();
-    return result;
+    {
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        auto found = renderer.auxComputePipelines.find(key);
+        if (found != renderer.auxComputePipelines.end()) {
+            pipeline->release();
+            found->second->retain();
+            *pipeline_out = found->second;
+            return 0;
+        }
+        pipeline->retain();
+        renderer.auxComputePipelines.emplace(key, pipeline);
+    }
+    if (mgl_env_flag_enabled("MGL_METALCPP_DIAG")) {
+        fprintf(stderr,
+                "MGL METALCPP: aux compute PSO create "
+                "kind=%u variant=%llu\n",
+                kind, static_cast<unsigned long long>(variant));
+    }
+    *pipeline_out = pipeline;
+    return 0;
 }
 
 int recordBufferSlot(std::vector<MTL::Buffer*>& buffers,
