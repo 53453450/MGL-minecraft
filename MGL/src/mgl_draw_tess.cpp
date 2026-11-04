@@ -411,11 +411,15 @@ extern "C" bool mglTessComputeTCSCoreLayout(
         return false;
     }
     const uint32_t patchVertices = MAX(1u, contract->patch_vertices);
-    uint32_t patchCountTC = contract->vertex_count / patchVertices;
-    if (patchCountTC == 0u) {
-        patchCountTC = 1u;
+    /* AUDIT-054: one patch-count for output/patch/factor sizes. Prefer the
+     * contract's patch_count (draw/gather), fall back to vertex_count/pv. */
+    uint32_t patchCount = contract->patch_count;
+    if (patchCount == 0u) {
+        patchCount = contract->vertex_count / patchVertices;
     }
-    const uint32_t patchCount = MAX(1u, contract->patch_count);
+    if (patchCount == 0u) {
+        patchCount = 1u;
+    }
     const uint32_t instanceCount = MAX(1u, contract->instance_count);
     uint32_t tcsOutVertices = tcs->tess_control_output_vertices;
     if (tcsOutVertices == 0u) {
@@ -428,15 +432,15 @@ extern "C" bool mglTessComputeTCSCoreLayout(
     if (outputStride == 0u || patchStride == 0u) {
         return false;
     }
-    if ((uint64_t)patchCountTC > UINT64_MAX / tcsOutVertices ||
-        (uint64_t)patchCountTC * tcsOutVertices > UINT64_MAX / outputStride ||
+    if ((uint64_t)patchCount > UINT64_MAX / tcsOutVertices ||
+        (uint64_t)patchCount * tcsOutVertices > UINT64_MAX / outputStride ||
         (uint64_t)patchCount > UINT64_MAX / patchStride ||
         (uint64_t)patchCount > UINT64_MAX / MGL_AIR_TESS_FACTOR_RECORD_BYTES) {
         return false;
     }
     const uint64_t per_inst_output =
-        (uint64_t)patchCountTC * tcsOutVertices * outputStride;
-    const uint64_t per_inst_patch = (uint64_t)patchCountTC * patchStride;
+        (uint64_t)patchCount * tcsOutVertices * outputStride;
+    const uint64_t per_inst_patch = (uint64_t)patchCount * patchStride;
     const uint64_t per_inst_factor =
         (uint64_t)patchCount * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
     /* AUDIT-050: multi-instance TCS must size stores by instance_count. */
