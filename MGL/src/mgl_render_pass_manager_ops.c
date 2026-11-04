@@ -76,6 +76,9 @@ extern void mglLogRenderPassLifecycle(const char *tag, uint64_t call,
 
 /* Shell-provided drawable accessor (private ivar) and guarded call. */
 extern void *mglPlatformShellDrawable(void *renderer);
+extern void *mglPlatformShellDrawablePointer(void *renderer);
+extern MGLSizeValue mglPlatformShellApplyPendingDrawableSize(void *renderer);
+extern void mglRendererNextDrawable(void *renderer);
 extern int mglPlatformShellGuardedCall(void *renderer, const char *what,
                                        int (*body)(void *));
 
@@ -4467,6 +4470,20 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
         }
     }
 
+    /* PERF-038: after unlocked swap (swapInterval==0) the drawable is cleared at
+     * post_commit; acquire once here before default-FBO encoding instead of at swap. */
+    if (areas.layer != NULL && areas.drawable == NULL &&
+        glState->framebuffer == NULL) {
+        const GLuint mgl_drawbuffer =
+            mglDefaultDrawBufferIndexForGL(glState->draw_buffer);
+        if (mglRenderDefaultDrawBufferIsFront(mgl_drawbuffer) &&
+            mglRenderShouldPresentDrawBuffer((uint32_t)glState->draw_buffer) !=
+                0) {
+            (void)mglPlatformShellApplyPendingDrawableSize(renderer);
+            (void)mglRendererNextDrawable(renderer);
+        }
+    }
+
     MGLResourceSyncWork resourceSyncWork = {false, false, false};
     if (plan.process_dirty_domains) {
         if (!mglRenderPassProcessDirtyStateDomains(renderer,
@@ -5257,11 +5274,6 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
             mglRendererRecordGPUError(renderer);
         }
 
-        if (traceSwap) {
-            mglTraceLog(
-                "MGL TRACE swap.nextDrawable.begin call=%llu stage=post_commit",
-                (unsigned long long)swapCall);
-        }
         if (skipPresent) {
             /* Keep the current drawable: nothing was presented, so the surface
              * remains a valid render target for the next frame. */
@@ -5271,7 +5283,8 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
                     (unsigned long long)swapCall);
             }
         } else if (swapInterval == 0) {
-            /* Visible unlocked: defer acquisition off the critical path. */
+            /* PERF-038: visible unlocked — drop consumed drawable; next frame
+             * acquires in processGLState (not here). Never present NULL. */
             mglPlatformShellSetDrawable(renderer, NULL);
             if (traceSwap) {
                 mglTraceLog(
@@ -5279,6 +5292,11 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
                     (unsigned long long)swapCall);
             }
         } else {
+            if (traceSwap) {
+                mglTraceLog(
+                    "MGL TRACE swap.nextDrawable.begin call=%llu stage=post_commit",
+                    (unsigned long long)swapCall);
+            }
             (void)mglRendererNextDrawable(renderer);
             if (traceSwap) {
                 void *tex = mglRendererDrawableTexture(renderer);
