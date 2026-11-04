@@ -353,8 +353,53 @@ int mglBatchApplyDynamicBindings(void *renderer, const MGLDrawCommand *cmd,
                                  GLMContext glm_ctx, MGLEncodeContext *encCtx)
 {
     if (!cmd) return 1;
-    if (!glm_ctx || !encCtx) return 0;
+    if (!glm_ctx || !encCtx || !glm_ctx->active_state) return 0;
     encCtx->render_encoder_owner = mglRendererCommandStateFor(renderer)->currentRenderEncoderOwner;
+
+    /* AUDIT-058: snapshot GL binding state that apply_* mutates so a later
+     * cmd cannot inherit this cmd's UBO range / texture-unit overrides. */
+    struct {
+        uint16_t binding_index;
+        GLintptr offset;
+        GLsizeiptr size;
+    } ubo_saved[MGL_MAX_DYNAMIC_UNIFORM_BINDINGS];
+    uint8_t ubo_saved_count = 0;
+    for (uint8_t i = 0; i < cmd->dynamic_uniform_binding_count &&
+                        i < MGL_MAX_DYNAMIC_UNIFORM_BINDINGS; i++) {
+        const MGLDynamicUniformBinding *ob = &cmd->dynamic_uniform_bindings[i];
+        if (ob->binding_index >= MAX_BINDABLE_BUFFERS) continue;
+        BufferBaseTarget *slot =
+            &glm_ctx->active_state->buffer_base[_UNIFORM_BUFFER]
+                 .buffers[ob->binding_index];
+        ubo_saved[ubo_saved_count].binding_index = ob->binding_index;
+        ubo_saved[ubo_saved_count].offset = slot->offset;
+        ubo_saved[ubo_saved_count].size = slot->size;
+        ubo_saved_count++;
+    }
+    struct {
+        uint8_t unit;
+        uint8_t target_index;
+        Texture *texture;
+        Texture *active;
+    } tex_saved[MGL_MAX_DYNAMIC_TEXTURE_BINDINGS];
+    uint8_t tex_saved_count = 0;
+    for (uint8_t i = 0; i < cmd->dynamic_texture_binding_count &&
+                        i < MGL_MAX_DYNAMIC_TEXTURE_BINDINGS; i++) {
+        const MGLDynamicTextureBinding *ob = &cmd->dynamic_texture_bindings[i];
+        if (ob->unit >= TEXTURE_UNITS ||
+            ob->target_index >= _MAX_TEXTURE_TYPES) {
+            continue;
+        }
+        tex_saved[tex_saved_count].unit = ob->unit;
+        tex_saved[tex_saved_count].target_index = ob->target_index;
+        tex_saved[tex_saved_count].texture =
+            glm_ctx->active_state->texture_units[ob->unit]
+                .textures[ob->target_index];
+        tex_saved[tex_saved_count].active =
+            glm_ctx->active_state->active_textures[ob->unit];
+        tex_saved_count++;
+    }
+
     MGLDynApplyCtx c = {.r = renderer, .cmd = cmd, .ctx = glm_ctx, .enc = encCtx,
                         .base_vao = glm_ctx->active_state->vao,
                         .draw_vao = glm_ctx->active_state->vao};
@@ -368,10 +413,29 @@ int mglBatchApplyDynamicBindings(void *renderer, const MGLDrawCommand *cmd,
         .bind_uniform_direct = mglDynApplyBindUniform,
         .mapper_fallback = mglDynApplyMapperFallback,
     };
-    return mgl_batch_issue_apply_dyn_bindings(cmd->dynamic_vertex_binding_count,
-                                              cmd->dynamic_uniform_binding_count,
-                                              cmd->dynamic_texture_binding_count, &ops)
-               ? 1 : 0;
+    const int ok = mgl_batch_issue_apply_dyn_bindings(
+                       cmd->dynamic_vertex_binding_count,
+                       cmd->dynamic_uniform_binding_count,
+                       cmd->dynamic_texture_binding_count, &ops)
+                       ? 1
+                       : 0;
+
+    for (uint8_t i = 0; i < ubo_saved_count; i++) {
+        BufferBaseTarget *slot =
+            &glm_ctx->active_state->buffer_base[_UNIFORM_BUFFER]
+                 .buffers[ubo_saved[i].binding_index];
+        slot->offset = ubo_saved[i].offset;
+        slot->size = ubo_saved[i].size;
+    }
+    /* Reverse order so per-unit active_textures lands on the first snapshot. */
+    for (uint8_t i = tex_saved_count; i > 0u; i--) {
+        const uint8_t idx = (uint8_t)(i - 1u);
+        glm_ctx->active_state->texture_units[tex_saved[idx].unit]
+            .textures[tex_saved[idx].target_index] = tex_saved[idx].texture;
+        glm_ctx->active_state->active_textures[tex_saved[idx].unit] =
+            tex_saved[idx].active;
+    }
+    return ok;
 }
 
 int mglBatchTryReplaySimpleBatch(void *renderer, MGLDrawBatch *batch,

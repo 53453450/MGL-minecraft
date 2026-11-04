@@ -32,18 +32,29 @@ void mglExpandInternalFormatToRGBA8(uint32_t internal_format,
                                     uint32_t src_pixel_bytes,
                                     uint8_t out[4])
 {
+    /* AUDIT-038: refuse NULL / short RGB payloads before indexing. */
+    if (!out) {
+        return;
+    }
+    if (!src_pixel) {
+        out[0] = out[1] = out[2] = 0u;
+        out[3] = 0xffu;
+        return;
+    }
     uint32_t packed = mglPackedUploadLE(src_pixel, src_pixel_bytes);
     uint8_t r = 0u, g = 0u, b = 0u, a = 0xffu;
     switch (internal_format) {
         case GL_RGB8:
         case GL_SRGB8:
         case GL_RGB:
+            if (src_pixel_bytes < 3u) break;
             r = src_pixel[0];
             g = src_pixel[1];
             b = src_pixel[2];
             a = 0xffu;
             break;
         case GL_RGB8_SNORM:
+            if (src_pixel_bytes < 3u) break;
             r = src_pixel[0];
             g = src_pixel[1];
             b = src_pixel[2];
@@ -51,6 +62,7 @@ void mglExpandInternalFormatToRGBA8(uint32_t internal_format,
             break;
         case GL_RGB8I:
         case GL_RGB8UI:
+            if (src_pixel_bytes < 3u) break;
             r = src_pixel[0];
             g = src_pixel[1];
             b = src_pixel[2];

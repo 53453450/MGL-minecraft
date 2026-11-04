@@ -206,8 +206,20 @@ int mglRenderMapBufferStorage(Buffer* buffer,
         return MGL_RENDER_BUFFER_OPERATION_HANDLED;
     }
 
-    if (!cpuBase &&
-        metalBuffer->storageMode() == MTL::StorageModeManaged) {
+    /* AUDIT-056: writable unmap must push the CPU shadow into Metal before
+     * the next GPU use; previously only Managed didModifyRange ran when there
+     * was no separate shadow. */
+    const bool writes = access == GL_WRITE_ONLY || access == GL_READ_WRITE ||
+                        mglBufferMapIsWritable(access);
+    if (writes && cpuBase && metalBase && metalBase != cpuBase &&
+        safeLength > 0) {
+        memcpy(metalBase + offset, cpuBase + offset, safeLength);
+        if (metalBuffer->storageMode() == MTL::StorageModeManaged) {
+            metalBuffer->didModifyRange(NS::Range::Make(offset, safeLength));
+        }
+        buffer->cpu_shadow_pending = 0;
+    } else if (!cpuBase &&
+               metalBuffer->storageMode() == MTL::StorageModeManaged) {
         metalBuffer->didModifyRange(NS::Range::Make(offset, safeLength));
     }
     return MGL_RENDER_BUFFER_OPERATION_HANDLED;
@@ -1335,6 +1347,15 @@ int mglRenderConvertVertexBuffer(
         } else if (minimumConvertedStride > convertedStrideBase) {
             convertedStrideBase = minimumConvertedStride;
         }
+        /* Keep source relativeoffset; grow pitch so floatN fits (PSO mirrors). */
+        if ((kind == MGL_RENDER_VERTEX_DOUBLE_TO_FLOAT ||
+             kind == MGL_RENDER_VERTEX_FIXED_TO_FLOAT) &&
+            relativeOffset <= std::numeric_limits<size_t>::max() -
+                                  minimumConvertedStride) {
+            const size_t need = relativeOffset + minimumConvertedStride;
+            if (need > convertedStrideBase)
+                convertedStrideBase = need;
+        }
         size_t convertedStride = 0;
         if (!mgl::alignVertexStride(convertedStrideBase, &convertedStride)) {
             if (err && errcap) snprintf(err, errcap, "converted stride overflow");
@@ -1416,8 +1437,14 @@ int mglRenderConvertVertexBuffer(
                 const size_t inputBytes =
                     componentCount * sourceComponentSize;
                 const size_t outputBytes = componentCount * sizeof(float);
-                if (relativeOffset > copyBytes ||
-                    inputBytes > copyBytes - relativeOffset ||
+                /* GL stride is the pitch between vertex bases, not a clamp on
+                 * attribute extent: relativeoffset+sizeof(attrib) may reach
+                 * past the next base (CTS VAB inputL binds stride 16 with a
+                 * 3×double at relativeoffset 8).  Bound the source read by
+                 * the remaining buffer, not by originalStride. */
+                const size_t srcAbs = sourceOffset + relativeOffset;
+                if (srcAbs > copyLength ||
+                    inputBytes > copyLength - srcAbs ||
                     relativeOffset > convertedStride ||
                     outputBytes > convertedStride - relativeOffset) {
                     continue;

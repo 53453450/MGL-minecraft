@@ -28,6 +28,30 @@
 #include <string.h>
 #include <ctype.h>
 
+#include <stdarg.h>
+
+/* AUDIT-031: snprintf into preamble without letting off walk past capacity
+ * (sizeof-off underflow would otherwise write past the stack buffer). */
+static int mgl_legacy_preamble_printf(char *buf, size_t cap, size_t *off,
+                                      const char *fmt, ...)
+{
+    if (!buf || !off || !fmt || *off >= cap)
+        return -1;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + *off, cap - *off, fmt, ap);
+    va_end(ap);
+    if (n < 0)
+        return -1;
+    if ((size_t)n >= cap - *off) {
+        *off = cap;
+        return -1;
+    }
+    *off += (size_t)n;
+    return 0;
+}
+
+
 /* === Constants === */
 
 /* GL default gl_MaxTextureCoords is 8; array sized to this upper bound. */
@@ -768,15 +792,13 @@ int mgl_translate_legacy_glsl(char *src,
     char preamble[2048];
     size_t off = 0;
 
-    off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
-        "/* MGL legacy GLSL translation: renamed builtins declared as\n"
+    (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "/* MGL legacy GLSL translation: renamed builtins declared as\n"
         " * user variables so the frontend can parse them. */\n");
 
     /* gl_TexCoord declaration (array, both VS out and FS in) */
     if (features->has_gl_TexCoord) {
         const char *dir = is_vertex ? "out" : "in";
-        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
-            "%s vec4 _mglTexCoord[%d];\n", dir, MGL_LEGACY_MAX_TEX_COORDS);
+        (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "%s vec4 _mglTexCoord[%d];\n", dir, MGL_LEGACY_MAX_TEX_COORDS);
     }
 
     /* Legacy matrix built-in uniforms (§7.4): injected verbatim so the
@@ -786,14 +808,10 @@ int mgl_translate_legacy_glsl(char *src,
         const legacy_matrix_t *m = &s_legacy_matrices[i];
         if (!code_uses_identifier(src, m->name)) continue;
         if (m->array_size > 0) {
-            off += (size_t)snprintf(preamble + off,
-                sizeof(preamble) - off,
-                "uniform %s %s[%d];\n",
+            (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "uniform %s %s[%d];\n",
                 m->type, m->name, m->array_size);
         } else {
-            off += (size_t)snprintf(preamble + off,
-                sizeof(preamble) - off,
-                "uniform %s %s;\n", m->type, m->name);
+            (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "uniform %s %s;\n", m->type, m->name);
         }
     }
 
@@ -805,8 +823,7 @@ int mgl_translate_legacy_glsl(char *src,
      * the shaderpack; an unset uniform defaults to 0. */
     if (code_uses_identifier(src, "gl_Fog") &&
         !strstr(src, "gl_FogParameters")) {
-        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
-            "struct gl_FogParameters {\n"
+        (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "struct gl_FogParameters {\n"
             "    vec4  color;\n"
             "    float density;\n"
             "    float start;\n"
@@ -825,14 +842,12 @@ int mgl_translate_legacy_glsl(char *src,
     if ((code_uses_identifier(src, "shadow2D") ||
          code_uses_identifier(src, "shadow2DProj")) &&
         !strstr(src, "vec4 shadow2D")) {
-        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
-            "vec4 shadow2D(sampler2DShadow s, vec3 c){ return vec4(texture(s, c)); }\n"
+        (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "vec4 shadow2D(sampler2DShadow s, vec3 c){ return vec4(texture(s, c)); }\n"
             "vec4 shadow2D(sampler2D s, vec3 c){ return vec4(texture(s, c.xy)); }\n");
     }
     if (code_uses_identifier(src, "shadow2DProj") &&
         !strstr(src, "vec4 shadow2DProj")) {
-        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
-            "vec4 shadow2DProj(sampler2DShadow s, vec4 c){ return vec4(textureProj(s, c)); }\n"
+        (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "vec4 shadow2DProj(sampler2DShadow s, vec4 c){ return vec4(textureProj(s, c)); }\n"
             "vec4 shadow2DProj(sampler2D s, vec4 c){ return vec4(textureProj(s, c)); }\n");
     }
 
@@ -843,9 +858,7 @@ int mgl_translate_legacy_glsl(char *src,
         const legacy_const_t *c = &s_legacy_constants[i];
         if (!code_uses_identifier(src, c->name)) continue;
         if (code_has_const_decl(src, c->name)) continue;
-        off += (size_t)snprintf(preamble + off,
-            sizeof(preamble) - off,
-            "const int %s = %d;\n", c->name, c->value);
+        (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "const int %s = %d;\n", c->name, c->value);
     }
 
     /* gl_Vertex: the legacy implicit position attribute, injected with
@@ -856,9 +869,7 @@ int mgl_translate_legacy_glsl(char *src,
      * (ftransform() expansion may have introduced it after detection). */
     if (is_vertex && code_uses_identifier(src, "gl_Vertex")) {
         if (!strstr(src, "layout(location = 0) in vec4 gl_Vertex;")) {
-            off += (size_t)snprintf(preamble + off,
-                sizeof(preamble) - off,
-                "layout(location = 0) in vec4 gl_Vertex;\n");
+            (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "layout(location = 0) in vec4 gl_Vertex;\n");
         }
     }
 
@@ -867,16 +878,13 @@ int mgl_translate_legacy_glsl(char *src,
         if (fragdataOnlyIndex0) {
             /* All gl_FragData writes were at index 0 and were rewritten to
              * the scalar _mglFragColor in Step 3. */
-            off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
-                "layout(location = 0) out vec4 _mglFragColor;\n");
+            (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "layout(location = 0) out vec4 _mglFragColor;\n");
         } else {
-            off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
-                "layout(location = 0) out vec4 _mglFragData[%d];\n",
+            (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "layout(location = 0) out vec4 _mglFragData[%d];\n",
                 MGL_LEGACY_MAX_DRAW_BUFFERS);
         }
     } else if (features->has_gl_FragColor && is_fragment) {
-        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
-            "layout(location = 0) out vec4 _mglFragColor;\n");
+        (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "layout(location = 0) out vec4 _mglFragColor;\n");
     }
 
     /* Other builtin variable declarations (table-driven) */
@@ -910,8 +918,7 @@ int mgl_translate_legacy_glsl(char *src,
                     snprintf(decl, sizeof(decl), "%s %s %s;\n",
                              is_vertex ? "out" : "in", b->type, fb);
                     if (!strstr(preamble, decl))
-                        off += (size_t)snprintf(preamble + off,
-                            sizeof(preamble) - off, "%s", decl);
+                        (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "%s", decl);
                 }
                 continue;
             }
@@ -921,8 +928,7 @@ int mgl_translate_legacy_glsl(char *src,
                  * gl_Color=3, gl_SecondaryColor=4, gl_FogCoord=5) without
                  * querying renamed names.  The ORIGINAL gl_ name is kept
                  * (Step 3 skipped the rename), matching gl_Vertex. */
-                off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
-                    "layout(location = %d) %s %s %s;\n",
+                (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "layout(location = %d) %s %s %s;\n",
                     b->vs_location, dir, b->type, b->legacy_name);
             } else {
                 char decl[160];
@@ -931,8 +937,7 @@ int mgl_translate_legacy_glsl(char *src,
                  * this stage (e.g. FS gl_Color and gl_FrontColor both
                  * become _mglFrontColor); never declare it twice. */
                 if (!strstr(preamble, decl))
-                    off += (size_t)snprintf(preamble + off,
-                        sizeof(preamble) - off, "%s", decl);
+                    (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "%s", decl);
             }
         }
 
@@ -954,9 +959,7 @@ int mgl_translate_legacy_glsl(char *src,
                              "layout(location = %d) in vec4 %s;\n",
                              8 + i, modern);
                     if (!strstr(src, located)) {
-                        off += (size_t)snprintf(preamble + off,
-                            sizeof(preamble) - off,
-                            "%s", located);
+                        (void)mgl_legacy_preamble_printf(preamble, sizeof(preamble), &off, "%s", located);
                     }
                 }
             }
