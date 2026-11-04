@@ -113,6 +113,13 @@ typedef enum {
      * ABI runtime-array table, but that kernel does not share this encoder. */
     kMGLSamplerWrapBufferIndex = 23,
 
+    /* Emulated-MS plane offset for the GS passthrough VS: adds the current
+     * sample-loop plane onto gl_Layer*stride so layered MS_ARRAY FBOs write
+     * the forced sample slice (flat = layer * 8 + sample).  AIR places the
+     * PTVS UBO at ubo_base after the GS-output SSBO at slot 0, so the Metal
+     * location is 1 (GLSL layout(binding=N) is not the Metal slot). */
+    kMGLEmulatedMSPlaneBufferIndex = 1,
+
     /* ARB_shader_draw_parameters host stamp for VS: {draw_id, base_vertex}
      * as two int32 words.  Bound only when the linked VS uses gl_DrawID /
      * gl_BaseVertex; Metal has no portable [[draw_id]], and [[base_vertex]]

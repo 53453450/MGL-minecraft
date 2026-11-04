@@ -72,6 +72,11 @@ static inline bool mglVboRangeValidationEnabled(void)
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_draw.h"
 #include "mgl_render_api_query.h"
+#include "mgl_buffer_slots.h"
+#include "mgl_types_framebuffer.h"
+#include "mgl_renderer_binding_ops.h"
+
+extern int mglPlatformShellMSSamplePlaneOffset(void *renderer);
 
 /* The Objective-C versions handed these C callers a +1 through
  * (__bridge_retained void *) ...; where the underlying call only lends the
@@ -1143,6 +1148,20 @@ static int mglGsMetalRebindFragment(void *renderer, GLMContext ctx)
     (void)mglStageEncodeBindFragmentBuffers(renderer,
                                                                    &gsEncCtx);
     (void)mglRendererBindBufferSizeConstantsForRenderEncoder(renderer);
+    /* Layered emulated-MS PTVS: gl_Layer * stride + plane.  Bind after the
+     * fragment rebind so fallback slot-fill cannot overwrite it. */
+    if (ctx->active_state &&
+        mglFramebufferMultisampleLayerStride(ctx->active_state->framebuffer) >
+            1u &&
+        gsEncCtx.render_encoder_owner) {
+        int32_t pack[4] = {mglPlatformShellMSSamplePlaneOffset(renderer), 0, 0,
+                           0};
+        (void)mglRenderSetRenderBytesForOwner(
+            gsEncCtx.render_encoder_owner, pack, sizeof(pack),
+            MGL_RENDER_BINDING_STAGE_VERTEX, kMGLEmulatedMSPlaneBufferIndex);
+        mglRendererBindingInvalidateLastBoundVertexBufferAtIndex(
+            renderer, kMGLEmulatedMSPlaneBufferIndex);
+    }
     Program *gsVertexProgram =
         mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     Program *gsFragmentProgram =

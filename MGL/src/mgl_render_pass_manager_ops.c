@@ -1705,7 +1705,9 @@ static uint64_t mglPdGeometryPassthroughCacheKey(const Program *program,
         hash, program ? mglProgramBackendView(program)->pipeline_cache_instance_id : 0u);
     hash = mglHashStepU64(hash,
                           program ? mglProgramBackendView(program)->pipeline_cache_generation : 0u);
-    return mglHashStepU64(hash, layerStride);
+    hash = mglHashStepU64(hash, layerStride);
+    /* v2: layered emulated-MS PTVS adds mgl_emulated_ms_plane (Metal slot 1). */
+    return mglHashStepU64(hash, layerStride > 1u ? 2u : 1u);
 }
 
 /* MGLRenderer+RenderPass_Private.h: `static const BOOL
@@ -1792,7 +1794,15 @@ int mglRenderPassGeneratePipelineDescriptorState(
         return 0;
     }
 
-    Shader *vertex_shader = vertexProgram->shader_slots[vertexStage];
+    /* tessVertexRender uses the TES program as the Metal vertex function
+     * (see tessPassthroughFunction below).  Its shader lives in the
+     * TESS_EVALUATION slot — a separable TES-only program has no VS slot,
+     * so checking shader_slots[VERTEX] aborted SSO tess draws with
+     * INVALID_OPERATION (CTS shader_subroutine.subroutines_with_separate_
+     * shader_objects). */
+    const int vertexSlotStage =
+        (nativeTES || tessVertex) ? _TESS_EVALUATION_SHADER : vertexStage;
+    Shader *vertex_shader = vertexProgram->shader_slots[vertexSlotStage];
     Shader *fragment_shader =
         fragmentProgram ? fragmentProgram->shader_slots[_FRAGMENT_SHADER] : NULL;
     if (!vertex_shader) {
@@ -3294,6 +3304,15 @@ int mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(
                          "layout(std430, binding = 0) buffer MGLGSOutput {\n"
                          "    vec4 records[];\n"
                          "} mgl_gs_output;\n");
+    if (layerStride > 1u) {
+        /* Sample-loop plane offset; binding matches kMGLEmulatedMSPlaneBufferIndex. */
+        mglPdSourceAppendF(
+            &src,
+            "layout(std140, binding = %u) uniform MGLEmulatedMSPlaneBlock {\n"
+            "    int mgl_emulated_ms_plane;\n"
+            "};\n",
+            (unsigned)kMGLEmulatedMSPlaneBufferIndex);
+    }
     /* The stage-out record stores every varying as a full vec4 slot, so the
      * reflected gl_type of a GS output is promoted to the record width.  The
      * passthrough VS must declare the interface with the *fragment shader's*
@@ -3490,15 +3509,26 @@ int mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(
                fsNeedsLayer || fsNeedsViewport) {
 
         /* Layout v2 (A04): layer @52 / viewport @56 share vec4 slot 3 as .y /
-         * .z (stream occupies .w). */
+         * .z (stream occupies .w).  Emulated MS_ARRAY is flat =
+         * layer * stride + sample_plane; the plane comes from the host. */
         const unsigned layerSlot =
             (unsigned)(MGL_AIR_PER_VERTEX_LAYER_OFFSET / 16u);
-        mglPdSourceAppendF(
-            &src,
-            "    vec4 mgl_layer_vp = mgl_gs_output.records[mgl_base + %u];\n"
-            "    gl_Layer = floatBitsToInt(mgl_layer_vp.y) * %u;\n"
-            "    gl_ViewportIndex = floatBitsToInt(mgl_layer_vp.z);\n",
-            layerSlot, (unsigned)layerStride);
+        if (layerStride > 1u) {
+            mglPdSourceAppendF(
+                &src,
+                "    vec4 mgl_layer_vp = mgl_gs_output.records[mgl_base + %u];\n"
+                "    gl_Layer = floatBitsToInt(mgl_layer_vp.y) * %u + "
+                "mgl_emulated_ms_plane;\n"
+                "    gl_ViewportIndex = floatBitsToInt(mgl_layer_vp.z);\n",
+                layerSlot, (unsigned)layerStride);
+        } else {
+            mglPdSourceAppendF(
+                &src,
+                "    vec4 mgl_layer_vp = mgl_gs_output.records[mgl_base + %u];\n"
+                "    gl_Layer = floatBitsToInt(mgl_layer_vp.y) * %u;\n"
+                "    gl_ViewportIndex = floatBitsToInt(mgl_layer_vp.z);\n",
+                layerSlot, (unsigned)layerStride);
+        }
     }
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
