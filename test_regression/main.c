@@ -18159,9 +18159,10 @@ static int test_attrib_location_matrix_array_span(unsigned char *pixels,
  * buffer landing there used to link and then silently overwrite (or be
  * overwritten by) the internal pack; the gate now fails the link.
  *
- * The Metal slot of a user buffer is allocated, not chosen: a VS user buffer
- * sits at hasPlain+attrCount+index, an FS one at hasPlain+index, so the cases
- * reach the gated slots by sizing the attribute / block counts. */
+ * Slot layout is [plain][SSBOs][UBOs][atomics].  VS stage inputs are
+ * [[stage_in]] — they do not consume buffer(N) slots — so cases reach the
+ * gated indices by sizing the UBO block count (plain + n → UBO i at
+ * plain+i). */
 static int link_expect(const char *label, const char *vs, const char *fs,
                        int expect_ok)
 {
@@ -18192,39 +18193,35 @@ static int link_expect(const char *label, const char *vs, const char *fs,
     return result;
 }
 
-/* Emit a VS with `n` vec4 attributes, optionally the plain uniform pack, a
- * sampler, and one UBO -- every resource used so none is optimised away. */
-static void build_vs_gate_source(char *buf, size_t cap, int nattrs,
-                                 int with_plain, int with_sampler,
-                                 int with_ubo)
+/* Emit a VS with a few live attributes, optional plain pack / sampler, and
+ * `n_ubos` std140 blocks (UBO i → Metal slot plain_base+i). */
+static void build_vs_gate_source(char *buf, size_t cap, int n_ubos,
+                                 int with_plain, int with_sampler)
 {
     size_t off = 0;
-    off += (size_t)snprintf(buf + off, cap - off, "#version 460 core\n");
-    for (int i = 0; i < nattrs; i++)
-        off += (size_t)snprintf(buf + off, cap - off, "in vec4 a%d;\n", i);
+    off += (size_t)snprintf(buf + off, cap - off, "#version 460 core\n"
+                                                  "in vec4 a0;\n");
     if (with_plain)
         off += (size_t)snprintf(buf + off, cap - off,
                                 "uniform float u_shift;\n");
     if (with_sampler)
         off += (size_t)snprintf(buf + off, cap - off,
                                 "layout(binding=0) uniform sampler2D tex;\n");
-    if (with_ubo)
+    for (int i = 0; i < n_ubos; i++)
         off += (size_t)snprintf(buf + off, cap - off,
-                                "layout(std140) uniform Data { float x; } blk;\n");
+                                "layout(std140) uniform B%d { float x%d; } b%d;\n",
+                                i, i, i);
     off += (size_t)snprintf(buf + off, cap - off,
                             "out vec4 v_color;\n"
-                            "void main() {\n  vec4 s = ");
-    for (int i = 0; i < nattrs; i++)
-        off += (size_t)snprintf(buf + off, cap - off, "%sa%d",
-                                i ? " + " : "", i);
-    off += (size_t)snprintf(buf + off, cap - off, ";\n");
+                            "void main() {\n  vec4 s = a0;\n");
     if (with_plain)
         off += (size_t)snprintf(buf + off, cap - off, "  s += vec4(u_shift);\n");
     if (with_sampler)
         off += (size_t)snprintf(buf + off, cap - off,
                                 "  s += texture(tex, vec2(0.5));\n");
-    if (with_ubo)
-        off += (size_t)snprintf(buf + off, cap - off, "  s += vec4(blk.x);\n");
+    for (int i = 0; i < n_ubos; i++)
+        off += (size_t)snprintf(buf + off, cap - off,
+                                "  s += vec4(b%d.x%d);\n", i, i);
     snprintf(buf + off, cap - off,
              "  v_color = s;\n  gl_Position = s;\n}\n");
 }
@@ -18234,34 +18231,37 @@ static int test_buffer_slot_conflict_gate(unsigned char *pixels,
 {
     (void)pixels;
     (void)out_path;
+    static const char *vs_trivial =
+        "#version 460 core\n"
+        "void main() { gl_Position = vec4(0.0); }\n";
     static const char *fs_trivial =
         "#version 460 core\n"
         "layout(location=0) out vec4 o;\n"
         "void main() { o = vec4(0.0, 1.0, 0.0, 1.0); }\n";
     int result = 0;
-    char vs[4096];
-    char fs[4096];
+    char vs[8192];
+    char fs[8192];
 
-    /* (a) VS UBO at Metal slot 14 with a VS sampler: the LOD-bias pack owns
-     * 14 while the stage has samplers -> reject. */
-    build_vs_gate_source(vs, sizeof(vs), 13, 1, 1, 1);
+    /* (a) plain@0 + UBOs@1..14 → last block on LOD-bias slot; with a VS
+     * sampler the pack owns 14 → reject. */
+    build_vs_gate_source(vs, sizeof(vs), 14, 1, 1);
     result |= link_expect("buffer_slot_gate vs14+sampler", vs, fs_trivial, 0);
 
-    /* (b) same layout without the sampler: 14 is not bound -> link. */
-    build_vs_gate_source(vs, sizeof(vs), 13, 1, 0, 1);
+    /* (b) same layout without the sampler: 14 is not bound → link. */
+    build_vs_gate_source(vs, sizeof(vs), 14, 1, 0);
     result |= link_expect("buffer_slot_gate vs14-nosampler", vs, fs_trivial, 1);
 
-    /* (c) VS UBO at slot 16 (16 attributes, no plain pack: the user base is
-     * attrCount): the VAO attribute-stream region -> reject. */
-    build_vs_gate_source(vs, sizeof(vs), 16, 0, 0, 1);
+    /* (c) no plain pack: UBOs@0..16 → last block in the VAO attribute-stream
+     * region (16+) → reject. */
+    build_vs_gate_source(vs, sizeof(vs), 17, 0, 0);
     result |= link_expect("buffer_slot_gate vs16-attrstream", vs, fs_trivial, 0);
 
     /* (f) control: a low VS UBO slot stays legal. */
-    build_vs_gate_source(vs, sizeof(vs), 2, 1, 0, 1);
+    build_vs_gate_source(vs, sizeof(vs), 1, 1, 0);
     result |= link_expect("buffer_slot_gate vs3-control", vs, fs_trivial, 1);
 
     /* (d) FS with 14 UBOs and a sampler: the pack is at 0, the UBOs at 1..14,
-     * so the last block lands on the gated 14 -> reject. */
+     * so the last block lands on the gated 14 → reject. */
     {
         size_t off = (size_t)snprintf(fs, sizeof(fs), "#version 460 core\n"
                                       "uniform float u_bias;\n"
@@ -18278,10 +18278,10 @@ static int test_buffer_slot_conflict_gate(unsigned char *pixels,
                                     "  s += b%d.x%d;\n", i, i);
         snprintf(fs + off, sizeof(fs) - off,
                  "  s += texture(tex, vec2(0.5)).x;\n  o = vec4(s);\n}\n");
-        result |= link_expect("buffer_slot_gate fs14+sampler", fs, fs_trivial, 0);
+        result |= link_expect("buffer_slot_gate fs14+sampler", vs_trivial, fs, 0);
     }
 
-    /* (e) same blocks without the sampler: 14 is not bound -> link. */
+    /* (e) same blocks without the sampler: 14 is not bound → link. */
     {
         size_t off = (size_t)snprintf(fs, sizeof(fs), "#version 460 core\n"
                                       "uniform float u_bias;\n");
@@ -18296,7 +18296,7 @@ static int test_buffer_slot_conflict_gate(unsigned char *pixels,
             off += (size_t)snprintf(fs + off, sizeof(fs) - off,
                                     "  s += b%d.x%d;\n", i, i);
         snprintf(fs + off, sizeof(fs) - off, "  o = vec4(s);\n}\n");
-        result |= link_expect("buffer_slot_gate fs14-nosampler", fs, fs_trivial, 1);
+        result |= link_expect("buffer_slot_gate fs14-nosampler", vs_trivial, fs, 1);
     }
 
     return result;
