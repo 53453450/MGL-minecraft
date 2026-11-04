@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
@@ -328,8 +329,24 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         emitStmt(cg, st->u.ifs.then, mod, locals, deps);
         if (cg.err == 1) return;
         llvm::BasicBlock *thenTail = cg.b->GetInsertBlock();
-        bool thenRet = terminatorLeavesHelper(cg, thenTail->getTerminator());
-        if (!thenTail->getTerminator()) cg.b->CreateBr(bbMerge);
+        /* break/continue (and the switch-all-return path) open a fresh
+         * zero-pred "dead" block as the insert point.  That block must not
+         * grow a br into bbMerge — doing so created a phantom predecessor
+         * (dead → if.end) that left if.end reachable from nowhere-and-
+         * somewhere at once.  Regular VS PSOs tolerated it; capture VS
+         * with device stores made AGX pipeline creation throw
+         * XPC_ERROR_CONNECTION_INTERRUPTED (CTS control_flow). */
+        bool thenRet = false;
+        if (thenTail->hasNPredecessors(0)) {
+            if (!thenTail->getTerminator())
+                cg.b->CreateUnreachable();
+            thenRet = true;
+        } else {
+            thenRet =
+                terminatorLeavesHelper(cg, thenTail->getTerminator());
+            if (!thenTail->getTerminator())
+                cg.b->CreateBr(bbMerge);
+        }
         std::map<std::string, llvm::Value *> thenL = cg.lvalues;
 
         std::map<std::string, llvm::Value *> elseL;
@@ -346,8 +363,17 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             emitStmt(cg, st->u.ifs.else_, mod, locals, deps);
             if (cg.err == 1) return;
             llvm::BasicBlock *elseTail = cg.b->GetInsertBlock();
-            bool elseRet = terminatorLeavesHelper(cg, elseTail->getTerminator());
-            if (!elseTail->getTerminator()) cg.b->CreateBr(bbMerge);
+            bool elseRet = false;
+            if (elseTail->hasNPredecessors(0)) {
+                if (!elseTail->getTerminator())
+                    cg.b->CreateUnreachable();
+                elseRet = true;
+            } else {
+                elseRet = terminatorLeavesHelper(
+                    cg, elseTail->getTerminator());
+                if (!elseTail->getTerminator())
+                    cg.b->CreateBr(bbMerge);
+            }
             elseL = cg.lvalues;
             if (thenRet && elseRet) {
                 /* Both paths return; code after the if is unreachable. */
@@ -765,10 +791,17 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             }
             llvm::BasicBlock *lastTail = nullptr;
             bool chainBroken = false;
+            bool firstSel = true;
             for (size_t i = 0; i < segs.size(); i++) {
                 if (sel < 0 || (int)i < sel) continue;
                 if (chainBroken) break;
                 cg.b->SetInsertPoint(segs[i].entry);
+                /* First selected segment starts from pre-switch values;
+                 * fall-through keeps the previous segment's lvalues. */
+                if (firstSel) {
+                    cg.lvalues = snap;
+                    firstSel = false;
+                }
                 for (auto *s : segs[i].stmts) {
                     emitStmt(cg, s, mod, locals, deps);
                     if (cg.err == 1) return;
@@ -869,23 +902,69 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         cg.b->CreateBr(defEntry ? defEntry : bbEnd);
 
         llvm::BasicBlock *lastTail = nullptr;
+        /* Each case/default is entered from the dispatch checks with the
+         * pre-switch lvalues.  Emitting case N with case N-1's lvalues still
+         * in cg.lvalues made a later case's loop PHI read a value defined
+         * only inside an earlier case ("Instruction does not dominate all
+         * uses!") — broken IR that AGX rejects when the value stays live
+         * (CTS control_flow capture / XFB).  Fall-through merges dispatch
+         * (snap) with the previous segment's values at the case entry. */
+        llvm::BasicBlock *fallFrom = nullptr;
+        std::map<std::string, llvm::Value *> fallVals;
         for (size_t i = 0; i < segs.size(); i++) {
             cg.err = 0;
             cg.b->SetInsertPoint(segs[i].entry);
+            if (!fallFrom) {
+                cg.lvalues = snap;
+            } else {
+                cg.lvalues.clear();
+                for (const auto &kv : snap) {
+                    llvm::Value *disp = kv.second;
+                    auto fit = fallVals.find(kv.first);
+                    llvm::Value *fall =
+                        (fit != fallVals.end() &&
+                         fit->second->getType() == disp->getType())
+                            ? fit->second
+                            : disp;
+                    if (fall == disp) {
+                        cg.lvalues[kv.first] = disp;
+                        continue;
+                    }
+                    auto *phi = llvm::PHINode::Create(
+                        disp->getType(), 2u, kv.first, segs[i].entry);
+                    for (llvm::BasicBlock *pred :
+                         llvm::predecessors(segs[i].entry)) {
+                        phi->addIncoming(
+                            pred == fallFrom ? fall : disp, pred);
+                    }
+                    cg.lvalues[kv.first] = phi;
+                }
+                for (const auto &kv : fallVals) {
+                    if (cg.lvalues.count(kv.first))
+                        continue;
+                    cg.lvalues[kv.first] = kv.second;
+                }
+                /* PHIs were appended to the entry; continue after them. */
+                cg.b->SetInsertPoint(segs[i].entry);
+            }
             for (auto *s : segs[i].stmts) {
                 emitStmt(cg, s, mod, locals, deps);
                 if (cg.err == 1) return;
             }
             llvm::BasicBlock *tail = cg.b->GetInsertBlock();
+            fallFrom = nullptr;
+            fallVals.clear();
             if (!tail->getTerminator()) {
                 if (tail->hasNPredecessors(0)) {
                     /* Dead block left by break/continue/return in a nested
                      * construct: nothing falls through from it, so it must not
                      * become a live edge into the exit merge. */
                     cg.b->CreateUnreachable();
-                } else if (i + 1 < segs.size())
+                } else if (i + 1 < segs.size()) {
                     cg.b->CreateBr(segs[i + 1].entry);
-                else {
+                    fallFrom = tail;
+                    fallVals = cg.lvalues;
+                } else {
                     cg.b->CreateBr(bbEnd);
                     lastTail = tail;
                 }

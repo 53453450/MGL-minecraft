@@ -298,6 +298,26 @@ llvm::Value *emitMatrixBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
     auto rowCount = [&](llvm::ArrayType *a) {
         return (uint32_t)colType(a)->getElementCount().getFixedValue();
     };
+    /* GLSL 4.60 §5.9: matrix ± / * scalar promotes the scalar to the matrix
+     * element type.  CTS shader_subroutine.two_subroutines writes
+     * `return (in_value + 1);` with an int literal; without SIToFP the
+     * fadd/fmul operands disagree (`<N x float>` vs `<N x i32>`) and Metal
+     * yields zeros in the XFB record. */
+    auto scalarAsColElt = [&](llvm::Value *s, llvm::ArrayType *arr) {
+        if (s->getType()->isVectorTy())
+            s = cg.b->CreateExtractElement(s, cI(0));
+        llvm::Type *want = colType(arr)->getElementType();
+        if (s->getType() == want) return s;
+        if (want->isFloatingPointTy() && s->getType()->isIntegerTy())
+            return cg.b->CreateSIToFP(s, want);
+        if (want->isFloatingPointTy() && s->getType()->isFloatingPointTy())
+            return cg.b->CreateFPCast(s, want);
+        if (want->isIntegerTy() && s->getType()->isFloatingPointTy())
+            return cg.b->CreateFPToSI(s, want);
+        if (want->isIntegerTy() && s->getType()->isIntegerTy())
+            return cg.b->CreateIntCast(s, want, /*isSigned=*/true);
+        return s;
+    };
 
     if (op == MGL_OP_MUL) {
         if (larr && r->getType()->isVectorTy()) {
@@ -352,13 +372,7 @@ llvm::Value *emitMatrixBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
         }
         if (larr) {
             /* M * scalar: per-column scale. */
-            llvm::Value *s = r;
-            if (s->getType()->isVectorTy()) {
-                llvm::Value *s0 = cg.b->CreateExtractElement(
-                    s, llvm::ConstantInt::get(
-                           llvm::Type::getInt32Ty(*cg.ctx), 0));
-                s = s0;
-            }
+            llvm::Value *s = scalarAsColElt(r, larr);
             llvm::Value *out = llvm::UndefValue::get(l->getType());
             for (uint32_t c = 0; c < colCount(larr); c++) {
                 llvm::Value *col = cg.b->CreateExtractValue(l, c);
@@ -370,13 +384,7 @@ llvm::Value *emitMatrixBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
         }
         if (rarr) {
             /* scalar * M. */
-            llvm::Value *s = l;
-            if (s->getType()->isVectorTy()) {
-                llvm::Value *s0 = cg.b->CreateExtractElement(
-                    s, llvm::ConstantInt::get(
-                           llvm::Type::getInt32Ty(*cg.ctx), 0));
-                s = s0;
-            }
+            llvm::Value *s = scalarAsColElt(l, rarr);
             llvm::Value *out = llvm::UndefValue::get(r->getType());
             for (uint32_t c = 0; c < colCount(rarr); c++) {
                 llvm::Value *col = cg.b->CreateExtractValue(r, c);
@@ -402,19 +410,14 @@ llvm::Value *emitMatrixBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
             }
             return out;
         }
+        auto *arrTy = llvm::cast<llvm::ArrayType>((larr ? l : r)->getType());
         llvm::Value *arr = larr ? l : r;
-        llvm::Value *s = larr ? r : l;
-        if (s->getType()->isVectorTy()) {
-            s = cg.b->CreateExtractElement(
-                s, llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0));
-        }
-        llvm::Value *out = llvm::UndefValue::get(arr->getType());
+        llvm::Value *s = scalarAsColElt(larr ? r : l, arrTy);
+        llvm::Value *out = llvm::UndefValue::get(arrTy);
         bool scalarOnRight = larr != nullptr;
-        for (uint32_t c = 0; c < colCount(
-                llvm::cast<llvm::ArrayType>(arr->getType())); c++) {
+        for (uint32_t c = 0; c < colCount(arrTy); c++) {
             llvm::Value *col = cg.b->CreateExtractValue(arr, c);
-            llvm::Value *bs = cg.b->CreateVectorSplat(
-                rowCount(llvm::cast<llvm::ArrayType>(arr->getType())), s);
+            llvm::Value *bs = cg.b->CreateVectorSplat(rowCount(arrTy), s);
             llvm::Value *m = sub
                 ? (scalarOnRight ? cg.b->CreateFSub(col, bs)
                                  : cg.b->CreateFSub(bs, col))
@@ -435,13 +438,9 @@ llvm::Value *emitMatrixBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
             }
             return out;
         }
+        auto *arrTy = llvm::cast<llvm::ArrayType>((larr ? l : r)->getType());
         llvm::Value *arr = larr ? l : r;
-        llvm::Value *s = larr ? r : l;
-        if (s->getType()->isVectorTy()) {
-            s = cg.b->CreateExtractElement(
-                s, llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0));
-        }
-        auto *arrTy = llvm::cast<llvm::ArrayType>(arr->getType());
+        llvm::Value *s = scalarAsColElt(larr ? r : l, arrTy);
         llvm::Value *out = llvm::UndefValue::get(arrTy);
         const uint32_t rows = rowCount(arrTy);
         const bool scalarOnRight = larr != nullptr;

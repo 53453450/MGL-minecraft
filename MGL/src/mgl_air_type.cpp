@@ -141,14 +141,27 @@ llvm::Value *encodeFloatCarrier(Codegen &cg, llvm::Value *value,
         }
         return llvm::Constant::getNullValue(dst);
     }
-    if (scalar == MGLIR_SCALAR_UINT)
+    if (scalar == MGLIR_SCALAR_UINT) {
+        /* Vector uints: bitcast per component so every bit survives the
+         * float carrier (CTS structure_parameters_program_binary:
+         * 2^24+1).  UIToFP is exact only to 2^24.  Scalar uints prefer
+         * uintUsesSplitFloatCarrier; the UIToFP fallback is for the
+         * has_gs path that cannot split. */
+        if (value->getType()->isVectorTy())
+            return cg.b->CreateBitCast(value, dst);
         return cg.b->CreateUIToFP(value, dst);
+    }
     return cg.b->CreateSIToFP(value, dst);
 }
 
 llvm::Value *decodeFloatCarrier(Codegen &cg, llvm::Value *arg,
                                        MGLIRScalar scalar,
                                        llvm::Type *destTy) {
+    if (scalar == MGLIR_SCALAR_UINT &&
+        (arg->getType()->isVectorTy() ||
+         (destTy && destTy->isVectorTy()))) {
+        return cg.b->CreateBitCast(arg, destTy);
+    }
     arg = cg.b->CreateUnaryIntrinsic(llvm::Intrinsic::round, arg);
     if (scalar == MGLIR_SCALAR_UINT)
         return cg.b->CreateFPToUI(arg, destTy);
