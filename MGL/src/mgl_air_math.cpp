@@ -69,10 +69,19 @@ static llvm::Value *callAirFastUnary(Codegen &cg, const AirMathDeps &deps,
 }
 
 static bool typeIsIntLike(llvm::Type *t) {
-    return t->isIntOrIntVectorTy() &&
-           (!t->isVectorTy() || llvm::cast<llvm::FixedVectorType>(t)
-                                    ->getElementType()
-                                    ->isIntegerTy());
+    /* i64 is the AGX double payload, not a GLSL int genType — keep it off
+     * the signed-int abs/min/max/clamp paths so soft-float can run. */
+    if (!t->isIntOrIntVectorTy())
+        return false;
+    unsigned bits = t->isVectorTy()
+        ? llvm::cast<llvm::FixedVectorType>(t)->getElementType()
+              ->getIntegerBitWidth()
+        : t->getIntegerBitWidth();
+    if (bits == 64u)
+        return false;
+    return !t->isVectorTy() || llvm::cast<llvm::FixedVectorType>(t)
+                                   ->getElementType()
+                                   ->isIntegerTy();
 }
 
 /* Constant 0.0 / 1.0 with the shape of `t` (scalar or vector). */
@@ -283,7 +292,12 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         strcmp(name, "trunc") == 0 || strcmp(name, "round") == 0 ||
         strcmp(name, "roundEven") == 0) {
         if (!need(1)) return nullptr;
-        a0 = farg(0);
+        llvm::Value *raw = arg(0);
+        if (!raw) return nullptr;
+        const bool as_double =
+            raw->getType()->isIntOrIntVectorTy() &&
+            raw->getType()->getScalarSizeInBits() == 64;
+        a0 = coerceScalar(cg, raw, MGLIR_SCALAR_FLOAT);
         if (!a0) return nullptr;
         llvm::Intrinsic::ID id;
         if (strcmp(name, "exp") == 0) id = llvm::Intrinsic::exp;
@@ -295,7 +309,8 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         else if (strcmp(name, "trunc") == 0) id = llvm::Intrinsic::trunc;
         else if (strcmp(name, "round") == 0) id = llvm::Intrinsic::round;
         else id = llvm::Intrinsic::roundeven;
-        return callFloatIntrinsic(cg, id, a0);
+        llvm::Value *r = callFloatIntrinsic(cg, id, a0);
+        return as_double ? coerceScalar(cg, r, MGLIR_SCALAR_DOUBLE) : r;
     }
     if (strcmp(name, "sqrt") == 0) {
         if (!need(1)) return nullptr;
@@ -359,10 +374,16 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
     }
     if (strcmp(name, "fract") == 0) {
         if (!need(1)) return nullptr;
-        a0 = farg(0);
+        llvm::Value *raw = arg(0);
+        if (!raw) return nullptr;
+        const bool as_double =
+            raw->getType()->isIntOrIntVectorTy() &&
+            raw->getType()->getScalarSizeInBits() == 64;
+        a0 = coerceScalar(cg, raw, MGLIR_SCALAR_FLOAT);
         if (!a0) return nullptr;
         llvm::Value *fl = callFloatIntrinsic(cg, llvm::Intrinsic::floor, a0);
-        return cg.b->CreateFSub(a0, fl);
+        llvm::Value *r = cg.b->CreateFSub(a0, fl);
+        return as_double ? coerceScalar(cg, r, MGLIR_SCALAR_DOUBLE) : r;
     }
     if (strcmp(name, "isnan") == 0) {
         if (!need(1)) return nullptr;
@@ -382,7 +403,12 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
     }
     if (strcmp(name, "sign") == 0) {
         if (!need(1)) return nullptr;
-        a0 = farg(0);
+        llvm::Value *raw = arg(0);
+        if (!raw) return nullptr;
+        const bool as_double =
+            raw->getType()->isIntOrIntVectorTy() &&
+            raw->getType()->getScalarSizeInBits() == 64;
+        a0 = coerceScalar(cg, raw, MGLIR_SCALAR_FLOAT);
         if (!a0) return nullptr;
         llvm::Type *t = a0->getType();
         llvm::Value *z = fpConstOf(cg, t, 0.0);
@@ -392,7 +418,8 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         llvm::Value *neg = cg.b->CreateFCmpOLT(a0, z);
         llvm::Value *mone = fpConstOf(cg, t, -1.0);
         llvm::Value *sn = cg.b->CreateSelect(neg, mone, z);
-        return cg.b->CreateSelect(pos, one, sn);
+        llvm::Value *r = cg.b->CreateSelect(pos, one, sn);
+        return as_double ? coerceScalar(cg, r, MGLIR_SCALAR_DOUBLE) : r;
     }
     if (strcmp(name, "radians") == 0) {
         if (!need(1)) return nullptr;
@@ -493,11 +520,23 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
                 ? llvm::CmpInst::ICMP_SLT : llvm::CmpInst::ICMP_SGT;
             return cg.b->CreateSelect(cg.b->CreateICmp(p, a0, a1), a0, a1);
         }
+        /* float genType and AGX double (i64 payload) both soft-float here.
+         * Also widen when sema typed the call as DOUBLE but Uniform*d
+         * delivered f32 carriers (CTS fp64-case1 max(g_uniform_def,...)). */
+        MType a0ty = deps.exprType(cg, e->u.call.args[0], mod, locals);
+        MType a1ty = deps.exprType(cg, e->u.call.args[1], mod, locals);
+        const bool as_double =
+            (t->isIntOrIntVectorTy() && t->getScalarSizeInBits() == 64) ||
+            a0ty.scalar == MGLIR_SCALAR_DOUBLE ||
+            a1ty.scalar == MGLIR_SCALAR_DOUBLE;
+        a0 = coerceScalar(cg, a0, MGLIR_SCALAR_FLOAT);
         a1 = coerceScalar(cg, a1, MGLIR_SCALAR_FLOAT);
+        t = a0->getType();
         if (t->isVectorTy()) a1 = deps.broadcastTo(cg, a1, t);
         llvm::Intrinsic::ID id = strcmp(name, "min") == 0
             ? llvm::Intrinsic::minnum : llvm::Intrinsic::maxnum;
-        return cg.b->CreateIntrinsic(id, {t}, {a0, a1});
+        llvm::Value *r = cg.b->CreateIntrinsic(id, {t}, {a0, a1});
+        return as_double ? coerceScalar(cg, r, MGLIR_SCALAR_DOUBLE) : r;
     }
     if (strcmp(name, "clamp") == 0 || strcmp(name, "mix") == 0) {
         if (!need(3)) return nullptr;
@@ -583,8 +622,19 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
                                  llvm::Constant::getNullValue(t)),
                 neg, a0);
         }
+        /* float genType + double (i64) → soft fabs. */
         a0 = coerceScalar(cg, a0, MGLIR_SCALAR_FLOAT);
-        return callFloatIntrinsic(cg, llvm::Intrinsic::fabs, a0);
+        llvm::Value *r = callFloatIntrinsic(cg, llvm::Intrinsic::fabs, a0);
+        /* Sema types double abs as DOUBLE; widen soft result back to i64. */
+        if (t->isIntOrIntVectorTy() &&
+            ((t->isVectorTy()
+                  ? llvm::cast<llvm::FixedVectorType>(t)
+                        ->getElementType()
+                        ->getIntegerBitWidth()
+                  : t->getIntegerBitWidth()) == 64u)) {
+            return coerceScalar(cg, r, MGLIR_SCALAR_DOUBLE);
+        }
+        return r;
     }
     if (strcmp(name, "reflect") == 0) {
         if (!need(2)) return nullptr;

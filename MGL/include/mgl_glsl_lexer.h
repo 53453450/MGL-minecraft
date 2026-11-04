@@ -47,7 +47,8 @@ typedef enum MGLGLSLTokenKind {
     MGLGLSL_TOK_IDENT,
     MGLGLSL_TOK_INT,       /* decimal/octal/hex literal */
     MGLGLSL_TOK_UINT,      /* unsigned literal (u/U suffix) */
-    MGLGLSL_TOK_FLOAT,     /* floating point literal */
+    MGLGLSL_TOK_FLOAT,     /* floating point literal (optional f/F) */
+    MGLGLSL_TOK_DOUBLE,    /* double literal (lf/LF suffix; GLSL 4.60 §4.1.4) */
 
     /* Punctuation / operators. */
     MGLGLSL_TOK_PUNCT,

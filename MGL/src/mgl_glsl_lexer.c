@@ -129,13 +129,17 @@ static int is_hex_digit(char c)
 }
 
 /* Scan the body of a numeric literal (no leading digit consumed).
- * Handles: 123, 123u/U, 0x1F, 0x1Fu, 1.5, 1., .5, 1e-3, 1.5E+2, 1f/F.
- * Returns 1 if the token is floating-point, 0 for integer (set *is_uint). */
-static int scan_number(MGLGLSLexer *lx, MGLGLSLToken *tok, int *is_uint)
+ * Handles: 123, 123u/U, 0x1F, 0x1Fu, 1.5, 1., .5, 1e-3, 1.5E+2, 1f/F,
+ * 1.0lf/1.0LF (GLSL 4.60 §4.1.4 floating-suffix).
+ * Returns 1 if the token is floating-point, 0 for integer (set *is_uint).
+ * *is_double is set when the lf/LF suffix was consumed. */
+static int scan_number(MGLGLSLexer *lx, MGLGLSLToken *tok, int *is_uint,
+                       int *is_double)
 {
     tok->start = (uint32_t)lx->pos;
     int is_float = 0;
     *is_uint = 0;
+    *is_double = 0;
 
     /* 0x/0X prefix. */
     if (lx->src[lx->pos] == '0' && lx->pos + 1 < lx->src_len &&
@@ -178,12 +182,18 @@ static int scan_number(MGLGLSLexer *lx, MGLGLSLToken *tok, int *is_uint)
         }
     }
 
-    /* Suffixes. */
+    /* Suffixes: u/U, f/F, or lf/LF (double).  Check lf/LF before bare f/F. */
     if (lx->pos < lx->src_len) {
         char c = lx->src[lx->pos];
         if (c == 'u' || c == 'U') {
             *is_uint = 1;
             lx->pos++;
+        } else if (lx->pos + 1 < lx->src_len &&
+                   ((c == 'l' && lx->src[lx->pos + 1] == 'f') ||
+                    (c == 'L' && lx->src[lx->pos + 1] == 'F'))) {
+            is_float = 1;
+            *is_double = 1;
+            lx->pos += 2;
         } else if (c == 'f' || c == 'F') {
             is_float = 1;
             lx->pos++;
@@ -192,8 +202,15 @@ static int scan_number(MGLGLSLexer *lx, MGLGLSLToken *tok, int *is_uint)
 
     tok->end = (uint32_t)lx->pos;
     tok->line = lx->line;
-    tok->kind = (is_float || *is_uint) ? (is_float ? MGLGLSL_TOK_FLOAT : MGLGLSL_TOK_UINT)
-                                       : MGLGLSL_TOK_INT;
+    if (*is_double) {
+        tok->kind = MGLGLSL_TOK_DOUBLE;
+    } else if (is_float) {
+        tok->kind = MGLGLSL_TOK_FLOAT;
+    } else if (*is_uint) {
+        tok->kind = MGLGLSL_TOK_UINT;
+    } else {
+        tok->kind = MGLGLSL_TOK_INT;
+    }
     return is_float;
 }
 
@@ -255,7 +272,8 @@ int mglGLSLexerNext(MGLGLSLexer *lx, MGLGLSLToken *out)
         (c == '.' && lx->pos + 1 < lx->src_len &&
          isdigit((unsigned char)lx->src[lx->pos + 1]))) {
         int is_uint = 0;
-        scan_number(lx, out, &is_uint);
+        int is_double = 0;
+        scan_number(lx, out, &is_uint, &is_double);
         return 0;
     }
     if (scan_punct(lx, out) == 0) {
@@ -276,7 +294,8 @@ int mglGLSLexerLiteral(const MGLGLSLexer *lx, const MGLGLSLToken *tok,
 {
     if (!lx || !tok || !out || (tok->kind != MGLGLSL_TOK_INT &&
                                 tok->kind != MGLGLSL_TOK_UINT &&
-                                tok->kind != MGLGLSL_TOK_FLOAT)) {
+                                tok->kind != MGLGLSL_TOK_FLOAT &&
+                                tok->kind != MGLGLSL_TOK_DOUBLE)) {
         return -1;
     }
     size_t n = tok->end - tok->start;
@@ -337,7 +356,14 @@ int mglGLSLexerLiteral(const MGLGLSLexer *lx, const MGLGLSLToken *tok,
         return 0;
     }
 
-    /* Strip the u/U and f/F suffix char before strtod. */
+    /* Strip u/U, f/F, or lf/LF before strtod. */
+    if (n >= 2) {
+        char a = buf[n - 2], b = buf[n - 1];
+        if ((a == 'l' && b == 'f') || (a == 'L' && b == 'F')) {
+            buf[n - 2] = '\0';
+            n -= 2;
+        }
+    }
     if (n > 0) {
         char last = buf[n - 1];
         if (last == 'u' || last == 'U' || last == 'f' || last == 'F') {

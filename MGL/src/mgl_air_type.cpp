@@ -251,17 +251,22 @@ llvm::Align bufferLeafAlign(llvm::Type *t) {
 }
 
 llvm::Type *llvmType(const MType &t, llvm::LLVMContext &ctx) {
-    llvm::Type *s = llvmScalar(t.scalar, ctx);
+    /* AGX materializeAll rejects <N x i64>.  Double vectors/matrices use a
+     * float SSA carrier; memory load/store still round-trip IEEE754 binary64. */
+    MType use = t;
+    if (t.scalar == MGLIR_SCALAR_DOUBLE && (t.vec || t.isMatrix()))
+        use.scalar = MGLIR_SCALAR_FLOAT;
+    llvm::Type *s = llvmScalar(use.scalar, ctx);
     /* Arrays-of-matrices: arr takes precedence over the matrix shape. */
-    if (t.isArray()) {
-        MType el = t;
+    if (use.isArray()) {
+        MType el = use;
         el.arr = 0;
-        return llvm::ArrayType::get(llvmType(el, ctx), t.arr);
+        return llvm::ArrayType::get(llvmType(el, ctx), use.arr);
     }
-    if (t.isMatrix())
-        return llvm::ArrayType::get(llvm::FixedVectorType::get(s, t.rows), t.cols);
-    if (t.vec)
-        return llvm::FixedVectorType::get(s, t.vec);
+    if (use.isMatrix())
+        return llvm::ArrayType::get(llvm::FixedVectorType::get(s, use.rows), use.cols);
+    if (use.vec)
+        return llvm::FixedVectorType::get(s, use.vec);
     return s;
 }
 
@@ -348,22 +353,72 @@ llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want,
                 fv->getElementCount().getFixedValue());
         return elt;
     };
-    /* Doubles are i64 payloads — never SIToFP/FPToSI them as float.
-     * Numeric int/float→double conversion would emit f64 ALU that AGX
-     * metallibs reject; bit-identical payloads from matching paths still
-     * compare equal for CTS equality checks. */
+    /* Doubles are i64 payloads — never emit f64 ALU (AGX rejects it).
+     * Soft-convert through f32 when crossing the float/double boundary so
+     * Uniform*d / LF literals (i64) and f32 carriers can compare/add. */
     if (want == MGLIR_SCALAR_DOUBLE) {
         if (cur->isIntOrIntVectorTy() && cur->getScalarSizeInBits() == 64)
             return v;
         if (cur->isFPOrFPVectorTy() && cur->getScalarSizeInBits() == 64)
             return cg.b->CreateBitCast(v, vt(llvm::Type::getInt64Ty(ctx)));
+        if (cur->isFPOrFPVectorTy() && cur->getScalarSizeInBits() == 32) {
+            /* Expand binary32 → binary64 bits without f64 ops. */
+            auto expand1 = [&](llvm::Value *f) -> llvm::Value * {
+                llvm::Value *bits = cg.b->CreateBitCast(f, cg.b->getInt32Ty());
+                llvm::Value *sign = cg.b->CreateLShr(bits, 31);
+                llvm::Value *exp = cg.b->CreateAnd(
+                    cg.b->CreateLShr(bits, 23), cg.b->getInt32(0xFF));
+                llvm::Value *mant = cg.b->CreateAnd(bits, cg.b->getInt32(0x7FFFFF));
+                llvm::Value *is_zero = cg.b->CreateICmpEQ(
+                    cg.b->CreateAnd(bits, cg.b->getInt32(0x7FFFFFFF)),
+                    cg.b->getInt32(0));
+                llvm::Value *is_special = cg.b->CreateICmpEQ(exp, cg.b->getInt32(0xFF));
+                llvm::Value *is_denorm = cg.b->CreateICmpEQ(exp, cg.b->getInt32(0));
+                llvm::Value *exp64 = cg.b->CreateAdd(exp, cg.b->getInt32(1023 - 127));
+                llvm::Value *hi = cg.b->CreateOr(
+                    cg.b->CreateShl(sign, 31),
+                    cg.b->CreateOr(cg.b->CreateShl(
+                        cg.b->CreateAnd(exp64, cg.b->getInt32(0x7FF)), 20),
+                        cg.b->CreateLShr(mant, 3)));
+                llvm::Value *lo = cg.b->CreateShl(mant, 29);
+                /* NaN/Inf: keep top exp, pass mantissa. */
+                llvm::Value *hi_spec = cg.b->CreateOr(
+                    cg.b->CreateShl(sign, 31),
+                    cg.b->CreateOr(cg.b->getInt32(0x7FF00000),
+                                   cg.b->CreateLShr(mant, 3)));
+                hi = cg.b->CreateSelect(is_special, hi_spec, hi);
+                /* +/-0 */
+                hi = cg.b->CreateSelect(is_zero, cg.b->CreateShl(sign, 31), hi);
+                lo = cg.b->CreateSelect(is_zero, cg.b->getInt32(0), lo);
+                /* Flush denormals to signed zero (CTS values are normals). */
+                hi = cg.b->CreateSelect(is_denorm, cg.b->CreateShl(sign, 31), hi);
+                lo = cg.b->CreateSelect(is_denorm, cg.b->getInt32(0), lo);
+                llvm::Value *hi64 = cg.b->CreateZExt(hi, cg.b->getInt64Ty());
+                llvm::Value *lo64 = cg.b->CreateZExt(lo, cg.b->getInt64Ty());
+                return cg.b->CreateOr(cg.b->CreateShl(hi64, 32), lo64);
+            };
+            if (auto *fvt = llvm::dyn_cast<llvm::FixedVectorType>(cur)) {
+                unsigned n = fvt->getElementCount().getFixedValue();
+                llvm::Type *outTy = llvm::FixedVectorType::get(
+                    llvm::Type::getInt64Ty(ctx), n);
+                llvm::Value *out = llvm::UndefValue::get(outTy);
+                for (unsigned i = 0; i < n; i++) {
+                    llvm::Value *el = cg.b->CreateExtractElement(v, i);
+                    out = cg.b->CreateInsertElement(out, expand1(el), i);
+                }
+                return out;
+            }
+            return expand1(v);
+        }
         return v;
     }
-    if (cur->isIntOrIntVectorTy() && cur->getScalarSizeInBits() == 64 &&
-        want != MGLIR_SCALAR_DOUBLE)
-        return v; /* keep double payload out of float/int coercions */
     bool wantFP = scalarIsFloat(want);
     bool curFP = cur->isFPOrFPVectorTy();
+    if (cur->isIntOrIntVectorTy() && cur->getScalarSizeInBits() == 64) {
+        if (wantFP)
+            return encodeFloatCarrier(cg, v, MGLIR_SCALAR_DOUBLE);
+        return v;
+    }
     if (curFP == wantFP && want != MGLIR_SCALAR_BOOL &&
         cur->getScalarSizeInBits() == (want == MGLIR_SCALAR_BOOL ? 1 : 32))
         return v;

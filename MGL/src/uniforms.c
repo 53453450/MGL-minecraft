@@ -2052,6 +2052,28 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
 }
 
 /* Map a plain-uniform GL type to (component count, float-ness). */
+static GLboolean mglGLTypeIsDoubleUniform(GLuint gl_type)
+{
+    switch (gl_type) {
+        case GL_DOUBLE:
+        case GL_DOUBLE_VEC2:
+        case GL_DOUBLE_VEC3:
+        case GL_DOUBLE_VEC4:
+        case GL_DOUBLE_MAT2:
+        case GL_DOUBLE_MAT3:
+        case GL_DOUBLE_MAT4:
+        case GL_DOUBLE_MAT2x3:
+        case GL_DOUBLE_MAT2x4:
+        case GL_DOUBLE_MAT3x2:
+        case GL_DOUBLE_MAT3x4:
+        case GL_DOUBLE_MAT4x2:
+        case GL_DOUBLE_MAT4x3:
+            return GL_TRUE;
+        default:
+            return GL_FALSE;
+    }
+}
+
 static GLuint mglPlainUniformTypeInfo(GLuint gl_type, GLboolean *is_float)
 {
     *is_float = GL_TRUE;
@@ -2103,8 +2125,12 @@ static GLuint mglMatrixElementStrideWords(size_t avail_words,
  * integer bits.  Slots never uploaded read as zero (GL initial value; shader
  * initializers are seeded into the slots at link time). */
 static GLuint mglReadPlainUniform(Program *ptr, GLint location,
-                                  uint32_t out[16], GLboolean *is_float_out)
+                                  uint32_t out[16], GLboolean *is_float_out,
+                                  GLboolean *is_double_out)
 {
+    if (is_double_out) {
+        *is_double_out = GL_FALSE;
+    }
     if (!ptr || location < 0) {
         return 0;
     }
@@ -2162,7 +2188,18 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
         return 0;
     }
 
-    memset(out, 0, comps * sizeof(uint32_t));
+    /* Doubles occupy two 32-bit words per component in the plain pack. */
+    const GLboolean is_double = mglGLTypeIsDoubleUniform(gl_type);
+    if (is_double_out) {
+        *is_double_out = is_double;
+    }
+    const GLuint word_scale = is_double ? 2u : 1u;
+    const GLuint word_comps = comps * word_scale;
+    if (word_comps > 16u) {
+        return 0;
+    }
+
+    memset(out, 0, word_comps * sizeof(uint32_t));
 
     /* Prefer the exact location slot: glUniform* writes each location
      * independently (arr[i] / mat3[i] live at location+i).  Fall back to the
@@ -2170,7 +2207,7 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
      * that pack consecutive elements into one buffer. */
     Buffer *buf = NULL;
     size_t first = 0;
-    GLuint stored_words = comps;
+    GLuint stored_words = word_comps;
     const GLuint padded_words =
         mglPlainUniformMatrixElementBytes(gl_type) / sizeof(uint32_t);
 
@@ -2223,7 +2260,7 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
                 }
             }
         } else {
-            memcpy(out, tmp, comps * sizeof(uint32_t));
+            memcpy(out, tmp, stored_words * sizeof(uint32_t));
         }
     }
     return comps;
@@ -2263,7 +2300,8 @@ static GLuint mglGetUniformAsFloat(GLMContext ctx, GLuint program, GLint locatio
 
     uint32_t bits[16];
     GLboolean is_float = GL_TRUE;
-    GLuint comps = mglReadPlainUniform(ptr, location, bits, &is_float);
+    GLboolean is_double = GL_FALSE;
+    GLuint comps = mglReadPlainUniform(ptr, location, bits, &is_float, &is_double);
     if (comps == 0) {
         /* Sampler uniforms are valid GetUniform targets: return the unit. */
         if (mglFindSamplerUniformResource(ptr, location, NULL, NULL)) {
@@ -2276,12 +2314,54 @@ static GLuint mglGetUniformAsFloat(GLMContext ctx, GLuint program, GLint locatio
         return 0;  /* location not an active uniform */
     }
     for (GLuint i = 0; i < comps; i++) {
-        if (is_float) {
+        if (is_double) {
+            GLdouble d;
+            memcpy(&d, &bits[i * 2u], sizeof(d));
+            out[i] = (GLfloat)d;
+        } else if (is_float) {
             GLfloat f;
             memcpy(&f, &bits[i], sizeof(f));
             out[i] = f;
         } else {
             out[i] = (GLfloat)(GLint)bits[i];
+        }
+    }
+    return comps;
+}
+
+static GLuint mglGetUniformAsDouble(GLMContext ctx, GLuint program, GLint location,
+                                    const char *caller, GLdouble *out)
+{
+    {
+        GLenum name_err = mglGetUniformProgramNameError(ctx, program);
+        if (name_err != GL_NO_ERROR) {
+            mglDispatchError(ctx, caller, name_err);
+            return 0;
+        }
+    }
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, caller);
+    if (!ptr || !ptr->link_success) {
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return 0;
+    }
+
+    uint32_t bits[16];
+    GLboolean is_float = GL_TRUE;
+    GLboolean is_double = GL_FALSE;
+    GLuint comps = mglReadPlainUniform(ptr, location, bits, &is_float, &is_double);
+    if (comps == 0) {
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return 0;
+    }
+    for (GLuint i = 0; i < comps; i++) {
+        if (is_double) {
+            memcpy(&out[i], &bits[i * 2u], sizeof(GLdouble));
+        } else if (is_float) {
+            GLfloat f;
+            memcpy(&f, &bits[i], sizeof(f));
+            out[i] = (GLdouble)f;
+        } else {
+            out[i] = (GLdouble)(GLint)bits[i];
         }
     }
     return comps;
@@ -2299,17 +2379,18 @@ void mglGetUniformfv(GLMContext ctx, GLuint program, GLint location, GLfloat *pa
     }
 }
 
-/* Double uniforms are stored as float (Metal has no fp64), so the stored
- * value is widened. */
+/* Default-block doubles are stored as IEEE754 binary64 to match AIR i64
+ * payloads.  Read them back as doubles (not via the float soft path). */
 void mglGetUniformdv(GLMContext ctx, GLuint program, GLint location, GLdouble *params)
 {
-    GLfloat values[16];
+    GLdouble values[16];
     if (!ctx) {
         return;
     }
-    GLuint comps = mglGetUniformAsFloat(ctx, program, location, __FUNCTION__, values);
-    for (GLuint i = 0; params && i < comps; i++) {
-        params[i] = (GLdouble)values[i];
+    GLuint comps =
+        mglGetUniformAsDouble(ctx, program, location, __FUNCTION__, values);
+    if (params) {
+        memcpy(params, values, comps * sizeof(GLdouble));
     }
 }
 
@@ -2370,13 +2451,18 @@ void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *para
 
     uint32_t bits[16];
     GLboolean is_float = GL_TRUE;
-    GLuint comps = mglReadPlainUniform(ptr, location, bits, &is_float);
+    GLboolean is_double = GL_FALSE;
+    GLuint comps = mglReadPlainUniform(ptr, location, bits, &is_float, &is_double);
     if (comps == 0) {
         ERROR_RETURN(GL_INVALID_OPERATION);  /* location not an active uniform */
         return;
     }
     for (GLuint i = 0; i < comps; i++) {
-        if (is_float) {
+        if (is_double) {
+            GLdouble d;
+            memcpy(&d, &bits[i * 2u], sizeof(d));
+            params[i] = (GLint)mglRoundToInt64Clamped((GLfloat)d, INT_MIN, INT_MAX);
+        } else if (is_float) {
             GLfloat f;
             memcpy(&f, &bits[i], sizeof(f));
             /* Spec 2.2.2: float -> int converts by rounding to nearest. */
@@ -2404,13 +2490,18 @@ void mglGetUniformuiv(GLMContext ctx, GLuint program, GLint location, GLuint *pa
 
     uint32_t bits[16];
     GLboolean is_float = GL_TRUE;
-    GLuint comps = mglReadPlainUniform(ptr, location, bits, &is_float);
+    GLboolean is_double = GL_FALSE;
+    GLuint comps = mglReadPlainUniform(ptr, location, bits, &is_float, &is_double);
     if (comps == 0) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
     for (GLuint i = 0; i < comps; i++) {
-        if (is_float) {
+        if (is_double) {
+            GLdouble d;
+            memcpy(&d, &bits[i * 2u], sizeof(d));
+            params[i] = (GLuint)mglRoundToInt64Clamped((GLfloat)d, 0, (int64_t)UINT32_MAX);
+        } else if (is_float) {
             GLfloat f;
             memcpy(&f, &bits[i], sizeof(f));
             /* Spec 2.2.2: negative inputs clamp to 0 for an unsigned target. */
@@ -3228,6 +3319,15 @@ static GLsizeiptr mglPlainUniformScalarVectorBytes(GLuint gl_type)
         case GL_FLOAT_VEC4: case GL_INT_VEC4: case GL_UNSIGNED_INT_VEC4:
         case GL_BOOL_VEC4:
             return 16;
+        /* AIR stores GLSL double as i64 payloads (8 bytes per component). */
+        case GL_DOUBLE:
+            return 8;
+        case GL_DOUBLE_VEC2:
+            return 16;
+        case GL_DOUBLE_VEC3:
+            return 24;
+        case GL_DOUBLE_VEC4:
+            return 32;
         default:
             return 0;
     }
@@ -3474,16 +3574,16 @@ static void mglUniformStore(GLMContext ctx, Program *program, GLint location,
     }
 }
 
-static void mglUniformDoubleVectorAsFloat(GLMContext ctx,
-                                          GLint location,
-                                          const GLdouble *value,
-                                          GLsizei count,
-                                          size_t components)
+/* Default-block doubles must be IEEE754 binary64 blobs: AIR loads them as
+ * i64 payloads.  Narrowing to float here used to pack two floats into one
+ * double word and soft-truncate to ≈value+ulp. */
+static void mglUniformDoubleVector(GLMContext ctx,
+                                   GLint location,
+                                   const GLdouble *value,
+                                   GLsizei count,
+                                   size_t components)
 {
     GLsizeiptr sourceBytes = 0;
-    size_t scalarCount;
-    GLfloat stackValues[16];
-    GLfloat *converted = stackValues;
 
     if (!checkUniformUploadParams(ctx,
                                   location,
@@ -3499,41 +3599,17 @@ static void mglUniformDoubleVectorAsFloat(GLMContext ctx,
         return;
     }
 
-    scalarCount = (size_t)count * components;
-    if (scalarCount > sizeof(stackValues) / sizeof(stackValues[0])) {
-        if (scalarCount > SIZE_MAX / sizeof(GLfloat)) {
-            ctx = mglUniformResolveContext(ctx, __FUNCTION__);
-            mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
-            return;
-        }
-        converted = (GLfloat *)malloc(scalarCount * sizeof(GLfloat));
-        if (!converted) {
-            ctx = mglUniformResolveContext(ctx, __FUNCTION__);
-            mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
-            return;
-        }
-    }
-
-    for (size_t i = 0; i < scalarCount; i++) {
-        converted[i] = (GLfloat)value[i];
-    }
-
-    (void)sourceBytes;
-    mglUniform(ctx, location, converted, (GLsizeiptr)(scalarCount * sizeof(GLfloat)));
-
-    if (converted != stackValues) {
-        free(converted);
-    }
+    mglUniform(ctx, location, (void *)value, sourceBytes);
 }
 
 void mglUniform1d(GLMContext ctx, GLint location, GLdouble x)
 {
-    mglUniformDoubleVectorAsFloat(ctx, location, &x, 1, 1);
+    mglUniformDoubleVector(ctx, location, &x, 1, 1);
 }
 
 void mglUniform1dv(GLMContext ctx, GLint location, GLsizei count, const GLdouble *value)
 {
-    mglUniformDoubleVectorAsFloat(ctx, location, value, count, 1);
+    mglUniformDoubleVector(ctx, location, value, count, 1);
 }
 
 void mglUniform1f(GLMContext ctx, GLint location, GLfloat v0)
@@ -3938,12 +4014,12 @@ void mglUniform2d(GLMContext ctx, GLint location, volatile GLdouble x, volatile 
 {
     GLdouble data[] = {x, y};
     
-    mglUniformDoubleVectorAsFloat(ctx, location, data, 1, 2);
+    mglUniformDoubleVector(ctx, location, data, 1, 2);
 }
 
 void mglUniform2dv(GLMContext ctx, GLint location, GLsizei count, const GLdouble *value)
 {
-    mglUniformDoubleVectorAsFloat(ctx, location, value, count, 2);
+    mglUniformDoubleVector(ctx, location, value, count, 2);
 }
 
 void mglUniform2f(GLMContext ctx, GLint location, GLfloat v0, GLfloat v1)
@@ -3990,12 +4066,12 @@ void mglUniform3d(GLMContext ctx, GLint location, GLdouble x, GLdouble y, GLdoub
 {
     GLdouble data[] = {x, y, z};
     
-    mglUniformDoubleVectorAsFloat(ctx, location, data, 1, 3);
+    mglUniformDoubleVector(ctx, location, data, 1, 3);
 }
 
 void mglUniform3dv(GLMContext ctx, GLint location, GLsizei count, const GLdouble *value)
 {
-    mglUniformDoubleVectorAsFloat(ctx, location, value, count, 3);
+    mglUniformDoubleVector(ctx, location, value, count, 3);
 }
 
 void mglUniform3f(GLMContext ctx, GLint location, GLfloat v0, GLfloat v1, GLfloat v2)
@@ -4038,12 +4114,12 @@ void mglUniform4d(GLMContext ctx, GLint location, GLdouble x, GLdouble y, GLdoub
 {
     GLdouble data[] = {x, y, z, w};
     
-    mglUniformDoubleVectorAsFloat(ctx, location, data, 1, 4);
+    mglUniformDoubleVector(ctx, location, data, 1, 4);
 }
 
 void mglUniform4dv(GLMContext ctx, GLint location, GLsizei count, const GLdouble *value)
 {
-    mglUniformDoubleVectorAsFloat(ctx, location, value, count, 4);
+    mglUniformDoubleVector(ctx, location, value, count, 4);
 }
 
 void mglUniform4f(GLMContext ctx, GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3)
@@ -4208,48 +4284,12 @@ DEFINE_TRANSPOSE_FUNC(GLdouble, 3, 3, Mat3x3dv, Mat3x3dvTrans)
 
 void mglUniformMatrix3dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
 {
-    GLsizeiptr sourceBytes = 0;
-    if (!checkUniformUploadParams(ctx,
-                                  location,
-                                  value,
-                                  count,
-                                  9u * sizeof(GLdouble),
-                                  &sourceBytes)) {
-        return;
-    }
-
-    if (count == 0) {
-        mglUniform(ctx, location, NULL, 0);
-        return;
-    }
-
-    if ((size_t)count > SIZE_MAX / (9u * sizeof(GLfloat))) {
-        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
-        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
-        return;
-    }
-
-    size_t floatCount = (size_t)count * 9u;
-    GLfloat stackValues[18];
-    GLfloat *converted = (floatCount <= (sizeof(stackValues) / sizeof(stackValues[0])))
-        ? stackValues
-        : (GLfloat *)malloc(floatCount * sizeof(GLfloat));
-    if (!converted) {
-        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
-        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
-        return;
-    }
-
-    for (size_t i = 0; i < floatCount; i++) {
-        converted[i] = (GLfloat)value[i];
-    }
-
-    (void)sourceBytes;
-    mglUploadPlainUniformMat3fv(ctx, location, count, transpose, converted);
-
-    if (converted != stackValues) {
-        free(converted);
-    }
+    HANDLE_MATRIX_TRANSPOSE(
+                            GLdouble,
+                            Mat3x3dv,
+                            Mat3x3dvTrans,
+                            Mat3x3dvTranspose
+        );
 }
 
 DEFINE_MATRIX_TYPE(GLfloat, 3, 3, Mat3x3fv)       // 3x3 matrix type

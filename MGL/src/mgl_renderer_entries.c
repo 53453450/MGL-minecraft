@@ -1737,6 +1737,23 @@ bool mglRenderGenerateVertexDescriptorState(GLMContext ctx,
                             ? 12u
                             : 16u);
                 }
+            } else if ((conversionKind == MGL_ATTRIB_CONV_DOUBLE ||
+                        conversionKind == MGL_ATTRIB_CONV_FIXED) &&
+                       resolved.stride != 0u) {
+                /* Converted buffer keeps source relativeoffset but stores
+                 * floatN; grow the Metal stride when relativeoffset+floatN
+                 * exceeds the GL binding pitch (VAB inputL stride-16 case).
+                 * stride==0 is constant-fetch (§10.3.1) — leave it for the
+                 * Constant step remap below. */
+                uint32_t n = (uint32_t)vao->attrib[i].size;
+                if (n < 1u || n > 4u) {
+                    n = 4u;
+                }
+                uint32_t need =
+                    (uint32_t)resolved.relativeoffset + n * 4u;
+                if (need > stride) {
+                    stride = (uint32_t)mglRenderAlignVertexStrideForMetal(need);
+                }
             }
             layoutStride[mapped_buffer_index] = stride;
 

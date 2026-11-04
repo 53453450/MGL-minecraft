@@ -2046,10 +2046,12 @@ extern "C" uint32_t mglRenderPlanVertexAttribStride(
         return 16u;
     }
     if (mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_F64) {
-        const uint64_t raw =
-            resolved_stride > 0u ? resolved_stride
-                                 : (uint64_t)size * sizeof(double);
-        return (uint32_t)mglRenderAlignVertexStrideForMetal(raw);
+        /* stride 0 must stay 0 so the caller can remap to Metal Constant
+         * step (GL 4.6 §10.3.1).  Do not substitute size*sizeof(double). */
+        if (resolved_stride == 0u) {
+            return 0u;
+        }
+        return (uint32_t)mglRenderAlignVertexStrideForMetal(resolved_stride);
     }
     if (integer == 0 && (mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_S32 ||
          mglVertexFetchKindForGLType(type) == MGL_VFETCH_KIND_U32)) {

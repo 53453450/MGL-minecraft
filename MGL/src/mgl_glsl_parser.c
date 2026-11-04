@@ -516,7 +516,7 @@ static int at_num(MGLParser *p)
 {
     MGLGLSLTokenKind k = (MGLGLSLTokenKind)tk(p, 0)->kind;
     return k == MGLGLSL_TOK_INT || k == MGLGLSL_TOK_UINT ||
-           k == MGLGLSL_TOK_FLOAT;
+           k == MGLGLSL_TOK_FLOAT || k == MGLGLSL_TOK_DOUBLE;
 }
 
 static int at_int_num(MGLParser *p)
@@ -1280,14 +1280,17 @@ static MGLExpr *parse_primary(MGLParser *p)
     const MGLGLSLToken *t = tk(p, 0);
 
     if (t->kind == MGLGLSL_TOK_INT || t->kind == MGLGLSL_TOK_UINT ||
-        t->kind == MGLGLSL_TOK_FLOAT) {
+        t->kind == MGLGLSL_TOK_FLOAT || t->kind == MGLGLSL_TOK_DOUBLE) {
         MGLExpr *e = expr_alloc(p, MGL_EXPR_LITERAL, line);
         if (e) {
-        e->u.literal.base = (t->kind == MGLGLSL_TOK_FLOAT)
-                                ? MGL_AST_TYPE_FLOAT
-                                : (t->kind == MGLGLSL_TOK_UINT)
-                                      ? MGL_AST_TYPE_UINT
-                                      : MGL_AST_TYPE_INT;
+            if (t->kind == MGLGLSL_TOK_DOUBLE)
+                e->u.literal.base = MGL_AST_TYPE_DOUBLE;
+            else if (t->kind == MGLGLSL_TOK_FLOAT)
+                e->u.literal.base = MGL_AST_TYPE_FLOAT;
+            else if (t->kind == MGLGLSL_TOK_UINT)
+                e->u.literal.base = MGL_AST_TYPE_UINT;
+            else
+                e->u.literal.base = MGL_AST_TYPE_INT;
             e->u.literal.value = cur_double(p);
         }
         advance(p);
