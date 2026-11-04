@@ -596,6 +596,34 @@ void mglRenderBindingSetValid(MGLBindingState *binding_state, int valid);
 
 int mglRenderBindingGetValid(MGLBindingState *binding_state, uint32_t *valid_out);
 
+/* Per-encoder sampled/image bind gate (see BindingState::sampledNeedsBind). */
+void mglRenderBindingMarkSampledNeedsBind(MGLBindingState *binding_state);
+void mglRenderBindingClearSampledNeedsBind(MGLBindingState *binding_state);
+int mglRenderBindingSampledNeedsBind(MGLBindingState *binding_state);
+
+/* Sampler warmup latch scoped to this binding state (not process-static). */
+int mglRenderBindingWarmupUnchanged(MGLBindingState *binding_state,
+                                    const void *vertex_program,
+                                    const void *fragment_program,
+                                    const uint32_t *vertex_mask,
+                                    const uint32_t *fragment_mask);
+void mglRenderBindingStoreWarmup(MGLBindingState *binding_state,
+                                 const void *vertex_program,
+                                 const void *fragment_program,
+                                 const uint32_t *vertex_mask,
+                                 const uint32_t *fragment_mask);
+
+/* Borrowed MTL sampler cache keyed by (unit, tex, gl_sampler, params_sig). */
+void *mglRenderBindingLookupSampledSampler(MGLBindingState *binding_state,
+                                           uint32_t unit, const void *tex,
+                                           const void *gl_sampler,
+                                           uint64_t params_sig);
+void mglRenderBindingStoreSampledSampler(MGLBindingState *binding_state,
+                                         uint32_t unit, const void *tex,
+                                         const void *gl_sampler,
+                                         uint64_t params_sig,
+                                         void *mtl_sampler);
+
 int mglRenderBindingRecordVertexBuffer(MGLBindingState *binding_state, void *buffer, uint64_t offset, uint32_t index);
 
 int mglRenderBindingRecordFragmentBuffer(MGLBindingState *binding_state, void *buffer, uint64_t offset, uint32_t index);

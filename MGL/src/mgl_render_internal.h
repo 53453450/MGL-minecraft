@@ -570,6 +570,14 @@ inline void installBufferCowSnapshot(Buffer* owner,
     mglBufferBackendEnsure(owner)->mtl_data = snapshot.buffer;
 }
 
+struct SampledSamplerCacheEntry {
+    const void *tex = nullptr;
+    const void *gl_sampler = nullptr;
+    uint64_t params_sig = 0;
+    /* Borrowed Metal sampler; BindingState does not retain it. */
+    void *mtl_sampler = nullptr;
+};
+
 struct BindingState {
     explicit BindingState(uint32_t textureSlotCount)
         : vertexBuffers(kMGLMaxBufferSlots, nullptr),
@@ -579,7 +587,8 @@ struct BindingState {
           vertexTextures(textureSlotCount, nullptr),
           fragmentTextures(textureSlotCount, nullptr),
           vertexSamplers(textureSlotCount, nullptr),
-          fragmentSamplers(textureSlotCount, nullptr) {}
+          fragmentSamplers(textureSlotCount, nullptr),
+          sampledSamplerCache(textureSlotCount) {}
 
     ~BindingState() { invalidate(); }
 
@@ -614,6 +623,16 @@ struct BindingState {
         scissor = {};
         triangleFillMode = MTL::TriangleFillModeFill;
         valid = false;
+        sampledNeedsBind = true;
+        warmupVertex = nullptr;
+        warmupFragment = nullptr;
+        warmupVertexMask[0] = warmupVertexMask[1] = warmupVertexMask[2] =
+            warmupVertexMask[3] = 0u;
+        warmupFragmentMask[0] = warmupFragmentMask[1] = warmupFragmentMask[2] =
+            warmupFragmentMask[3] = 0u;
+        for (SampledSamplerCacheEntry &entry : sampledSamplerCache) {
+            entry = SampledSamplerCacheEntry{};
+        }
     }
 
     template <typename T>
@@ -661,6 +680,14 @@ struct BindingState {
     uint64_t scissorCount = 0;
     MTL::TriangleFillMode triangleFillMode = MTL::TriangleFillModeFill;
     bool valid = false;
+    /* Encoder-side sampled/image bind owed: set on invalidate / SetValid(0) /
+     * GL DIRTY_TEX*|PROGRAM|IMAGE; cleared after BindTextures succeeds. */
+    bool sampledNeedsBind = true;
+    const void *warmupVertex = nullptr;
+    const void *warmupFragment = nullptr;
+    uint32_t warmupVertexMask[4] = {};
+    uint32_t warmupFragmentMask[4] = {};
+    std::vector<SampledSamplerCacheEntry> sampledSamplerCache;
     MGLRenderBindingStats stats = {};
 };
 

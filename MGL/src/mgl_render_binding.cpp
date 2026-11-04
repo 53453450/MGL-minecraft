@@ -1472,7 +1472,13 @@ void mglRenderBindingInvalidate(MGLBindingState * binding_state) {
 
 void mglRenderBindingSetValid(MGLBindingState * binding_state, int valid) {
     mgl::BindingState* state = reinterpret_cast<mgl::BindingState*>(static_cast<void*>(binding_state));
-    if (state) state->valid = valid != 0;
+    if (!state) return;
+    state->valid = valid != 0;
+    /* valid→0 means encoder-side Metal binds must be re-emitted; treat as
+     * sampled bind owed even if GL dirty bits were already cleared. */
+    if (!state->valid) {
+        state->sampledNeedsBind = true;
+    }
 }
 
 int mglRenderBindingGetValid(MGLBindingState * binding_state, uint32_t* valid_out) {
@@ -1481,6 +1487,115 @@ int mglRenderBindingGetValid(MGLBindingState * binding_state, uint32_t* valid_ou
     if (!state || !valid_out) return -1;
     *valid_out = state->valid ? 1u : 0u;
     return 0;
+}
+
+void mglRenderBindingMarkSampledNeedsBind(MGLBindingState *binding_state) {
+    mgl::BindingState *state =
+        reinterpret_cast<mgl::BindingState *>(static_cast<void *>(binding_state));
+    if (state) {
+        state->sampledNeedsBind = true;
+    }
+}
+
+void mglRenderBindingClearSampledNeedsBind(MGLBindingState *binding_state) {
+    mgl::BindingState *state =
+        reinterpret_cast<mgl::BindingState *>(static_cast<void *>(binding_state));
+    if (state) {
+        state->sampledNeedsBind = false;
+    }
+}
+
+int mglRenderBindingSampledNeedsBind(MGLBindingState *binding_state) {
+    mgl::BindingState *state =
+        reinterpret_cast<mgl::BindingState *>(static_cast<void *>(binding_state));
+    return (state && state->sampledNeedsBind) ? 1 : 0;
+}
+
+int mglRenderBindingWarmupUnchanged(MGLBindingState *binding_state,
+                                    const void *vertex_program,
+                                    const void *fragment_program,
+                                    const uint32_t *vertex_mask,
+                                    const uint32_t *fragment_mask) {
+    mgl::BindingState *state =
+        reinterpret_cast<mgl::BindingState *>(static_cast<void *>(binding_state));
+    if (!state) {
+        return 0;
+    }
+    if (state->warmupVertex != vertex_program ||
+        state->warmupFragment != fragment_program) {
+        return 0;
+    }
+    if (vertex_program && vertex_mask &&
+        memcmp(state->warmupVertexMask, vertex_mask,
+               sizeof(state->warmupVertexMask)) != 0) {
+        return 0;
+    }
+    if (fragment_program && fragment_program != vertex_program && fragment_mask &&
+        memcmp(state->warmupFragmentMask, fragment_mask,
+               sizeof(state->warmupFragmentMask)) != 0) {
+        return 0;
+    }
+    return 1;
+}
+
+void mglRenderBindingStoreWarmup(MGLBindingState *binding_state,
+                                 const void *vertex_program,
+                                 const void *fragment_program,
+                                 const uint32_t *vertex_mask,
+                                 const uint32_t *fragment_mask) {
+    mgl::BindingState *state =
+        reinterpret_cast<mgl::BindingState *>(static_cast<void *>(binding_state));
+    if (!state) {
+        return;
+    }
+    state->warmupVertex = vertex_program;
+    state->warmupFragment = fragment_program;
+    if (vertex_program && vertex_mask) {
+        memcpy(state->warmupVertexMask, vertex_mask,
+               sizeof(state->warmupVertexMask));
+    } else {
+        memset(state->warmupVertexMask, 0, sizeof(state->warmupVertexMask));
+    }
+    if (fragment_program && fragment_program != vertex_program && fragment_mask) {
+        memcpy(state->warmupFragmentMask, fragment_mask,
+               sizeof(state->warmupFragmentMask));
+    } else {
+        memset(state->warmupFragmentMask, 0, sizeof(state->warmupFragmentMask));
+    }
+}
+
+void *mglRenderBindingLookupSampledSampler(MGLBindingState *binding_state,
+                                           uint32_t unit, const void *tex,
+                                           const void *gl_sampler,
+                                           uint64_t params_sig) {
+    mgl::BindingState *state =
+        reinterpret_cast<mgl::BindingState *>(static_cast<void *>(binding_state));
+    if (!state || unit >= state->sampledSamplerCache.size()) {
+        return nullptr;
+    }
+    const mgl::SampledSamplerCacheEntry &entry = state->sampledSamplerCache[unit];
+    if (entry.tex == tex && entry.gl_sampler == gl_sampler &&
+        entry.params_sig == params_sig && entry.mtl_sampler) {
+        return entry.mtl_sampler;
+    }
+    return nullptr;
+}
+
+void mglRenderBindingStoreSampledSampler(MGLBindingState *binding_state,
+                                         uint32_t unit, const void *tex,
+                                         const void *gl_sampler,
+                                         uint64_t params_sig,
+                                         void *mtl_sampler) {
+    mgl::BindingState *state =
+        reinterpret_cast<mgl::BindingState *>(static_cast<void *>(binding_state));
+    if (!state || unit >= state->sampledSamplerCache.size() || !mtl_sampler) {
+        return;
+    }
+    mgl::SampledSamplerCacheEntry &entry = state->sampledSamplerCache[unit];
+    entry.tex = tex;
+    entry.gl_sampler = gl_sampler;
+    entry.params_sig = params_sig;
+    entry.mtl_sampler = mtl_sampler;
 }
 
 int mglRenderBindingInvalidateVertexBuffer(MGLBindingState * binding_state, uint32_t index) {
