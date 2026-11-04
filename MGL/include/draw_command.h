@@ -178,6 +178,11 @@ typedef struct {
     GLenum   indexType;
     GLuint   indexBufferOffset;
     GLuint   element_buffer_name;
+    /* AUDIT-034: DrawRangeElements* index span [range_start, range_end].
+     * has_index_range=0 for ordinary DrawElements (scan the index stream). */
+    GLuint   range_start;
+    GLuint   range_end;
+    uint8_t  has_index_range;
     uint8_t  dynamic_vertex_binding_count;
     MGLDynamicVertexBinding
              dynamic_vertex_bindings[MGL_MAX_DYNAMIC_VERTEX_BINDINGS];

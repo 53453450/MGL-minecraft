@@ -2003,8 +2003,8 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
                                                     cmd->instanceCount);
             break;
         case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
-            /* DrawRangeElementsBaseVertex also lands here (start/end ignored
-             * by Metal backend — verified at MGLRenderer.m:32670). */
+            /* DrawRangeElementsBaseVertex also lands here; range is kept on
+             * cmd for attrib/read tracking (AUDIT-034). */
             mglRendererDrawElementsBaseVertex(ctx, cmd->mode, cmd->count, cmd->indexType,
                                                      (const void *)(uintptr_t)cmd->indexBufferOffset,
                                                      cmd->baseVertex);
@@ -2078,8 +2078,8 @@ void mglDrawElements(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, co
 
 void mglDrawRangeElements(GLMContext ctx, GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices)
 {
-    /* Range-specific validation (start/end not stored in MGLDrawCommand;
-     * Metal backend ignores them — verified at MGLRenderer.m:32670). */
+    /* GL 4.6 §10.3.7: indices outside [start, end] are undefined; keep the
+     * span on the command so attrib/read tracking can use it (AUDIT-034). */
     if (end < start) { ERROR_RETURN(GL_INVALID_VALUE); return; }
 
     MGLDrawCommand cmd;
@@ -2095,6 +2095,9 @@ void mglDrawRangeElements(GLMContext ctx, GLenum mode, GLuint start, GLuint end,
     cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
     cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
     cmd.instanceCount     = 1;
+    cmd.range_start       = start;
+    cmd.range_end         = end;
+    cmd.has_index_range   = 1u;
     mglDrawDispatch(ctx, &cmd);
 }
 
@@ -2149,7 +2152,6 @@ void mglDrawElementsBaseVertex(GLMContext ctx, GLenum mode, GLsizei count, GLenu
 
 void mglDrawRangeElementsBaseVertex(GLMContext ctx, GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices, GLint basevertex)
 {
-    /* Range-specific validation (start/end ignored by Metal backend). */
     if (end < start) { ERROR_RETURN(GL_INVALID_VALUE); return; }
 
     MGLDrawCommand cmd;
@@ -2166,6 +2168,9 @@ void mglDrawRangeElementsBaseVertex(GLMContext ctx, GLenum mode, GLuint start, G
     cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
     cmd.baseVertex        = basevertex;
     cmd.instanceCount     = 1;
+    cmd.range_start       = start;
+    cmd.range_end         = end;
+    cmd.has_index_range   = 1u;
     mglDrawDispatch(ctx, &cmd);
 }
 

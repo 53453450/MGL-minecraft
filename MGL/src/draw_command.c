@@ -3769,12 +3769,43 @@ static bool mglScanCommandElementIndices(Buffer *elementBuffer,
     return true;
 }
 
+static bool mglCommandApplyBaseVertexToIndexRange(const MGLDrawCommand *cmd,
+                                                  uint64_t minIndex,
+                                                  uint64_t maxIndex,
+                                                  uint64_t *minVertex,
+                                                  uint64_t *maxVertex)
+{
+    if (!cmd || !minVertex || !maxVertex) return false;
+    if (cmd->baseVertex < 0) {
+        uint64_t negBase = (uint64_t)(-((int64_t)cmd->baseVertex));
+        *minVertex = (minIndex > negBase) ? (minIndex - negBase) : 0;
+        *maxVertex = (maxIndex > negBase) ? (maxIndex - negBase) : 0;
+        return true;
+    }
+    uint64_t base = (uint64_t)cmd->baseVertex;
+    if (minIndex > UINT64_MAX - base || maxIndex > UINT64_MAX - base) {
+        return false;
+    }
+    *minVertex = minIndex + base;
+    *maxVertex = maxIndex + base;
+    return true;
+}
+
 static bool mglCommandComputeElementVertexRange(GLMContext ctx,
                                                 const MGLDrawCommand *cmd,
                                                 uint64_t *minVertex,
                                                 uint64_t *maxVertex)
 {
     if (!ctx || !cmd || !minVertex || !maxVertex || cmd->count <= 0) return false;
+
+    /* AUDIT-034: DrawRangeElements declares the live index span — use it
+     * instead of scanning the element buffer (indices outside are undefined). */
+    if (cmd->has_index_range) {
+        if (cmd->range_end < cmd->range_start) return false;
+        return mglCommandApplyBaseVertexToIndexRange(
+            cmd, (uint64_t)cmd->range_start, (uint64_t)cmd->range_end,
+            minVertex, maxVertex);
+    }
 
     Buffer *elementBuffer = mglDrawCommandElementBuffer(ctx, cmd);
     size_t indexSize = mglCommandIndexSize(cmd->indexType);
@@ -3801,23 +3832,8 @@ static bool mglCommandComputeElementVertexRange(GLMContext ctx,
         return false;
     }
 
-    uint64_t minIndex = scan.min_index;
-    uint64_t maxIndex = scan.max_index;
-
-    if (cmd->baseVertex < 0) {
-        uint64_t negBase = (uint64_t)(-((int64_t)cmd->baseVertex));
-        *minVertex = (minIndex > negBase) ? (minIndex - negBase) : 0;
-        *maxVertex = (maxIndex > negBase) ? (maxIndex - negBase) : 0;
-    } else {
-        uint64_t base = (uint64_t)cmd->baseVertex;
-        if (minIndex > UINT64_MAX - base || maxIndex > UINT64_MAX - base) {
-            return false;
-        }
-        *minVertex = minIndex + base;
-        *maxVertex = maxIndex + base;
-    }
-
-    return true;
+    return mglCommandApplyBaseVertexToIndexRange(
+        cmd, scan.min_index, scan.max_index, minVertex, maxVertex);
 }
 
 static bool mglCommandComputeArrayVertexRange(const MGLDrawCommand *cmd,
