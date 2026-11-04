@@ -9,7 +9,7 @@
  * mglRendererFlushDrawBufferLocked.
  */
 #include "mgl_renderer_ports.h"   /* C port surface (T4) */
-#include "mgl_render_pass_manager_ops.h" /* mglRenderPassProcessGLStateLocked */
+#include "mgl_render_pass_public.h" /* mglRenderPassProcessGLStateLocked */
 #include "mgl_draw_issue.h"       /* mglDrawHost{BindContext,RasterizationIsEmpty,...} */
 #include "mgl_render_pass_sync_ops.h"
 #include "mgl_batch_restore.h"

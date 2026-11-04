@@ -14,7 +14,6 @@
 
 #include "mgl_batch_replay.h"
 #include "mgl_renderer_ports.h"
-#include "mgl_texture_bind.h"  /* mglRendererBindMTLTexture */
 #include "mgl_batch_issue.h"
 #include "mgl_batch_mtl_encode.h"
 
@@ -1184,45 +1183,12 @@ extern "C" int mgl_batch_mtl_bind_dyn_sampled(const MGLBatchDynSampledBindOps *o
                                                req_count);
 }
 
-/* === Active-texture binding (former -[MGLRenderer bindActiveTexturesToMTL]) ===
- * The per-unit lookup and stale-mask bookkeeping are plain C; only the Metal
- * texture bind goes through a port. */
-namespace {
-
-struct MGLActTexCtx {
-    void *r;
-    GLMContext glm;
-};
-
-int mglActTexBindUnit(void *v, uint32_t unit, int *stale_out)
-{
-    MGLActTexCtx *c = static_cast<MGLActTexCtx *>(v);
-    Texture *tex = c->glm->active_state->active_textures[unit];
-    if (!tex) {
-        if (stale_out) *stale_out = 1;
-        return 0;
-    }
-    if (stale_out) *stale_out = 0;
-    return mglRendererBindMTLTexture(c->r, tex) ? 1 : 0;
-}
-
-void mglActTexClearStale(void *v, uint32_t word, uint32_t bit)
-{
-    MGLActTexCtx *c = static_cast<MGLActTexCtx *>(v);
-    c->glm->active_state->active_texture_mask[word] &= ~(1u << bit);
-    mglInvalidateStateHashCachesForDirtyBits(c->glm->active_state, DIRTY_TEX_BINDING);
-}
-
-} // namespace
+/* Active-texture materialize lives in mgl_renderer_binding_ops.c (ARCH-004).
+ * Public batch symbol remains a thin wrapper for I8 / existing callers. */
+extern "C" int mglRendererBindActiveTexturesToMTL(void *renderer,
+                                                   GLMContext glm_ctx);
 
 extern "C" int mglBatchBindActiveTexturesToMTL(void *renderer, GLMContext glm_ctx)
 {
-    MGLActTexCtx c = {renderer, glm_ctx};
-    MGLBatchActiveTexBindOps ops = {
-        .ctx = &c,
-        .mask4 = glm_ctx->active_state->active_texture_mask,
-        .bind_unit = mglActTexBindUnit,
-        .clear_stale = mglActTexClearStale,
-    };
-    return mgl_batch_bind_active_textures(&ops) ? 1 : 0;
+    return mglRendererBindActiveTexturesToMTL(renderer, glm_ctx);
 }

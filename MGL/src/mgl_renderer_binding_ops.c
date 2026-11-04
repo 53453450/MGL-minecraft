@@ -20,7 +20,9 @@
 #include "mgl_buffer_map.h"        /* map/update-dirty entries */
 #include "mgl_size_constants.h"    /* runtime-array size constants */
 #include "mgl_encode_context.h"    /* MGLEncodeContext */
-#include "mgl_batch_public.h"       /* mglBatchBindActiveTexturesToMTL */
+#include "mgl_texture_bind.h"      /* mglRendererBindMTLTexture */
+#include "mgl_types_state.h"       /* mglInvalidateStateHashCachesForDirtyBits */
+#include "mgl_dirty_bits.h"
 #include "mgl_render_api_binding.h"
 
 static void *mglRendererBindingOwner(void *renderer)
@@ -71,6 +73,40 @@ void mglRendererBindingMarkSampledNeedsBind(void *renderer)
     mglRenderBindingMarkSampledNeedsBind(mglRendererBindingOwner(renderer));
 }
 
+int mglRendererBindActiveTexturesToMTL(void *renderer, GLMContext glm_ctx)
+{
+    if (!renderer || !glm_ctx || !glm_ctx->active_state) {
+        return 0;
+    }
+    GLMState *state = glm_ctx->active_state;
+    for (uint32_t w = 0; w < 4u; w++) {
+        unsigned mask = state->active_texture_mask[w];
+        if (!mask) {
+            continue;
+        }
+        for (uint32_t bit = 0; bit < 32u; bit++) {
+            if ((mask & (1u << bit)) == 0u) {
+                continue;
+            }
+            const uint32_t unit = w * 32u + bit;
+            Texture *tex = state->active_textures[unit];
+            if (!tex) {
+                state->active_texture_mask[w] &= ~(1u << bit);
+                mglInvalidateStateHashCachesForDirtyBits(state,
+                                                         DIRTY_TEX_BINDING);
+                continue;
+            }
+            if (!mglRendererBindMTLTexture(renderer, tex)) {
+                return 0;
+            }
+            if ((mask >> (bit + 1u)) == 0u) {
+                break;
+            }
+        }
+    }
+    return 1;
+}
+
 /* MGL_STATE() from MGLRenderer_Private.h, in C; the argument is the caller's
  * context, exactly as the method's MGL_STATE(glm_ctx) was. */
 static GLMState *mglRendererBindingDerivedState(const MGLRendererStateView *areas,
@@ -112,7 +148,7 @@ bool mglRendererSyncResourceBindingsForContext(
         mglRendererBindBufferSizeConstantsForRenderEncoder(renderer));
     if (!done || !done->boundActiveTextures) {
         RETURN_FALSE_ON_FAILURE(
-            mglBatchBindActiveTexturesToMTL(renderer, areas.ctx));
+            mglRendererBindActiveTexturesToMTL(renderer, areas.ctx));
     }
     RETURN_FALSE_ON_FAILURE(
         mglRenderPassRestoreRenderEncoderAfterTextureUpload(

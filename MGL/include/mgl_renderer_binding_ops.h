@@ -39,6 +39,10 @@ void mglRendererBindingInvalidateLastBoundFragmentBufferAtIndex(
 
 void mglRendererBindingMarkSampledNeedsBind(void *renderer);
 
+/* Materialize active-texture units to Metal (ARCH-004: not a batch symbol).
+ * Formerly mglBatchBindActiveTexturesToMTL; batch_public keeps a thin wrapper. */
+int mglRendererBindActiveTexturesToMTL(void *renderer, GLMContext glm_ctx);
+
 /* === Resource binding sync ==============================================
  * Work already performed by processDirtyStateDomainsLocked within the same
  * processGLState invocation; the sync entry skips these steps instead of

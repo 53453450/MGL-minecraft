@@ -23,7 +23,7 @@
 #include "mgl_draw_buffer.h"          /* Metal draw-buffer mapping */
 #include "mgl_sync.h"                 /* MGLMetalAttachmentSubresource */
 #include "mgl_renderer_backend.h"     /* default draw buffer attachments */
-#include "mgl_batch_public.h"          /* mglBatchBindActiveTexturesToMTL */
+#include "mgl_renderer_binding_ops.h"  /* mglRendererBindActiveTexturesToMTL */
 #include "mgl_stage_encode_drivers.h" /* stage encode bind drivers */
 #include "mgl_frame_activity.h"     /* MGL_ENC_REASON_* */
 #include "mgl_air_loader.h"        /* MGLRenderPipelineDescriptorState */
@@ -470,7 +470,8 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
 
         if (plan.bind_textures)
         {
-            RETURN_FALSE_ON_FAILURE(mglBatchBindActiveTexturesToMTL(renderer, ctx));
+            RETURN_FALSE_ON_FAILURE(
+                mglRendererBindActiveTexturesToMTL(renderer, ctx));
             if (work) work->boundActiveTextures = true;
 
             mglPdStateView(&areas)->dirty_bits &= ~(DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER);

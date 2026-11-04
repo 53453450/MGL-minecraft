@@ -3,7 +3,7 @@
  * A3: MDI/direct issue — loops in mgl_batch_mtl_issue_mdi_batch / issue_direct_batch.
  */
 #include "mgl_renderer_ports.h"  /* C port surface (T4) */
-#include "mgl_render_pass_manager_ops.h" /* mglRenderPassProcessGLStateLocked */
+#include "mgl_render_pass_public.h" /* mglRenderPassProcessGLStateLocked */
 #include "mgl_types_program.h"    /* Program */
 #include "mgl_draw_issue.h"       /* draw host ports: device / cull-distance */
 #include "mgl_env_flag.h"
