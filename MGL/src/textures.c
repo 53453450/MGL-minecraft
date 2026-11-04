@@ -2010,13 +2010,9 @@ bool ensureTextureLevelCapacity(GLMContext ctx, Texture *tex, GLuint required_le
     return true;
 }
 
-/* GL 4.6 §8.8: samples is a desired minimum; the actual count may be larger.
- * Round up to the next value in GetInternalformativ(GL_SAMPLES)
- * ({1,2,4,...,max_samples}) so texelFetch(sample = request) stays in range
- * when CTS requests max_samples-1 (see gl3cTextureSizePromotion). */
-static GLuint mglPromoteMultisampleCount(GLMContext ctx, GLsizei samples)
+/* Device max for MS sample counts (MAX_SAMPLES / framebuffer samples). */
+static GLuint mglMultisampleCountLimit(GLMContext ctx)
 {
-    static const GLuint candidates[] = {1u, 2u, 4u, 8u, 16u, 32u};
     GLuint max_samples = 4u;
     if (ctx) {
         GLuint m = STATE(var).max_samples;
@@ -2027,6 +2023,30 @@ static GLuint mglPromoteMultisampleCount(GLMContext ctx, GLsizei samples)
             max_samples = m;
         }
     }
+    return max_samples ? max_samples : 1u;
+}
+
+/* GL 4.6 §8.8 / §8.19: samples > MAX_SAMPLES → INVALID_VALUE. */
+static GLenum mglMultisampleCountValidationError(GLMContext ctx, GLsizei samples)
+{
+    if (samples < 1) {
+        return GL_INVALID_VALUE;
+    }
+    if ((GLuint)samples > mglMultisampleCountLimit(ctx)) {
+        return GL_INVALID_VALUE;
+    }
+    return GL_NO_ERROR;
+}
+
+/* GL 4.6 §8.8: samples is a desired minimum; the actual count may be larger.
+ * Round up to the next value in GetInternalformativ(GL_SAMPLES)
+ * ({1,2,4,...,max_samples}) so texelFetch(sample = request) stays in range
+ * when CTS requests max_samples-1 (see gl3cTextureSizePromotion).
+ * Caller must have already rejected samples > MAX_SAMPLES (AUDIT-034). */
+static GLuint mglPromoteMultisampleCount(GLMContext ctx, GLsizei samples)
+{
+    static const GLuint candidates[] = {1u, 2u, 4u, 8u, 16u, 32u};
+    GLuint max_samples = mglMultisampleCountLimit(ctx);
     if (samples <= 1) {
         return 1u;
     }
@@ -2085,6 +2105,13 @@ static bool mglTextureStorageMultisampleMetadata(GLMContext ctx,
     if (samples < 1 || width <= 0 || height <= 0 || depth <= 0)
     {
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+    /* AUDIT-034: refuse samples above the device limit (do not silently clamp). */
+    {
+        GLenum sample_err = mglMultisampleCountValidationError(ctx, samples);
+        if (sample_err != GL_NO_ERROR) {
+            ERROR_RETURN_VALUE(sample_err, false);
+        }
     }
     samples = (GLsizei)mglPromoteMultisampleCount(ctx, samples);
 
@@ -3667,6 +3694,13 @@ void mglTexImage2DMultisample(GLMContext ctx, GLenum target, GLsizei samples, GL
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
+    {
+        GLenum sample_err = mglMultisampleCountValidationError(ctx, samples);
+        if (sample_err != GL_NO_ERROR) {
+            ERROR_RETURN(sample_err);
+            return;
+        }
+    }
     if (!checkInternalFormatForMetal(ctx, internalformat)) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
@@ -3806,6 +3840,13 @@ void mglTexImage3DMultisample(GLMContext ctx, GLenum target, GLsizei samples, GL
     if (samples < 1 || width < 0 || height < 0 || depth < 0) {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
+    }
+    {
+        GLenum sample_err = mglMultisampleCountValidationError(ctx, samples);
+        if (sample_err != GL_NO_ERROR) {
+            ERROR_RETURN(sample_err);
+            return;
+        }
     }
     if (!checkInternalFormatForMetal(ctx, internalformat)) {
         ERROR_RETURN(GL_INVALID_OPERATION);
@@ -5600,9 +5641,13 @@ void mglTextureStorage2DMultisample(GLMContext ctx, GLuint texture, GLsizei samp
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if ((GLuint)samples > MAX(STATE(var).max_framebuffer_samples, 1u)) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
+    /* GL 4.6 §8.19 / AUDIT-034: samples > MAX_SAMPLES → INVALID_VALUE. */
+    {
+        GLenum sample_err = mglMultisampleCountValidationError(ctx, samples);
+        if (sample_err != GL_NO_ERROR) {
+            ERROR_RETURN(sample_err);
+            return;
+        }
     }
 
     tex = getTex(ctx, texture, 0);
@@ -5755,9 +5800,12 @@ void mglTextureStorage3DMultisample(GLMContext ctx, GLuint texture, GLsizei samp
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if ((GLuint)samples > MAX(STATE(var).max_framebuffer_samples, 1u)) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
+    {
+        GLenum sample_err = mglMultisampleCountValidationError(ctx, samples);
+        if (sample_err != GL_NO_ERROR) {
+            ERROR_RETURN(sample_err);
+            return;
+        }
     }
 
     tex = getTex(ctx, texture, 0);
