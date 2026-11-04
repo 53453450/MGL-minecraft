@@ -11,7 +11,7 @@
 #define MGL_RENDER_PASS_PUBLIC_H
 
 #include "glm_context.h"
-#include "mgl_renderer_binding_ops.h" /* MGLResourceSyncWork */
+#include "mgl_state_apply.h" /* mglStateApplyDirtyDomains / MGLResourceSyncWork */
 
 #include <stdbool.h>
 
