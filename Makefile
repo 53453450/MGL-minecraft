@@ -1305,7 +1305,8 @@ test-mcrepro: $(build_dir)/test_mcrepro
 METALCPP_C_SRC := MGL/src/mgl_binding_texture_log.c MGL/src/mgl_trace_log.c \
                   MGL/src/pixel_utils.c MGL/src/mgl_env_flag.c \
                   MGL/src/mgl_pixel_tables.c MGL/src/mgl_sampler_plan.c \
-                  MGL/src/mgl_draw_mode.c MGL/src/mgl_vertex_tables.c
+                  MGL/src/mgl_draw_mode.c MGL/src/mgl_vertex_tables.c \
+                  MGL/src/mgl_byte_hash.c
 # The platform shell is C++ (log 210): it cannot go through the smoke gate's
 # -x objective-c++ -fobjc-arc invocation any more, so it is compiled to its own
 # objects first and linked with -x none like the other C sources.

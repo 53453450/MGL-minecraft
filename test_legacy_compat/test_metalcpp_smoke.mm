@@ -2620,11 +2620,20 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
         return 1;
     }
     mglRenderWaitForSync(NULL, &sync);
+    /* Wait clears the backend; AUDIT-044: no backend → UNSIGNALED (not a
+     * vacuous SIGNALED). Completion was observed by the blocking wait. */
     if (sync.backend ||
-        mglRenderGetSyncStatus(NULL, &sync) != GL_SIGNALED) {
-        fprintf(stderr, "FAIL: sync wait did not release/signaled state\n");
+        mglRenderGetSyncStatus(NULL, &sync) != GL_UNSIGNALED) {
+        fprintf(stderr, "FAIL: sync wait did not release/unsignaled state\n");
         mglRenderReleaseSync(NULL, &sync);
         return 1;
+    }
+    {
+        Sync neverAttached = {};
+        if (mglRenderGetSyncStatus(NULL, &neverAttached) != GL_UNSIGNALED) {
+            fprintf(stderr, "FAIL: empty sync must stay UNSIGNALED (AUDIT-044)\n");
+            return 1;
+        }
     }
 
     Sync releaseOnly = {};
@@ -2671,7 +2680,7 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
     }
     mglRenderWaitForSync(&context, &captured);
     if (captured.backend ||
-        mglRenderGetSyncStatus(&context, &captured) != GL_SIGNALED) {
+        mglRenderGetSyncStatus(&context, &captured) != GL_UNSIGNALED) {
         fprintf(stderr, "FAIL: captured sync wait/release\n");
         mglRenderDetachRuntimeOwners(&context);
         mglRenderDestroyCommandBufferOwner(&commandOwner);
@@ -5072,11 +5081,17 @@ static int verifyGetTexImagePlan(void) {
         fprintf(stderr, "FAIL: plan rgba32f pitch\n");
         return 1;
     }
-    /* bytesPerRow fallback when not converting. */
+    /* bytesPerRow fallback when not converting; pitch must be >= width*bpp
+     * (AUDIT-039). 256 is a padded caller pitch over min_row=128. */
     if (mglRenderGetTexImagePlan(125u, GL_RGBA, GL_FLOAT, 8, 4, 1, 16, 16,
-                                    0, 64, 0, 0, &p) != 0 ||
-        p.use_bgra8_conversion || p.row_bytes != 64) {
+                                    0, 256, 0, 0, &p) != 0 ||
+        p.use_bgra8_conversion || p.row_bytes != 256) {
         fprintf(stderr, "FAIL: plan bpr fallback\n");
+        return 1;
+    }
+    if (mglRenderGetTexImagePlan(125u, GL_RGBA, GL_FLOAT, 8, 4, 1, 16, 16,
+                                    0, 64, 0, 0, &p) != -1) {
+        fprintf(stderr, "FAIL: plan short bpr must reject (AUDIT-039)\n");
         return 1;
     }
     /* Private storage + depth>1 + bytesPerImage -> total = bpi*depth. */
@@ -6595,7 +6610,8 @@ static int verifyIntegerReadbackConvert(void) {
         .source_component_count = 4, .source_component_bytes = 1,
         .source_signed = 0, .source_rgb10a2_uint = 0,
         .copy_w = 2, .copy_h = 1,
-        .dst = (uint8_t *)dst1, .dst_bytes_per_row = 16,
+        /* AUDIT-036: pitch must cover copy_w * dst_pixel_bytes (=32). */
+        .dst = (uint8_t *)dst1, .dst_bytes_per_row = 32,
         .dst_pixel_bytes = 16, .dst_x = 0, .dst_y = 0,
         .output_components = 4, .component_map = map1,
         .output_component_bytes = 4, .packed_type = GL_UNSIGNED_INT,

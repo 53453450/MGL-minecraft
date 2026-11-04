@@ -30,23 +30,25 @@ static int tests_passed;
         }                                                        \
     } while (0)
 
-/* The retired inline layout (mglAirReflectModuleImpl). */
+/* Reference arithmetic matching mglBufferSlotLayoutBuild (attr_slots ignored:
+ * VS inputs are [[stage_in]], not buffer(N); see 2a0ba8cb). */
 static void reference_layout(const MGLBufferSlotCounts *in, uint32_t *ssbo,
                              uint32_t *ubo, uint32_t *ac, uint32_t *plain_base)
 {
-    const int is_vs = in->stage == MGL_STAGE_VERTEX;
     const uint32_t user_buffer_base =
         in->stage == MGL_STAGE_TESS_EVALUATION ? 1u : 0u;
-    const uint32_t has_plain = in->has_plain_pack ? 1u : 0u;
-    *ssbo = user_buffer_base +
-            (is_vs ? (has_plain + in->attr_slots)
-                   : ((in->stage == MGL_STAGE_COMPUTE ||
-                       in->stage == MGL_STAGE_TESS_CONTROL ||
-                       in->stage == MGL_STAGE_TESS_EVALUATION ||
-                       in->stage == MGL_STAGE_GEOMETRY ||
-                       in->stage == MGL_STAGE_FRAGMENT)
-                          ? has_plain
-                          : 0u));
+    const uint32_t has_plain =
+        in->has_plain_pack &&
+                (in->stage == MGL_STAGE_VERTEX ||
+                 in->stage == MGL_STAGE_COMPUTE ||
+                 in->stage == MGL_STAGE_TESS_CONTROL ||
+                 in->stage == MGL_STAGE_TESS_EVALUATION ||
+                 in->stage == MGL_STAGE_GEOMETRY ||
+                 in->stage == MGL_STAGE_FRAGMENT)
+            ? 1u
+            : 0u;
+    (void)in->attr_slots;
+    *ssbo = user_buffer_base + has_plain;
     *ubo = *ssbo + in->ssbo_slots;
     *ac = *ubo + in->ubo_slots;
     *plain_base = user_buffer_base;
@@ -106,9 +108,9 @@ static void test_shapes(void)
     c.ubo_slots = 1u;
     c.atomic_counter_slots = 1u;
     CHECK(mglBufferSlotLayoutBuild(&c, &l) == MGL_BUFFER_LAYOUT_OK &&
-              l.plain_base == 0u && l.ssbo_base == 4u && l.ubo_base == 6u &&
-              l.atomic_counter_base == 7u && l.end == 8u,
-          "vertex: pack, three attribute slots, then SSBOs, UBOs, counters");
+              l.plain_base == 0u && l.ssbo_base == 1u && l.ubo_base == 3u &&
+              l.atomic_counter_base == 4u && l.end == 5u,
+          "vertex: pack then SSBOs/UBOs/counters; attr_slots ignored");
 
     c = counts(MGL_STAGE_FRAGMENT);
     c.attr_slots = 5u; /* only a vertex stage has attributes */
