@@ -15,6 +15,13 @@
 #include "mgl_metal_ref.h"
 #include "mgl_uniform_reflection.h"
 #include "mgl_program_backend.h"
+#include "mgl_render_api_program.h"
+
+_Static_assert(sizeof(((struct MGLProgramBackend *)0)->modules) <=
+                   (size_t)MGL_RENDER_PROGRAM_MODULE_BACKEND_BLOB,
+               "MGL_RENDER_PROGRAM_MODULE_BACKEND_BLOB too small");
+_Static_assert(MGL_PROGRAM_BACKEND_STAGES == _MAX_SHADER_TYPES,
+               "program backend stage count must match shader types");
 
 void mglShaderModuleBackendClear(struct MGLShaderModuleBackend *module)
 {
@@ -291,4 +298,124 @@ void mglBridgeSkippedGeometryShaderVaryings(Program *program)
     mglAlignInputsToOutputs(
         &program->shader_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES],
         &program->shader_resources_list[_FRAGMENT_SHADER][_STAGE_INPUT_RES]);
+}
+
+void mglRenderProgramReleaseBackend(Program *program)
+{
+    mglProgramBackendRelease(program);
+}
+
+uint64_t mglRenderProgramPipelineCacheInstanceId(const Program *program)
+{
+    return mglProgramBackendView(program)->pipeline_cache_instance_id;
+}
+
+void mglRenderProgramAssignPipelineCacheInstanceId(Program *program,
+                                                   uint64_t instance_id)
+{
+    mglProgramBackendEnsure(program)->pipeline_cache_instance_id = instance_id;
+}
+
+void mglRenderProgramBumpPipelineCacheGeneration(Program *program)
+{
+    mglProgramBackendEnsure(program)->pipeline_cache_generation++;
+}
+
+void mglRenderProgramCaptureModuleBackends(Program *program, void *blob,
+                                           size_t blob_bytes)
+{
+    size_t need = sizeof(((struct MGLProgramBackend *)0)->modules);
+    if (!blob || blob_bytes < need) {
+        return;
+    }
+    memset(blob, 0, blob_bytes);
+    if (program && program->backend) {
+        memcpy(blob, program->backend->modules, need);
+        memset(program->backend->modules, 0, need);
+    }
+}
+
+void mglRenderProgramClearModuleBackends(Program *program)
+{
+    if (program && program->backend) {
+        memset(program->backend->modules, 0,
+               sizeof(program->backend->modules));
+    }
+}
+
+void mglRenderProgramRestoreModuleBackends(Program *program, const void *blob,
+                                           size_t blob_bytes)
+{
+    size_t need = sizeof(((struct MGLProgramBackend *)0)->modules);
+    if (!program || !blob || blob_bytes < need) {
+        return;
+    }
+    memcpy(mglProgramBackendEnsure(program)->modules, blob, need);
+}
+
+void mglRenderProgramClearCapturedModuleBackend(void *blob, size_t blob_bytes,
+                                                int stage)
+{
+    size_t one = sizeof(struct MGLShaderModuleBackend);
+    size_t need = one * (size_t)MGL_PROGRAM_BACKEND_STAGES;
+    if (!blob || blob_bytes < need || stage < 0 ||
+        stage >= MGL_PROGRAM_BACKEND_STAGES) {
+        return;
+    }
+    mglShaderModuleBackendClear(
+        (struct MGLShaderModuleBackend *)((unsigned char *)blob +
+                                          (size_t)stage * one));
+}
+
+const unsigned char *mglRenderProgramModuleMetallibBytes(const Program *program,
+                                                         int stage)
+{
+    return mglProgramModuleView(program, stage)->metallib_bytes;
+}
+
+size_t mglRenderProgramModuleMetallibSize(const Program *program, int stage)
+{
+    return mglProgramModuleView(program, stage)->metallib_size;
+}
+
+void mglRenderProgramSetModuleMetallib(Program *program, int stage,
+                                       unsigned char *bytes, size_t size)
+{
+    struct MGLShaderModuleBackend *mod = mglProgramModuleBackend(program, stage);
+    mod->metallib_bytes = bytes;
+    mod->metallib_size = size;
+}
+
+void mglRenderProgramSetModuleTessCaptureMetallib(Program *program, int stage,
+                                                  unsigned char *bytes,
+                                                  size_t size)
+{
+    struct MGLShaderModuleBackend *mod = mglProgramModuleBackend(program, stage);
+    mod->metallib_tess_capture_bytes = bytes;
+    mod->metallib_tess_capture_size = size;
+}
+
+void mglRenderProgramSetModuleCullCaptureMetallib(Program *program, int stage,
+                                                  unsigned char *bytes,
+                                                  size_t size)
+{
+    struct MGLShaderModuleBackend *mod = mglProgramModuleBackend(program, stage);
+    mod->metallib_cull_capture_bytes = bytes;
+    mod->metallib_cull_capture_size = size;
+}
+
+void mglRenderProgramSetModuleTesComputeMetallib(Program *program, int stage,
+                                                 unsigned char *bytes,
+                                                 size_t size)
+{
+    struct MGLShaderModuleBackend *mod = mglProgramModuleBackend(program, stage);
+    mod->metallib_bytes_tes_compute = bytes;
+    mod->metallib_size_tes_compute = size;
+}
+
+void mglRenderProgramSetModuleNeedsRuntimeArraySizeBuffer(Program *program,
+                                                          int stage, int needs)
+{
+    mglProgramModuleBackend(program, stage)->needs_runtime_array_size_buffer =
+        needs ? 1u : 0u;
 }

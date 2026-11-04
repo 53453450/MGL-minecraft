@@ -6,4 +6,3 @@ Lyr-FE-Compiler MGL/src/mgl_render_pass_manager_ops.c 1
 Lyr-FE-Compiler MGL/src/mgl_render_pass_sync_ops.c 1
 Lyr-FE-Compiler MGL/src/program.c 2
 Lyr-FE-Compiler MGL/src/shaders.c 2
-Lyr-FE-Metal MGL/src/program.c 1
