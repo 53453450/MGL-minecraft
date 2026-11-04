@@ -1162,6 +1162,11 @@ check-layering:
 test-state-invariants:
 	python3 scripts/state_machine_invariants.py
 
+# Architecture layer gates (docs/MGL-architecture-design.md §9 Phase 0):
+# freeze NEW FE↔Metal / Pass↔Batch / Compiler / Private / DualProxy violations.
+test-arch-layer-gates:
+	python3 scripts/arch_layer_gates.py
+
 # G4 dataflow coverage gate (STATE_DATAFLOW_TODO §7.2): key field writes,
 # memcmp padding, and GLMState uncovered-field baseline.
 test-state-dataflow:
@@ -1465,6 +1470,7 @@ test-all:
 	$(MAKE) build_dir=$(build_dir) check-layering
 	$(MAKE) build_dir=$(build_dir) test-sampler-plan
 	$(MAKE) build_dir=$(build_dir) test-state-invariants
+	$(MAKE) build_dir=$(build_dir) test-arch-layer-gates
 	$(MAKE) build_dir=$(build_dir) test-state-dataflow
 	$(MAKE) build_dir=$(build_dir) test-state-snapshot-share
 	$(MAKE) build_dir=$(build_dir) test-frontends
@@ -1520,7 +1526,7 @@ test-all:
 	test-legacy-compat test-mglir test-mgl-air-type test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-air-loader-cache test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \
-	test-state-invariants test-state-dataflow test-state-snapshot-share \
+	test-state-invariants test-arch-layer-gates test-state-dataflow test-state-snapshot-share \
 	verify-toolchain check-glfw-selectors check-c-duplicates check-layering
 
 -include $(deps)
