@@ -42,8 +42,9 @@ typedef enum MGLHazardTrackAction {
     MGL_HAZARD_TRACK_FLUSH_THEN_RETRY = 2
 } MGLHazardTrackAction;
 
-/* Map an enable flag (e.g. MGL_HAZARD_OVERFLOW_FLUSH_CONTINUE) to policy.
- * Default (flag == 0) is sticky — preserves historical behavior. */
+/* Map an enable flag to policy: non-zero → flush-and-continue, zero → sticky.
+ * Runtime default is flush-and-continue (PERF-002); sticky is opt-in via
+ * MGL_HAZARD_OVERFLOW_STICKY at the draw_command call site. */
 MGLHazardOverflowPolicy mgl_batch_hazard_overflow_policy(int flush_and_continue_enabled);
 
 /* Decide what to do when a tracking table is at capacity.

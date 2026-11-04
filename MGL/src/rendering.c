@@ -1066,7 +1066,14 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
 
 void mglFinish(GLMContext ctx)
 {
-    mglTraceLogExternal("MGL: mglFinish called - flushing and waiting for GPU");
+    static uint64_t s_finishCallCount = 0;
+    uint64_t hit = ++s_finishCallCount;
+    if (mglTraceLogIsEnabled() &&
+        (hit <= 8ull || (hit % 256ull) == 0ull)) {
+        mglTraceLogExternal(
+            "MGL: mglFinish called (full GPU drain) hit=%llu",
+            (unsigned long long)hit);
+    }
     mglFlushCommandBuffer(ctx);
     mglRendererFlush(ctx, true);
 }

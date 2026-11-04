@@ -119,6 +119,26 @@ static GLuint mglTraceSafeFramebufferName(GLMContext ctx, Framebuffer *fbo)
     return fbo->name;
 }
 
+static void mglFlushPendingDrawsForAttachmentTextures(GLMContext ctx,
+                                                      Texture *old_tex,
+                                                      Texture *new_tex)
+{
+    if (!ctx) {
+        return;
+    }
+    MGLCommandBuffer *cb = &ctx->draw_command_buffer;
+    if (cb->texture_read_overflow || cb->texture_write_overflow) {
+        mglFlushPendingDraws(ctx);
+        return;
+    }
+    if (old_tex) {
+        mglFlushPendingDrawsForTexture(ctx, old_tex);
+    }
+    if (new_tex && new_tex != old_tex) {
+        mglFlushPendingDrawsForTexture(ctx, new_tex);
+    }
+}
+
 static Texture *mglTraceAttachmentTexture(GLMContext ctx, FBOAttachment *att)
 {
     if (!ctx || !att) {
@@ -1899,7 +1919,9 @@ void mglRenderbufferStorage(GLMContext ctx, GLenum target, GLenum internalformat
         return;
     }
 
-    mglFlushPendingDraws(ctx);
+    if (STATE(renderbuffer)->tex) {
+        mglFlushPendingDrawsForTexture(ctx, STATE(renderbuffer)->tex);
+    }
 
     tex = newTexObj(ctx, target);
     if (!tex) {
@@ -2163,8 +2185,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
     GLuint color_attachment_index = 0u;
 
     fbo = currentFBOForType(ctx, target);
-    mglFlushPendingDraws(ctx);
-    
+
     // Log FBO texture attachments for large textures (framebuffer size)
     if (MGL_VERBOSE_FBO_LOGS && texture != 0) {
         Texture *t = findTexture(ctx, texture);
@@ -2386,6 +2407,9 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
     new_layered = (texture != 0u &&
                    attachment_type == GL_NONE &&
                    mglFramebufferWholeTextureAttachmentIsLayered(effective_textarget));
+    mglFlushPendingDrawsForAttachmentTextures(
+        ctx, mglAttachmentBackingTexture(fbo_attachment_ptr), tex);
+
     if (mglAttachmentChangeNeedsPendingClearFlush(fbo_attachment_ptr,
                                                   texture,
                                                   effective_textarget,
@@ -2546,7 +2570,6 @@ void mglFramebufferRenderbuffer(GLMContext ctx, GLenum target, GLenum attachment
     FBOAttachment *fbo_attachment_ptr;
 
     fbo = currentFBOForType(ctx, target);
-    mglFlushPendingDraws(ctx);
 
     if (renderbuffertarget != GL_RENDERBUFFER) {
         ERROR_RETURN(GL_INVALID_ENUM);
@@ -2601,6 +2624,19 @@ void mglFramebufferRenderbuffer(GLMContext ctx, GLenum target, GLenum attachment
     }
 
     fbo_attachment_ptr = getFBOAttachment(ctx, fbo, attachment);
+
+    {
+        Texture *old_tex = mglAttachmentBackingTexture(fbo_attachment_ptr);
+        Texture *new_tex = (rbo && rbo->tex) ? rbo->tex : NULL;
+        mglFlushPendingDrawsForAttachmentTextures(ctx, old_tex, new_tex);
+        if (attachment == GL_DEPTH_STENCIL_ATTACHMENT) {
+            Texture *old_stencil = mglAttachmentBackingTexture(&fbo->stencil);
+            if (old_stencil && old_stencil != old_tex &&
+                old_stencil != new_tex) {
+                mglFlushPendingDrawsForTexture(ctx, old_stencil);
+            }
+        }
+    }
 
     fbo_attachment_ptr->textarget = GL_RENDERBUFFER;
     fbo_attachment_ptr->texture = renderbuffer;
@@ -3654,7 +3690,6 @@ void mglNamedFramebufferRenderbuffer(GLMContext ctx, GLuint framebuffer, GLenum 
 
     MGLFramebufferBindingSnapshot snapshot;
     mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
-    mglFlushPendingDraws(ctx);
     mglFramebufferUseTemporaryDrawBinding(ctx, fbo);
     mglFramebufferRenderbuffer(ctx, GL_DRAW_FRAMEBUFFER, attachment, renderbuffertarget, renderbuffer);
     mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
@@ -3718,7 +3753,6 @@ void mglNamedFramebufferTexture(GLMContext ctx, GLuint framebuffer, GLenum attac
 
     MGLFramebufferBindingSnapshot snapshot;
     mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
-    mglFlushPendingDraws(ctx);
     mglFramebufferUseTemporaryDrawBinding(ctx, fbo);
     framebufferTexture(ctx, GL_DRAW_FRAMEBUFFER, GL_NONE, attachment, GL_NONE, texture, level, 0);
     mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
@@ -3743,7 +3777,6 @@ void mglNamedFramebufferTextureLayer(GLMContext ctx, GLuint framebuffer, GLenum 
 
     MGLFramebufferBindingSnapshot snapshot;
     mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
-    mglFlushPendingDraws(ctx);
     mglFramebufferUseTemporaryDrawBinding(ctx, fbo);
     framebufferTexture(ctx, GL_DRAW_FRAMEBUFFER, GL_TEXTURE_3D, attachment, GL_NONE, texture, level, layer);
     mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);

@@ -1012,18 +1012,41 @@ static int mglHazardHasPendingDraws(const MGLCommandBuffer *cb)
 
 static MGLHazardOverflowPolicy mglHazardPolicyNow(void)
 {
-    return mgl_batch_hazard_overflow_policy(
-        mgl_env_flag_enabled("MGL_HAZARD_OVERFLOW_FLUSH_CONTINUE"));
+    /* PERF-002: default flush-and-continue so overflow does not sticky-degrade
+     * every subsequent hazard query. Opt into legacy sticky via
+     * MGL_HAZARD_OVERFLOW_STICKY=1. MGL_HAZARD_OVERFLOW_FLUSH_CONTINUE remains
+     * accepted as an explicit (now redundant) enable. */
+    if (mgl_env_flag_enabled("MGL_HAZARD_OVERFLOW_STICKY")) {
+        return MGL_HAZARD_OVERFLOW_STICKY;
+    }
+    (void)mgl_env_flag_enabled("MGL_HAZARD_OVERFLOW_FLUSH_CONTINUE");
+    return MGL_HAZARD_OVERFLOW_FLUSH_AND_CONTINUE;
 }
 
 /* Capacity exhausted: sticky latches overflow (return 0); flush-and-continue
  * flushes pending draws (tables reset) and returns 1 so the caller can insert. */
+static void mglHazardClearOverflowLatchFlags(MGLCommandBuffer *cb)
+{
+    if (!cb) return;
+    cb->buffer_read_range_overflow = false;
+    cb->texture_read_overflow = false;
+    cb->texture_write_overflow = false;
+    cb->pending_vao_ref_overflow = false;
+    cb->pending_vao_name_overflow = false;
+}
+
 static int mglHazardAllowInsertAfterCapacityFull(GLMContext ctx,
                                                  MGLCommandBuffer *cb)
 {
     MGLHazardTrackAction action = mgl_batch_hazard_on_capacity_full(
         mglHazardPolicyNow(), mglHazardHasPendingDraws(cb));
     if (action == MGL_HAZARD_TRACK_FLUSH_THEN_RETRY) {
+        /* PERF-015: flush-and-continue resets hazard tables (and overflow
+         * latches) via mglResetCommandBufferForContext; clear latches first so
+         * a partial flush path never leaves query_degraded sticky. Sticky
+         * degradation remains only with MGL_HAZARD_OVERFLOW_STICKY=1 or
+         * capacity-full with zero pending batches. */
+        mglHazardClearOverflowLatchFlags(cb);
         mglFlushCommandBuffer(ctx);
         return 1;
     }

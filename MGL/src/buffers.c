@@ -136,27 +136,73 @@ static void mglBufferMarkWrite(Buffer *ptr,
     ptr->last_write_src_hash = src_hash;
 }
 
+/* PERF-001: GPU wait only when Metal may be ahead of the CPU shadow. */
+static int mglBufferNeedsGpuSyncForCpuRead(Buffer *ptr)
+{
+    return ptr && ptr->gpu_write_target && !ptr->cpu_shadow_pending &&
+           mglBufferMtl(ptr) && ptr->data.buffer_data;
+}
+
+static void mglSyncBufferForCpuRead(GLMContext ctx, Buffer *ptr,
+                                    GLintptr offset, GLsizeiptr size)
+{
+    if (!ctx || !ptr || size <= 0) {
+        return;
+    }
+    mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
+    if (!mglBufferNeedsGpuSyncForCpuRead(ptr)) {
+        return;
+    }
+    mglFlushCommandBuffer(ctx);
+    mglRendererFlush(ctx, true);
+    mglRendererReadBackBuffer(ctx, ptr, (size_t)offset, (size_t)size);
+}
+
+static inline bool mgl_range_ok_glsize(GLintptr offset, GLsizeiptr size, GLsizeiptr total)
+{
+    if (offset < 0 || size < 0 || total < 0)
+        return false;
+
+    uint64_t uoffset = (uint64_t)offset;
+    uint64_t usize = (uint64_t)size;
+    uint64_t utotal = (uint64_t)total;
+
+    if (uoffset > utotal)
+        return false;
+    if (usize > utotal - uoffset)
+        return false;
+
+    return true;
+}
+
 /* Merge shader-written Metal contents into the CPU shadow before a partial
- * CPU update. The following write then becomes authoritative until the dirty
- * shadow is uploaded; readback must not overwrite it with the pre-update
- * Metal bytes in that interval. */
+ * CPU update. PERF-021: refresh only the written range. */
 static void mglPrepareGpuWrittenBufferForCpuShadowWrite(GLMContext ctx,
-                                                        Buffer *ptr)
+                                                        Buffer *ptr,
+                                                        GLintptr offset,
+                                                        GLsizeiptr size)
 {
     if (!ctx || !ptr || !ptr->gpu_write_target || ptr->cpu_shadow_pending ||
-        !ptr->data.buffer_data || !mglBufferMtl(ptr)) {
+        !ptr->data.buffer_data || !mglBufferMtl(ptr) || size <= 0) {
         return;
+    }
+    if (offset < 0 || !mgl_range_ok_glsize(offset, size, ptr->size)) {
+        offset = 0;
+        size = ptr->size;
     }
 
     mglFlushCommandBuffer(ctx);
     mglRendererFlush(ctx, true);
-    if (ptr->size > 0) {
-        size_t readback_size = (size_t)ptr->size;
-        if (ptr->data.buffer_size > 0 && readback_size > ptr->data.buffer_size) {
-            readback_size = ptr->data.buffer_size;
+    size_t readback_size = (size_t)size;
+    size_t readback_off = (size_t)offset;
+    if (ptr->data.buffer_size > 0 &&
+        readback_off + readback_size > ptr->data.buffer_size) {
+        if (readback_off >= ptr->data.buffer_size) {
+            return;
         }
-        mglRendererReadBackBuffer(ctx, ptr, 0, readback_size);
+        readback_size = ptr->data.buffer_size - readback_off;
     }
+    mglRendererReadBackBuffer(ctx, ptr, readback_off, readback_size);
 }
 
 static void mglBufferMarkAllocatedUninitialized(Buffer *ptr, MGLBufferInitSource source)
@@ -592,23 +638,6 @@ static void mglBindNullBufferForTarget(GLMContext ctx, GLenum target, GLint inde
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_BUFFER);
     }
     mglSetGenericBufferBinding(ctx, target, 0u);
-}
-
-static inline bool mgl_range_ok_glsize(GLintptr offset, GLsizeiptr size, GLsizeiptr total)
-{
-    if (offset < 0 || size < 0 || total < 0)
-        return false;
-
-    uint64_t uoffset = (uint64_t)offset;
-    uint64_t usize = (uint64_t)size;
-    uint64_t utotal = (uint64_t)total;
-
-    if (uoffset > utotal)
-        return false;
-    if (usize > utotal - uoffset)
-        return false;
-
-    return true;
 }
 
 static inline bool mgl_range_ok_size_t(GLintptr offset, GLsizeiptr size, size_t total)
@@ -2294,7 +2323,7 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
                                 ptr->data.dirty_bits);
         }
 
-        mglPrepareGpuWrittenBufferForCpuShadowWrite(ctx, ptr);
+        mglPrepareGpuWrittenBufferForCpuShadowWrite(ctx, ptr, offset, size);
         if (ptr->storage_flags & GL_SPARSE_STORAGE_BIT_ARB) {
             /* Writes into uncommitted pages are silently discarded. */
             if (mglSparseBufferCopyCommitted(
@@ -2452,7 +2481,7 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
         }
 
         // copy it to the backing and use processGLState to upload new data
-        mglPrepareGpuWrittenBufferForCpuShadowWrite(ctx, ptr);
+        mglPrepareGpuWrittenBufferForCpuShadowWrite(ctx, ptr, offset, size);
         memcpy((char*)ptr->data.buffer_data + offset, data, size);
         ptr->cpu_shadow_pending = GL_TRUE;
         mglBufferMarkWrite(ptr,
@@ -3180,17 +3209,13 @@ void *mglMapBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeip
         }
     }
 
-    /* For read maps, ensure all pending GPU operations (including compute
-     * dispatches) are complete before the CPU reads the buffer contents.
-     * Compute dispatches are encoded directly into the Metal command buffer
-     * and are not tracked by mglFlushPendingDrawsForBuffer, so we must commit
-     * and wait here to guarantee visibility of GPU writes.
-     *
-     * AUDIT-055: write maps without UNSYNCHRONIZED must also wait so the CPU
-     * cannot race in-flight GPU readers/writers of the same store. */
-    if ((access_flags & GL_MAP_READ_BIT) ||
-        ((access_flags & GL_MAP_WRITE_BIT) &&
-         !(access_flags & GL_MAP_UNSYNCHRONIZED_BIT))) {
+    /* PERF-001: read maps wait only when Metal may be ahead of the shadow
+     * (gpu_write_target). AUDIT-055: write maps without UNSYNCHRONIZED still
+     * full-wait so the CPU cannot race in-flight GPU readers/writers. */
+    if (access_flags & GL_MAP_READ_BIT) {
+        mglSyncBufferForCpuRead(ctx, ptr, offset, length);
+    } else if ((access_flags & GL_MAP_WRITE_BIT) &&
+               !(access_flags & GL_MAP_UNSYNCHRONIZED_BIT)) {
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
     }
@@ -3333,11 +3358,11 @@ void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLs
         }
     }
 
-    /* AUDIT-055: same wait policy as MapBufferRange (read, or write without
-     * UNSYNCHRONIZED). */
-    if ((access & GL_MAP_READ_BIT) ||
-        ((access & GL_MAP_WRITE_BIT) &&
-         !(access & GL_MAP_UNSYNCHRONIZED_BIT))) {
+    /* PERF-001 / AUDIT-055: same wait policy as MapBufferRange. */
+    if (access & GL_MAP_READ_BIT) {
+        mglSyncBufferForCpuRead(ctx, ptr, offset, length);
+    } else if ((access & GL_MAP_WRITE_BIT) &&
+               !(access & GL_MAP_UNSYNCHRONIZED_BIT)) {
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
     }
@@ -3824,15 +3849,9 @@ void mglGetBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizei
         return;
     }
 
-    /* Deferred draws live in the CPU batch until mglFlushCommandBuffer.
-     * RendererFlush only waits for already-submitted GPU work, so omit the
-     * batch drain and a post-barrier DrawArrays is still unsubmitted when
-     * the CPU reads an SSBO (KHR-GL46 advanced-usage-sync: 2 vs 4). */
-    mglFlushCommandBuffer(ctx);
-    /* MGL_SYNC_STRICT: mtlFlush(ctx, true) already performed commit +
-     * waitUntilCompleted here, a conservative path needing no extra strict
-     * branch (avoids a double wait). */
-    mglRendererFlush(ctx, true);
+    /* PERF-001: drain deferred draws always; GPU wait+readback only when
+     * Metal may be ahead of the CPU shadow (SSBO/XFB gpu_write_target). */
+    mglSyncBufferForCpuRead(ctx, ptr, offset, size);
 
     /* imageStore to a texture-buffer writes a Metal texture2d copy of the
      * Buffer.  Pull that back before CPU readback so clients that omit an
@@ -3849,11 +3868,6 @@ void mglGetBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizei
             }
         }
     }
-
-    /* A shader may have written this range (SSBO/XFB); after the GPU wait
-     * above, refresh the CPU shadow from the Metal buffer so the read returns
-     * the shader results instead of stale shadow bytes. */
-    mglRendererReadBackBuffer(ctx, ptr, (size_t)offset, (size_t)size);
 
     if (!mgl_range_ok_size_t(offset, size, ptr->data.buffer_size))
     {
@@ -4067,12 +4081,8 @@ void mglGetNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GL
         return;
     }
 
-    mglFlushCommandBuffer(ctx);
-    mglRendererFlush(ctx, true);
-
-    /* Same shadow refresh as mglGetBufferSubData: shader-written ranges
-     * (SSBO/XFB) live in the Metal buffer, not the CPU shadow. */
-    mglRendererReadBackBuffer(ctx, ptr, (size_t)offset, (size_t)size);
+    /* PERF-001: same gated sync as mglGetBufferSubData. */
+    mglSyncBufferForCpuRead(ctx, ptr, offset, size);
 
     memcpy(data, (const uint8_t *)((uintptr_t)ptr->data.buffer_data) + (uintptr_t)offset, (size_t)size);
 }

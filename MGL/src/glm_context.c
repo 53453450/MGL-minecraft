@@ -745,8 +745,19 @@ GLMContext createGLMContextProfile(int profile_es, GLenum format, GLenum type,
     ctx->draw_defer_enabled = (getenv("MGL_DISABLE_DRAW_DEFER") == NULL);
     /* MGL_SYNC_STRICT: when enabled, every sync boundary takes the most
      * conservative path (full flush + commit + waitUntilCompleted) for
-     * regression triage and correctness-baseline comparison */
+     * regression triage and correctness-baseline comparison.
+     * PERF-012: release builds must not ship with this on by accident. */
     ctx->sync_strict = (getenv("MGL_SYNC_STRICT") != NULL);
+    if (ctx->sync_strict) {
+        static int s_sync_strict_warned;
+        if (!s_sync_strict_warned) {
+            s_sync_strict_warned = 1;
+            fprintf(stderr,
+                    "MGL WARNING: MGL_SYNC_STRICT is set — every buffer/texture "
+                    "sync boundary will Flush + waitUntilCompleted (triage only; "
+                    "do not enable in release)\n");
+        }
+    }
 
     return ctx;
 }

@@ -705,12 +705,13 @@ void mglBindTexture(GLMContext ctx, GLenum target, GLuint texture)
     if (!binding_changed && !pending_write) {
         return;
     }
-    if (pending_write || (binding_changed && !mglBindNoFlushEnabled())) {
-        if (binding_changed && !pending_write) {
-            MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
-        } else if (pending_write) {
-            MGL_PERF_INC(g_mglFlushReasonOtherSinceSwap);
-        }
+    if (pending_write) {
+        /* PERF-014: only flush draws that hazard this texture, not the whole
+         * pending CB. */
+        MGL_PERF_INC(g_mglFlushReasonOtherSinceSwap);
+        mglFlushPendingDrawsForTexture(ctx, ptr);
+    } else if (binding_changed && !mglBindNoFlushEnabled()) {
+        MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
         mglFlushPendingDraws(ctx);
     }
 
@@ -1355,12 +1356,11 @@ void mglBindTextures(GLMContext ctx, GLuint first, GLsizei count, const GLuint *
             if (!binding_changed && !pending_write) {
                 continue;
             }
-            if (pending_write || (binding_changed && !mglBindNoFlushEnabled())) {
-                if (binding_changed && !pending_write) {
-                    MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
-                } else if (pending_write) {
-                    MGL_PERF_INC(g_mglFlushReasonOtherSinceSwap);
-                }
+            if (pending_write) {
+                MGL_PERF_INC(g_mglFlushReasonOtherSinceSwap);
+                mglFlushPendingDrawsForTexture(ctx, ptr);
+            } else if (binding_changed && !mglBindNoFlushEnabled()) {
+                MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
                 mglFlushPendingDraws(ctx);
             }
 
@@ -1470,12 +1470,11 @@ void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
     if (!binding_changed && !pending_write) {
         return;
     }
-    if (pending_write || (binding_changed && !mglBindNoFlushEnabled())) {
-        if (binding_changed && !pending_write) {
-            MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
-        } else if (pending_write) {
-            MGL_PERF_INC(g_mglFlushReasonOtherSinceSwap);
-        }
+    if (pending_write) {
+        MGL_PERF_INC(g_mglFlushReasonOtherSinceSwap);
+        mglFlushPendingDrawsForTexture(ctx, ptr);
+    } else if (binding_changed && !mglBindNoFlushEnabled()) {
+        MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
         mglFlushPendingDraws(ctx);
     }
 
