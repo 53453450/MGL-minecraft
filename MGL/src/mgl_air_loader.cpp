@@ -306,6 +306,31 @@ MTL::RenderPipelineDescriptor* buildRenderPipelineDescriptor(
     return rpd;
 }
 
+static MTL::RenderPipelineState* mglMetalRPSAsyncWait(
+    MTL::Device* device, MTL::RenderPipelineDescriptor* rpd, NS::Error** err_out) {
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    MTL::RenderPipelineState* pso = nullptr;
+    NS::Error* err = nullptr;
+    device->newRenderPipelineState(
+        rpd, MTL::NewRenderPipelineStateCompletionHandlerFunction{
+                 [&](MTL::RenderPipelineState* s, NS::Error* e) {
+                     if (s) {
+                         s->retain();
+                     }
+                     if (e) {
+                         err = (NS::Error*)e->retain();
+                     }
+                     pso = s;
+                     dispatch_semaphore_signal(sem);
+                 }});
+    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    dispatch_release(sem);
+    if (err_out) {
+        *err_out = err;
+    }
+    return pso;
+}
+
 // Shared PSO creation. Complete pipelines query the archive first and add a
 // newly compiled state only on a miss, keeping archive updates incremental.
 int createRenderPipelineInternal(
@@ -363,8 +388,8 @@ int createRenderPipelineInternal(
     const bool archiveMiss = archiveEligible && !pso;
     if (!pso) {
         nsErr = nullptr;
-        /* PERF-029: sync compile; callers must not hold renderer.mutex here. */
-        pso = dev->newRenderPipelineState(rpd, &nsErr);
+        /* PERF-029: async compile via completionHandler; GL waits on semaphore. */
+        pso = mglMetalRPSAsyncWait(dev, rpd, &nsErr);
     }
     if (archiveMiss && mglTraceLogIsEnabled()) {
         static std::atomic<int> s_loggedArchiveMiss{0};
@@ -503,6 +528,36 @@ int mglAirCreateComputePipeline(const void* device, void* library,
         return -1;
     }
     *pso_out = pso; // Owned by the caller; compute PSOs are not cached here.
+    return 0;
+}
+
+int mglAirCreateRenderPipelineStateAsyncWait(void* device, void* descriptor,
+                                             void** pso_out, char* err,
+                                             size_t errcap) {
+    if (pso_out) {
+        *pso_out = nullptr;
+    }
+    if (!device || !descriptor || !pso_out) {
+        if (err && errcap) {
+            snprintf(err, errcap, "bad args");
+        }
+        return -1;
+    }
+    NS::Error* nsErr = nullptr;
+    MTL::RenderPipelineState* pso = mglMetalRPSAsyncWait(
+        static_cast<MTL::Device*>(device),
+        static_cast<MTL::RenderPipelineDescriptor*>(descriptor), &nsErr);
+    if (!pso) {
+        copyError(nsErr, err, errcap);
+        if (nsErr) {
+            nsErr->release();
+        }
+        return -1;
+    }
+    if (nsErr) {
+        nsErr->release();
+    }
+    *pso_out = pso;
     return 0;
 }
 

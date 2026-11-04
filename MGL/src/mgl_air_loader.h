@@ -96,6 +96,12 @@ int mglAirCreateComputePipeline(const void* device, void* library,
 /* Releases an owned object returned by this loader. */
 void mglAirRelease(void* obj);
 
+/* PERF-029: compile via Metal completion handler; caller blocks on a
+ * semaphore until the PSO is ready. Returns 0 with an owned pipeline state. */
+int mglAirCreateRenderPipelineStateAsyncWait(void* device, void* descriptor,
+                                             void** pso_out, char* err,
+                                             size_t errcap);
+
 /* Release the loader-owned PSO cache. Called by the C++ renderer when its
  * final device user shuts down. Safe to call repeatedly. */
 void mglAirLoaderShutdown(void);

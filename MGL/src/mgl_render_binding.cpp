@@ -1210,15 +1210,11 @@ int mglRenderCreateRenderPipelineState(
         device = renderer.device;
     }
 
-    NS::Error* nsError = nullptr;
-    /* PERF-029: sync PSO compile; renderer.mutex is not held across Metal. */
-    MTL::RenderPipelineState* pipeline =
-        device->newRenderPipelineState(descriptor, &nsError);
-    if (!pipeline) {
-        mgl::copyError(nsError, err, errcap);
+    /* PERF-029: async compile via completionHandler; GL waits on semaphore. */
+    if (mglAirCreateRenderPipelineStateAsyncWait(device, descriptor, pipeline_out,
+                                                 err, errcap) != 0) {
         return -1;
     }
-    *pipeline_out = pipeline;
     return 0;
 }
 
@@ -1261,11 +1257,16 @@ int mglRenderCreateRenderPipelineStateWithArchive(
 
     const bool archiveMiss = archiveEligible && !pipeline;
     if (!pipeline) {
-        nsError = nullptr;
-        pipeline = device->newRenderPipelineState(descriptor, &nsError);
+        /* PERF-029: async compile via completionHandler; GL waits on semaphore. */
+        void* asyncPipeline = nullptr;
+        if (mglAirCreateRenderPipelineStateAsyncWait(device, descriptor,
+                                                     &asyncPipeline, err,
+                                                     errcap) != 0) {
+            return -1;
+        }
+        pipeline = static_cast<MTL::RenderPipelineState*>(asyncPipeline);
     }
     if (!pipeline) {
-        mgl::copyError(nsError, err, errcap);
         return -1;
     }
 
