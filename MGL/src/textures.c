@@ -5414,6 +5414,9 @@ static void mglSparseScrubTextureLevel(Texture *tex, GLint level, int clear)
     GLint page_x, page_y, page_z;
     GLint width, height, depth;
     GLint x, y, z;
+    MGLSparseUnmapRegion *regions = NULL;
+    uint32_t region_count = 0u, region_cap = 0u;
+    void *mtl;
 
     if (!tex || !tex->params.sparse || !tex->sparse_heap)
         return;
@@ -5422,11 +5425,9 @@ static void mglSparseScrubTextureLevel(Texture *tex, GLint level, int clear)
     lvl = &tex->faces[0].levels[level];
     if (!lvl || lvl->width == 0)
         return;
-    if (!mglTextureMtl(tex)) {
-        void *mtl = mglTextureBackendEnsure(tex)->mtl_data;
-        if (!mtl)
-            return;
-    }
+    mtl = mglTextureBackendEnsure(tex)->mtl_data;
+    if (!mtl)
+        return;
 
     page_x = tex->sparse_page_x > 0 ? tex->sparse_page_x : 64;
     page_y = tex->sparse_page_y > 0 ? tex->sparse_page_y : 64;
@@ -5456,27 +5457,40 @@ static void mglSparseScrubTextureLevel(Texture *tex, GLint level, int clear)
                     pw = width - x;
                 if (mglSparsePageIntersectsCommit(tex, level, x, y, z, pw, ph, pd))
                     continue;
-                {
-                    void *mtl = mglTextureBackendEnsure(tex)->mtl_data;
-                    if (!mtl)
-                        return;
-                    /* clear≠0 after imageStore/SubImage remaps; GPU-zero
-                     * while mapped then Unmap.  Skip clear on commit-only
-                     * scrub (unmapped pages — blit would fault). */
-                    if (clear)
-                        (void)mglRenderSparseTextureClearRegion(
-                            mtl, (uint32_t)x, (uint32_t)y, (uint32_t)z,
-                            (uint32_t)pw, (uint32_t)ph, (uint32_t)pd,
-                            (uint32_t)level);
-                    (void)mglRenderSparseTextureCommit(
-                        tex->sparse_heap, mtl,
-                        (uint32_t)x, (uint32_t)y, (uint32_t)z,
+                /* clear≠0 after imageStore/SubImage remaps; GPU-zero while
+                 * mapped then Unmap.  Skip clear on commit-only scrub
+                 * (unmapped pages — blit would fault). */
+                if (clear)
+                    (void)mglRenderSparseTextureClearRegion(
+                        mtl, (uint32_t)x, (uint32_t)y, (uint32_t)z,
                         (uint32_t)pw, (uint32_t)ph, (uint32_t)pd,
-                        (uint32_t)level, 0, 0u);
+                        (uint32_t)level);
+                if (region_count == region_cap) {
+                    uint32_t ncap = region_cap ? region_cap * 2u : 64u;
+                    MGLSparseUnmapRegion *nregs = (MGLSparseUnmapRegion *)realloc(
+                        regions, (size_t)ncap * sizeof(*nregs));
+                    if (!nregs) {
+                        free(regions);
+                        return;
+                    }
+                    regions = nregs;
+                    region_cap = ncap;
                 }
+                regions[region_count].x = (uint32_t)x;
+                regions[region_count].y = (uint32_t)y;
+                regions[region_count].z = (uint32_t)z;
+                regions[region_count].width = (uint32_t)pw;
+                regions[region_count].height = (uint32_t)ph;
+                regions[region_count].depth = (uint32_t)pd;
+                regions[region_count].level = (uint32_t)level;
+                region_count++;
             }
         }
     }
+    if (region_count > 0u)
+        (void)mglRenderSparseTextureUnmapRegions(tex->sparse_heap, mtl, regions,
+                                                 region_count);
+    free(regions);
 }
 
 void mglSparseScrubBoundImages(GLMContext ctx)

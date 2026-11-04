@@ -217,6 +217,12 @@ typedef struct Buffer_t {
     int refcount;
     GLboolean delete_status;
     char *debug_label;  /* ObjectLabel, GL 4.6 §20.7; NULL = empty */
+    /* ARB_sparse_buffer: one byte per SPARSE_BUFFER_PAGE_SIZE_ARB page.
+     * Non-zero = committed.  NULL when the buffer is not sparse.  Decommit
+     * clears bits and zeros the CPU shadow (and Metal store) so later reads
+     * see a defined zero rather than stale fully-resident contents. */
+    uint8_t *sparse_page_committed;
+    GLuint sparse_page_count;
 } Buffer;
 
 /* Dirty-bit bookkeeping for the buffer record, so the backend asks instead of

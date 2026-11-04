@@ -685,6 +685,10 @@ struct Renderer {
     std::array<Buffer*, kPackedStructBufferCapacity> packedStructBuffers{};
     size_t packedStructBufferIndex = 0;
     std::set<BindingState*> bindingStates;
+    /* Shared queues for sparse Map/Unmap/clear — avoid newCommandQueue per
+     * page (commit + scrub used to allocate one queue per tile). */
+    MTL::CommandQueue* sparseQueue = nullptr;
+    MTL4::CommandQueue* sparseMtl4Queue = nullptr;
 };
 
 struct CommandQueueOwner {
@@ -793,10 +797,23 @@ struct CommandBufferSubmission {
 
 struct MDIScratchOwner {
     ~MDIScratchOwner() {
+        flushRetired();
         if (buffer) buffer->release();
     }
 
+    void flushRetired() {
+        for (MTL::Buffer* retired_buffer : retired) {
+            if (retired_buffer) retired_buffer->release();
+        }
+        retired.clear();
+    }
+
+    void retire(MTL::Buffer* old_buffer) {
+        if (old_buffer) retired.push_back(old_buffer);
+    }
+
     MTL::Buffer* buffer = nullptr;
+    std::vector<MTL::Buffer*> retired;
     uint64_t capacity = 0;
     uint64_t offset = 0;
 };
@@ -1048,6 +1065,14 @@ inline void releasePipelineCaches(Renderer& renderer) {
         if (entry.second) entry.second->release();
     }
     renderer.convertedVertexBuffers.clear();
+    if (renderer.sparseQueue) {
+        renderer.sparseQueue->release();
+        renderer.sparseQueue = nullptr;
+    }
+    if (renderer.sparseMtl4Queue) {
+        renderer.sparseMtl4Queue->release();
+        renderer.sparseMtl4Queue = nullptr;
+    }
 }
 
 inline void releaseBindingStates(Renderer& renderer) {

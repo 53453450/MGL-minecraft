@@ -1415,6 +1415,33 @@ extern "C" int mglRenderCreateSparseTextureFromState(
     return 0;
 }
 
+static MTL::CommandQueue* mglSparseQueueLocked(mgl::Renderer& renderer) {
+    if (!renderer.sparseQueue && renderer.device)
+        renderer.sparseQueue = renderer.device->newCommandQueue();
+    return renderer.sparseQueue;
+}
+
+static MTL4::CommandQueue* mglSparseMtl4QueueLocked(mgl::Renderer& renderer) {
+    if (!renderer.sparseMtl4Queue && renderer.device)
+        renderer.sparseMtl4Queue = renderer.device->newMTL4CommandQueue();
+    return renderer.sparseMtl4Queue;
+}
+
+static int mglSparseWaitCommandBuffer(MTL::CommandBuffer* cb) {
+    if (!cb) return -1;
+    cb->commit();
+    cb->waitUntilCompleted();
+    const MTL::CommandBufferStatus st = cb->status();
+    cb->release();
+    if (st != MTL::CommandBufferStatusCompleted) {
+        fprintf(stderr,
+                "MGL WARNING: sparse command buffer status=%d (not Completed)\n",
+                (int)st);
+        return -1;
+    }
+    return 0;
+}
+
 /* Commit or decommit a texel-space region.  heap_offset is the starting
  * placement-heap tile index for Map (ignored on Unmap). */
 extern "C" int mglRenderSparseTextureCommit(void* heap, void* texture,
@@ -1444,39 +1471,23 @@ extern "C" int mglRenderSparseTextureCommit(void* heap, void* texture,
     const NS::UInteger tiles_y =
         static_cast<NS::UInteger>((height + tile_y - 1) / tile_y);
 
-    /* Prefer ResourceStateCommandEncoder on the standard queue: MTL4
+    /* Prefer ResourceStateCommandEncoder on the shared sparse queue: MTL4
      * updateTextureMappings Unmap has been observed to leave prior
      * imageStore contents readable on AGX (MS / r11f UncommittedReads). */
-    MTL::CommandQueue* queue = renderer.device->newCommandQueue();
+    MTL::CommandQueue* queue = mglSparseQueueLocked(renderer);
     if (!queue) return -1;
-    MTL::CommandBuffer* cb = queue->commandBuffer();
-    if (!cb) {
-        queue->release();
-        return -1;
-    }
-    MTL::ResourceStateCommandEncoder* enc = cb->resourceStateCommandEncoder();
-    if (!enc) {
-        cb->release();
-        queue->release();
-        return -1;
-    }
 
     const MTL::SparseTextureMappingMode mode =
         commit ? MTL::SparseTextureMappingModeMap
                : MTL::SparseTextureMappingModeUnmap;
 
-    if (is_3d) {
-        /* Map still needs the placement heap; ResourceState Map without a
-         * heap offset is not enough for placement-sparse textures.  Fall
-         * back to MTL4 for Map, keep ResourceState for Unmap. */
-        if (commit) {
-            enc->endEncoding();
-            cb->release();
-            queue->release();
-            MTL4::CommandQueue* q4 = renderer.device->newMTL4CommandQueue();
-            if (!q4) return -1;
-            MTL4::UpdateSparseTextureMappingOperation op = {};
-            op.mode = MTL::SparseTextureMappingModeMap;
+    if (commit) {
+        /* Map needs the placement heap offset — MTL4 updateTextureMappings. */
+        MTL4::CommandQueue* q4 = mglSparseMtl4QueueLocked(renderer);
+        if (!q4) return -1;
+        MTL4::UpdateSparseTextureMappingOperation op = {};
+        op.mode = MTL::SparseTextureMappingModeMap;
+        if (is_3d) {
             op.textureRegion = MTL::Region::Make3D(
                 static_cast<NS::UInteger>(x / tile_x),
                 static_cast<NS::UInteger>(y / tile_y),
@@ -1486,33 +1497,8 @@ extern "C" int mglRenderSparseTextureCommit(void* heap, void* texture,
             op.textureLevel = level;
             op.heapOffset = static_cast<NS::UInteger>(heap_offset);
             q4->updateTextureMappings(target, source_heap, &op, 1);
-            MTL::SharedEvent* ev = renderer.device->newSharedEvent();
-            if (ev) {
-                q4->signalEvent(ev, 1);
-                (void)ev->waitUntilSignaledValue(1, 5000ull);
-                ev->release();
-            }
-            q4->release();
-            return 0;
-        }
-        enc->updateTextureMapping(
-            target, mode,
-            MTL::Region::Make3D(
-                static_cast<NS::UInteger>(x / tile_x),
-                static_cast<NS::UInteger>(y / tile_y),
-                static_cast<NS::UInteger>(z), tiles_x, tiles_y,
-                static_cast<NS::UInteger>(depth ? depth : 1)),
-            level, 0);
-    } else {
-        const uint32_t slices = depth > 0u ? depth : 1u;
-        if (commit) {
-            enc->endEncoding();
-            cb->release();
-            queue->release();
-            MTL4::CommandQueue* q4 = renderer.device->newMTL4CommandQueue();
-            if (!q4) return -1;
-            MTL4::UpdateSparseTextureMappingOperation op = {};
-            op.mode = MTL::SparseTextureMappingModeMap;
+        } else {
+            const uint32_t slices = depth > 0u ? depth : 1u;
             uint64_t slice_off = heap_offset;
             const uint64_t tiles_per_slice =
                 (uint64_t)tiles_x * (uint64_t)tiles_y;
@@ -1528,15 +1514,33 @@ extern "C" int mglRenderSparseTextureCommit(void* heap, void* texture,
                 q4->updateTextureMappings(target, source_heap, &op, 1);
                 slice_off += tiles_per_slice;
             }
-            MTL::SharedEvent* ev = renderer.device->newSharedEvent();
-            if (ev) {
-                q4->signalEvent(ev, 1);
-                (void)ev->waitUntilSignaledValue(1, 5000ull);
-                ev->release();
-            }
-            q4->release();
-            return 0;
         }
+        MTL::SharedEvent* ev = renderer.device->newSharedEvent();
+        if (!ev) return -1;
+        q4->signalEvent(ev, 1);
+        const bool signaled = ev->waitUntilSignaledValue(1, 5000ull);
+        ev->release();
+        return signaled ? 0 : -1;
+    }
+
+    MTL::CommandBuffer* cb = queue->commandBuffer();
+    if (!cb) return -1;
+    MTL::ResourceStateCommandEncoder* enc = cb->resourceStateCommandEncoder();
+    if (!enc) {
+        cb->release();
+        return -1;
+    }
+    if (is_3d) {
+        enc->updateTextureMapping(
+            target, mode,
+            MTL::Region::Make3D(
+                static_cast<NS::UInteger>(x / tile_x),
+                static_cast<NS::UInteger>(y / tile_y),
+                static_cast<NS::UInteger>(z), tiles_x, tiles_y,
+                static_cast<NS::UInteger>(depth ? depth : 1)),
+            level, 0);
+    } else {
+        const uint32_t slices = depth > 0u ? depth : 1u;
         for (uint32_t s = 0; s < slices; s++) {
             enc->updateTextureMapping(
                 target, mode,
@@ -1548,13 +1552,8 @@ extern "C" int mglRenderSparseTextureCommit(void* heap, void* texture,
                 level, z + s);
         }
     }
-
     enc->endEncoding();
-    cb->commit();
-    cb->waitUntilCompleted();
-    cb->release();
-    queue->release();
-    return 0;
+    return mglSparseWaitCommandBuffer(cb);
 }
 
 extern "C" int mglRenderSparseTextureClearRegion(
@@ -1581,15 +1580,13 @@ extern "C" int mglRenderSparseTextureClearRegion(
     if (img_bytes == 0 || img_bytes > (32u * 1024u * 1024u))
         return -1;
 
-    MTL::CommandQueue* queue = renderer.device->newCommandQueue();
+    MTL::CommandQueue* queue = mglSparseQueueLocked(renderer);
     if (!queue)
         return -1;
     MTL::Buffer* zeros = renderer.device->newBuffer(
         img_bytes, MTL::ResourceStorageModeShared);
-    if (!zeros) {
-        queue->release();
+    if (!zeros)
         return -1;
-    }
     memset(zeros->contents(), 0, img_bytes);
 
     MTL::CommandBuffer* cb = queue->commandBuffer();
@@ -1599,7 +1596,6 @@ extern "C" int mglRenderSparseTextureClearRegion(
         zeros->release();
         if (cb)
             cb->release();
-        queue->release();
         return -1;
     }
     if (is_3d) {
@@ -1617,12 +1613,76 @@ extern "C" int mglRenderSparseTextureClearRegion(
         }
     }
     blit->endEncoding();
-    cb->commit();
-    cb->waitUntilCompleted();
-    cb->release();
     zeros->release();
-    queue->release();
-    return 0;
+    return mglSparseWaitCommandBuffer(cb);
+}
+
+extern "C" int mglRenderSparseTextureUnmapRegions(
+    void* heap, void* texture, const MGLSparseUnmapRegion* regions,
+    uint32_t count) {
+    MTL::Heap* source_heap = static_cast<MTL::Heap*>(heap);
+    MTL::Texture* target = static_cast<MTL::Texture*>(texture);
+    (void)source_heap;
+    if (!target || !regions || count == 0u)
+        return -1;
+    mgl::Renderer& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.mutex);
+    if (!renderer.device)
+        return -1;
+
+    MTL::Size tileSz = renderer.device->sparseTileSize(
+        target->textureType(), target->pixelFormat(), target->sampleCount());
+    const uint32_t tile_x =
+        tileSz.width > 0 ? static_cast<uint32_t>(tileSz.width) : 64u;
+    const uint32_t tile_y =
+        tileSz.height > 0 ? static_cast<uint32_t>(tileSz.height) : 64u;
+    const bool is_3d = target->textureType() == MTL::TextureType3D;
+
+    MTL::CommandQueue* queue = mglSparseQueueLocked(renderer);
+    if (!queue)
+        return -1;
+    MTL::CommandBuffer* cb = queue->commandBuffer();
+    if (!cb)
+        return -1;
+    MTL::ResourceStateCommandEncoder* enc = cb->resourceStateCommandEncoder();
+    if (!enc) {
+        cb->release();
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < count; i++) {
+        const MGLSparseUnmapRegion* r = &regions[i];
+        if (r->width == 0u || r->height == 0u)
+            continue;
+        const NS::UInteger tiles_x = static_cast<NS::UInteger>(
+            (r->width + tile_x - 1u) / tile_x);
+        const NS::UInteger tiles_y = static_cast<NS::UInteger>(
+            (r->height + tile_y - 1u) / tile_y);
+        if (is_3d) {
+            enc->updateTextureMapping(
+                target, MTL::SparseTextureMappingModeUnmap,
+                MTL::Region::Make3D(
+                    static_cast<NS::UInteger>(r->x / tile_x),
+                    static_cast<NS::UInteger>(r->y / tile_y),
+                    static_cast<NS::UInteger>(r->z), tiles_x, tiles_y,
+                    static_cast<NS::UInteger>(r->depth ? r->depth : 1u)),
+                r->level, 0);
+        } else {
+            const uint32_t slices = r->depth > 0u ? r->depth : 1u;
+            for (uint32_t s = 0; s < slices; s++) {
+                enc->updateTextureMapping(
+                    target, MTL::SparseTextureMappingModeUnmap,
+                    MTL::Region::Make3D(
+                        static_cast<NS::UInteger>(r->x / tile_x),
+                        static_cast<NS::UInteger>(r->y / tile_y),
+                        static_cast<NS::UInteger>(0), tiles_x, tiles_y,
+                        static_cast<NS::UInteger>(1)),
+                    r->level, r->z + s);
+            }
+        }
+    }
+    enc->endEncoding();
+    return mglSparseWaitCommandBuffer(cb);
 }
 
 int mglRenderCreateBufferTextureFromState(

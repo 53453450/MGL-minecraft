@@ -413,6 +413,17 @@ int mglRenderSparseTextureClearRegion(void *texture,
                                       uint32_t width, uint32_t height,
                                       uint32_t depth, uint32_t level);
 
+/* One page-aligned Unmap region for batched scrub (one CB for many pages). */
+typedef struct MGLSparseUnmapRegion_t {
+    uint32_t x, y, z;
+    uint32_t width, height, depth;
+    uint32_t level;
+} MGLSparseUnmapRegion;
+
+int mglRenderSparseTextureUnmapRegions(void *heap, void *texture,
+                                       const MGLSparseUnmapRegion *regions,
+                                       uint32_t count);
+
 int mglRenderCreateBufferTextureFromState(
     void *buffer,
     const MGLRenderTextureDescriptorState *texture_descriptor,

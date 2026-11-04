@@ -366,6 +366,9 @@ void mglReleaseBufferStorage(Buffer *buf)
     buf->data.buffer_size = 0;
     /* The ownership bit went away with the backend record above; writing it
      * here would allocate a fresh record just to zero a byte. */
+    free(buf->sparse_page_committed);
+    buf->sparse_page_committed = NULL;
+    buf->sparse_page_count = 0u;
 }
 
 void mglReleaseBufferReference(GLMContext ctx, Buffer *buf)
@@ -826,6 +829,45 @@ GLint mglSparseBufferPageSize(void)
     return 65536;
 }
 
+/* Copy src to dst only over committed sparse pages; uncommitted writes are
+ * discarded (ARB_sparse_buffer).  Returns bytes actually written. */
+static GLsizeiptr mglSparseBufferCopyCommitted(Buffer *ptr, GLintptr offset,
+                                               GLsizeiptr size, const void *src,
+                                               void *dst)
+{
+    GLint page;
+    GLuint first, last, i;
+    GLsizeiptr written = 0;
+
+    if (!ptr || !src || !dst || size <= 0 || offset < 0)
+        return 0;
+    if (!ptr->sparse_page_committed || ptr->sparse_page_count == 0u)
+        return 0;
+    page = mglSparseBufferPageSize();
+    if (page <= 0)
+        return 0;
+    first = (GLuint)(offset / page);
+    last = (GLuint)((offset + size + page - 1) / page);
+    if (last > ptr->sparse_page_count)
+        last = ptr->sparse_page_count;
+    for (i = first; i < last; i++) {
+        GLintptr page_off = (GLintptr)i * page;
+        GLintptr seg0 = page_off > offset ? page_off : offset;
+        GLintptr page_end = page_off + page;
+        GLintptr range_end = offset + size;
+        GLintptr seg1 = page_end < range_end ? page_end : range_end;
+        if (seg1 <= seg0)
+            continue;
+        if (!ptr->sparse_page_committed[i])
+            continue;
+        memcpy((uint8_t *)dst + (size_t)(seg0 - offset),
+               (const uint8_t *)src + (size_t)(seg0 - offset),
+               (size_t)(seg1 - seg0));
+        written += seg1 - seg0;
+    }
+    return written;
+}
+
 static int mglSparseBufferStorageFlagsOk(GLMContext ctx, GLbitfield storage_flags, GLsizeiptr size)
 {
     if (storage_flags & ~(GL_DYNAMIC_STORAGE_BIT | GL_MAP_READ_BIT | GL_MAP_WRITE_BIT |
@@ -906,10 +948,25 @@ void bufferStorage(GLMContext ctx, Buffer *ptr, GLenum target, GLuint index, GLs
     ptr->mapped_length = 0;
     ptr->mapped_ptr = NULL;
     ptr->storage_flags = storage_flags;
+    ptr->sparse_page_committed = NULL;
+    ptr->sparse_page_count = 0u;
 
     ptr->data.dirty_bits = DIRTY_BUFFER_ADDR;
 
-    if (data)
+    if (storage_flags & GL_SPARSE_STORAGE_BIT_ARB) {
+        /* Spec: the entire store starts uncommitted.  Track pages so
+         * BufferPageCommitmentARB decommit is not a no-op. */
+        GLint page = mglSparseBufferPageSize();
+        GLuint npages = page > 0 ? (GLuint)((size + page - 1) / page) : 0u;
+        if (npages > 0u) {
+            ptr->sparse_page_committed = (uint8_t *)calloc(npages, 1u);
+            ptr->sparse_page_count = npages;
+        }
+        /* Discard client data for sparse storage (ARB_sparse_buffer). */
+        if (ptr->data.buffer_data && ptr->size > 0)
+            memset((void *)(uintptr_t)ptr->data.buffer_data, 0, (size_t)ptr->size);
+        mglBufferMarkAllocatedUninitialized(ptr, kInitBufferDataNull);
+    } else if (data)
     {
         memcpy((void *)ptr->data.buffer_data, data, ptr->size);
 
@@ -2238,7 +2295,16 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
         }
 
         mglPrepareGpuWrittenBufferForCpuShadowWrite(ctx, ptr);
-        memcpy((char*)ptr->data.buffer_data + offset, data, size);
+        if (ptr->storage_flags & GL_SPARSE_STORAGE_BIT_ARB) {
+            /* Writes into uncommitted pages are silently discarded. */
+            if (mglSparseBufferCopyCommitted(
+                    ptr, offset, size, data,
+                    (char *)ptr->data.buffer_data + offset) == 0) {
+                return;
+            }
+        } else {
+            memcpy((char *)ptr->data.buffer_data + offset, data, size);
+        }
         ptr->cpu_shadow_pending = GL_TRUE;
         ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
         mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
@@ -2773,9 +2839,10 @@ void *mglMapBuffer(GLMContext ctx, GLenum target, GLenum access)
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
 
-    /* For read maps, ensure all pending GPU operations (including compute
-     * dispatches) are complete before the CPU reads the buffer contents. */
-    if (access == GL_READ_ONLY || access == GL_READ_WRITE) {
+    /* AUDIT-055: MapBuffer WRITE_ONLY must also wait (MapBufferRange already
+     * does). Without UNSYNCHRONIZED there is no unsync escape hatch here. */
+    if (access == GL_READ_ONLY || access == GL_WRITE_ONLY ||
+        access == GL_READ_WRITE) {
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
     }
@@ -2913,7 +2980,13 @@ GLboolean mglUnmapBuffer(GLMContext ctx, GLenum target)
     mglBufferMarkMapWrite(ptr);
     if (mglBufferMapAllowsWrite(ptr)) {
         ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
-        ptr->cpu_shadow_pending = GL_TRUE;
+        /* MapUnmap writes the shadow into Metal when not FLUSH_EXPLICIT.
+         * FLUSH_EXPLICIT leaves pending ranges that FlushMapped* must push. */
+        if (ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT) {
+            ptr->cpu_shadow_pending = GL_TRUE;
+        } else {
+            ptr->cpu_shadow_pending = GL_FALSE;
+        }
         mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
     }
 
@@ -2974,7 +3047,11 @@ GLboolean mglUnmapNamedBuffer(GLMContext ctx, GLuint buffer)
     mglBufferMarkMapWrite(ptr);
     if (mglBufferMapAllowsWrite(ptr)) {
         ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
-        ptr->cpu_shadow_pending = GL_TRUE;
+        if (ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT) {
+            ptr->cpu_shadow_pending = GL_TRUE;
+        } else {
+            ptr->cpu_shadow_pending = GL_FALSE;
+        }
         mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
     }
 
@@ -3109,10 +3186,11 @@ void *mglMapBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeip
      * and are not tracked by mglFlushPendingDrawsForBuffer, so we must commit
      * and wait here to guarantee visibility of GPU writes.
      *
-     * MGL_SYNC_STRICT: mglFlushCommandBuffer + mtlFlush(ctx, true)
-     * (commit + waitUntilCompleted) already ran here, a conservative path
-     * that needs no extra strict branch. */
-    if (access_flags & GL_MAP_READ_BIT) {
+     * AUDIT-055: write maps without UNSYNCHRONIZED must also wait so the CPU
+     * cannot race in-flight GPU readers/writers of the same store. */
+    if ((access_flags & GL_MAP_READ_BIT) ||
+        ((access_flags & GL_MAP_WRITE_BIT) &&
+         !(access_flags & GL_MAP_UNSYNCHRONIZED_BIT))) {
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
     }
@@ -3255,9 +3333,11 @@ void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLs
         }
     }
 
-    /* For read maps, ensure all pending GPU operations (including compute
-     * dispatches) are complete before the CPU reads the buffer contents. */
-    if (access & GL_MAP_READ_BIT) {
+    /* AUDIT-055: same wait policy as MapBufferRange (read, or write without
+     * UNSYNCHRONIZED). */
+    if ((access & GL_MAP_READ_BIT) ||
+        ((access & GL_MAP_WRITE_BIT) &&
+         !(access & GL_MAP_UNSYNCHRONIZED_BIT))) {
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
     }
@@ -4003,10 +4083,8 @@ void mglBufferPageCommitmentARB(GLMContext ctx, GLenum target, GLintptr offset,
     GLuint index;
     Buffer *ptr;
     GLint page;
+    GLuint first, last, i;
 
-    /* The buffer is fully resident and zero-filled.  Commitment only has to
-     * accept a page-aligned range; reads of untouched bytes are already 0. */
-    (void)commit;
     ERROR_CHECK_RETURN(checkTarget(ctx, target), GL_INVALID_ENUM);
     index = bufferIndexFromTarget(ctx, target);
     ptr = STATE(buffers[index]);
@@ -4019,9 +4097,40 @@ void mglBufferPageCommitmentARB(GLMContext ctx, GLenum target, GLintptr offset,
         return;
     }
     page = mglSparseBufferPageSize();
-    if (page <= 0 || (offset % page) != 0 || (size % page) != 0 ||
+    /* size may extend to the end of the store without page alignment. */
+    if (page <= 0 || (offset % page) != 0 ||
+        ((size % page) != 0 && (offset + size) != ptr->size) ||
         offset > ptr->size || (GLsizeiptr)(ptr->size - offset) < size) {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
+    }
+    if (!ptr->sparse_page_committed || ptr->sparse_page_count == 0u || size == 0)
+        return;
+
+    first = (GLuint)(offset / page);
+    last = (GLuint)((offset + size + page - 1) / page);
+    if (last > ptr->sparse_page_count)
+        last = ptr->sparse_page_count;
+
+    if (commit) {
+        /* Newly committed pages have undefined content - leave bytes as-is
+         * (including redundant commits, which must not alter content). */
+        for (i = first; i < last; i++)
+            ptr->sparse_page_committed[i] = 1u;
+        return;
+    }
+
+    /* Decommit: mark uncommitted and zero the backing so subsequent reads
+     * see zeros (a valid choice for undefined). */
+    for (i = first; i < last; i++)
+        ptr->sparse_page_committed[i] = 0u;
+    if (ptr->data.buffer_data) {
+        memset((uint8_t *)(uintptr_t)ptr->data.buffer_data + (size_t)offset, 0,
+               (size_t)size);
+        ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+        if (mglBufferMtl(ptr))
+            mglRendererBufferSubData(ctx, ptr, offset, size,
+                                     (const void *)((uintptr_t)ptr->data.buffer_data +
+                                                    (uintptr_t)offset));
     }
 }
