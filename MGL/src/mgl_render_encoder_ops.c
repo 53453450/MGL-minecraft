@@ -767,24 +767,29 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
                 loadStorePlan.set_store_action ? loadStorePlan.store_action
                                                : MGLStoreActionStore);
 
-            /* MS textures are texture2d_array sample planes; LoadActionClear
-             * only hits the attached base slice. Clear the other sample planes
-             * so imageLoad(sample) sees the same clear value. */
+            /* Emulated MS stores sample planes as texture2d_array slices;
+             * LoadActionClear only hits the attached base slice.  Clear the
+             * other planes so blit-resolve / imageLoad(sample) see the same
+             * value.  Gate on samples>1 (not only TEXTURE_2D_MULTISAMPLE*):
+             * renderbuffer MS keeps target=GL_RENDERBUFFER.  Use the same
+             * sRGB/linear view as the pass attachment — clearing the native
+             * sRGB texture while plane 0 used a linear view mixed encoded and
+             * raw values (DSA MS storage SRGB failures). */
             if (attachmentTextureForClear &&
                 mglTextureMtl(attachmentTextureForClear) &&
-                mglRenderIsMultisampleTextureTarget(
-                    (uint32_t)attachmentTextureForClear->target)) {
+                attachmentTextureForClear->samples > 1u) {
                 const MGLMetalAttachmentSubresource sub =
                     mglMetalAttachmentSubresourceForAttachment(att);
                 const uint64_t samples =
-                    mglPdMaxU64((uint64_t)attachmentTextureForClear->samples, 1u);
+                    (uint64_t)attachmentTextureForClear->samples;
+                void *clear_tex = mglApplySRGBStateToRenderTarget(
+                    mglTextureMtl(attachmentTextureForClear), ctx);
                 for (uint64_t s = 1u; s < samples; s++) {
                     (void)mglRenderEncodeColorClearForCommandBufferOwner(
-                        commandState->currentCommandBufferOwner,
-                        mglTextureMtl(attachmentTextureForClear), sub.level,
-                        sub.slice + s, sub.depthPlane, att->clear_color[0],
-                        att->clear_color[1], att->clear_color[2],
-                        att->clear_color[3]);
+                        commandState->currentCommandBufferOwner, clear_tex,
+                        sub.level, sub.slice + s, sub.depthPlane,
+                        att->clear_color[0], att->clear_color[1],
+                        att->clear_color[2], att->clear_color[3]);
                 }
             }
 

@@ -35,6 +35,7 @@
 #include "mgl_renderer_host.h"          /* mglMarkTextureLevelRenderTargetWritten */
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_render_encoder_ops.h" /* mglRenderPassNewCommandBufferLocked */
+#include "mgl_ms_sample_loop.h" /* broadcast after scissored MS clear */
 
 #include <limits.h>
 #include <stdio.h>
@@ -933,6 +934,12 @@ static void mglPdClearRects(void *renderer, GLMContext glm_ctx, unsigned int mas
                                values, rawX, rawY, rawW, rawH);
         }
     }
+
+    /* Scissored clear only draws into the attached MS sample plane.  Copy
+     * plane 0 onto the remaining planes so a later blit-resolve does not
+     * average in uncleared samples (MS→SS color_config_test → 0.25). */
+    mglRendererBroadcastEmulatedMSSamplePlanesAfterDrawIfNeeded(renderer,
+                                                                glm_ctx);
 
     mglMarkRendererDirtyBits(glm_ctx->active_state,
                              DIRTY_FBO | DIRTY_RENDER_STATE);

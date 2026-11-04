@@ -1566,13 +1566,15 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
         if (!mglFramebufferAttachmentHasStorage(ctx, &fbo->color_attachments[i])) {
             return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT, "color-no-storage", i, &fbo->color_attachments[i]);
         }
-        /* Color attachments must use a color-renderable internal format.
-         * Non-renderable formats (RGB-only, compressed, luminance, etc.)
-         * cause the framebuffer to be incomplete per GL 4.6 spec.
-         * Multisample attachments with non-renderable formats return
-         * GL_FRAMEBUFFER_UNSUPPORTED so callers (e.g. CTS texture_swizzle
-         * fillMSTexture) can treat the format/target combo as unsupported
-         * rather than failing on incomplete. */
+        /* Color attachments must use a color-renderable internal format
+         * (GL 4.6 §9.4.1).  Non-CR → INCOMPLETE_ATTACHMENT.
+         *
+         * Multisample + non-CR is also an implementation-dependent
+         * restriction (§9.4.2 FRAMEBUFFER_UNSUPPORTED).  Prefer
+         * UNSUPPORTED for samples>1 so clients that probe MS renderability
+         * (including CTS texture_swizzle fillMSTexture, which only soft-
+         * fails on UNSUPPORTED) can skip the combo without treating a
+         * non-CR format as "supported but incomplete". */
         GLint ifmt = mglFramebufferAttachmentInternalFormat(ctx, &fbo->color_attachments[i]);
         Texture *tex = mglFramebufferAttachmentTextureObject(ctx, &fbo->color_attachments[i]);
         {
@@ -1587,27 +1589,8 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
                 return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT, "color-not-renderable", i, &fbo->color_attachments[i]);
             }
         }
-        /* Table 8.12 marks SNORM CR, but MSAA SNORM RTs are not a useful
-         * AGX path; keep CTS fillMSTexture on UNSUPPORTED.  RGB16F / RGB16
-         * are renderable as single-sample attachments (shader packs attach
-         * them) but their multisample storage is not a supported target. */
-        if (tex && tex->samples > 1u) {
-            switch (ifmt) {
-            case GL_RGB16F:
-            case GL_RGB16:
-            case GL_R8_SNORM:
-            case GL_RG8_SNORM:
-            case GL_RGB8_SNORM:
-            case GL_RGBA8_SNORM:
-            case GL_R16_SNORM:
-            case GL_RG16_SNORM:
-            case GL_RGB16_SNORM:
-            case GL_RGBA16_SNORM:
-                return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_UNSUPPORTED, "snorm-ms", i, &fbo->color_attachments[i]);
-            default:
-                break;
-            }
-        }
+        /* SNORM / RGB16 / RGB16F stay CR as MSAA: Metal accepts *Snorm and
+         * RGBA16{Float,Unorm} multisample render targets on this device. */
     }
 
     if (fbo->depth.texture != 0u &&
@@ -4256,9 +4239,15 @@ void mglNamedRenderbufferStorageMultisample(GLMContext ctx, GLuint renderbuffer,
         return;
     }
 
+    /* Same sequence as mglRenderbufferStorageMultisample: allocate, stamp
+     * samples, drop any single-sample Metal backing so the next FBO bind
+     * rebuilds as Multisample / array-emulated planes. */
     mglNamedRenderbufferStorage(ctx, renderbuffer, internalformat, width, height);
     if (rbo->tex) {
-        rbo->tex->samples = mglRenderbufferStorageSamples(ctx, samples);
+        Texture *tex = rbo->tex;
+        tex->samples = mglRenderbufferStorageSamples(ctx, samples);
+        mglRenderTextureDropBacking(tex);
+        tex->dirty_bits |= DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA;
     }
 }
 
