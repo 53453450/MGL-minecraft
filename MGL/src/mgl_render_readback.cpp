@@ -171,6 +171,7 @@ void mglRenderPendingEventClear(MGLPendingEventOwner * owner_handle) {
     mgl::PendingEventOwner* owner =
         reinterpret_cast<mgl::PendingEventOwner*>(static_cast<void*>(owner_handle));
     if (!owner) return;
+    std::lock_guard<std::mutex> owner_lock(owner->mutex);
     if (owner->event) {
         owner->event->release();
         owner->event = nullptr;

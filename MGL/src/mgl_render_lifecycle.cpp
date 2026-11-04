@@ -552,13 +552,21 @@ void mglRenderResetMDIScratchOwner(MGLMDIScratchOwner * owner_handle) {
     mgl::MDIScratchOwner* owner =
         reinterpret_cast<mgl::MDIScratchOwner*>(static_cast<void*>(owner_handle));
     if (!owner) return;
-    /* Pass / CB boundary: prior GPU work that referenced retired scratch
-     * buffers is assumed complete, so flush deferred releases here. */
-    owner->flushRetired();
-    if (owner->buffer) owner->buffer->release();
-    owner->buffer = nullptr;
+    /* AUDIT-037: at a CB boundary the prior buffer may still be referenced by
+     * an in-flight encode. Retire it; only drop the oldest once the ring is
+     * deep enough that those CBs are almost certainly done. */
+    if (owner->buffer) {
+        owner->retire(owner->buffer);
+        owner->buffer = nullptr;
+    }
     owner->capacity = 0;
     owner->offset = 0;
+    constexpr size_t kMaxRetiredMDI = 8u;
+    while (owner->retired.size() > kMaxRetiredMDI) {
+        MTL::Buffer* oldest = owner->retired.front();
+        owner->retired.erase(owner->retired.begin());
+        if (oldest) oldest->release();
+    }
 }
 
 void mglRenderDestroyMDIScratchOwner(MGLMDIScratchOwner ** owner_handle) {

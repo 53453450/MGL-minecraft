@@ -418,7 +418,11 @@ void mglPassManagerResetMDIScratch(MGLRenderPassManager *manager)
     if (!manager) {
         return;
     }
-    mglRenderDestroyMDIScratchOwner(&manager->state->mdiArgsScratchOwner);
+    /* AUDIT-037: CB rotation must not Destroy (immediate release). Reset
+     * retires the live scratch into a deferred ring while keeping the owner. */
+    if (manager->state->mdiArgsScratchOwner) {
+        mglRenderResetMDIScratchOwner(manager->state->mdiArgsScratchOwner);
+    }
 }
 
 void mglPassManagerInstallNewRenderPassDescriptor(MGLRenderPassManager *manager)

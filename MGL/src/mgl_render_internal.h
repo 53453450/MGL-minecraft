@@ -783,6 +783,8 @@ inline void snapshotCommandRecovery(
 struct PendingEventOwner {
     ~PendingEventOwner() { if (event) event->release(); }
 
+    /* AUDIT-013: Prepare/Detach can race on event + sync_name. */
+    std::mutex mutex;
     MTL::Event* event = nullptr;
     GLsizei sync_name = 0;
 };

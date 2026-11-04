@@ -2508,6 +2508,13 @@ int mglRenderBuildLevelUploadOps(
         int prepResult = mglRenderTexturePrepareLevelUpload(
             l, texture_type, internal_format, pixel_format, &prep);
         if (prepResult == -2) {
+            /* AUDIT-011: needed_bytes must not wrap. */
+            uint64_t need = 0;
+            if (mglRenderCheckedProduct(prep.bytes_per_image, prep.copy_depth,
+                                        &need) != 0) {
+                bad_count++;
+                continue;
+            }
             MGLRenderLevelUploadOp& op = ops[op_count++];
             op.level = level;
             op.kind = 1u;
@@ -2517,7 +2524,7 @@ int mglRenderBuildLevelUploadOps(
             op.bytes_per_image = prep.bytes_per_image;
             op.copy_depth = prep.copy_depth;
             op.available_bytes = prep.available_bytes;
-            op.needed_bytes = prep.bytes_per_image * prep.copy_depth;
+            op.needed_bytes = need;
             op.data = nullptr;
             op.owns_data = 0;
             short_count++;
@@ -2648,6 +2655,7 @@ int mglRenderPendingEventPrepare(MGLPendingEventOwner * owner_handle, GLsizei sy
     mgl::PendingEventOwner* owner =
         reinterpret_cast<mgl::PendingEventOwner*>(static_cast<void*>(owner_handle));
     if (!owner || !event_out) return -1;
+    std::lock_guard<std::mutex> owner_lock(owner->mutex);
     if (!owner->event) {
         mgl::Renderer& renderer = mgl::renderer();
         std::lock_guard<std::mutex> lock(renderer.mutex);
@@ -2669,6 +2677,7 @@ int mglRenderPendingEventDetach(MGLPendingEventOwner * owner_handle, GLsizei* sy
     mgl::PendingEventOwner* owner =
         reinterpret_cast<mgl::PendingEventOwner*>(static_cast<void*>(owner_handle));
     if (!owner || !event_out) return -1;
+    std::lock_guard<std::mutex> owner_lock(owner->mutex);
     if (owner->event) {
         *event_out = owner->event;
         owner->event = nullptr;
@@ -3334,6 +3343,16 @@ int mglRenderEncodeTextureUploadLayers(
         layer_count == 0 || (layer_count > 1u && source_layer_stride == 0u)) {
         return -1;
     }
+    /* AUDIT-014: flip_y (and normal) paths index rows via bytes_per_row;
+     * bytes_per_image must cover the full height span. */
+    {
+        uint64_t min_image = 0;
+        if (mglRenderCheckedProduct(source_height, source_bytes_per_row,
+                                    &min_image) != 0 ||
+            source_bytes_per_image < min_image) {
+            return -1;
+        }
+    }
 
     const uint64_t last_layer = layer_count - 1u;
     if ((source_layer_stride != 0u &&
@@ -3656,13 +3675,19 @@ int mglRenderBlitCopyDepthStencilAspectToBuffer(
         destination_bytes_per_row == 0) {
         return -1;
     }
+    /* AUDIT-008: refuse wrapped bytes_per_image. */
+    uint64_t dst_image = 0;
+    if (mglRenderCheckedProduct(destination_bytes_per_row, height,
+                                &dst_image) != 0) {
+        return -1;
+    }
     encoder->copyFromTexture(
         source, static_cast<NS::UInteger>(source_slice),
         static_cast<NS::UInteger>(source_level),
         MTL::Origin(source_x, source_y, 0), MTL::Size(width, height, 1),
         destination, static_cast<NS::UInteger>(destination_offset),
         static_cast<NS::UInteger>(destination_bytes_per_row),
-        static_cast<NS::UInteger>(destination_bytes_per_row * height),
+        static_cast<NS::UInteger>(dst_image),
         stencil_aspect ? MTL::BlitOptionStencilFromDepthStencil
                        : MTL::BlitOptionDepthFromDepthStencil);
     return 0;
@@ -3688,12 +3713,17 @@ int mglRenderBlitCopyStencilToBuffer(
         destination_bytes_per_row == 0) {
         return -1;
     }
+    uint64_t dst_image = 0;
+    if (mglRenderCheckedProduct(destination_bytes_per_row, height,
+                                &dst_image) != 0) {
+        return -1;
+    }
     encoder->copyFromTexture(
         source, 0, 0, MTL::Origin(source_x, source_y, 0),
         MTL::Size(width, height, 1), destination,
         static_cast<NS::UInteger>(destination_offset),
         static_cast<NS::UInteger>(destination_bytes_per_row),
-        static_cast<NS::UInteger>(destination_bytes_per_row * height),
+        static_cast<NS::UInteger>(dst_image),
         packed_depth_stencil ? MTL::BlitOptionStencilFromDepthStencil
                              : MTL::BlitOptionNone);
     return 0;
@@ -3719,10 +3749,15 @@ int mglRenderBlitCopyBufferToStencil(
         source_bytes_per_row == 0) {
         return -1;
     }
+    uint64_t src_image = 0;
+    if (mglRenderCheckedProduct(source_bytes_per_row, height,
+                                &src_image) != 0) {
+        return -1;
+    }
     encoder->copyFromBuffer(
         source, static_cast<NS::UInteger>(source_offset),
         static_cast<NS::UInteger>(source_bytes_per_row),
-        static_cast<NS::UInteger>(source_bytes_per_row * height),
+        static_cast<NS::UInteger>(src_image),
         MTL::Size(width, height, 1), destination, 0, 0,
         MTL::Origin(destination_x, destination_y, 0),
         packed_depth_stencil ? MTL::BlitOptionStencilFromDepthStencil
