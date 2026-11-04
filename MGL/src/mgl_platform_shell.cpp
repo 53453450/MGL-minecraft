@@ -31,6 +31,8 @@
 #include <dispatch/dispatch.h>
 
 #include <new>
+#include <unordered_map>
+
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -132,6 +134,74 @@ static SEL s_shellSelStartCapture = NULL;
 static SEL s_shellSelStopCapture = NULL;
 static SEL s_shellSelAlloc = NULL;
 
+static MGLObjectId mglShellLayerOf(MGLObjectId self);
+
+static dispatch_queue_t mglMetalLayerQueue(void)
+{
+    static dispatch_once_t once;
+    static dispatch_queue_t queue;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create("mgl.metal.layer", DISPATCH_QUEUE_SERIAL);
+    });
+    return queue;
+}
+
+static std::unordered_map<void *, MGLObjectId> &mglPrefetchedDrawableMap(void)
+{
+    static std::unordered_map<void *, MGLObjectId> map;
+    return map;
+}
+
+static void mglMetalLayerInvalidatePrefetchLocked(void *shellKey)
+{
+    auto &map = mglPrefetchedDrawableMap();
+    auto it = map.find(shellKey);
+    if (it == map.end()) {
+        return;
+    }
+    if (it->second) {
+        mglReleaseObject(it->second);
+    }
+    map.erase(it);
+}
+
+static void mglMetalLayerInvalidatePrefetch(MGLObjectId self)
+{
+    if (!self) {
+        return;
+    }
+    void *shellKey = (void *)self;
+    dispatch_sync(mglMetalLayerQueue(), ^{
+        mglMetalLayerInvalidatePrefetchLocked(shellKey);
+    });
+}
+
+/* Returns a +1 drawable (caller releases). Prefetch map entries are already
+ * retained; fresh nextDrawable results are retained before leaving the queue
+ * so the object survives the queue autorelease pool. */
+static MGLObjectId mglMetalLayerAcquireDrawableLocked(MGLObjectId self)
+{
+    MGLObjectId layer = mglShellLayerOf(self);
+    if (!layer) {
+        return NULL;
+    }
+    void *shellKey = (void *)self;
+    auto &map = mglPrefetchedDrawableMap();
+    MGLObjectId drawable = NULL;
+    auto it = map.find(shellKey);
+    if (it != map.end()) {
+        drawable = it->second;
+        map.erase(it);
+    } else {
+        drawable = mglSend<MGLObjectId>(
+            layer, MGL_SEL(s_shellSelNextDrawable, "nextDrawable"));
+        if (drawable) {
+            (void)objc_retain(drawable);
+        }
+    }
+    return drawable;
+}
+
 /* ARC's strong property store: retain the new value, release the old one. */
 static void mglShellStoreObject(void **slot, MGLObjectId value)
 {
@@ -209,6 +279,7 @@ static MGLObjectId mglShellGetLayer(MGLObjectId self, SEL cmd)
 static void mglShellSetLayer(MGLObjectId self, SEL cmd, MGLObjectId value)
 {
     (void)cmd;
+    mglMetalLayerInvalidatePrefetch(self);
     MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
     if (ivars) {
         mglShellStoreObject(&ivars->_layer, value);
@@ -370,6 +441,7 @@ static signed char mglShellConfigureMetalLayer(MGLObjectId self, SEL cmd,
 static void mglShellDetachMetalLayer(MGLObjectId self, SEL cmd)
 {
     (void)cmd;
+    mglMetalLayerInvalidatePrefetch(self);
     mglShellSetDrawable(self, MGL_SEL(s_shellSelSetDrawable, "setDrawable:"),
                         (MGLObjectId)NULL);
     MGLObjectId layer = mglShellLayerOf(self);
@@ -452,12 +524,15 @@ static void mglShellStopCapture(MGLObjectId self, SEL cmd)
 static MGLObjectId mglShellNextDrawable(MGLObjectId self, SEL cmd)
 {
     (void)cmd;
-    MGLObjectId layer = mglShellLayerOf(self);
-    MGLObjectId drawable =
-        layer ? mglSend<MGLObjectId>(layer, MGL_SEL(s_shellSelNextDrawable,
-                                                    "nextDrawable"))
-              : NULL;
-    mglShellSetDrawable(self, MGL_SEL(s_shellSelSetDrawable, "setDrawable:"), drawable);
+    __block MGLObjectId drawable = NULL;
+    dispatch_sync(mglMetalLayerQueue(), ^{
+        drawable = mglMetalLayerAcquireDrawableLocked(self);
+    });
+    mglShellSetDrawable(self, MGL_SEL(s_shellSelSetDrawable, "setDrawable:"),
+                        drawable);
+    if (drawable) {
+        mglReleaseObject(drawable);
+    }
     return mglShellDrawableOf(self);
 }
 
@@ -509,6 +584,7 @@ static void mglShellSetLayerFrame(MGLObjectId self, SEL cmd, CGRect frame,
 static void mglShellSetLayerDrawableSize(MGLObjectId self, SEL cmd, CGSize size)
 {
     (void)cmd;
+    mglMetalLayerInvalidatePrefetch(self);
     MGLObjectId layer = mglShellLayerOf(self);
     if (layer) {
         (void)mglSend<void>(layer, MGL_SEL(s_shellSelSetDrawableSize,
@@ -631,6 +707,7 @@ static const MGLIvarSpec kMGLRendererIvars[] = {
 static void mglPlatformShellDealloc(MGLObjectId self, SEL cmd)
 {
     (void)cmd;
+    mglMetalLayerInvalidatePrefetch(self);
     MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
     if (ivars) {
         mglShellStoreObject(&ivars->_drawable, NULL);
@@ -935,6 +1012,29 @@ void mglRendererNextDrawable(void *renderer)
     }
 }
 
+void mglRendererPrefetchNextDrawable(void *renderer)
+{
+    MGLObjectId r = (MGLObjectId)renderer;
+    if (!r) {
+        return;
+    }
+    dispatch_async(mglMetalLayerQueue(), ^{
+        void *shellKey = (void *)r;
+        mglMetalLayerInvalidatePrefetchLocked(shellKey);
+        MGLObjectId layer = mglShellLayerOf(r);
+        if (!layer) {
+            return;
+        }
+        MGLObjectId drawable = mglSend<MGLObjectId>(
+            layer, MGL_SEL(s_shellSelNextDrawable, "nextDrawable"));
+        if (!drawable) {
+            return;
+        }
+        (void)objc_retain(drawable);
+        mglPrefetchedDrawableMap()[shellKey] = drawable;
+    });
+}
+
 void *mglRendererDrawableTexture(void *renderer)
 {
     MGLObjectId r = (MGLObjectId)renderer;
@@ -980,6 +1080,7 @@ int mglRendererEnsureLayerDrawableSizeAtLeastWidth(void *renderer,
     (void)mglSend<void>(r, MGL_SEL(s_selSetMetalLayerDrawableSize,
                                    "mglSetMetalLayerDrawableSize:"),
                         CGSizeMake((CGFloat)targetWidth, (CGFloat)targetHeight));
+    mglMetalLayerInvalidatePrefetch(r);
     if (mglSend<MGLObjectId>(r, MGL_SEL(s_selDrawable, "drawable"))) {
         (void)mglSend<void>(r, MGL_SEL(s_selSetDrawable, "setDrawable:"),
                             (MGLObjectId)NULL);

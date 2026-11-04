@@ -444,6 +444,7 @@ int mglPlatformShellNewCommandBuffer(void *renderer);
  * is its `.texture` — NULL when there is no drawable, so one NULL check covers
  * both `!_drawable` and `![self mglDrawableTexture]`. */
 void mglRendererNextDrawable(void *renderer);
+void mglRendererPrefetchNextDrawable(void *renderer);
 void *mglRendererDrawableTexture(void *renderer);
 int mglRendererEnsureLayerDrawableSizeAtLeastWidth(void *renderer,
                                                        size_t required_width,

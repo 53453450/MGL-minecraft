@@ -79,6 +79,7 @@ extern void *mglPlatformShellDrawable(void *renderer);
 extern void *mglPlatformShellDrawablePointer(void *renderer);
 extern MGLSizeValue mglPlatformShellApplyPendingDrawableSize(void *renderer);
 extern void mglRendererNextDrawable(void *renderer);
+extern void mglRendererPrefetchNextDrawable(void *renderer);
 extern int mglPlatformShellGuardedCall(void *renderer, const char *what,
                                        int (*body)(void *));
 
@@ -5286,6 +5287,8 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
             /* PERF-038: visible unlocked — drop consumed drawable; next frame
              * acquires in processGLState (not here). Never present NULL. */
             mglPlatformShellSetDrawable(renderer, NULL);
+            /* PERF-038: prefetch off GL hot path for next frame acquire. */
+            mglRendererPrefetchNextDrawable(renderer);
             if (traceSwap) {
                 mglTraceLog(
                     "MGL TRACE swap.nextDrawable.deferred call=%llu stage=post_commit",
