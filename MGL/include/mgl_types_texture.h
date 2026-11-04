@@ -219,6 +219,12 @@ typedef struct Texture_t {
 
     // base level params
     GLenum internalformat;
+    /* When BindImageTexture reinterprets a non-atomic Metal format as
+     * R32I/UI (same bpp), Metal ShaderAtomic needs a real R32 store — a
+     * PixelFormatView cannot carry ShaderAtomic.  Non-zero overrides the
+     * Metal pixel format while GL internalformat stays unchanged so
+     * GetTexImage still reads the raw cast bytes. */
+    GLenum image_metal_format;
     GLenum compressed_internalformat; // original compressed format if tex was created with compressed internalformat via glTexImage*, 0 otherwise
     GLuint width;
     GLuint height;

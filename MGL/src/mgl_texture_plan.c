@@ -560,15 +560,18 @@ uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
     switch (internalformat) {
     case GL_RED:
     case GL_R8:
+    case GL_R8_SNORM:
     case GL_R8I:
     case GL_R8UI:
         bpp = 1u;
         break;
     case GL_RG:
     case GL_RG8:
+    case GL_RG8_SNORM:
     case GL_RG8I:
     case GL_RG8UI:
     case GL_R16:
+    case GL_R16_SNORM:
     case GL_R16F:
     case GL_R16I:
     case GL_R16UI:
@@ -576,20 +579,26 @@ uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
         break;
     case GL_RGB:
     case GL_RGB8:
+    case GL_RGB8_SNORM:
     case GL_RGB8I:
     case GL_RGB8UI:
     case GL_SRGB8:
-    case GL_R11F_G11F_B10F:
-    case GL_RGB9_E5:
         bpp = 3u;
         break;
+    /* Packed 32-bit RGB(A) storage — not 3-byte tightly packed. */
+    case GL_R11F_G11F_B10F:
+    case GL_RGB9_E5:
     case GL_RGBA:
     case GL_RGBA8:
+    case GL_RGBA8_SNORM:
     case GL_RGBA8I:
     case GL_RGBA8UI:
     case GL_RGB10_A2:
     case GL_RGB10_A2UI:
     case GL_SRGB8_ALPHA8:
+    case GL_RG16:
+    case GL_RG16_SNORM:
+    case GL_RG16F:
     case GL_RG16I:
     case GL_RG16UI:
     case GL_R32I:
@@ -602,6 +611,7 @@ uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
         bpp = 5u;
         break;
     case GL_RGBA16:
+    case GL_RGBA16_SNORM:
     case GL_RGBA16F:
     case GL_RG32I:
     case GL_RG32UI:
@@ -611,7 +621,10 @@ uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
         bpp = 8u;
         break;
     case GL_RGB16:
+    case GL_RGB16_SNORM:
     case GL_RGB16F:
+    case GL_RGB16I:
+    case GL_RGB16UI:
         bpp = 6u;
         break;
     case GL_RGB32F:

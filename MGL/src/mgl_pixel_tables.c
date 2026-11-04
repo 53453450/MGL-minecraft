@@ -124,6 +124,8 @@ uint32_t mglNumComponentsForFormat(uint32_t format) {
         case GL_RGB8:
         case GL_RGB8_SNORM:
         case GL_SRGB8:
+        case GL_RGB16:
+        case GL_RGB16_SNORM:
         case GL_RGB16F:
         case GL_RGB32F:
         case GL_R11F_G11F_B10F:

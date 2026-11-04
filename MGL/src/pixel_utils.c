@@ -3105,17 +3105,21 @@ uint32_t mtlPixelFormatForGLTex(Texture * tex)
         return MGLPixelFormatInvalid;
     }
 
-    /* glTexImage* with a compressed internalformat stores data uncompressed
-     * (see mglCompressedInternalFormatToSizedUncompressed remap in
-     * createTextureLevel). The Metal texture must match the uncompressed
-     * data layout, not the compressed internalformat. glCompressedTexImage*
-     * stores block data (compressed_internalformat == internalformat) and
-     * still needs the compressed Metal format. */
-    if (mglTexLevelInternalFormatCompressed((GLint)internal_format) &&
+    /* BindImageTexture same-bpp R32 cast: Metal store is R32* so imageAtomic
+     * can use ShaderAtomic; GL internalformat stays the original (e.g. RGBA8). */
+    if (tex->image_metal_format != 0u) {
+        internal_format = tex->image_metal_format;
+    } else if (mglTexLevelInternalFormatCompressed((GLint)internal_format) &&
         tex->compressed_internalformat != internal_format &&
         tex->faces[0].levels &&
         tex->faces[0].levels[0].pitch > 0u)
     {
+        /* glTexImage* with a compressed internalformat stores data uncompressed
+         * (see mglCompressedInternalFormatToSizedUncompressed remap in
+         * createTextureLevel). The Metal texture must match the uncompressed
+         * data layout, not the compressed internalformat. glCompressedTexImage*
+         * stores block data (compressed_internalformat == internalformat) and
+         * still needs the compressed Metal format. */
         internal_format = (GLenum)mglCompressedInternalFormatToSizedUncompressed((GLint)internal_format);
     }
 
