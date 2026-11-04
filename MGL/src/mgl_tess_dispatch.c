@@ -122,20 +122,6 @@ static void *mglTessDispatchCreateBuffer(size_t length, uint64_t options)
     return NULL;
 }
 
-/* +1 buffer, or NULL. */
-static void *mglTessDispatchCreateBufferWithBytes(const void *bytes,
-                                                  size_t length,
-                                                  uint64_t options)
-{
-    void *buffer = NULL;
-    if (mglRenderCreateBufferWithBytes(bytes, length, options, NULL, &buffer) ==
-            0 &&
-        buffer) {
-        return buffer;
-    }
-    return NULL;
-}
-
 static void *mglTessDispatchBufferContents(void *buffer)
 {
     void *contents = NULL;
@@ -143,6 +129,74 @@ static void *mglTessDispatchBufferContents(void *buffer)
     return buffer && mglRenderGetBufferContents(buffer, &contents, &length) == 0
                ? contents
                : NULL;
+}
+
+/* PERF-006: grow-only tess temp reuse with 2-deep ping-pong so multidraw can
+ * keep the previous CB's buffer alive while the next draw fills a sibling. */
+typedef struct MGLTessReuseSlot {
+    void *buffer[2];
+    size_t capacity[2];
+    unsigned next;
+} MGLTessReuseSlot;
+
+static MGLTessReuseSlot sTessFactorReuse;
+static MGLTessReuseSlot sTcsStageInReuse;
+static MGLTessReuseSlot sTcsOutputReuse;
+static MGLTessReuseSlot sTcsPatchOutReuse;
+static MGLTessReuseSlot sTesOutReuse;
+static MGLTessReuseSlot sIndirectReuse;
+static MGLTessReuseSlot sXfbTempReuse;
+
+static void *mglTessDispatchReuseSlotBuffer(MGLTessReuseSlot *slot,
+                                            size_t length,
+                                            void **contents_out)
+{
+    if (contents_out) {
+        *contents_out = NULL;
+    }
+    if (!slot || length == 0) {
+        return NULL;
+    }
+    const unsigned idx = slot->next & 1u;
+    slot->next = (slot->next + 1u) & 1u;
+    if (slot->buffer[idx] && slot->capacity[idx] >= length) {
+        if (contents_out) {
+            *contents_out = mglTessDispatchBufferContents(slot->buffer[idx]);
+        }
+        CFRetain((CFTypeRef)slot->buffer[idx]);
+        return slot->buffer[idx];
+    }
+    if (slot->buffer[idx]) {
+        CFRelease((CFTypeRef)slot->buffer[idx]);
+        slot->buffer[idx] = NULL;
+        slot->capacity[idx] = 0;
+    }
+    void *buffer = mglTessDispatchCreateBuffer(
+        length, MGL_TESS_DISPATCH_STORAGE_SHARED);
+    if (!buffer) {
+        return NULL;
+    }
+    slot->buffer[idx] = buffer;
+    slot->capacity[idx] = length;
+    CFRetain((CFTypeRef)slot->buffer[idx]);
+    if (contents_out) {
+        *contents_out = mglTessDispatchBufferContents(buffer);
+    }
+    return buffer;
+}
+
+static void *mglTessDispatchReuseTessFactorBuffer(size_t length,
+                                                    void **contents_out)
+{
+    return mglTessDispatchReuseSlotBuffer(&sTessFactorReuse, length,
+                                          contents_out);
+}
+
+static void *mglTessDispatchReuseTCSStageInBuffer(size_t length,
+                                                  void **contents_out)
+{
+    return mglTessDispatchReuseSlotBuffer(&sTcsStageInReuse, length,
+                                          contents_out);
 }
 
 static uint64_t mglTessDispatchBufferLength(void *buffer)
@@ -365,14 +419,18 @@ static void *mglTessDispatchNewTCSStageInBuffer(
     }
 
     size_t tcs_in_size = (size_t)stage_plan.bytes;
-    void *stage_in_buffer = mglTessDispatchCreateBuffer(
-        tcs_in_size, MGL_TESS_DISPATCH_STORAGE_SHARED);
-    void *stage_in_contents = mglTessDispatchBufferContents(stage_in_buffer);
-    if (!stage_in_contents) {
+    void *stage_in_contents = NULL;
+    void *stage_in_buffer =
+        mglTessDispatchReuseTCSStageInBuffer(tcs_in_size, &stage_in_contents);
+    if (!stage_in_buffer || !stage_in_contents) {
+        if (stage_in_buffer) {
+            CFRelease((CFTypeRef)stage_in_buffer);
+        }
         return NULL;
     }
     if (!mglTessInitStageInDefaults(stage_in_contents, tcs_in_vertices,
                                     tcs_in_stride)) {
+        CFRelease((CFTypeRef)stage_in_buffer);
         return NULL;
     }
 
@@ -554,11 +612,10 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
     const GLuint instance_count = tcs_layout.instance_count;
     const GLuint patch_count = tcs_layout.patch_count;
 
-    void *tcs_output_buffer = mglTessDispatchCreateBuffer(
-        (size_t)tcs_layout.output_bytes, MGL_TESS_DISPATCH_STORAGE_SHARED);
+    void *tcs_output_contents = NULL;
+    void *tcs_output_buffer = mglTessDispatchReuseSlotBuffer(
+        &sTcsOutputReuse, (size_t)tcs_layout.output_bytes, &tcs_output_contents);
     (void)mglRendererBackendSetTcsOutputBuffer(areas.backend, tcs_output_buffer);
-    void *tcs_output_contents =
-        mglTessDispatchBufferContents(tcs_output_buffer);
     if (!tcs_output_contents) {
         goto done;
     }
@@ -566,12 +623,12 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
     areas.tessellation->tcsOutputOffset = 0u;
     mglTessDispatchAdopt(temporaries, tcs_output_buffer);
 
-    void *tcs_patch_out_buffer = mglTessDispatchCreateBuffer(
-        (size_t)tcs_layout.patch_out_bytes, MGL_TESS_DISPATCH_STORAGE_SHARED);
+    void *tcs_patch_out_contents = NULL;
+    void *tcs_patch_out_buffer = mglTessDispatchReuseSlotBuffer(
+        &sTcsPatchOutReuse, (size_t)tcs_layout.patch_out_bytes,
+        &tcs_patch_out_contents);
     (void)mglRendererBackendSetTcsPatchOutBuffer(areas.backend,
                                                  tcs_patch_out_buffer);
-    void *tcs_patch_out_contents =
-        mglTessDispatchBufferContents(tcs_patch_out_buffer);
     if (!tcs_patch_out_contents) {
         goto done;
     }
@@ -581,18 +638,18 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
     GLuint indirect_params[2] = {0u, 0u};
     mglTessFillTCSIndirectParams(patch_vertices, instance_count,
                                  indirect_params);
-    void *indirect_buffer = mglTessDispatchCreateBufferWithBytes(
-        indirect_params, sizeof(indirect_params),
-        MGL_TESS_DISPATCH_STORAGE_SHARED);
-    if (!indirect_buffer) {
+    void *indirect_contents = NULL;
+    void *indirect_buffer = mglTessDispatchReuseSlotBuffer(
+        &sIndirectReuse, sizeof(indirect_params), &indirect_contents);
+    if (!indirect_buffer || !indirect_contents) {
         goto done;
     }
+    memcpy(indirect_contents, indirect_params, sizeof(indirect_params));
     mglTessDispatchAdopt(temporaries, indirect_buffer);
 
-    void *tess_factor_buffer = mglTessDispatchCreateBuffer(
-        (size_t)tcs_layout.factor_bytes, MGL_TESS_DISPATCH_STORAGE_SHARED);
-    void *tess_factor_contents =
-        mglTessDispatchBufferContents(tess_factor_buffer);
+    void *tess_factor_contents = NULL;
+    void *tess_factor_buffer = mglTessDispatchReuseTessFactorBuffer(
+        (size_t)tcs_layout.factor_bytes, &tess_factor_contents);
     if (!tess_factor_contents) {
         goto done;
     }
@@ -803,10 +860,10 @@ bool mglTessDispatchAIRTessEvalVertexRender(
     const size_t out_stride = eval_plan.out_stride;
     const size_t out_size = (size_t)eval_plan.out_size;
 
-    void *out_buffer = mglTessDispatchCreateBuffer(
-        out_size, MGL_TESS_DISPATCH_STORAGE_SHARED);
+    void *out_contents = NULL;
+    void *out_buffer = mglTessDispatchReuseSlotBuffer(&sTesOutReuse, out_size,
+                                                      &out_contents);
     mglTessDispatchAdopt(temporaries, out_buffer);
-    void *out_contents = mglTessDispatchBufferContents(out_buffer);
     if (!out_contents) {
         fprintf(stderr,
                 "MGL TESS ERROR: failed to allocate TES-vertex domain stream "
@@ -1203,10 +1260,10 @@ bool mglTessDispatchAIRTessEvalCompute(
     const GLuint items_per_instance = eval_plan.items_per_instance;
     size_t out_stride = eval_plan.out_stride;
     const size_t out_size = (size_t)eval_plan.out_size;
-    void *out_buffer = mglTessDispatchCreateBuffer(
-        out_size, MGL_TESS_DISPATCH_STORAGE_SHARED);
+    void *out_contents = NULL;
+    void *out_buffer = mglTessDispatchReuseSlotBuffer(&sTesOutReuse, out_size,
+                                                      &out_contents);
     mglTessDispatchAdopt(temporaries, out_buffer);
-    void *out_contents = mglTessDispatchBufferContents(out_buffer);
     if (!out_contents) {
         fprintf(stderr,
                 "MGL TESS ERROR: failed to allocate TES compute output "
@@ -1382,8 +1439,8 @@ bool mglTessDispatchAIRTessEvalCompute(
              * location-based user outputs). GL XFB is a compact stream of only
              * the selected varyings, so it can never target the GL range
              * directly. Gather the selected fields after the dispatch. */
-            xfb_temporary = mglTessDispatchCreateBuffer(
-                required_bytes, MGL_TESS_DISPATCH_STORAGE_SHARED);
+            xfb_temporary = mglTessDispatchReuseSlotBuffer(
+                &sXfbTempReuse, required_bytes, NULL);
             mglTessDispatchAdopt(temporaries, xfb_temporary);
             if (!xfb_temporary) {
                 goto done;

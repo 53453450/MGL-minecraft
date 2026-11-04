@@ -28,6 +28,7 @@
 #include "mgl_env_flag.h"
 
 #include <cstdint>
+#include <vector>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -1448,14 +1449,12 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
         return false;
     }
 
-    uint32_t *patchBases =
-        (uint32_t *)malloc((size_t)(spec->patch_count + 1u) * sizeof(uint32_t));
-    if (!patchBases) {
-        return false;
-    }
+    /* PERF-028: reuse TLS scratch for per-patch base table (hot tess path). */
+    static thread_local std::vector<uint32_t> s_tessPatchBasesScratch;
+    s_tessPatchBasesScratch.resize((size_t)spec->patch_count + 1u);
+    uint32_t *patchBases = s_tessPatchBasesScratch.data();
     if (!mglTessFillEvalPatchItemBases(tes, factor_bytes, spec->patch_count,
                                        patchBases)) {
-        free(patchBases);
         return false;
     }
     if (patchBases[spec->patch_count] > spec->items_per_instance) {
@@ -1469,12 +1468,10 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
         (uint64_t)spec->instance_count *
         (32u + (uint64_t)spec->patch_count * 16u);
     if (cap64 == 0u || cap64 > SIZE_MAX) {
-        free(patchBases);
         return false;
     }
     uint8_t *keep = (uint8_t *)malloc((size_t)cap64);
     if (!keep) {
-        free(patchBases);
         return false;
     }
     size_t used = 0u;
@@ -1488,7 +1485,6 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
                       (uint64_t)inst * spec->gl_in_instance_stride;
         if (!mglTessPlanAppendBuffer(plan, spec->gl_in_buffer, instGlInOffset,
                                      MGL_AIR_TESS_SLOT_TCS_STAGE_IN)) {
-            free(patchBases);
             free(keep);
             return false;
         }
@@ -1497,7 +1493,6 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
                                      spec->gather_buffer ? spec->gather_buffer
                                                          : spec->gl_in_buffer,
                                      0u, MGL_AIR_TESS_SLOT_GATHER_INDEX)) {
-            free(patchBases);
             free(keep);
             return false;
         }
@@ -1508,7 +1503,6 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
         if (!mglTessPlanAppendBytes(plan, keep, &used, (size_t)cap64,
                                     gatherParams, sizeof(gatherParams),
                                     MGL_AIR_TESS_SLOT_GATHER_PARAMS)) {
-            free(patchBases);
             free(keep);
             return false;
         }
@@ -1530,13 +1524,11 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
                                         MGL_AIR_TESS_SLOT_INDIRECT) ||
                 !mglTessPlanAppendDirectDispatch(plan, (items + 63u) / 64u,
                                                  64u)) {
-                free(patchBases);
                 free(keep);
                 return false;
             }
         }
     }
-    free(patchBases);
     *out_keep_alive = keep;
     return true;
 }

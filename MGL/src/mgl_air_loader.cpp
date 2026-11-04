@@ -21,12 +21,14 @@
 #include "mgl_air_loader.h"
 #include "mgl_buffer_slots.h"
 #include "mgl_env_flag.h"
+#include "mgl_trace_log.h"
 
+#include <atomic>
 #include <dispatch/dispatch.h>
 #include <cstdint>
 #include <cstring>
 #include <list>
-#include <map>
+#include <unordered_map>
 #include <mutex>
 #include <string>
 #include <type_traits>
@@ -46,7 +48,8 @@ struct PSOCacheEntry {
 };
 
 struct PSOCache {
-    std::map<std::string, PSOCacheEntry> entries;
+    /* PERF-010: unordered_map avoids O(log n) strcmp on hot cache hits. */
+    std::unordered_map<std::string, PSOCacheEntry> entries;
     std::list<std::string> lru; // front = least recently used
 };
 
@@ -360,7 +363,16 @@ int createRenderPipelineInternal(
     const bool archiveMiss = archiveEligible && !pso;
     if (!pso) {
         nsErr = nullptr;
+        /* PERF-029 deferred: Metal-cpp exposes only synchronous PSO compile
+         * here; no async newRenderPipelineState API in-tree to adopt yet. */
         pso = dev->newRenderPipelineState(rpd, &nsErr);
+    }
+    if (archiveMiss && mglTraceLogIsEnabled()) {
+        static std::atomic<int> s_loggedArchiveMiss{0};
+        if (s_loggedArchiveMiss.exchange(1) == 0) {
+            mglTraceLog("MGL TRACE: binary archive PSO miss; compiled synchronously "
+                        "(PERF-029 deferred async compile)\n");
+        }
     }
     if (!pso) {
         copyError(nsErr, err, errcap);
@@ -430,6 +442,7 @@ int mglAirLoadLibrary(const void* device, const unsigned char* bytes, size_t siz
         return -1;
     }
     NS::Error* nsErr = nullptr;
+    /* PERF-029 deferred: newLibrary is synchronous; no async loader in-tree. */
     MTL::Library* lib = dev->newLibrary(data, &nsErr);
     dispatch_release(data);
     if (!lib) {

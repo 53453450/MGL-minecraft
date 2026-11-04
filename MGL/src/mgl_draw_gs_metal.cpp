@@ -26,6 +26,7 @@
 #include "mgl_render_api_lifecycle.h"
 #include "mgl_shader_abi.h"
 #include "mgl_types_buffer.h"
+#include "mgl_dirty_bits.h"
 
 #include <CoreFoundation/CoreFoundation.h>
 
@@ -43,6 +44,12 @@ extern "C" int mglTessComputePipelineReady(int create_ok, int has_handle);
 extern "C" int mglTessCommandBufferNeedsNew(int has_state, uint32_t status);
 
 namespace {
+
+/* PERF-007: GS raster success mutates program/bindings/VBs/attachments, not
+ * every GL domain; keep DIRTY_ALL on error/early-exit paths only. */
+constexpr uint32_t kMglGsRasterSuccessDirty =
+    DIRTY_VAO | DIRTY_BUFFER | DIRTY_TEX | DIRTY_TEX_BINDING | DIRTY_SAMPLER |
+    DIRTY_PROGRAM | DIRTY_RENDER_STATE | DIRTY_BUFFER_BASE_STATE | DIRTY_FBO;
 
 struct OwnedList {
     const MGLGsMetalExpansionHostOps *ops = nullptr;
@@ -520,7 +527,7 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
 
     ops->set_expansion(ops->renderer, program, 1,
                        mglDrawGsLastDrawMode(output_primitive));
-    ctx->active_state->dirty_bits = DIRTY_ALL;
+    /* PERF-007: success raster uses kMglGsRasterSuccessDirty; errors keep DIRTY_ALL. */
 
     uint64_t bufferWritten[MGL_AIR_GS_MAX_STREAMS] = {0};
     if (xfbActive && xfbVisBuffer && xfbOffsetBuffer && xfbWrittenBuffer &&
@@ -744,19 +751,19 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
             queryMeta);
     }
 
-    auto finish_queries_and_clear = [&](void) {
+    auto finish_queries_and_clear = [&](uint32_t dirtyAfter) {
         ops->record_queries(ctx, queryGenerated, queryWritten,
                             xfbActive ? 1 : 0, queryMeta, gsStreamCount,
                             bufferWritten, bufferStride, workItemCount);
         ops->set_expansion(ops->renderer, NULL, 0, 0);
-        ctx->active_state->dirty_bits = DIRTY_ALL;
+        ctx->active_state->dirty_bits = dirtyAfter;
     };
 
     if (mglDrawGsSkipRaster(
             xfbActive ? 1 : 0,
             ctx->active_state->caps.rasterizer_discard ? 1 : 0)) {
         ops->mark_cb_has_work(ops->renderer);
-        finish_queries_and_clear();
+        finish_queries_and_clear(DIRTY_ALL);
         return 1;
     }
     if (std::getenv("MGL_GS_DIAG")) {
@@ -774,7 +781,7 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
             mglHasActivePrimitiveQuery(ctx) ||
             mglHasActiveGeometryShaderQuery(ctx)) {
             ops->mark_cb_has_work(ops->renderer);
-            finish_queries_and_clear();
+            finish_queries_and_clear(DIRTY_ALL);
         } else {
             ops->set_expansion(ops->renderer, NULL, 0, 0);
             ctx->active_state->dirty_bits = DIRTY_ALL;
@@ -928,7 +935,7 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
         ops->gpu_capture_stop(ops->renderer);
         gs_log(ops, "MGL GPU capture stopped");
     }
-    finish_queries_and_clear();
+    finish_queries_and_clear(kMglGsRasterSuccessDirty);
     rc = 1;
     return rc;
 }

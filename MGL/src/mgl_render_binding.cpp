@@ -1083,7 +1083,8 @@ int mglRenderStorePipeline(MGLPipelineCacheOwner * owner_handle, const uint64_t 
         const bool replacing = owner->pipelineCache.find(key) !=
                                owner->pipelineCache.end();
         uint32_t removed = 0;
-        if (!replacing && owner->pipelineCache.size() >= 256u) {
+        /* PERF-030: match mgl_air_loader kPSOCacheLimit (1024). */
+        if (!replacing && owner->pipelineCache.size() >= 1024u) {
             const size_t target =
                 std::max<size_t>(1u, owner->pipelineCache.size() / 4u);
             while (removed < target && !owner->pipelineCacheLRU.empty()) {
@@ -1196,10 +1197,13 @@ int mglRenderCreateRenderPipelineState(
     if (!descriptor || !pipeline_out) return -1;
 
     mgl::Renderer& renderer = mgl::renderer();
+    /* PERF-033 deferred: coarse renderer.mutex — split only with proven
+     * lock-order / lifetime audit; compile stays under this lock today. */
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
 
     NS::Error* nsError = nullptr;
+    /* PERF-029 deferred: synchronous PSO compile (no async API wired). */
     MTL::RenderPipelineState* pipeline =
         renderer.device->newRenderPipelineState(descriptor, &nsError);
     if (!pipeline) {
@@ -1228,6 +1232,7 @@ int mglRenderCreateRenderPipelineStateWithArchive(
     if (!descriptor || !pipeline_out) return -1;
 
     mgl::Renderer& renderer = mgl::renderer();
+    /* PERF-033 deferred: see sync PSO path above. */
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
 
@@ -1246,6 +1251,7 @@ int mglRenderCreateRenderPipelineStateWithArchive(
     const bool archiveMiss = archiveEligible && !pipeline;
     if (!pipeline) {
         nsError = nullptr;
+        /* PERF-029 deferred: sync compile fallback after archive miss. */
         pipeline = renderer.device->newRenderPipelineState(
             descriptor, &nsError);
     }
