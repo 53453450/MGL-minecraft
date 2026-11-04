@@ -46,15 +46,14 @@ static const char *kMglExtensions[] = {
     "GL_ARB_framebuffer_object",
     "GL_ARB_texture_storage",
     "GL_ARB_sparse_texture",
-    /* texture2 / clamp / sparse_buffer are string gates for the remaining
-     * sparse CTS groups.  texture2 does not yet report the standard page-size
-     * table or zero uncommitted reads; clamp and sparse_buffer have no
-     * builtin or buffer path.  EXT_dsa here is only TexturePageCommitmentEXT,
-     * which shares the ARB commitment checks. */
+    /* texture2: Table 8.X page sizes + host commit tracking for uncommitted
+     * zero reads.  sparse_buffer: page commitment API.  Not advertised:
+     * GL_ARB_sparse_texture_clamp — lodClamp must clamp automatic LOD
+     * (ARB_sparse_texture_clamp), not substitute texelFetch / hardcode
+     * shadow=1; GL_EXT_direct_state_access — only TexturePageCommitmentEXT
+     * exists, not the rest of EXT_dsa. */
     "GL_ARB_sparse_texture2",
-    "GL_ARB_sparse_texture_clamp",
     "GL_ARB_sparse_buffer",
-    "GL_EXT_direct_state_access",
     "GL_ARB_sampler_objects",
     "GL_ARB_uniform_buffer_object",
     "GL_ARB_draw_buffers",

@@ -3923,6 +3923,35 @@ GLboolean  glIsEnabledi(GLenum target, GLuint index)
     return ctx->dispatch.is_enabledi(ctx, target, index);
 }
 
+/* EXT_direct_state_access / EXT_draw_buffers2 aliases.  CTS glwInitExtGL
+ * overwrites the core enablei/disablei/isEnabledi/get*i_v slots with these
+ * EXT names when GL_EXT_direct_state_access is advertised; without exports
+ * those slots become NULL and viewport_array / indexed-enable tests SEGV. */
+void glEnableIndexedEXT(GLenum target, GLuint index)
+{
+    glEnablei(target, index);
+}
+
+void glDisableIndexedEXT(GLenum target, GLuint index)
+{
+    glDisablei(target, index);
+}
+
+GLboolean glIsEnabledIndexedEXT(GLenum target, GLuint index)
+{
+    return glIsEnabledi(target, index);
+}
+
+void glGetBooleanIndexedvEXT(GLenum target, GLuint index, GLboolean *data)
+{
+    glGetBooleani_v(target, index, data);
+}
+
+void glGetIntegerIndexedvEXT(GLenum target, GLuint index, GLint *data)
+{
+    glGetIntegeri_v(target, index, data);
+}
+
 void glBeginTransformFeedback(GLenum primitiveMode)
 {
     GLMContext ctx = GET_CONTEXT();
@@ -6047,11 +6076,31 @@ void glGetFloati_v(GLenum target, GLuint index, GLfloat *data)
     ctx->dispatch.get_floati_v(ctx, target, index, data);
 }
 
+void glGetFloatIndexedvEXT(GLenum target, GLuint index, GLfloat *data)
+{
+    glGetFloati_v(target, index, data);
+}
+
+void glGetFloati_vEXT(GLenum target, GLuint index, GLfloat *data)
+{
+    glGetFloati_v(target, index, data);
+}
+
 void glGetDoublei_v(GLenum target, GLuint index, GLdouble *data)
 {
     GLMContext ctx = GET_CONTEXT();
 
     ctx->dispatch.get_doublei_v(ctx, target, index, data);
+}
+
+void glGetDoubleIndexedvEXT(GLenum target, GLuint index, GLdouble *data)
+{
+    glGetDoublei_v(target, index, data);
+}
+
+void glGetDoublei_vEXT(GLenum target, GLuint index, GLdouble *data)
+{
+    glGetDoublei_v(target, index, data);
 }
 
 void glDrawArraysInstancedBaseInstance(GLenum mode, GLint first, GLsizei count, GLsizei instancecount, GLuint baseinstance)
