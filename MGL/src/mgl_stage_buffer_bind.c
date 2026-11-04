@@ -610,6 +610,26 @@ void mglBindingStateBindStageFallbackBuffers(
 
     if (enable_all_slot_fill && fallback_binding_buffer) {
         for (size_t s = 0; s < kMGLMaxMetalVertexBufferCount; s++) {
+            /* processGLState binds these reserved packs via setBytes after
+             * stage-buffer sync.  Filling them with the fallback MTLBuffer
+             * overwrites that data — GS rebindFragmentAfterGs hit this for
+             * slot 30 (sample/FragCoord params), so FS SampleID stayed 0
+             * whenever the program also had plain uniforms (map_count>0). */
+            if (is_fragment &&
+                (s == kMGLFragCoordParamsBufferIndex ||
+                 s == kMGLLodBiasMaxBufferIndex ||
+                 s == kMGLSamplerWrapBufferIndex)) {
+                continue;
+            }
+            if (!is_fragment &&
+                (s == kMGLPointSizeBufferIndex ||
+                 s == kMGLShaderDrawParamsBufferIndex ||
+                 s == kMGLLodBiasMaxBufferIndex ||
+                 s == kMGLSamplerWrapBufferIndex ||
+                 s == kMGLCullDistanceParamsBufferIndex ||
+                 s == kMGLCullDistanceVertexBufferIndex)) {
+                continue;
+            }
             int matches =
                 mglSbBindingStateIsValid(binding_owner) &&
                 mglSbBindingStateBufferMatches(binding_owner, metal_stage,
