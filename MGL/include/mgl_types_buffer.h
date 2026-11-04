@@ -34,6 +34,7 @@
 
 #include <mach/vm_types.h>
 #include "glm_params.h"
+#include "glm_context_fwd.h" /* GLMContext — G5: types headers stay off full Rec */
 
 enum {
     _TEXTURE_BUFFER = 0, // duplicate of _TEXTURE_BUFFER_TARGET

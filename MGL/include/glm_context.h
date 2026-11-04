@@ -102,7 +102,7 @@ void mglDispatchError(GLMContext ctx, const char *func, GLenum error);
 #include "mgl_types_program.h"
 #include "mgl_types_framebuffer.h"
 #include "mgl_types_sync.h"
-#include "mgl_types_state.h"
+#include "glm_state.h" /* GLMState (+ mgl_types_state.h); G5 split */
 #include "mgl_renderer_backend.h"
 
 static_assert(_TEXTURE_BUFFER == _TEXTURE_BUFFER_TARGET, "_TEXTURE_BUFFER != _TEXTURE_BUFFER_TARGET");

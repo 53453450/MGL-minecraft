@@ -18,7 +18,7 @@
 
 #include "draw_command.h"
 #include "glm_context.h"
-#include "MGLRenderer.h"
+#include "mgl_platform_shell_result.h"
 
 #define TEST_W 32
 #define TEST_H 32

@@ -21,7 +21,7 @@
 static const int kMGLDiagnosticStateLogsC = 0;
 #include "mgl_sync.h"
 #include "mgl_thread_affinity.h"   /* MGL_ASSERT_GL_THREAD */       /* MGL_COMMAND_BUFFER_STATUS_COMMITTED */
-#include "mgl_renderer_ports.h"
+#include "mgl_renderer_state_areas.h"
 #include "mgl_render_api_command.h"
 #include "mgl_render_api_query.h"
 

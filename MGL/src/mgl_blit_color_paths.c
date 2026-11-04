@@ -37,7 +37,8 @@
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_render_api_readback.h"
 #include "mgl_blit_color_state.h"
-#include "mgl_renderer_ports.h"    /* state areas, writable command buffer */
+#include "mgl_renderer_attachment.h"
+#include "mgl_renderer_state_areas.h"    /* state areas, writable command buffer */
 #include "mgl_renderer_backend.h"  /* device */
 #include "mgl_render.h"            /* compute encoders, blit encodes */
 #include "mgl_blit_plan.h"         /* blit plan helpers */

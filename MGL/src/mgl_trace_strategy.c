@@ -12,7 +12,7 @@
  */
 
 #include "mgl_trace_strategy.h"
-#include "mgl_renderer_ports.h"
+#include "mgl_renderer_state_areas.h"
 #include <stdbool.h>
 #include <stddef.h>
 

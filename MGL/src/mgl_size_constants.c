@@ -25,7 +25,7 @@
 
 #include "mgl_size_constants.h"
 #include "glm_context.h"
-#include "mgl_renderer_ports.h"        /* state areas */
+#include "mgl_renderer_state_areas.h"        /* state areas */
 #include "mgl_renderer_backend.h"      /* size-constant cache + device */
 #include "mgl_render_api_command.h"
 #include "mgl_render_api_binding.h"

@@ -25,7 +25,7 @@
 #include "mgl_sampled_sampler.h"
 #include "mgl_binding_texture.h" /* sampler materialize plan + logging */
 #include "mgl_texture_sampler.h" /* mglTextureCreateSamplerForTexParam */
-#include "mgl_renderer_ports.h"  /* state areas */
+#include "mgl_renderer_state_areas.h"  /* state areas */
 #include "mgl_render_api_command.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_texture.h"

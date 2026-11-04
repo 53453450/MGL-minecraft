@@ -20,7 +20,8 @@
 #include "mgl_metal_ref.h"        /* mglReleaseMetalObjNoNull */
 #include "mgl_pixel_format.h"     /* mglTextureBytesPerPixelForFormat */
 #include "mgl_pso_format_class.h" /* mglRenderPixelFormatIsPackedDepthStencil */
-#include "mgl_renderer_ports.h"
+#include "mgl_ports_batch_flush.h"
+#include "mgl_renderer_state_areas.h"
 #include "mgl_texture_compat.h"   /* mglTextureNeedsChannelExpansion */
 #include "mgl_texture_upload_ops.h"
 #include "mgl_trace_log.h"

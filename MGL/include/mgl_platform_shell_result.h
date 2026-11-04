@@ -45,6 +45,9 @@ void *CppCreateMGLRendererFromContextAndBindToWindow(void *glm_ctx,
 void *CppCreateMGLRendererHeadless(void *glm_ctx);
 void *CppCreateMGLRendererAndBindToContext(void *glm_ctx);
 
+/* 1 if the active Metal device is Apple Paravirtual (hosted CI VMs). */
+int mglRenderIsVirtualizedGPU(void);
+
 #ifdef __cplusplus
 }
 #endif

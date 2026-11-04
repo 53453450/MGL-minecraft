@@ -15,7 +15,7 @@
  */
 
 #include "mgl_texture_sampler.h"
-#include "mgl_renderer_ports.h"
+#include "mgl_renderer_state_areas.h"
 #include "mgl_draw_issue.h"        /* mglDrawHostDevice */
 #include "mgl_render_api_texture.h"
 #include "mgl_metal_ref.h"

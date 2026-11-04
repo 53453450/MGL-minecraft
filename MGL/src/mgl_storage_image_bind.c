@@ -32,7 +32,7 @@
 
 #include "mgl_render_pass_sync_ops.h"
 #include "mgl_storage_image_bind.h"
-#include "mgl_renderer_ports.h"   /* state areas, texture bind, restore encoder */
+#include "mgl_renderer_state_areas.h"   /* state areas, texture bind, restore encoder */
 #include "mgl_renderer_backend.h" /* program binding counts/GL bindings */
 #include "mgl_render_api_command.h"
 #include "mgl_render_api_binding.h"

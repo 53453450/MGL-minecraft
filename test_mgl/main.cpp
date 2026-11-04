@@ -57,7 +57,7 @@ SDL_Event sdlevent;
 extern "C" {
 #include "MGLContext.h"
 }
-#include "MGLRenderer.h"
+#include "mgl_platform_shell_result.h"
 #define SWAP_BUFFERS MGLswapBuffers((GLMContext) glfwGetWindowUserPointer(window));
 
 //#define SWAP_BUFFERS glfwSwapBuffers(window);

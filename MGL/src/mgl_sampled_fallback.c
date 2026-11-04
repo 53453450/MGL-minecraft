@@ -30,7 +30,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "mgl_sampled_fallback.h"
-#include "mgl_renderer_ports.h"    /* state areas */
+#include "mgl_renderer_state_areas.h"    /* state areas */
 #include "mgl_renderer_backend.h"  /* fallback resource / sampled-texture caches */
 #include "mgl_render_api_texture.h"
 #include "mgl_render_api_buffer.h"

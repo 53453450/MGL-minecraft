@@ -33,7 +33,8 @@
 
 #include "mgl_swap_diagnostics.h"
 #include "glm_context.h"
-#include "mgl_renderer_ports.h"  /* state areas */
+#include "mgl_ports_present.h"
+#include "mgl_renderer_state_areas.h"  /* state areas */
 #include "mgl_blit_pipelines.h"  /* scaled-blit pipeline/sampler + params */
 #include "mgl_render_api_command.h"
 #include "mgl_render_api_binding.h"

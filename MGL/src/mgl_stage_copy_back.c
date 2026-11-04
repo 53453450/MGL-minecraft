@@ -27,7 +27,7 @@
 
 /* The .m's file-local command-buffer status enum (MGLRenderer.m). */
 enum { MGL_RENDERER_CB_NOT_ENQUEUED = 0u };
-#include "mgl_renderer_ports.h"  /* state areas (backend) */
+#include "mgl_renderer_state_areas.h"  /* state areas (backend) */
 #include "mgl_renderer_backend.h" /* backend copy-back clear entries */
 #include "mgl_render_api_buffer.h"
 #include "mgl_render_api_binding.h"

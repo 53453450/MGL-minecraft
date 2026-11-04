@@ -32,7 +32,9 @@
 #include "mgl_texture_bind.h"        /* mglRendererBindMTLTexture */
 #include "mgl_sampled_sampler.h" /* sampler materialize (log 151) */
 #include "mgl_stage_copy_back.h"
-#include "mgl_renderer_ports.h"     /* state areas + the host entries */
+#include "mgl_ports_batch_flush.h"
+#include "mgl_ports_present.h"
+#include "mgl_renderer_state_areas.h"     /* state areas + the host entries */
 #include "mgl_renderer_backend.h"   /* program binding sizes */
 #include "mgl_binding_policy.h"
 #include "mgl_binding_stage.h"      /* bind plan for a map entry */

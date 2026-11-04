@@ -386,6 +386,9 @@ bool mglSamplerSnapshotCanDeferParameter(GLMContext ctx, GLenum pname);
 /* Initializes an address-stable, chunked batch arena. */
 bool mglInitBatchArena(MGLBatchArena *arena, size_t initial_capacity);
 
+/* Allocate from an enabled batch arena (16-byte aligned). NULL if disabled. */
+void *mglBatchArenaAlloc(MGLBatchArena *arena, size_t size);
+
 /* Reset the batch arena (sets chunk offsets to 0, keeping all chunks).
  * Safe to call only when no worker/encoder is accessing snapshot data
  * (i.e. after teardownBatchReplayForContext).  No-op if arena is NULL. */

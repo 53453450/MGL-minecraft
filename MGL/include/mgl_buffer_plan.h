@@ -52,7 +52,7 @@
 #ifndef MGL_BUFFER_PLAN_H
 #define MGL_BUFFER_PLAN_H
 
-#include "glm_context.h"
+#include "mgl_types_program.h" /* Program *, GLuint — G5: no full glm_context.h */
 
 #ifdef __cplusplus
 extern "C" {

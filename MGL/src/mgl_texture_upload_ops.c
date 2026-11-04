@@ -24,7 +24,8 @@
 #include "mgl_pso_format_class.h"  /* mglRenderPixelFormatIsPackedDepthStencil */
 #include "mgl_readback_policy.h"   /* mglRenderTextureRepackDepthPlanes */
 #include "mgl_renderer_backend.h"
-#include "mgl_renderer_ports.h"
+#include "mgl_ports_batch_flush.h"
+#include "mgl_renderer_state_areas.h"
 #include "mgl_texture_create_ops.h" /* mglTextureReplaceRegionValue */
 #include "mgl_render_pass_manager_ops.h" /* ensure-writable-command-buffer */
 #include "pixel_utils.h"               /* MGLPixelFormatR8Unorm */

@@ -10,7 +10,7 @@
 #ifndef MGL_RENDER_PASS_PUBLIC_H
 #define MGL_RENDER_PASS_PUBLIC_H
 
-#include "glm_context.h"
+#include "glm_context_fwd.h" /* G5: Batch/Flush only needs opaque GLMContext */
 #include "mgl_state_apply.h" /* mglStateApplyDirtyDomains / MGLResourceSyncWork */
 
 #include <stdbool.h>

@@ -19,7 +19,8 @@
  */
 
 #include "mgl_attachment_binding.h"
-#include "mgl_renderer_ports.h"   /* state areas, attachment texture */
+#include "mgl_renderer_attachment.h"
+#include "mgl_renderer_state_areas.h"   /* state areas, attachment texture */
 #include "mgl_texture_bind.h"   /* mglRendererBindMTLTexture */
 
 #include <stdint.h>

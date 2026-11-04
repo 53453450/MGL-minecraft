@@ -27,7 +27,8 @@
 #include "mgl_readback_policy.h"
 #include "mgl_region_value.h"
 #include "mgl_render_pass_manager_ops.h"
-#include "mgl_renderer_ports.h"
+#include "mgl_ports_present.h"
+#include "mgl_renderer_state_areas.h"
 #include "mgl_renderer_backend.h"
 #include "mgl_texture_bind.h"          /* mglRendererBindMTLTexture */
 #include "mgl_texture_compat.h"     /* mglTextureLevelHasUploadableCPUData */

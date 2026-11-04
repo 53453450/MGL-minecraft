@@ -14,7 +14,8 @@
  */
 
 #include "mgl_texture_readback_clear.h"
-#include "mgl_renderer_ports.h"   /* command state */
+#include "mgl_ports_batch_flush.h"
+#include "mgl_renderer_state_areas.h"   /* command state */
 #include "mgl_render_api_readback.h"
 #include "mgl_texture_compat.h"  /* mglMarkTextureLevelRenderTargetWrittenImpl */
 #include "mgl_sync.h"          /* mglMetalAttachmentSubresourceForAttachment */

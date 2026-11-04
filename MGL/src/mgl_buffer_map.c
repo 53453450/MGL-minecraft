@@ -35,7 +35,8 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "mgl_buffer_map.h"
-#include "mgl_renderer_ports.h"        /* state areas */
+#include "mgl_ports_batch_flush.h"
+#include "mgl_renderer_state_areas.h"        /* state areas */
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_buffer.h"
 #include "mgl_render_api_pixel.h"

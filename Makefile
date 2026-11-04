@@ -77,7 +77,13 @@ LIBS += -framework Metal -framework OpenGL -framework Foundation \
 
 CFLAGS += -IMGL/include
 CFLAGS += -IMGL/include/GL # "glcorearb.h"
-CFLAGS += -IMGL/src        # "mgl_safety.h" lives in MGL/src/, used by MGLRenderer_Private.h
+CFLAGS += -IMGL/src                 # mgl_safety.h and flat-layer local headers
+CFLAGS += -IMGL/src/compiler        # AIR/GLSL local headers after Phase 6 move
+CFLAGS += -IMGL/src/L0_platform     # shell/objc bridge after Phase 6 move
+CFLAGS += -IMGL/src/L1_backend -IMGL/src/L4_context
+CXXFLAGS += -IMGL/include -IMGL/include/GL
+CXXFLAGS += -IMGL/src -IMGL/src/compiler -IMGL/src/L0_platform
+CXXFLAGS += -IMGL/src/L1_backend -IMGL/src/L4_context
 
 # GLFW configuration for shared library build
 CFLAGS += -I./external/glfw/include -I./external/glfw/src
@@ -174,8 +180,17 @@ help:
 		'  make clean            Remove local build outputs.'
 
 # mgl
-#mgl_srcs_c := $(wildcard MGL/src/*.c)
-mgl_srcs_c := $(filter-out %/gl_core.c  %/gl_es.c %/mgl_fake_draw_executor.c, $(wildcard MGL/src/*.c))
+# Flat src + Phase 6 physical layers (compiler / L0 / L5). gl_core/gl_es stay
+# out of the shared lib object list (linked as profile-specific TUs).
+mgl_srcs_c := $(filter-out %/gl_core.c %/gl_es.c %/mgl_fake_draw_executor.c, \
+	$(wildcard MGL/src/*.c) \
+	$(wildcard MGL/src/compiler/*.c) \
+	$(wildcard MGL/src/L0_platform/*.c) \
+	$(wildcard MGL/src/L1_backend/*.c) \
+	$(wildcard MGL/src/L2_encode/*.c) \
+	$(wildcard MGL/src/L3_validate/*.c) \
+	$(wildcard MGL/src/L4_context/*.c) \
+	$(wildcard MGL/src/L5_api/*.c))
 
 # Aux shader assets: the precompiled metallib table embeds all helper
 # shaders; the runtime never compiles .metal source.  The table is regenerated
@@ -202,19 +217,25 @@ $(AUX_BUILD_DIR)/%.metallib: $(AUX_BUILD_DIR)/%.air
 $(AUX_ASSET_STAMP): MGL/aux_shaders/MANIFEST $(AUX_METALLIBS) scripts/gen_aux_assets.py
 	@mkdir -p $(dir $@)
 	python3 scripts/gen_aux_assets.py MGL/aux_shaders/MANIFEST \
-		$(AUX_BUILD_DIR) MGL/include/mgl_aux_assets.h MGL/src/mgl_aux_assets.c
+		$(AUX_BUILD_DIR) MGL/include/mgl_aux_assets.h MGL/src/L1_backend/mgl_aux_assets.c
 	@touch $@
 
 # The generated table is part of both dylibs; regenerate it before compiling.
-$(build_core_dir)/MGL/src/mgl_aux_assets.o: $(AUX_ASSET_STAMP)
-$(build_es_dir)/MGL/src/mgl_aux_assets.o: $(AUX_ASSET_STAMP)
+$(build_core_dir)/MGL/src/L1_backend/mgl_aux_assets.o: $(AUX_ASSET_STAMP)
+$(build_es_dir)/MGL/src/L1_backend/mgl_aux_assets.o: $(AUX_ASSET_STAMP)
 
-# MGL/src currently has no C++ sources, but the wildcard must be defined so
-# the .cpp rules below are not silently dropped if one is added later.
-mgl_srcs_cpp := $(wildcard MGL/src/*.cpp)
+mgl_srcs_cpp := \
+	$(wildcard MGL/src/*.cpp) \
+	$(wildcard MGL/src/compiler/*.cpp) \
+	$(wildcard MGL/src/L0_platform/*.cpp) \
+	$(wildcard MGL/src/L1_backend/*.cpp) \
+	$(wildcard MGL/src/L2_encode/*.cpp) \
+	$(wildcard MGL/src/L3_validate/*.cpp) \
+	$(wildcard MGL/src/L4_context/*.cpp) \
+	$(wildcard MGL/src/L5_api/*.cpp)
 
-mgl_core_c := MGL/src/gl_core.c
-mgl_es_c := MGL/src/gl_es.c
+mgl_core_c := MGL/src/L5_api/gl_core.c
+mgl_es_c := MGL/src/L5_api/gl_es.c
 
 mgl_core_obj := $(mgl_core_c:.c=.o)
 mgl_core_obj := $(addprefix $(build_core_dir)/,$(mgl_core_obj))
@@ -330,7 +351,8 @@ BREW_LLVM15 := $(shell brew --prefix llvm@15 2>/dev/null)
 LLVM_ROOT ?= $(if $(strip $(BREW_LLVM15)),$(BREW_LLVM15),/opt/homebrew/opt/llvm@15)
 LLVM_CXX ?= $(APPLE_CLANG)
 LLVM_CXXFLAGS := -std=c++20 -isysroot $(SDK_ROOT) -I$(LLVM_ROOT)/include -IMGL/include \
-	-IMGL/src \
+	-IMGL/src -IMGL/src/compiler -IMGL/src/L0_platform \
+	-IMGL/src/L1_backend -IMGL/src/L4_context \
 	-IMGL/include/GL \
 	-Iexternal/metal-cpp
 LLVM_LDFLAGS := -L$(LLVM_ROOT)/lib -lLLVM-15 -lc++
@@ -340,7 +362,8 @@ LLVM_LDFLAGS := -L$(LLVM_ROOT)/lib -lLLVM-15 -lc++
 # survive C++23.  The <stdatomic.h>/<atomic> clash is instead resolved inside
 # mgl_types_sync.h / mgl_frame_activity.h (C++ branches use <atomic>).
 M1_AIR_CXXFLAGS := -std=c++20 -I$(LLVM_ROOT)/include -IMGL/include \
-	-IMGL/src \
+	-IMGL/src -IMGL/src/compiler -IMGL/src/L0_platform \
+	-IMGL/src/L1_backend -IMGL/src/L4_context \
 	-IMGL/include/GL \
 	-Iexternal/metal-cpp
 CXXFLAGS_GL_CORE := $(CXXFLAGS) -DMGL_GL_CORE $(M1_AIR_CXXFLAGS)
@@ -653,7 +676,7 @@ test-regression-update: build-test-regression
 		--golden-dir $(abspath MGL_Golden_Images) --update
 
 $(build_dir)/test_air_loader_cache: test_legacy_compat/test_air_loader_cache.mm \
-	MGL/src/mgl_air_loader.h $(build_dir)/libmgl.dylib
+	MGL/src/compiler/mgl_air_loader.h $(build_dir)/libmgl.dylib
 	$(APPLE_CLANG) -x objective-c++ -fobjc-arc -Wall -Werror -gfull -O0 \
 		-arch $(HOST_ARCH) -isysroot $(SDK_ROOT) -IMGL/src \
 		test_legacy_compat/test_air_loader_cache.mm \
@@ -761,7 +784,7 @@ test-xfb-plan: $(build_dir)/test_xfb_plan
 	$(build_dir)/test_xfb_plan
 
 $(build_dir)/test_batch_path: test_legacy_compat/test_batch_path.c \
-	MGL/src/mgl_batch_path.c MGL/include/mgl_batch_path.h \
+	MGL/src/L2_encode/mgl_batch_path.c MGL/include/mgl_batch_path.h \
 	MGL/src/mgl_env_flag.c MGL/include/mgl_env_flag.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
@@ -769,7 +792,7 @@ $(build_dir)/test_batch_path: test_legacy_compat/test_batch_path.c \
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_batch_path.c \
-		MGL/src/mgl_batch_path.c \
+		MGL/src/L2_encode/mgl_batch_path.c \
 		MGL/src/mgl_env_flag.c \
 		-o $@
 
@@ -777,21 +800,21 @@ test-batch-path: $(build_dir)/test_batch_path
 	$(build_dir)/test_batch_path
 
 $(build_dir)/test_batch_hazard: test_legacy_compat/test_batch_hazard.c \
-	MGL/src/mgl_batch_hazard.c MGL/include/mgl_batch_hazard.h
+	MGL/src/L2_encode/mgl_batch_hazard.c MGL/include/mgl_batch_hazard.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_batch_hazard.c \
-		MGL/src/mgl_batch_hazard.c \
+		MGL/src/L2_encode/mgl_batch_hazard.c \
 		-o $@
 
 test-batch-hazard: $(build_dir)/test_batch_hazard
 	$(build_dir)/test_batch_hazard
 
 $(build_dir)/test_batch_icb: test_legacy_compat/test_batch_icb.c \
-	MGL/src/mgl_batch_path.c MGL/include/mgl_batch_path.h \
+	MGL/src/L2_encode/mgl_batch_path.c MGL/include/mgl_batch_path.h \
 	MGL/src/mgl_env_flag.c MGL/include/mgl_env_flag.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
@@ -799,7 +822,7 @@ $(build_dir)/test_batch_icb: test_legacy_compat/test_batch_icb.c \
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_batch_icb.c \
-		MGL/src/mgl_batch_path.c \
+		MGL/src/L2_encode/mgl_batch_path.c \
 		MGL/src/mgl_env_flag.c \
 		-o $@
 
@@ -807,23 +830,23 @@ test-batch-icb: $(build_dir)/test_batch_icb
 	$(build_dir)/test_batch_icb
 
 $(build_dir)/test_batch_restore: test_legacy_compat/test_batch_restore.c \
-	MGL/src/mgl_batch_restore.c MGL/include/mgl_batch_restore.h
+	MGL/src/L2_encode/mgl_batch_restore.c MGL/include/mgl_batch_restore.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_batch_restore.c \
-		MGL/src/mgl_batch_restore.c \
+		MGL/src/L2_encode/mgl_batch_restore.c \
 		-o $@
 
 test-batch-restore: $(build_dir)/test_batch_restore
 	$(build_dir)/test_batch_restore
 
 $(build_dir)/test_batch_issue: test_legacy_compat/test_batch_issue.c \
-	MGL/src/mgl_batch_issue.c MGL/include/mgl_batch_issue.h \
-	MGL/src/mgl_batch_rt_mark.c MGL/include/mgl_batch_rt_mark.h \
-	MGL/src/mgl_batch_restore.c MGL/src/mgl_batch_path.c \
+	MGL/src/L2_encode/mgl_batch_issue.c MGL/include/mgl_batch_issue.h \
+	MGL/src/L2_encode/mgl_batch_rt_mark.c MGL/include/mgl_batch_rt_mark.h \
+	MGL/src/L2_encode/mgl_batch_restore.c MGL/src/L2_encode/mgl_batch_path.c \
 	MGL/src/mgl_env_flag.c MGL/include/mgl_env_flag.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
@@ -831,8 +854,8 @@ $(build_dir)/test_batch_issue: test_legacy_compat/test_batch_issue.c \
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_batch_issue.c \
-		MGL/src/mgl_batch_issue.c MGL/src/mgl_batch_rt_mark.c \
-		MGL/src/mgl_batch_restore.c MGL/src/mgl_batch_path.c \
+		MGL/src/L2_encode/mgl_batch_issue.c MGL/src/L2_encode/mgl_batch_rt_mark.c \
+		MGL/src/L2_encode/mgl_batch_restore.c MGL/src/L2_encode/mgl_batch_path.c \
 		MGL/src/mgl_env_flag.c \
 		-o $@
 
@@ -842,21 +865,21 @@ test-batch-issue: $(build_dir)/test_batch_issue
 
 
 $(build_dir)/test_process_gl_state_plan: test_legacy_compat/test_process_gl_state_plan.c \
-	MGL/src/mgl_render_pass_plan.c MGL/include/mgl_render_pass_plan.h
+	MGL/src/L2_encode/mgl_render_pass_plan.c MGL/include/mgl_render_pass_plan.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_process_gl_state_plan.c \
-		MGL/src/mgl_render_pass_plan.c \
+		MGL/src/L2_encode/mgl_render_pass_plan.c \
 		-o $@
 
 test-process-gl-state-plan: $(build_dir)/test_process_gl_state_plan
 	$(build_dir)/test_process_gl_state_plan
 
 $(build_dir)/test_render_pass_clear_plan: test_legacy_compat/test_render_pass_clear_plan.c \
-	MGL/src/mgl_render_pass_plan.c MGL/include/mgl_render_pass_plan.h \
+	MGL/src/L2_encode/mgl_render_pass_plan.c MGL/include/mgl_render_pass_plan.h \
 	MGL/include/mgl_render_pass_clear.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
@@ -864,14 +887,14 @@ $(build_dir)/test_render_pass_clear_plan: test_legacy_compat/test_render_pass_cl
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_render_pass_clear_plan.c \
-		MGL/src/mgl_render_pass_plan.c \
+		MGL/src/L2_encode/mgl_render_pass_plan.c \
 		-o $@
 
 test-render-pass-clear-plan: $(build_dir)/test_render_pass_clear_plan
 	$(build_dir)/test_render_pass_clear_plan
 
 $(build_dir)/test_buffer_plan: test_legacy_compat/test_buffer_plan.c \
-	MGL/src/mgl_vertex_attrib_plan.c MGL/include/mgl_vertex_attrib_plan.h \
+	MGL/src/L3_validate/mgl_vertex_attrib_plan.c MGL/include/mgl_vertex_attrib_plan.h \
 	MGL/include/mgl_vertex_attrib_binding.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
@@ -879,26 +902,26 @@ $(build_dir)/test_buffer_plan: test_legacy_compat/test_buffer_plan.c \
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_buffer_plan.c \
-		MGL/src/mgl_vertex_attrib_plan.c \
+		MGL/src/L3_validate/mgl_vertex_attrib_plan.c \
 		-o $@
 
 test-buffer-plan: $(build_dir)/test_buffer_plan
 	$(build_dir)/test_buffer_plan
 
 $(build_dir)/test_reference_query: test_legacy_compat/test_reference_query.c \
-	MGL/src/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
-	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
-	MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_cpp.c \
-	MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c
+	MGL/src/compiler/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
+	MGL/src/L4_context/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
+	MGL/src/compiler/mgl_glsl_sema.c MGL/src/compiler/mgl_glsl_cpp.c \
+	MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c MGL/src/compiler/mgl_ir.c
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_reference_query.c \
-		MGL/src/mgl_frontend_session.c MGL/src/mgl_legacy_compat.c \
-		MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_cpp.c \
-		MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c \
+		MGL/src/compiler/mgl_frontend_session.c MGL/src/L4_context/mgl_legacy_compat.c \
+		MGL/src/compiler/mgl_glsl_sema.c MGL/src/compiler/mgl_glsl_cpp.c \
+		MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c MGL/src/compiler/mgl_ir.c \
 		-o $@
 
 test-reference-query: $(build_dir)/test_reference_query
@@ -906,18 +929,18 @@ test-reference-query: $(build_dir)/test_reference_query
 
 $(build_dir)/test_clear_stage_compile_state: test_legacy_compat/test_clear_stage_compile_state.c \
 	MGL/src/mgl_program_reflection.c MGL/include/mgl_program_reflection.h \
-	MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_glsl_cpp.c \
-	MGL/src/mgl_metal_ref.c MGL/include/mgl_metal_ref.h \
-	MGL/src/mgl_uniform_reflection.c MGL/src/mgl_binding_policy.c
+	MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c MGL/src/compiler/mgl_glsl_cpp.c \
+	MGL/src/L1_backend/mgl_metal_ref.c MGL/include/mgl_metal_ref.h \
+	MGL/src/mgl_uniform_reflection.c MGL/src/L3_validate/mgl_binding_policy.c
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_clear_stage_compile_state.c \
-		MGL/src/mgl_program_reflection.c MGL/src/mgl_metal_ref.c \
-		MGL/src/mgl_uniform_reflection.c MGL/src/mgl_binding_policy.c \
-		MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_glsl_cpp.c \
+		MGL/src/mgl_program_reflection.c MGL/src/L1_backend/mgl_metal_ref.c \
+		MGL/src/mgl_uniform_reflection.c MGL/src/L3_validate/mgl_binding_policy.c \
+		MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c MGL/src/compiler/mgl_glsl_cpp.c \
 		-framework CoreFoundation -framework Foundation -framework Metal \
 		-o $@
 
@@ -926,18 +949,18 @@ test-clear-stage-compile-state: $(build_dir)/test_clear_stage_compile_state
 
 $(build_dir)/test_per_vertex_signature: test_legacy_compat/test_per_vertex_signature.c \
 	MGL/src/mgl_program_reflection.c MGL/include/mgl_program_reflection.h \
-	MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_glsl_cpp.c \
-	MGL/src/mgl_metal_ref.c MGL/include/mgl_metal_ref.h \
-	MGL/src/mgl_uniform_reflection.c MGL/src/mgl_binding_policy.c
+	MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c MGL/src/compiler/mgl_glsl_cpp.c \
+	MGL/src/L1_backend/mgl_metal_ref.c MGL/include/mgl_metal_ref.h \
+	MGL/src/mgl_uniform_reflection.c MGL/src/L3_validate/mgl_binding_policy.c
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_per_vertex_signature.c \
-		MGL/src/mgl_program_reflection.c MGL/src/mgl_metal_ref.c \
-		MGL/src/mgl_uniform_reflection.c MGL/src/mgl_binding_policy.c \
-		MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_glsl_cpp.c \
+		MGL/src/mgl_program_reflection.c MGL/src/L1_backend/mgl_metal_ref.c \
+		MGL/src/mgl_uniform_reflection.c MGL/src/L3_validate/mgl_binding_policy.c \
+		MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c MGL/src/compiler/mgl_glsl_cpp.c \
 		-framework CoreFoundation -framework Foundation -framework Metal \
 		-o $@
 
@@ -945,14 +968,14 @@ test-per-vertex-signature: $(build_dir)/test_per_vertex_signature
 	$(build_dir)/test_per_vertex_signature
 
 $(build_dir)/test_render_pass_load_store_plan: test_legacy_compat/test_render_pass_load_store_plan.c \
-	MGL/src/mgl_render_pass_plan.c MGL/include/mgl_render_pass_plan.h
+	MGL/src/L2_encode/mgl_render_pass_plan.c MGL/include/mgl_render_pass_plan.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_render_pass_load_store_plan.c \
-		MGL/src/mgl_render_pass_plan.c \
+		MGL/src/L2_encode/mgl_render_pass_plan.c \
 		-o $@
 
 test-render-pass-load-store: $(build_dir)/test_render_pass_load_store_plan
@@ -987,21 +1010,21 @@ test-buffer-layout: $(build_dir)/test_buffer_layout
 	$(build_dir)/test_buffer_layout
 
 $(build_dir)/test_texture_plan: test_legacy_compat/test_texture_plan.c \
-	MGL/src/mgl_texture_plan.c MGL/include/mgl_texture_plan.h
+	MGL/src/L3_validate/mgl_texture_plan.c MGL/include/mgl_texture_plan.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_texture_plan.c \
-		MGL/src/mgl_texture_plan.c \
+		MGL/src/L3_validate/mgl_texture_plan.c \
 		-o $@
 
 test-texture-plan: $(build_dir)/test_texture_plan
 	$(build_dir)/test_texture_plan
 
 $(build_dir)/test_raster_orientation_plan: test_legacy_compat/test_raster_orientation_plan.c \
-	MGL/src/mgl_raster_orientation_plan.c MGL/include/mgl_raster_orientation_plan.h \
+	MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/include/mgl_raster_orientation_plan.h \
 	MGL/src/mgl_pso_format_class.c MGL/include/mgl_pso_format_class.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
@@ -1009,7 +1032,7 @@ $(build_dir)/test_raster_orientation_plan: test_legacy_compat/test_raster_orient
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_raster_orientation_plan.c \
-		MGL/src/mgl_raster_orientation_plan.c \
+		MGL/src/L3_validate/mgl_raster_orientation_plan.c \
 		MGL/src/mgl_pso_format_class.c \
 		-o $@
 
@@ -1017,7 +1040,7 @@ test-raster-orientation-plan: $(build_dir)/test_raster_orientation_plan
 	$(build_dir)/test_raster_orientation_plan
 
 $(build_dir)/test_render_pass_attachment_plan: test_legacy_compat/test_render_pass_attachment_plan.c \
-	MGL/src/mgl_render_pass_plan.c MGL/include/mgl_render_pass_plan.h \
+	MGL/src/L2_encode/mgl_render_pass_plan.c MGL/include/mgl_render_pass_plan.h \
 	MGL/include/mgl_render_pass_clear.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
@@ -1025,35 +1048,35 @@ $(build_dir)/test_render_pass_attachment_plan: test_legacy_compat/test_render_pa
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_render_pass_attachment_plan.c \
-		MGL/src/mgl_render_pass_plan.c \
+		MGL/src/L2_encode/mgl_render_pass_plan.c \
 		-o $@
 
 test-render-pass-attachment-plan: $(build_dir)/test_render_pass_attachment_plan
 	$(build_dir)/test_render_pass_attachment_plan
 
 $(build_dir)/test_blit_plan: test_legacy_compat/test_blit_plan.c \
-	MGL/src/mgl_blit_plan.c MGL/include/mgl_blit_plan.h
+	MGL/src/L3_validate/mgl_blit_plan.c MGL/include/mgl_blit_plan.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_blit_plan.c \
-		MGL/src/mgl_blit_plan.c \
+		MGL/src/L3_validate/mgl_blit_plan.c \
 		-o $@
 
 test-blit-plan: $(build_dir)/test_blit_plan
 	$(build_dir)/test_blit_plan
 
 $(build_dir)/test_sampler_plan: test_legacy_compat/test_sampler_plan.c \
-	MGL/src/mgl_sampler_plan.c MGL/include/mgl_sampler_plan.h
+	MGL/src/L3_validate/mgl_sampler_plan.c MGL/include/mgl_sampler_plan.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_sampler_plan.c \
-		MGL/src/mgl_sampler_plan.c \
+		MGL/src/L3_validate/mgl_sampler_plan.c \
 		-o $@
 
 test-sampler-plan: $(build_dir)/test_sampler_plan
@@ -1072,7 +1095,7 @@ $(build_dir)/test_binding_stage: test_legacy_compat/test_binding_stage.c \
 $(build_dir)/test_binding_texture: test_legacy_compat/test_binding_texture.c \
 	MGL/src/mgl_binding_texture.c MGL/include/mgl_binding_texture.h \
 	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h \
-	MGL/src/mgl_binding_policy.c MGL/include/mgl_binding_policy.h \
+	MGL/src/L3_validate/mgl_binding_policy.c MGL/include/mgl_binding_policy.h \
 	MGL/src/mgl_byte_hash.c MGL/include/mgl_byte_hash.h
 	@mkdir -p $(dir $@)
 	$(CC) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -g -O0 -std=c11 \
@@ -1080,7 +1103,7 @@ $(build_dir)/test_binding_texture: test_legacy_compat/test_binding_texture.c \
 		test_legacy_compat/test_binding_texture.c \
 		MGL/src/mgl_binding_texture.c \
 		MGL/src/mgl_binding_stage.c \
-		MGL/src/mgl_binding_policy.c \
+		MGL/src/L3_validate/mgl_binding_policy.c \
 		MGL/src/mgl_byte_hash.c \
 		MGL/src/mgl_trace_log.c \
 		MGL/src/mgl_env_flag.c \
@@ -1179,19 +1202,19 @@ test-benchmark: bench
 	scripts/run_benchmark_smoke.sh --no-build
 
 $(build_dir)/test_legacy_compat: test_legacy_compat/main.c \
-	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h
+	MGL/src/L4_context/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h
 	$(APPLE_CLANG) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -gfull -O0 \
 		-IMGL/include -IMGL/include/GL \
-		test_legacy_compat/main.c MGL/src/mgl_legacy_compat.c \
+		test_legacy_compat/main.c MGL/src/L4_context/mgl_legacy_compat.c \
 		-o $@
 
 test-legacy-compat: $(build_dir)/test_legacy_compat
 	$(build_dir)/test_legacy_compat
 
-$(build_dir)/test_mglir: test_legacy_compat/test_mglir.c MGL/src/mgl_ir.c
+$(build_dir)/test_mglir: test_legacy_compat/test_mglir.c MGL/src/compiler/mgl_ir.c
 	$(APPLE_CLANG) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -gfull -O0 \
 		-IMGL/include \
-		test_legacy_compat/test_mglir.c MGL/src/mgl_ir.c \
+		test_legacy_compat/test_mglir.c MGL/src/compiler/mgl_ir.c \
 		-o $@
 
 test-mglir: $(build_dir)/test_mglir
@@ -1200,10 +1223,10 @@ test-mglir: $(build_dir)/test_mglir
 # Non-Metal C1b type golden: carrier / mangle / typeFromIR (LLVM only).
 $(build_dir)/test_mgl_air_type: test_legacy_compat/test_mgl_air_type.cpp \
 	MGL/src/mgl_air_type.cpp MGL/include/mgl_air_type.h \
-	MGL/include/mgl_air_codegen.h MGL/src/mgl_ir.c
+	MGL/include/mgl_air_codegen.h MGL/src/compiler/mgl_ir.c
 	@mkdir -p $(build_dir)
 	# clang rejects -std=c++* for C inputs, so compile mgl_ir.c separately.
-	$(CC) -isysroot $(SDK_ROOT) -IMGL/include -IMGL/src -c MGL/src/mgl_ir.c \
+	$(CC) -isysroot $(SDK_ROOT) -IMGL/include -IMGL/src -c MGL/src/compiler/mgl_ir.c \
 		-o $(build_dir)/test_mgl_air_type_ir.o
 	$(LLVM_CXX) -x c++ $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		test_legacy_compat/test_mgl_air_type.cpp \
@@ -1229,49 +1252,49 @@ $(build_dir)/test_air_target: test_legacy_compat/test_air_target.cpp \
 test-air-target: $(build_dir)/test_air_target
 	$(build_dir)/test_air_target
 
-$(build_dir)/test_mgllex: test_legacy_compat/test_mgllex.c MGL/src/mgl_glsl_lexer.c
+$(build_dir)/test_mgllex: test_legacy_compat/test_mgllex.c MGL/src/compiler/mgl_glsl_lexer.c
 	$(APPLE_CLANG) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -gfull -O0 \
 		-IMGL/include \
-		test_legacy_compat/test_mgllex.c MGL/src/mgl_glsl_lexer.c \
+		test_legacy_compat/test_mgllex.c MGL/src/compiler/mgl_glsl_lexer.c \
 		-o $@
 
 test-mgllex: $(build_dir)/test_mgllex
 	$(build_dir)/test_mgllex
 
-$(build_dir)/test_mglparse: test_legacy_compat/test_mglparse.c MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c
+$(build_dir)/test_mglparse: test_legacy_compat/test_mglparse.c MGL/src/compiler/mgl_glsl_cpp.c MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c
 	$(APPLE_CLANG) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -gfull -O0 \
 		-IMGL/include \
-		test_legacy_compat/test_mglparse.c MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
+		test_legacy_compat/test_mglparse.c MGL/src/compiler/mgl_glsl_cpp.c MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c \
 		-o $@
 
 test-mglparse: $(build_dir)/test_mglparse
 	$(build_dir)/test_mglparse
 
-$(build_dir)/test_mglsema: test_legacy_compat/test_mglsema.c MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c
+$(build_dir)/test_mglsema: test_legacy_compat/test_mglsema.c MGL/src/compiler/mgl_glsl_sema.c MGL/src/compiler/mgl_glsl_cpp.c MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c MGL/src/compiler/mgl_ir.c
 	$(APPLE_CLANG) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -gfull -O0 \
 		-IMGL/include -IMGL/include/GL \
-		test_legacy_compat/test_mglsema.c MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c \
+		test_legacy_compat/test_mglsema.c MGL/src/compiler/mgl_glsl_sema.c MGL/src/compiler/mgl_glsl_cpp.c MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c MGL/src/compiler/mgl_ir.c \
 		-o $@
 
 test-mglsema: $(build_dir)/test_mglsema
 	$(build_dir)/test_mglsema
 
 $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
-	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
-	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
-	MGL/src/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
-	MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/mgl_glsl_sema.c \
-	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
-	MGL/src/mgl_ir.c MGL/src/mgl_env_flag.c
+	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
+	MGL/src/L4_context/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
+	MGL/src/compiler/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
+	MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/compiler/mgl_glsl_sema.c \
+	MGL/src/compiler/mgl_glsl_cpp.c MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c \
+	MGL/src/compiler/mgl_ir.c MGL/src/mgl_env_flag.c
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -gfull -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Cocoa -framework Foundation -framework Metal \
 		test_legacy_compat/test_mglair.mm \
-		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
-		MGL/src/mgl_legacy_compat.c \
-		MGL/src/mgl_frontend_session.c \
-		MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/mgl_glsl_sema.c \
-		MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
-		MGL/src/mgl_ir.c MGL/src/mgl_env_flag.c \
+		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
+		MGL/src/L4_context/mgl_legacy_compat.c \
+		MGL/src/compiler/mgl_frontend_session.c \
+		MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/compiler/mgl_glsl_sema.c \
+		MGL/src/compiler/mgl_glsl_cpp.c MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c \
+		MGL/src/compiler/mgl_ir.c MGL/src/mgl_env_flag.c \
 		-o $@
 
 test-mglair: $(build_dir)/test_mglair
@@ -1279,9 +1302,9 @@ test-mglair: $(build_dir)/test_mglair
 
 # MC-style shader repro: anonymous std140 UBO blocks + samplers through the
 # AIR backend.  C sources build as C (they are not valid C++).
-MCREPRO_CSRC := MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/mgl_glsl_sema.c \
-	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c \
-	MGL/src/mgl_legacy_compat.c MGL/src/mgl_frontend_session.c MGL/src/mgl_env_flag.c
+MCREPRO_CSRC := MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/compiler/mgl_glsl_sema.c \
+	MGL/src/compiler/mgl_glsl_cpp.c MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c MGL/src/compiler/mgl_ir.c \
+	MGL/src/L4_context/mgl_legacy_compat.c MGL/src/compiler/mgl_frontend_session.c MGL/src/mgl_env_flag.c
 MCREPRO_COBJ := $(patsubst MGL/src/%.c,$(build_dir)/mcrepro_%.o,$(MCREPRO_CSRC))
 deps += $(MCREPRO_COBJ:.o=.d)
 
@@ -1291,12 +1314,12 @@ $(build_dir)/mcrepro_%.o: MGL/src/%.c
 		-IMGL/include/GL -IMGL/src -c $< -o $@
 
 $(build_dir)/test_mcrepro: test_legacy_compat/test_mcrepro.mm \
-	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
+	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 	$(MCREPRO_COBJ)
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Foundation \
 		test_legacy_compat/test_mcrepro.mm \
-		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
+		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
 		-x none $(MCREPRO_COBJ) \
 		-o $@
 
@@ -1309,20 +1332,30 @@ test-mcrepro: $(build_dir)/test_mcrepro
 # goes the same way because it does not compile as Objective-C++.
 METALCPP_C_SRC := MGL/src/mgl_binding_texture_log.c MGL/src/mgl_trace_log.c \
                   MGL/src/pixel_utils.c MGL/src/mgl_env_flag.c \
-                  MGL/src/mgl_pixel_tables.c MGL/src/mgl_sampler_plan.c \
+                  MGL/src/mgl_pixel_tables.c MGL/src/L3_validate/mgl_sampler_plan.c \
                   MGL/src/mgl_draw_mode.c MGL/src/mgl_vertex_tables.c \
                   MGL/src/mgl_byte_hash.c
 # The platform shell is C++ (log 210): it cannot go through the smoke gate's
 # -x objective-c++ -fobjc-arc invocation any more, so it is compiled to its own
 # objects first and linked with -x none like the other C sources.
-METALCPP_PLATFORM_SHELL_SRC := MGL/src/mgl_platform_shell.cpp \
-                               MGL/src/mgl_objc_exception_bridge.cpp
-METALCPP_PLATFORM_SHELL_OBJ := $(patsubst MGL/src/%.cpp,$(build_dir)/metalcpp_%.o,$(METALCPP_PLATFORM_SHELL_SRC))
+METALCPP_PLATFORM_SHELL_SRC := MGL/src/L0_platform/mgl_platform_shell.cpp \
+                               MGL/src/L0_platform/mgl_objc_exception_bridge.cpp
+METALCPP_PLATFORM_SHELL_OBJ := \
+	$(build_dir)/metalcpp_platform_shell.o \
+	$(build_dir)/metalcpp_objc_exception_bridge.o
 METALCPP_C_OBJ := $(patsubst MGL/src/%.c,$(build_dir)/metalcpp_%.o,$(METALCPP_C_SRC))
 
 $(build_dir)/metalcpp_%.o: MGL/src/%.c
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -MMD $(CFLAGS_GL_CORE) -c $< -o $@
+
+$(build_dir)/metalcpp_platform_shell.o: MGL/src/L0_platform/mgl_platform_shell.cpp
+	@mkdir -p $(dir $@)
+	$(LLVM_CXX) -x c++ -g -O0 $(LLVM_CXXFLAGS) -DMGL_PLATFORM_SHELL_SMOKE -c $< -o $@
+
+$(build_dir)/metalcpp_objc_exception_bridge.o: MGL/src/L0_platform/mgl_objc_exception_bridge.cpp
+	@mkdir -p $(dir $@)
+	$(LLVM_CXX) -x c++ -g -O0 $(LLVM_CXXFLAGS) -DMGL_PLATFORM_SHELL_SMOKE -c $< -o $@
 
 $(build_dir)/metalcpp_%.o: MGL/src/%.cpp
 	@mkdir -p $(dir $@)
@@ -1330,14 +1363,14 @@ $(build_dir)/metalcpp_%.o: MGL/src/%.cpp
 
 # Metal-cpp initialization smoke gate. Device bridging and repeated
 # initialization/shutdown must remain stable.
-METALCPP_RENDER_SRC := MGL/src/mgl_render.cpp $(wildcard MGL/src/mgl_render_*.cpp)
+METALCPP_RENDER_SRC := MGL/src/L1_backend/mgl_render.cpp $(wildcard MGL/src/L1_backend/mgl_render_*.cpp)
 
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	$(METALCPP_RENDER_SRC) MGL/include/mgl_render.h \
 	$(wildcard MGL/include/*.h) \
 	MGL/src/mgl_rgba8_expand.c MGL/include/mgl_rgba8_expand.h \
-	MGL/src/mgl_readback_policy.c MGL/include/mgl_readback_policy.h MGL/src/mgl_raster_orientation_plan.c \
-	MGL/src/mgl_binding_policy.c MGL/include/mgl_binding_policy.h \
+	MGL/src/mgl_readback_policy.c MGL/include/mgl_readback_policy.h MGL/src/L3_validate/mgl_raster_orientation_plan.c \
+	MGL/src/L3_validate/mgl_binding_policy.c MGL/include/mgl_binding_policy.h \
 	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h \
 	MGL/src/mgl_binding_texture.c MGL/include/mgl_binding_texture.h \
 	MGL/src/mgl_program_resource.c MGL/include/mgl_program_resource.h \
@@ -1347,16 +1380,16 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/include/mgl_tess_domain.h \
 	MGL/src/mgl_renderer_backend.cpp MGL/src/mgl_renderer_backend.h \
 	MGL/src/mgl_render_internal.h MGL/src/mgl_render_pixel.h \
-	MGL/src/mgl_air_loader.h MGL/src/mgl_metal.h \
+	MGL/src/compiler/mgl_air_loader.h MGL/src/mgl_metal.h \
 	MGL/include/mgl_backend_handles.h \
 	$(METALCPP_PLATFORM_SHELL_OBJ) $(METALCPP_PLATFORM_SHELL_SRC) \
 	MGL/include/mgl_platform_shell_result.h \
 	MGL/src/mgl_objc_bridge.h MGL/src/mgl_renderer_ivars.h \
 	MGL/include/MGLPlatformRendererShell.h \
-	MGL/src/mgl_aux_assets.c \
+	MGL/src/L1_backend/mgl_aux_assets.c \
 	MGL/src/mgl_buffer_slots.c \
 	MGL/src/mgl_sync.c \
-	MGL/src/mgl_texture_plan.c MGL/include/mgl_texture_plan.h \
+	MGL/src/L3_validate/mgl_texture_plan.c MGL/include/mgl_texture_plan.h \
 	MGL/src/mgl_pixel_tables.c MGL/include/mgl_pixel_format.h \
 	MGL/src/mgl_buffer_transient.c \
 	$(METALCPP_C_OBJ)
@@ -1366,9 +1399,9 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		test_legacy_compat/test_metalcpp_smoke.mm \
 		$(METALCPP_RENDER_SRC) \
 		MGL/src/mgl_rgba8_expand.c \
-		MGL/src/mgl_readback_policy.c MGL/src/mgl_raster_orientation_plan.c \
-		MGL/src/mgl_texture_plan.c \
-		MGL/src/mgl_binding_policy.c \
+		MGL/src/mgl_readback_policy.c MGL/src/L3_validate/mgl_raster_orientation_plan.c \
+		MGL/src/L3_validate/mgl_texture_plan.c \
+		MGL/src/L3_validate/mgl_binding_policy.c \
 		MGL/src/mgl_buffer_transient.c \
 		MGL/src/mgl_binding_stage.c \
 		MGL/src/mgl_binding_texture.c \
@@ -1377,7 +1410,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_tess_factor_normalize.c \
 		MGL/src/mgl_tess_domain_gen.c \
 		MGL/src/mgl_renderer_backend.cpp \
-		MGL/src/mgl_aux_assets.c \
+		MGL/src/L1_backend/mgl_aux_assets.c \
 		MGL/src/mgl_buffer_slots.c \
 		MGL/src/mgl_sync.c \
 		-x none $(METALCPP_C_OBJ) $(METALCPP_PLATFORM_SHELL_OBJ) \
@@ -1409,20 +1442,20 @@ $(GTEST_STAMP):
 	@touch $@
 
 $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
-	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
-	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
-	MGL/src/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
-	MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/mgl_glsl_sema.c \
-	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
-	MGL/src/mgl_ir.c MGL/src/mgl_env_flag.c \
+	MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
+	MGL/src/L4_context/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
+	MGL/src/compiler/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
+	MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/compiler/mgl_glsl_sema.c \
+	MGL/src/compiler/mgl_glsl_cpp.c MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c \
+	MGL/src/compiler/mgl_ir.c MGL/src/mgl_env_flag.c \
 	$(GTEST_STAMP)
 	$(LLVM_CXX) -x c++ $(LLVM_CXXFLAGS) $(GTEST_CXXFLAGS) $(LLVM_LDFLAGS) \
 		test_legacy_compat/test_mglair_gtest.cpp \
-		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
-		MGL/src/mgl_legacy_compat.c MGL/src/mgl_frontend_session.c \
-		MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/mgl_glsl_sema.c \
-		MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
-		MGL/src/mgl_ir.c MGL/src/mgl_env_flag.c \
+		MGL/src/mgl_air_backend.cpp MGL/src/mgl_air_type.cpp MGL/src/mgl_air_resource.cpp MGL/src/mgl_air_math.cpp MGL/src/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/mgl_air_matrix.cpp MGL/src/mgl_air_stmt.cpp MGL/src/mgl_metallib_writer.cpp MGL/src/mgl_air_target.cpp \
+		MGL/src/L4_context/mgl_legacy_compat.c MGL/src/compiler/mgl_frontend_session.c \
+		MGL/src/mgl_air_reflect.c MGL/src/mgl_buffer_layout.c MGL/src/compiler/mgl_glsl_sema.c \
+		MGL/src/compiler/mgl_glsl_cpp.c MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c \
+		MGL/src/compiler/mgl_ir.c MGL/src/mgl_env_flag.c \
 		-x none $(GTEST_LIBS) -o $@
 
 test-mglair-gtest: $(build_dir)/test_mglair_gtest

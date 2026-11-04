@@ -29,7 +29,9 @@
 #include "mgl_readback_policy.h"  /* mglRenderMSAAArrayLayerStride */
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_render_pass_manager.h"
-#include "mgl_renderer_ports.h"
+#include "mgl_ports_present.h"
+#include "mgl_ports_batch_flush.h"
+#include "mgl_renderer_state_areas.h"
 #include "mgl_trace_log.h"
 #include "mgl_vertex_format.h"    /* mgl*DescriptorSignatureFromState */
 #include "mgl_vertex_layout.h"    /* mglRendererUpdateBlendStateCache */

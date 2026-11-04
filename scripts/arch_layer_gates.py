@@ -17,9 +17,18 @@ Rules:
   Lyr-Batch-Pass    mgl_batch_*.c must not include mgl_render_pass_manager_ops.h
                     (only pass_public.h) (ARCH-004/016).
   Lyr-No-Private    MGL/src must not #include/#import *Private* (ARCH-009;
-                    Phase 0: baseline allow; Phase 8: empty baseline).
+                    Phase 8: also forbid leftover MGLRenderer*_Private.h /
+                    mgl_renderer_ivars.h in the tree).
   Lyr-DualProxy     Ban assignment to core/_core->activeState anywhere
                     (ARCH-003 / Phase 2: single ctx->active_state).
+  Lyr-Ports-FanIn   Count of MGL/src TUs that #include mgl_renderer_ports.h
+                    must stay ≤ baseline (Phase 5: target ≤15).
+  Lyr-Ext           MGL/extensions/** must not include mgl_renderer_ports.h /
+                    backend_objects / mgl_glsl_parser / *Private* (G6).
+  Lyr-Ctx-Fwd       Public/plan headers (api.h, buffer_plan, pass_public,
+                    extension_hooks) must not include full glm_context.h (G5).
+  Lyr-Ctx-FanIn     Count of MGL/src TUs that #include glm_context.h must
+                    stay ≤ CTX_FANIN_LIMIT (G5 / Phase 1: ≤110).
 
 Usage:
   python3 scripts/arch_layer_gates.py
@@ -87,6 +96,41 @@ ACTIVE_STATE_ASSIGN = re.compile(
     r"(?:core|_core)\s*->\s*activeState\s*="
 )
 
+PORTS_INCLUDE = re.compile(
+    r'#\s*include\s*[<"]mgl_renderer_ports\.h[>"]'
+)
+
+PORTS_FANIN_LIMIT = 15
+CTX_FANIN_LIMIT = 110
+
+CTX_FULL_INCLUDE = re.compile(
+    r'#\s*include\s*[<"]glm_context\.h[>"]'
+)
+
+# Public / plan headers that must stay on glm_context_fwd (G5 / Lyr-Ctx-Fwd).
+CTX_FWD_HEADERS = (
+    "mgl/api.h",
+    "mgl_buffer_plan.h",
+    "mgl_render_pass_public.h",
+    "mgl_extension_hooks.h",
+    "mgl_batch_public.h",
+    "glm_state.h",
+)
+
+EXT_FORBIDDEN = re.compile(
+    r'#\s*include\s*[<"]([^>"]*(?:'
+    r"mgl_renderer_ports\.h|"
+    r"mgl_backend_objects|"
+    r"mgl_glsl_parser|"
+    r"Private"
+    r")[^>\"]*)[>\"]"
+)
+
+PRIVATE_LEFTOVER_NAMES = (
+    "MGLRenderer_Private.h",
+    "mgl_renderer_ivars.h",
+)
+
 COMMENT_RE = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
 
 
@@ -107,6 +151,13 @@ def scan_file(path: str, regex: re.Pattern) -> list[tuple[int, str]]:
     return out
 
 
+def iter_src_files(*suffixes: str):
+    for dirpath, _, files in os.walk(SRC):
+        for name in sorted(files):
+            if name.endswith(suffixes):
+                yield os.path.join(dirpath, name)
+
+
 def collect() -> dict[tuple[str, str], list[tuple[int, str]]]:
     hits: dict[tuple[str, str], list[tuple[int, str]]] = {}
 
@@ -114,16 +165,17 @@ def collect() -> dict[tuple[str, str], list[tuple[int, str]]]:
         if found:
             hits[(rule, rel(path))] = found
 
-    # Lyr-FE-Metal
+    # Lyr-FE-Metal (FE may live under L4_context/ after Phase 6)
     for name in FE_FILES:
-        path = os.path.join(SRC, name)
-        if os.path.exists(path):
+        matches = [
+            p for p in iter_src_files(".c") if os.path.basename(p) == name
+        ]
+        for path in matches:
             add("Lyr-FE-Metal", path, scan_file(path, METAL_HEADERS))
 
     # Lyr-FE-Compiler
-    for name in sorted(os.listdir(SRC)):
-        if not name.endswith((".c", ".cpp")):
-            continue
+    for path in iter_src_files(".c", ".cpp"):
+        name = os.path.basename(path)
         if not (
             name in FE_FILES
             or name.startswith("draw_")
@@ -131,7 +183,6 @@ def collect() -> dict[tuple[str, str], list[tuple[int, str]]]:
             or name.startswith("mgl_render_pass")
         ):
             continue
-        path = os.path.join(SRC, name)
         found = []
         text = strip_comments(open(path, encoding="utf-8", errors="ignore").read())
         for i, line in enumerate(text.splitlines(), 1):
@@ -145,25 +196,29 @@ def collect() -> dict[tuple[str, str], list[tuple[int, str]]]:
         add("Lyr-FE-Compiler", path, found)
 
     # Lyr-Pass-Batch
-    for name in sorted(os.listdir(SRC)):
-        if not (name.startswith("mgl_render_pass") and name.endswith(".c")):
+    for path in iter_src_files(".c"):
+        if not os.path.basename(path).startswith("mgl_render_pass"):
             continue
-        path = os.path.join(SRC, name)
         add("Lyr-Pass-Batch", path, scan_file(path, PASS_BATCH))
 
     # Lyr-Batch-Pass
-    for name in sorted(os.listdir(SRC)):
-        if not (name.startswith("mgl_batch_") and name.endswith((".c", ".cpp"))):
+    for path in iter_src_files(".c", ".cpp"):
+        if not os.path.basename(path).startswith("mgl_batch_"):
             continue
-        path = os.path.join(SRC, name)
         add("Lyr-Batch-Pass", path, scan_file(path, BATCH_PASS_OPS))
 
-    # Lyr-No-Private (src only; include umbrella is Phase 8)
-    for name in sorted(os.listdir(SRC)):
-        if not name.endswith((".c", ".cpp", ".m", ".mm", ".h", ".hpp")):
-            continue
-        path = os.path.join(SRC, name)
+    # Lyr-No-Private (all src TUs + leftover Private filename ban)
+    for path in iter_src_files(".c", ".cpp", ".m", ".mm", ".h", ".hpp"):
         add("Lyr-No-Private", path, scan_file(path, PRIVATE_INC))
+    leftover: list[tuple[int, str]] = []
+    for dirpath, _, files in os.walk(os.path.join(ROOT, "MGL")):
+        for name in files:
+            if name in PRIVATE_LEFTOVER_NAMES or (
+                name.startswith("MGLRenderer+") and name.endswith("_Private.h")
+            ):
+                leftover.append((1, rel(os.path.join(dirpath, name))))
+    if leftover:
+        hits[("Lyr-No-Private", "MGL/tree")] = leftover
 
     # Lyr-DualProxy: Phase 2 forbids any core.activeState assignment.
     for dirpath, _, files in os.walk(os.path.join(ROOT, "MGL")):
@@ -172,6 +227,44 @@ def collect() -> dict[tuple[str, str], list[tuple[int, str]]]:
                 continue
             path = os.path.join(dirpath, name)
             add("Lyr-DualProxy", path, scan_file(path, ACTIVE_STATE_ASSIGN))
+
+    # Lyr-Ports-FanIn: one synthetic entry whose "count" is TU fan-in.
+    ports_hits: list[tuple[int, str]] = []
+    for path in iter_src_files(".c", ".cpp"):
+        found = scan_file(path, PORTS_INCLUDE)
+        if found:
+            ports_hits.append((found[0][0], rel(path)))
+    if ports_hits:
+        hits[("Lyr-Ports-FanIn", "MGL/src")] = [
+            (ln, path) for ln, path in ports_hits
+        ]
+
+    # Lyr-Ext (G6): extensions tree must stay on hooks surface.
+    ext_root = os.path.join(ROOT, "MGL", "extensions")
+    if os.path.isdir(ext_root):
+        for dirpath, _, files in os.walk(ext_root):
+            for name in sorted(files):
+                if not name.endswith((".c", ".cpp", ".h", ".hpp")):
+                    continue
+                path = os.path.join(dirpath, name)
+                add("Lyr-Ext", path, scan_file(path, EXT_FORBIDDEN))
+
+    # Lyr-Ctx-Fwd (G5): named public/plan headers must not pull full Rec.
+    for rel_h in CTX_FWD_HEADERS:
+        path = os.path.join(INC, rel_h)
+        if os.path.isfile(path):
+            add("Lyr-Ctx-Fwd", path, scan_file(path, CTX_FULL_INCLUDE))
+
+    # Lyr-Ctx-FanIn (G5): src TU count including glm_context.h.
+    ctx_hits: list[tuple[int, str]] = []
+    for path in iter_src_files(".c", ".cpp"):
+        found = scan_file(path, CTX_FULL_INCLUDE)
+        if found:
+            ctx_hits.append((found[0][0], rel(path)))
+    if ctx_hits:
+        hits[("Lyr-Ctx-FanIn", "MGL/src")] = [
+            (ln, path) for ln, path in ctx_hits
+        ]
 
     return hits
 
@@ -239,11 +332,27 @@ def main() -> int:
                 f"STALE {rule} {path}: baseline {want}, now {have} "
                 f"(run --update after paying debt)"
             )
+    ports_fanin = len(hits.get(("Lyr-Ports-FanIn", "MGL/src"), ()))
+    if ports_fanin > PORTS_FANIN_LIMIT:
+        bad += 1
+        print(
+            f"FAIL Lyr-Ports-FanIn: {ports_fanin} TUs include "
+            f"mgl_renderer_ports.h (limit {PORTS_FANIN_LIMIT})"
+        )
+    ctx_fanin = len(hits.get(("Lyr-Ctx-FanIn", "MGL/src"), ()))
+    if ctx_fanin > CTX_FANIN_LIMIT:
+        bad += 1
+        print(
+            f"FAIL Lyr-Ctx-FanIn: {ctx_fanin} TUs include "
+            f"glm_context.h (limit {CTX_FANIN_LIMIT})"
+        )
     if bad:
         return 1
     total = sum(base.values())
     print(
-        f"arch layer gates ok: {total} baselined violations in {len(base)} entries"
+        f"arch layer gates ok: {total} baselined violations in {len(base)} entries; "
+        f"ports fan-in={ports_fanin}/{PORTS_FANIN_LIMIT}; "
+        f"ctx fan-in={ctx_fanin}/{CTX_FANIN_LIMIT}"
     )
     return 0
 

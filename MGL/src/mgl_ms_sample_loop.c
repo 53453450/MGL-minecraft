@@ -13,7 +13,8 @@
  * shell forwarders. */
 
 #include "mgl_ms_sample_loop.h"
-#include "mgl_renderer_ports.h"
+#include "mgl_ports_present.h"
+#include "mgl_renderer_state_areas.h"
 #include "mgl_render_pass_manager_ops.h"  /* mglRendererEndRenderEncodingLocked */
 #include "mgl_draw_support.h"          /* mglDrawEmulatedMSColor0Texture, … */
 #include "mgl_render_api_command.h"

@@ -39,7 +39,8 @@
 #include "mgl_texture_upload_ops.h"
 #include "mgl_texture_bind.h"
 #include "mgl_texture_plan.h" /* MGL_TEXTURE_MS_PLANE_STRIDE */
-#include "mgl_renderer_ports.h"  /* state areas + creation/upload ports */
+#include "mgl_ports_batch_flush.h"
+#include "mgl_renderer_state_areas.h"  /* state areas + creation/upload ports */
 #include "mgl_render_api_texture.h"
 #include "mgl_render_pass_manager_ops.h" /* mglRendererEndRenderEncodingLocked */
 #include "mgl_texture_compat.h"  /* sampled-copy release, swizzle predicate */

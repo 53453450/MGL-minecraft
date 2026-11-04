@@ -18,7 +18,8 @@
 #include <string.h>
 
 #include "glm_context.h"
-#include "mgl_renderer_ports.h"
+#include "mgl_renderer_attachment.h"
+#include "mgl_renderer_state_areas.h"
 #include "draw_command.h"
 
 extern void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer);

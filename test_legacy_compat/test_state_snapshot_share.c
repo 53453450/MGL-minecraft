@@ -32,7 +32,7 @@
 
 #include <GL/glcorearb.h>
 
-#include "MGLRenderer.h"
+#include "mgl_platform_shell_result.h"
 #include "glm_context.h"
 #include "mgl_frame_activity.h"
 

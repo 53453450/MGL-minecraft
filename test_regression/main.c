@@ -35,7 +35,7 @@
 
 #include "draw_command.h"
 #include "glm_context.h"
-#include "MGLRenderer.h"
+#include "mgl_platform_shell_result.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_api_texture.h"
 #include "mgl_buffer_backend.h"

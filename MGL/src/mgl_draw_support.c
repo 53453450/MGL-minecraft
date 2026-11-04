@@ -28,7 +28,9 @@
 #include "mgl_draw_issue.h"
 #include "mgl_draw_tess.h"    /* mglDrawHostRunVertexCaptureIndexed */
 #include "mgl_draw_mode.h"    /* mglRenderDrawModeProducesPolygons */
-#include "mgl_renderer_ports.h"   /* state areas, mglRendererProcessBuffer */
+#include "mgl_renderer_attachment.h"
+#include "mgl_ports_batch_flush.h"
+#include "mgl_renderer_state_areas.h"   /* state areas, mglRendererProcessBuffer */
 #include "mgl_render_api_command.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_buffer.h"
