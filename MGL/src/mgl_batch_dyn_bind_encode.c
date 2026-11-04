@@ -239,6 +239,9 @@ static void mglSampAfter(void *v, uint32_t i, const MGLBatchResolvedSamplerBind 
         return;
     const MGLSamplerSnapshotKey *key = &c->cb->sampler_snapshot_keys[entry->key_index];
     static uint64_t s_snapshotState[16];
+    /* AUDIT-061: metal_slot may exceed the diag table; skip rather than OOB. */
+    if (entry->metal_slot >= 16u)
+        return;
     if (!mglMipDiagStateChanged(&s_snapshotState[entry->metal_slot],
                                 mglRendererSamplerSnapshotHash(key)))
         return;

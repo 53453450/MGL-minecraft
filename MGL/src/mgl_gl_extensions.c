@@ -581,7 +581,11 @@ void mglRecordActivePrimitiveQueryDrawIndexed(GLMContext ctx,
 	{
 		generated_query->saw_draw = GL_TRUE;
 		generated_query->primitive_result_known = GL_TRUE;
-		generated_query->result += generated;
+		/* AUDIT-061: saturate instead of wrapping the 64-bit accumulator. */
+		if (generated_query->result > UINT64_MAX - generated)
+			generated_query->result = UINT64_MAX;
+		else
+			generated_query->result += generated;
 	}
 
 	QueryObject *written_query =
@@ -591,7 +595,10 @@ void mglRecordActivePrimitiveQueryDrawIndexed(GLMContext ctx,
 	{
 		written_query->saw_draw = GL_TRUE;
 		written_query->primitive_result_known = GL_TRUE;
-		written_query->result += written;
+		if (written_query->result > UINT64_MAX - written)
+			written_query->result = UINT64_MAX;
+		else
+			written_query->result += written;
 	}
 
 	TransformFeedback *xfb = STATE(transform_feedback);

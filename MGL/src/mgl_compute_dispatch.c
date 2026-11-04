@@ -230,6 +230,22 @@ bool mglComputeRunDispatchOrchestrationLocked(
         mglRendererTemporariesRelease(executionTemporaries);
         return false;
     }
+    /* AUDIT-054: Metal rejects a zero threadgroup dimension; refuse early. */
+    if (ptr->local_workgroup_size.x == 0u ||
+        ptr->local_workgroup_size.y == 0u ||
+        ptr->local_workgroup_size.z == 0u) {
+        fprintf(stderr,
+                "MGL COMPUTE ERROR: %s with zero local workgroup size\n",
+                reason ? reason : "glDispatchCompute");
+        if (computeCommandEncoder) {
+            (void)mglRenderEndComputeEncoder(computeCommandEncoder);
+        }
+        mglClearStageBindingCopyBacks(renderer, &copyBacks);
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        mglRendererTemporariesRelease(executionTemporaries);
+        return false;
+    }
 
     bool hasCopyBackEntries = false;
     if (useExecutionPlan) {
