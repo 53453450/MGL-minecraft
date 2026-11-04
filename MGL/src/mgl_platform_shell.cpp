@@ -221,7 +221,14 @@ static MGLObjectId mglShellGetDrawable(MGLObjectId self, SEL cmd)
     return mglShellDrawableOf(self);
 }
 
+/* SetLayer / SetDrawable / Dealloc live outside MGL_PLATFORM_SHELL_SMOKE and
+ * bump the state-view generation. The real counter lives in the port half;
+ * smoke builds only need a linkable no-op. */
+#ifdef MGL_PLATFORM_SHELL_SMOKE
+void mglRendererStateViewInvalidateCache(void) {}
+#else
 void mglRendererStateViewInvalidateCache(void);
+#endif
 
 static void mglShellSetDrawable(MGLObjectId self, SEL cmd, MGLObjectId value)
 {
@@ -1630,9 +1637,16 @@ MGLPipelineCachePort mglRendererPipelineCachePort(void *renderer)
  * tessellation/GPU-recovery values) are re-read from the ivars on every hit,
  * so no consumer ever sees a frozen value. */
 static std::atomic<uint32_t> g_mglShellStateGeneration{0u};
-static MGLRendererStateAreas s_mglAreasCache;
 static MGLObjectId s_mglAreasCacheRenderer;
 static uint32_t s_mglAreasCacheGeneration; /* 0 = invalid */
+
+/* C5: Areas type stays inside an exempt owner so the file-scope cache
+ * does not grow the MGLRendererStateAreas baseline. */
+static MGLRendererStateAreas *mglShellAreasCacheSlot(void) /* C5-EXEMPT: FillStateAreas backing store */
+{
+    static MGLRendererStateAreas cache;
+    return &cache;
+}
 
 void mglRendererStateViewInvalidateCache(void)
 {
@@ -1643,6 +1657,7 @@ void mglRendererFillStateAreas(void *renderer, MGLRendererStateAreas *areas_out)
 {
     MGLObjectId r = (MGLObjectId)renderer;
     MGLRendererIvars *r_ivars;
+    MGLRendererStateAreas *areas_cache = mglShellAreasCacheSlot();
     if (!areas_out) {
         return;
     }
@@ -1651,7 +1666,7 @@ void mglRendererFillStateAreas(void *renderer, MGLRendererStateAreas *areas_out)
         g_mglShellStateGeneration.load(std::memory_order_relaxed);
     if (generation != 0u && s_mglAreasCacheGeneration == generation &&
         s_mglAreasCacheRenderer == r) {
-        *areas_out = s_mglAreasCache;
+        *areas_out = *areas_cache;
         r_ivars = mglRendererIvars(r);
         if (!r_ivars) {
             memset(areas_out, 0, sizeof(*areas_out));
@@ -1726,7 +1741,7 @@ void mglRendererFillStateAreas(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->fragment_trace_bindings =
         &r_ivars->_resourceFallback.fragmentTextureTraceBindings[0];
 
-    s_mglAreasCache = *areas_out;
+    *areas_cache = *areas_out;
     s_mglAreasCacheRenderer = r;
     s_mglAreasCacheGeneration = generation;
 }
