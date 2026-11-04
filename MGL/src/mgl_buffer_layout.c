@@ -44,14 +44,18 @@ int mglBufferSlotLayoutBuild(const MGLBufferSlotCounts *in,
     const uint32_t base = layout_user_base(in->stage);
     const uint32_t plain =
         in->has_plain_pack && layout_stage_has_pack(in->stage) ? 1u : 0u;
-    const uint32_t attrs = in->stage == MGL_STAGE_VERTEX ? in->attr_slots : 0u;
+    /* VS stage inputs are Metal [[stage_in]] value args, not buffer(N)
+     * slots.  VAO attribute streams bind at kMGLVertexAttribBufferBase (16+)
+     * via the vertex descriptor.  Counting attr_slots here used to shove
+     * UBOs upward and collide with that reserved region (CTS layout_binding
+     * VS: two UBO arrays of 8 → Metal slot 16).  attr_slots is ignored. */
+    (void)in->attr_slots;
 
     MGLBufferSlotLayout layout;
     memset(&layout, 0, sizeof(layout));
     layout.plain_base = base;
     layout.plain_slots = plain;
     if (layout_add(base, plain, &layout.ssbo_base) != 0 ||
-        layout_add(layout.ssbo_base, attrs, &layout.ssbo_base) != 0 ||
         layout_add(layout.ssbo_base, in->ssbo_slots, &layout.ubo_base) != 0 ||
         layout_add(layout.ubo_base, in->ubo_slots,
                    &layout.atomic_counter_base) != 0 ||

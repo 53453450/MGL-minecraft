@@ -13,9 +13,12 @@
  * Layout of a stage, from slot 0 (TES starts at 1; the tessellation contract
  * buffer owns slot 0):
  *
- *     [plain-uniform pack] [vertex attributes (VS)] [SSBOs] [UBOs] [atomic counters]
+ *     [plain-uniform pack] [SSBOs] [UBOs] [atomic counters]
  *
- * Every instance of a block array takes its own slot.
+ * VS stage inputs are [[stage_in]] (not buffer slots).  VAO attribute streams
+ * bind at kMGLVertexAttribBufferBase (16+), reserved by the link gate — they
+ * are not part of this layout.  Every instance of a block array takes its own
+ * slot.
  */
 
 #ifndef MGL_BUFFER_LAYOUT_H
@@ -31,7 +34,7 @@ extern "C" {
 
 typedef struct MGLBufferSlotCounts {
     int stage;                       /* MGL_STAGE_* */
-    uint32_t attr_slots;             /* VS: locations taken by stage inputs */
+    uint32_t attr_slots;             /* unused: VS attrs are stage_in, not buffers */
     int has_plain_pack;              /* plain uniforms packed into one buffer */
     uint32_t ssbo_slots;             /* SSBO instances (array elements count) */
     uint32_t ubo_slots;              /* UBO instances */
