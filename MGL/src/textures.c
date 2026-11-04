@@ -5360,7 +5360,7 @@ static void mglCommitSparsePages(GLMContext ctx, Texture *tex, GLint level,
             tex->sparse_heap_next_tile += tiles_x * tiles_y * slices;
         }
         (void)mglRenderSparseTextureCommit(
-            tex->sparse_heap, mglTextureBackendEnsure(tex)->mtl_data,
+            tex->sparse_heap, mglTextureMtl(tex),
             (uint32_t)xoffset, (uint32_t)yoffset, commit_z,
             (uint32_t)width, (uint32_t)height, commit_d,
             (uint32_t)level, commit ? 1 : 0, heap_off);
@@ -5425,7 +5425,7 @@ static void mglSparseScrubTextureLevel(Texture *tex, GLint level, int clear)
     lvl = &tex->faces[0].levels[level];
     if (!lvl || lvl->width == 0)
         return;
-    mtl = mglTextureBackendEnsure(tex)->mtl_data;
+    mtl = mglTextureMtl(tex);
     if (!mtl)
         return;
 

@@ -651,8 +651,7 @@ int mglRenderBindBufferStorage(Buffer* buffer,
         return MGL_RENDER_BUFFER_ERROR;
     }
 
-    const bool sparseStorage =
-        (buffer->storage_flags & GL_SPARSE_STORAGE_BIT_ARB) != 0;
+    const bool sparseStorage = mglBufferStorageIsSparse(buffer->storage_flags);
     uint64_t options = static_cast<uint64_t>(MTL::ResourceStorageModeShared);
     /* WriteCombined forbids coherent CPU reads of GPU stores.  Sparse BOs are
      * the CTS atomic-counter / SSBO readback path (case_e), and any buffer

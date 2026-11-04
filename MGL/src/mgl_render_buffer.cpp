@@ -209,8 +209,7 @@ int mglRenderMapBufferStorage(Buffer* buffer,
     /* AUDIT-056: writable unmap must push the CPU shadow into Metal before
      * the next GPU use; previously only Managed didModifyRange ran when there
      * was no separate shadow. */
-    const bool writes = access == GL_WRITE_ONLY || access == GL_READ_WRITE ||
-                        mglBufferMapIsWritable(access);
+    const bool writes = mglBufferAccessIsWritable(access);
     if (writes && cpuBase && metalBase && metalBase != cpuBase &&
         safeLength > 0) {
         memcpy(metalBase + offset, cpuBase + offset, safeLength);

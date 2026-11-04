@@ -17,6 +17,12 @@ static inline bool mglBufferAccessIsReadable(uint32_t access)
            (access & GL_MAP_READ_BIT) != 0;
 }
 
+static inline bool mglBufferAccessIsWritable(uint32_t access)
+{
+    return access == GL_WRITE_ONLY || access == GL_READ_WRITE ||
+           (access & GL_MAP_WRITE_BIT) != 0;
+}
+
 static inline bool mglBufferMapIsWritable(uint32_t access_flags)
 {
     return (access_flags & GL_MAP_WRITE_BIT) != 0;
@@ -40,6 +46,11 @@ static inline bool mglBufferStorageIsPersistent(uint32_t storage_flags)
 static inline bool mglBufferStorageIsClient(uint32_t storage_flags)
 {
     return (storage_flags & GL_CLIENT_STORAGE_BIT) != 0;
+}
+
+static inline bool mglBufferStorageIsSparse(uint32_t storage_flags)
+{
+    return (storage_flags & GL_SPARSE_STORAGE_BIT_ARB) != 0;
 }
 
 #ifdef __cplusplus

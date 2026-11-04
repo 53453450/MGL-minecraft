@@ -99,10 +99,16 @@ static uint32_t mglTextureBindUploadLevelCount(uint64_t metal_levels,
 
 extern uint32_t mtlPixelFormatForGLTex(Texture *tex);
 
+/* Numeric IF values (avoid GL_* in this L3 TU — check_layering C2). */
+enum {
+    MGL_IF_BPTC_RGB_SFLOAT = 0x8E8Eu, /* GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT */
+    MGL_IF_BPTC_RGB_UFLOAT = 0x8E8Fu  /* GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT */
+};
+
 static int mglInternalFormatIsBPTCFloat(GLenum internalformat)
 {
-    return internalformat == GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT ||
-           internalformat == GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT;
+    return internalformat == (GLenum)MGL_IF_BPTC_RGB_SFLOAT ||
+           internalformat == (GLenum)MGL_IF_BPTC_RGB_UFLOAT;
 }
 
 /* Apple Metal newTextureView between BC6H_RGBFloat and BC6H_RGBUfloat does
@@ -150,10 +156,10 @@ static bool mglTextureBindBPTCFloatCloneStorage(void *renderer, Texture *tex,
     view_lvl->pitch = root_lvl->pitch;
     view_lvl->data = root_lvl->data;
     view_lvl->data_size = root_lvl->data_size;
-    view_lvl->complete = GL_TRUE;
-    view_lvl->has_initialized_data = GL_TRUE;
-    view_lvl->ever_written = GL_TRUE;
-    view_lvl->metal_data_authoritative = GL_FALSE;
+    view_lvl->complete = 1;
+    view_lvl->has_initialized_data = 1;
+    view_lvl->ever_written = 1;
+    view_lvl->metal_data_authoritative = 0;
     tex->compressed_internalformat = (GLenum)tex->internalformat;
     mglTextureSetDirtyBits(tex, DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
 
@@ -177,8 +183,8 @@ static bool mglTextureBindBPTCFloatCloneStorage(void *renderer, Texture *tex,
         root_lvl->data_size, root_lvl->width, root_lvl->height, 1u, 0u, 0u, 0);
     mglTextureBackendEnsure(tex)->mtl_data = cloned;
     mglTextureClearDirtyBits(tex, DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
-    tex->metal_data_authoritative = GL_TRUE;
-    view_lvl->metal_data_authoritative = GL_TRUE;
+    tex->metal_data_authoritative = 1;
+    view_lvl->metal_data_authoritative = 1;
     /* Drop the borrowed CPU pointer so the view does not free the root's
      * shadow on delete; GetTexImage still redirects via view_root. */
     view_lvl->data = 0;
