@@ -144,6 +144,9 @@ void mglRenderShutdown(void) {
             return;
         }
         renderer.users = 0;
+        /* AUDIT-012/047: callers must drain in-flight CBs (e.g. destroyGLMContext
+         * → mglRendererFlush(..., true)) before the last shutdown; this path
+         * only drops process-wide caches once the last user leaves. */
         mgl::releasePipelineCaches(renderer);
         mgl::releaseBindingStates(renderer);
         mgl::releasePackedStructBuffers(renderer);
@@ -283,6 +286,29 @@ int mglRenderCreateTextureViewRange(
         slice_length == 0) {
         return -1;
     }
+    /* AUDIT-010: level/slice ranges must fit the source texture. */
+    const uint64_t mip_count =
+        static_cast<uint64_t>(source->mipmapLevelCount());
+    uint64_t slice_count = static_cast<uint64_t>(source->arrayLength());
+    switch (source->textureType()) {
+        case MTL::TextureTypeCube:
+            slice_count = 6u;
+            break;
+        case MTL::TextureTypeCubeArray:
+            if (slice_count > std::numeric_limits<uint64_t>::max() / 6u) {
+                return -1;
+            }
+            slice_count *= 6u;
+            break;
+        default:
+            break;
+    }
+    if (level_location >= mip_count ||
+        level_length > mip_count - level_location ||
+        slice_location >= slice_count ||
+        slice_length > slice_count - slice_location) {
+        return -1;
+    }
     /* Metal aborts on depth/stencil ↔ color casts (CTS BindImage
      * DEPTH_COMPONENT16 as GL_R16).  Refuse before newTextureView. */
     const uint32_t src_pf = static_cast<uint32_t>(source->pixelFormat());
@@ -316,6 +342,45 @@ int mglRenderCreateTextureViewRange(
 }
 
 
+/* AUDIT-010: shared geometry gate for ReplaceRegion / GetBytes. */
+static int mglRenderTextureRegionInBounds(MTL::Texture* tex, uint64_t x,
+                                          uint64_t y, uint64_t z,
+                                          uint64_t width, uint64_t height,
+                                          uint64_t depth, uint64_t level,
+                                          uint64_t slice, int use_slice) {
+    if (!tex || level >= static_cast<uint64_t>(tex->mipmapLevelCount())) {
+        return 0;
+    }
+    uint64_t slice_count = static_cast<uint64_t>(tex->arrayLength());
+    switch (tex->textureType()) {
+        case MTL::TextureTypeCube:
+            slice_count = 6u;
+            break;
+        case MTL::TextureTypeCubeArray:
+            if (slice_count > std::numeric_limits<uint64_t>::max() / 6u) {
+                return 0;
+            }
+            slice_count *= 6u;
+            break;
+        default:
+            break;
+    }
+    if (use_slice && slice >= slice_count) {
+        return 0;
+    }
+    const uint64_t mip_w =
+        std::max<uint64_t>(1u, static_cast<uint64_t>(tex->width()) >> level);
+    const uint64_t mip_h =
+        std::max<uint64_t>(1u, static_cast<uint64_t>(tex->height()) >> level);
+    const uint64_t mip_d =
+        std::max<uint64_t>(1u, static_cast<uint64_t>(tex->depth()) >> level);
+    if (x > mip_w || width > mip_w - x || y > mip_h || height > mip_h - y ||
+        z > mip_d || depth > mip_d - z) {
+        return 0;
+    }
+    return 1;
+}
+
 int mglRenderTextureReplaceRegion(void* texture,
                                      uint64_t x,
                                      uint64_t y,
@@ -332,6 +397,10 @@ int mglRenderTextureReplaceRegion(void* texture,
     MTL::Texture* destination = static_cast<MTL::Texture*>(texture);
     if (!destination || !bytes || width == 0 || height == 0 || depth == 0 ||
         bytes_per_row == 0) {
+        return -1;
+    }
+    if (!mglRenderTextureRegionInBounds(destination, x, y, z, width, height,
+                                        depth, level, slice, use_slice)) {
         return -1;
     }
     MTL::Region region = MTL::Region::Make3D(
@@ -370,6 +439,10 @@ int mglRenderTextureGetBytes(void* texture,
     MTL::Texture* source = static_cast<MTL::Texture*>(texture);
     if (!source || !bytes || width == 0 || height == 0 || depth == 0 ||
         bytes_per_row == 0) {
+        return -1;
+    }
+    if (!mglRenderTextureRegionInBounds(source, x, y, z, width, height, depth,
+                                        level, slice, use_slice)) {
         return -1;
     }
     MTL::Region region = MTL::Region::Make3D(
@@ -868,7 +941,15 @@ int mglRenderCopyRGB10A2TextureBytesToGL(
     uint64_t dst_pixel_bytes = mglPixelTypeIsPacked(type)
         ? (uint64_t)comp_bytes
         : (uint64_t)comp_bytes * (uint64_t)slots;
-    if (dst_pixel_bytes == 0u || dst_bytes_per_row < width * dst_pixel_bytes) {
+    /* AUDIT-001: validate both pitches with checked mul (caller-side
+     * AUDIT-035 is defense-in-depth only; this API must stand alone). */
+    uint64_t src_row_need = 0u;
+    uint64_t dst_row_need = 0u;
+    if (dst_pixel_bytes == 0u ||
+        mglRenderCheckedProduct(width, src_bpp, &src_row_need) != 0 ||
+        mglRenderCheckedProduct(width, dst_pixel_bytes, &dst_row_need) != 0 ||
+        src_bytes_per_row < src_row_need ||
+        dst_bytes_per_row < dst_row_need) {
         return 0;
     }
 
@@ -1045,7 +1126,9 @@ int mglRenderCopyBackCPUPrefix(
         if (!destination || !destination->contents() ||
             entry.destination_offset > buffer->data.buffer_size ||
             entry.length >
-                buffer->data.buffer_size - entry.destination_offset) {
+                buffer->data.buffer_size - entry.destination_offset ||
+            entry.destination_offset > destination->length() ||
+            entry.length > destination->length() - entry.destination_offset) {
             if (failed_index_out) *failed_index_out = i;
             return -1;
         }
@@ -1819,7 +1902,9 @@ uint64_t mglRenderClampCopyToStruct(uint64_t dest_off, uint64_t copy_size,
     if (copy_size == 0u || dest_off >= struct_size) {
         return 0u;
     }
-    if (dest_off + copy_size > struct_size) {
+    /* Prefer subtraction over dest_off+copy_size so a huge copy_size
+     * cannot wrap the add and defeat the clamp (AUDIT-002). */
+    if (copy_size > struct_size - dest_off) {
         return struct_size - dest_off;
     }
     return copy_size;
@@ -2103,7 +2188,8 @@ mglRenderExpandQuadArrayIndices(
     for (uint32_t q = 0u; q < quad_count; q++) {
         const uint32_t base = q * 4u;
         const uint32_t d = q * 6u;
-        if (base + 3u > UINT32_MAX) {
+        /* uint32_t wrap makes `base + 3u > UINT32_MAX` always false. */
+        if (base > UINT32_MAX - 3u) {
             free(dst);
             return -1;
         }
@@ -2128,6 +2214,7 @@ int mglRenderGeometryGatherIndices(
     const uint8_t* bytes,
     uint32_t elem_width,
     uint32_t count,
+    uint64_t bytes_len,
     int restart_enabled,
     uint32_t restart_index,
     uint32_t input_vertices,
@@ -2135,8 +2222,15 @@ int mglRenderGeometryGatherIndices(
     if (!bytes || count == 0u || input_vertices == 0u || !out) {
         return -1;
     }
+    /* Only GL index widths; do not silently promote unknown sizes to 4. */
+    if (elem_width != 1u && elem_width != 2u && elem_width != 4u) {
+        return -1;
+    }
+    if ((uint64_t)elem_width > bytes_len / (uint64_t)count) {
+        return -1;
+    }
     const int has_restart = restart_enabled ? 1 : 0;
-    const int w = (elem_width == 1u) ? 1 : (elem_width == 2u ? 2 : 4);
+    const uint32_t w = elem_width;
     uint32_t* const gather = (uint32_t*)malloc((size_t)count * sizeof(uint32_t));
     if (!gather) {
         return -1;
@@ -2147,12 +2241,15 @@ int mglRenderGeometryGatherIndices(
     uint32_t in_prim = 0u;
     for (uint32_t i = 0u; i < count; i++) {
         uint32_t index = 0u;
-        if (w == 1) {
-            index = bytes[i];
-        } else if (w == 2) {
-            index = ((const uint16_t*)bytes)[i];
+        const uint8_t* elem = bytes + (uint64_t)i * (uint64_t)w;
+        if (w == 1u) {
+            index = elem[0];
+        } else if (w == 2u) {
+            uint16_t v = 0u;
+            memcpy(&v, elem, sizeof(v));
+            index = v;
         } else {
-            index = ((const uint32_t*)bytes)[i];
+            memcpy(&index, elem, sizeof(index));
         }
         if (has_restart && index == restart_index) {
             /* A restart terminates the current primitive.  Any indices since
@@ -2916,7 +3013,8 @@ int mglRenderSetComputeBytes(void* compute_encoder,
                                 uint32_t index) {
     MTL::ComputeCommandEncoder* encoder =
         static_cast<MTL::ComputeCommandEncoder*>(compute_encoder);
-    if (!encoder || (!bytes && length != 0)) return -1;
+    /* Metal setBytes hard limit is 4 KiB (AUDIT-007). */
+    if (!encoder || (!bytes && length != 0) || length > 4096u) return -1;
     encoder->setBytes(bytes, static_cast<NS::UInteger>(length), index);
     return 0;
 }
@@ -3118,7 +3216,9 @@ int mglRenderAllocateMDIScratch(MGLMDIScratchOwner * owner_handle, uint64_t leng
             static_cast<NS::UInteger>(nextCapacity),
             MTL::ResourceStorageModeShared);
         if (!next) return -1;
-        if (owner->buffer) owner->buffer->release();
+        /* Defer release until Reset (pass/CB boundary) so in-flight GPU
+         * references to the previous scratch cannot UAF (AUDIT-004). */
+        if (owner->buffer) owner->retire(owner->buffer);
         owner->buffer = next;
         owner->capacity = nextCapacity;
         alignedOffset = 0;
@@ -3378,6 +3478,30 @@ int mglRenderBlitCopyBufferToTexture(void* blit_encoder,
         source_bytes_per_row == 0 || source_bytes_per_image == 0) {
         return -1;
     }
+    if (source_depth > std::numeric_limits<uint64_t>::max() /
+                           source_bytes_per_image) {
+        return -1;
+    }
+    const uint64_t source_span = source_bytes_per_image * source_depth;
+    if (source_offset > source->length() ||
+        source_span > source->length() - source_offset) {
+        return -1;
+    }
+    if (destination_level >= destination->mipmapLevelCount()) {
+        return -1;
+    }
+    const uint64_t mip_width =
+        std::max<uint64_t>(1u, destination->width() >> destination_level);
+    const uint64_t mip_height =
+        std::max<uint64_t>(1u, destination->height() >> destination_level);
+    const uint64_t mip_depth =
+        std::max<uint64_t>(1u, destination->depth() >> destination_level);
+    if (destination_x > mip_width || source_width > mip_width - destination_x ||
+        destination_y > mip_height ||
+        source_height > mip_height - destination_y ||
+        destination_z > mip_depth || source_depth > mip_depth - destination_z) {
+        return -1;
+    }
     encoder->copyFromBuffer(
         source, static_cast<NS::UInteger>(source_offset),
         static_cast<NS::UInteger>(source_bytes_per_row),
@@ -3416,6 +3540,30 @@ int mglRenderBlitCopyTexture(void* blit_encoder,
         depth == 0) {
         return -1;
     }
+    if (source_level >= source->mipmapLevelCount() ||
+        destination_level >= destination->mipmapLevelCount()) {
+        return -1;
+    }
+    const uint64_t src_w =
+        std::max<uint64_t>(1u, source->width() >> source_level);
+    const uint64_t src_h =
+        std::max<uint64_t>(1u, source->height() >> source_level);
+    const uint64_t src_d =
+        std::max<uint64_t>(1u, source->depth() >> source_level);
+    const uint64_t dst_w =
+        std::max<uint64_t>(1u, destination->width() >> destination_level);
+    const uint64_t dst_h =
+        std::max<uint64_t>(1u, destination->height() >> destination_level);
+    const uint64_t dst_d =
+        std::max<uint64_t>(1u, destination->depth() >> destination_level);
+    if (source_x > src_w || width > src_w - source_x ||
+        source_y > src_h || height > src_h - source_y ||
+        source_z > src_d || depth > src_d - source_z ||
+        destination_x > dst_w || width > dst_w - destination_x ||
+        destination_y > dst_h || height > dst_h - destination_y ||
+        destination_z > dst_d || depth > dst_d - destination_z) {
+        return -1;
+    }
     encoder->copyFromTexture(
         source, static_cast<NS::UInteger>(source_slice),
         static_cast<NS::UInteger>(source_level),
@@ -3450,6 +3598,29 @@ int mglRenderBlitCopyTextureToBuffer(
     if (!encoder || !source || !destination || width == 0 || height == 0 ||
         depth == 0 || destination_bytes_per_row == 0 ||
         destination_bytes_per_image == 0) {
+        return -1;
+    }
+    if (source_level >= source->mipmapLevelCount()) {
+        return -1;
+    }
+    const uint64_t mip_width =
+        std::max<uint64_t>(1u, source->width() >> source_level);
+    const uint64_t mip_height =
+        std::max<uint64_t>(1u, source->height() >> source_level);
+    const uint64_t mip_depth =
+        std::max<uint64_t>(1u, source->depth() >> source_level);
+    if (source_x > mip_width || width > mip_width - source_x ||
+        source_y > mip_height || height > mip_height - source_y ||
+        source_z > mip_depth || depth > mip_depth - source_z) {
+        return -1;
+    }
+    if (depth > std::numeric_limits<uint64_t>::max() /
+                    destination_bytes_per_image) {
+        return -1;
+    }
+    const uint64_t dest_span = destination_bytes_per_image * depth;
+    if (destination_offset > destination->length() ||
+        dest_span > destination->length() - destination_offset) {
         return -1;
     }
     encoder->copyFromTexture(
@@ -3685,7 +3856,8 @@ int mglRenderSetRenderBytes(void* render_encoder,
                                uint32_t index) {
     MTL::RenderCommandEncoder* encoder =
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
-    if (!encoder || (!bytes && length != 0) ||
+    /* Metal setVertexBytes / setFragmentBytes hard limit is 4 KiB (AUDIT-007). */
+    if (!encoder || (!bytes && length != 0) || length > 4096u ||
         stage > MGL_RENDER_BINDING_STAGE_FRAGMENT) {
         return -1;
     }
@@ -3839,6 +4011,11 @@ int mglRenderExecuteIndirectCommands(void* render_encoder,
     MTL::IndirectCommandBuffer* buffer =
         static_cast<MTL::IndirectCommandBuffer*>(indirect_buffer);
     if (!encoder || !buffer || length == 0) return -1;
+    /* AUDIT-015: reject ranges that extend past the ICB size. */
+    const uint64_t icb_size = static_cast<uint64_t>(buffer->size());
+    if (location > icb_size || length > icb_size - location) {
+        return -1;
+    }
     encoder->executeCommandsInBuffer(buffer, NS::Range(location, length));
     return 0;
 }

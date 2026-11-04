@@ -4017,7 +4017,7 @@ static int verifyScanIndexRange(void) {
 static int verifyGeometryGather(void) {
     /* P4.4 (item 1141/887): geometry gather indices. */
     MGLRenderGeometryGatherResult r = {0};
-    if (mglRenderGeometryGatherIndices(NULL, 2, 4, 0, 0, 3, &r) != -1) {
+    if (mglRenderGeometryGatherIndices(NULL, 2, 4, 8, 0, 0, 3, &r) != -1) {
         fprintf(stderr, "FAIL: gather bad args\n");
         return 1;
     }
@@ -4028,9 +4028,10 @@ static int verifyGeometryGather(void) {
         const uint32_t *expected, uint32_t expectedCount,
         uint32_t expectedPrimitives, uint32_t expectedMax) -> int {
         MGLRenderGeometryGatherResult result = {0};
+        const uint64_t bytesLen = (uint64_t)elemWidth * (uint64_t)count;
         int rc = mglRenderGeometryGatherIndices(
-            (const uint8_t *)indices, elemWidth, count, restartEnabled,
-            restartIndex, 3u, &result);
+            (const uint8_t *)indices, elemWidth, count, bytesLen,
+            restartEnabled, restartIndex, 3u, &result);
         bool matches = rc == 0 && result.gather &&
             result.gather_count == expectedCount &&
             result.primitive_count == expectedPrimitives &&
@@ -4095,7 +4096,7 @@ static int verifyGeometryGather(void) {
         return 1;
     }
     const uint8_t u8[] = {0,1}; /* too short for a patch -> no primitives replace */
-    if (mglRenderGeometryGatherIndices(u8, 1, 2, 0, 0, 3, &r) != -1) {
+    if (mglRenderGeometryGatherIndices(u8, 1, 2, 2, 0, 0, 3, &r) != -1) {
         fprintf(stderr, "FAIL: gather incomplete reject\n");
         return 1;
     }

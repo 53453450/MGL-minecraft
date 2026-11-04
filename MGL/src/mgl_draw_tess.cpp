@@ -434,6 +434,17 @@ extern "C" bool mglTessComputeTCSCoreLayout(
         (uint64_t)patchCount > UINT64_MAX / MGL_AIR_TESS_FACTOR_RECORD_BYTES) {
         return false;
     }
+    const uint64_t per_inst_output =
+        (uint64_t)patchCountTC * tcsOutVertices * outputStride;
+    const uint64_t per_inst_patch = (uint64_t)patchCountTC * patchStride;
+    const uint64_t per_inst_factor =
+        (uint64_t)patchCount * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+    /* AUDIT-050: multi-instance TCS must size stores by instance_count. */
+    if (per_inst_output > UINT64_MAX / instanceCount ||
+        per_inst_patch > UINT64_MAX / instanceCount ||
+        per_inst_factor > UINT64_MAX / instanceCount) {
+        return false;
+    }
     *out = {};
     out->patch_vertices = patchVertices;
     out->patch_count = patchCount;
@@ -441,11 +452,9 @@ extern "C" bool mglTessComputeTCSCoreLayout(
     out->tcs_out_vertices = tcsOutVertices;
     out->output_stride = outputStride;
     out->patch_stride = patchStride;
-    out->output_bytes =
-        (uint64_t)patchCountTC * tcsOutVertices * outputStride;
-    out->patch_out_bytes = (uint64_t)patchCountTC * patchStride;
-    out->factor_bytes =
-        (uint64_t)patchCount * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+    out->output_bytes = per_inst_output * instanceCount;
+    out->patch_out_bytes = per_inst_patch * instanceCount;
+    out->factor_bytes = per_inst_factor * instanceCount;
     return true;
 }
 
@@ -2671,18 +2680,29 @@ extern "C" uint32_t mglXfbPackVsRecords(const MGLXfbVsPlan *plan, uint32_t buffe
                 const uint32_t row_bytes =
                     (uint32_t)field->matrix_rows * dst_elem;
                 for (uint32_t c = 0u; c < field->matrix_columns; c++) {
-                    memcpy(dst_record +
-                               (field->component_offset +
-                                c * (uint32_t)field->matrix_rows) * dst_elem,
+                    const uint32_t dst_off =
+                        (field->component_offset +
+                         c * (uint32_t)field->matrix_rows) *
+                        dst_elem;
+                    /* AUDIT-041: do not write past the destination record. */
+                    if (dst_off >= dst_stride ||
+                        row_bytes > dst_stride - dst_off) {
+                        continue;
+                    }
+                    memcpy(dst_record + dst_off,
                            src_record + field->source_offset + c * 16u,
                            row_bytes);
                 }
                 continue;
             }
             const uint32_t field_bytes = field->component_count * dst_elem;
+            const uint32_t dst_off = field->component_offset * dst_elem;
+            if (dst_off >= dst_stride || field_bytes > dst_stride - dst_off) {
+                continue;
+            }
             mglTessPackXFBFieldFromCarrier(
                 field->gl_type, src_record + field->source_offset,
-                dst_record + field->component_offset * dst_elem, field_bytes);
+                dst_record + dst_off, field_bytes);
         }
     }
     return record_count;
@@ -2921,10 +2941,15 @@ extern "C" bool mglGeometryGatherIndices(const uint8_t *indexBytes,
         return false;
     }
     const uint32_t elemBytes = mglRenderGLIndexElementSize((uint64_t)indexType);
+    if (elemBytes == 0u || count <= 0 ||
+        (uint64_t)elemBytes > UINT64_MAX / (uint64_t)(uint32_t)count) {
+        return false;
+    }
+    const uint64_t bytesLen = (uint64_t)elemBytes * (uint64_t)(uint32_t)count;
     MGLRenderGeometryGatherResult result = {0};
     if (mglRenderGeometryGatherIndices(
-            indexBytes, elemBytes, (uint32_t)count, restartEnabled ? 1 : 0,
-            restartIndex, inputVertices, &result) != 0) {
+            indexBytes, elemBytes, (uint32_t)count, bytesLen,
+            restartEnabled ? 1 : 0, restartIndex, inputVertices, &result) != 0) {
         return false;
     }
     /* DrawElements*BaseVertex: Metal [[vertex_id]] / capture slots are

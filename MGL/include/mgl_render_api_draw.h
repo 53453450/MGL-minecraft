@@ -133,6 +133,7 @@ int mglRenderGeometryGatherIndices(
     const uint8_t *index_bytes,
     uint32_t index_type_byte_width,   /* 1, 2 or 4 */
     uint32_t count,
+    uint64_t bytes_len,               /* readable span covering count*width */
     int restart_enabled,
     uint32_t restart_index,
     uint32_t input_vertices,
