@@ -371,29 +371,6 @@ static int ops_at_off(MGLParser *p, uint32_t off, const char *s)
            memcmp(p->ts->src + t->start, s, len) == 0;
 }
 
-/* Skips a balanced `( ... )` starting at the current token. */
-static void skip_balanced_parens(MGLParser *p)
-{
-    if (!ops_at(p, "(")) {
-        return;
-    }
-    int depth = 0;
-    while (tk(p, 0)->kind != MGLGLSL_TOK_END) {
-        if (ops_at(p, "(")) {
-            depth++;
-        } else if (ops_at(p, ")")) {
-            depth--;
-            advance(p);
-            if (depth == 0) {
-                return;
-            }
-            continue;
-        }
-        advance(p);
-    }
-}
-
-
 /* GLSL 4.0 subroutine table helpers (tu->subroutine_types). */
 static MGLSubroutineType *subroutine_type_get(MGLParser *p, const char *name,
                                               int create)
