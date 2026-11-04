@@ -315,6 +315,20 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
         return false;
     }
 
+    /* Hot-path: stable Metal storage + sampler already match GL.  Skip for
+     * TextureViews (view_root rebuild) and render targets (usage/mip
+     * reconciliation still needs Metal queries). */
+    if (!tex->view_root && !mglTextureIsRenderTarget(tex) && mglTextureMtl(tex) &&
+        mglTextureSamplerState(tex) &&
+        (mglTextureDirtyBits(tex) &
+         (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_ACCESS |
+          DIRTY_TEXTURE_PARAM)) == 0 &&
+        !mglRenderTextureBufferNeedsDirty(
+            mglRenderIsTextureBufferTarget(mglTextureTargetOf(tex)),
+            tex->texture_buffer ? 1 : 0, mglTextureBufferDirtyBits(tex))) {
+        return true;
+    }
+
     if (tex->view_root) {
         if (!mglTextureBindViewStorage(renderer, tex)) {
             return false;
