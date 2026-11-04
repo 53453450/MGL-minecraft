@@ -2046,10 +2046,21 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
      * keeps name tags and Metal rejects the pipeline
      * (point_rendering: result_color).  Stages compile VS→…→TES→GS→FS, so
      * both tess_eval_compute and tess_eval_render_vertex are already known
-     * when the FS is compiled. */
+     * when the FS is compiled.
+     *
+     * Separable FS/VS programs link alone, so the monolithic GS/TES probe
+     * above never fires — yet SSO draws still rasterize through the GS
+     * passthrough (or TES-vertex) which emits mgl_loc_N.  Tag separable
+     * VS outs and FS ins the same way so Metal can pair them
+     * (shader_subroutine.subroutines_with_separate_shader_objects). */
     if (stage == _FRAGMENT_SHADER &&
         !pptr->shader_slots[_GEOMETRY_SHADER] &&
-        (pptr->tess_eval_compute || pptr->tess_eval_render_vertex)) {
+        (pptr->tess_eval_compute || pptr->tess_eval_render_vertex ||
+         pptr->program_separable)) {
+        air_flags |= MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER;
+    }
+    if (stage == _VERTEX_SHADER && pptr->program_separable &&
+        !pptr->shader_slots[_GEOMETRY_SHADER]) {
         air_flags |= MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER;
     }
     /* VS compiles first in this loop, so clip_distance_count is already
@@ -4295,6 +4306,14 @@ void mglBindProgramPipeline(GLMContext ctx, GLuint pipeline)
     STATE(program_pipeline) = ptr;
     STATE(var.program_pipeline_binding) = pipeline;
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_PROGRAM);
+    /* ARB_shader_subroutine + SSO: binding a pipeline re-currentizes its
+     * stage programs, so their subroutine uniforms reset to defaults
+     * (CTS shader_subroutine.subroutine_uniform_reset). */
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        Program *sp = ptr->stage_programs[stage];
+        if (sp && sp->link_success)
+            mglUniformResetSubroutineSelections(ctx, sp->name);
+    }
 }
 
 /* GL 4.6 §7.4: the pipeline's active program receives Uniform* updates when
@@ -4408,4 +4427,9 @@ void mglUseProgramStages(GLMContext ctx, GLuint pipeline, GLbitfield stages, GLu
 
     pipe_ptr->validated = GL_FALSE;
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_PROGRAM);
+    /* GL 4.6 §7.10 / ARB_shader_subroutine: UseProgramStages resets the
+     * subroutine uniforms of every stage it touches. */
+    if (prog_ptr) {
+        mglUniformResetSubroutineSelections(ctx, prog_ptr->name);
+    }
 }

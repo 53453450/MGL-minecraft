@@ -3602,11 +3602,11 @@ static int mglSubroutineShaderStage(GLenum type)
 /* ARB_shader_subroutine: subroutine selections are context state -- "When
  * UseProgram is called, the subroutine uniforms for all shader stages are
  * reset to arbitrarily chosen default functions."  MGL keeps selections in
- * the program's plain-uniform pack, so the reset rewrites every subroutine
- * row to the never-set value 0, which the dispatch chain routes to the
- * first implementation (its default function).  mglUniformStore memcmps and
- * only flushes pending draws when a value actually changes, so rebinding a
- * program whose selections are already default costs nothing. */
+ * the program's plain-uniform pack and rewrites every subroutine row to the
+ * first named implementation of that uniform's type (a compatible default).
+ * mglUniformStore memcmps and only flushes pending draws when a value
+ * actually changes, so rebinding a program whose selections are already
+ * default costs nothing. */
 
 /* Resolve the plain-uniform location of a subroutine uniform from ONE
  * stage's resource list.  Subroutine uniforms are per-stage state (GL 4.6
@@ -3696,6 +3696,21 @@ GLint mglUniformSubroutinePlainLocation(Program *pptr, int stage,
     return -1;
 }
 
+/* First selectable absolute index of a subroutine type, or 0 when the type
+ * has no named implementations (should not happen after a successful link). */
+static GLuint mglSubroutineTypeDefaultIndex(const MGLAIRSubroutineTable *table,
+                                            uint32_t typeIdx)
+{
+    if (!table || typeIdx >= table->type_count) {
+        return 0u;
+    }
+    const MGLAIRSubroutineTypeInfo *ty = &table->types[typeIdx];
+    if (ty->impl_name_count == 0u) {
+        return 0u;
+    }
+    return ty->impl_name_index[0];
+}
+
 void mglUniformResetSubroutineSelections(GLMContext ctx, GLuint program)
 {
     if (!ctx || program == 0u) {
@@ -3736,10 +3751,16 @@ void mglUniformResetSubroutineSelections(GLMContext ctx, GLuint program)
             if (elements > MGL_AIR_MAX_SUBROUTINE_UNIFORM_ARRAY) {
                 elements = MGL_AIR_MAX_SUBROUTINE_UNIFORM_ARRAY;
             }
-            GLuint zero = 0u;
+            /* GL 4.6 §7.10: reset picks an arbitrarily chosen *compatible*
+             * default function.  Writing the never-set sentinel 0 made
+             * GetUniformSubroutineuiv report 0 for every uniform — invalid
+             * when a type's implementations start at a non-zero absolute
+             * index (CTS subroutine_uniform_reset: type B at 2|3). */
+            GLuint def = mglSubroutineTypeDefaultIndex(
+                table, table->uniform_type[u]);
             for (uint32_t e = 0; e < elements; e++) {
-                mglUniformStore(ctx, pptr, uniformLoc + (GLint)e, &zero,
-                                sizeof(zero));
+                mglUniformStore(ctx, pptr, uniformLoc + (GLint)e, &def,
+                                sizeof(def));
             }
         }
     }
