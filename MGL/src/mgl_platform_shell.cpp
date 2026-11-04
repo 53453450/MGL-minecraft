@@ -30,6 +30,7 @@
 #include <CoreGraphics/CoreGraphics.h>
 #include <dispatch/dispatch.h>
 
+#include <new>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1069,10 +1070,9 @@ void mglRendererTemporariesAdd(void *temporaries, void *object)
 
 void mglRendererTemporariesRelease(void *temporaries)
 {
-    /* AUDIT-053: encode may have just handed these Metal objects to an
-     * in-flight CB. Defer the last retain drop across a small ring so a
-     * subsequent GPU reference cannot UAF after this call returns. */
-    static constexpr size_t kRetiredTempSlots = 8u;
+    /* AUDIT-053 fallback: no CB to hang on. Keep a deeper ring so rapid
+     * encode/release cannot free an object still referenced by a live CB. */
+    static constexpr size_t kRetiredTempSlots = 32u;
     static void *retired[kRetiredTempSlots] = {};
     static size_t retired_count = 0u;
     if (!temporaries) {
@@ -1086,6 +1086,56 @@ void mglRendererTemporariesRelease(void *temporaries)
         retired_count = kRetiredTempSlots - 1u;
     }
     retired[retired_count++] = temporaries;
+}
+
+namespace {
+struct MglTemporariesDeferredRelease {
+    void *temporaries;
+};
+static void mglTemporariesDeferredReleaseBody(
+    void *ctx, const MGLRenderCommandBufferState *state)
+{
+    (void)state;
+    auto *release = static_cast<MglTemporariesDeferredRelease *>(ctx);
+    if (!release) return;
+    void *temps = release->temporaries;
+    release->temporaries = nullptr;
+    if (temps) mglBridgingRelease(temps);
+}
+static void mglTemporariesDeferredReleaseDestroy(void *ctx)
+{
+    auto *release = static_cast<MglTemporariesDeferredRelease *>(ctx);
+    if (!release) return;
+    if (release->temporaries) mglBridgingRelease(release->temporaries);
+    delete release;
+}
+} /* namespace */
+
+void mglRendererTemporariesReleaseOnCommandBuffer(void *temporaries,
+                                                  void *command_buffer)
+{
+    /* AUDIT-053: drop the keep-alive set only after the CB that encoded the
+     * borrowed Metal objects completes. */
+    if (!temporaries) {
+        return;
+    }
+    if (!command_buffer) {
+        mglRendererTemporariesRelease(temporaries);
+        return;
+    }
+    auto *release = new (std::nothrow) MglTemporariesDeferredRelease();
+    if (!release) {
+        mglRendererTemporariesRelease(temporaries);
+        return;
+    }
+    release->temporaries = temporaries;
+    if (mglRenderAddCommandBufferCompletion(
+            command_buffer, mglTemporariesDeferredReleaseBody, release,
+            mglTemporariesDeferredReleaseDestroy) != 0) {
+        release->temporaries = nullptr;
+        delete release;
+        mglRendererTemporariesRelease(temporaries);
+    }
 }
 
 /* === swap-path queries and effects that must run on the shell (log 180) == */

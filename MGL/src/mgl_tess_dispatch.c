@@ -676,7 +676,9 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
 done:
     mglClearStageBindingCopyBacks(renderer, &stage_copy_backs);
     if (temporaries) {
-        mglRendererTemporariesRelease(temporaries);
+        void *cb = mglRenderCommandBufferOwnerGetCurrent(
+            mglTessDispatchCommandBufferOwner(&areas));
+        mglRendererTemporariesReleaseOnCommandBuffer(temporaries, cb);
     }
     CFRelease((CFTypeRef)tcs_pipeline);
     return ok;
@@ -768,7 +770,8 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         if (!s_tes_vertex_multi_instance_logged) {
             fprintf(stderr,
                     "MGL TESS ERROR: multi-instance TES-vertex with TCS reuses "
-                    "instance-0 control points (program=%u instances=%d)",
+                    "instance-0 control points (program=%u instances=%d); "
+                    "set MGL_TESS_MULTI_INSTANCE_ERROR=0 to allow (AUDIT-050)",
                     (unsigned)tes_program->name, (int)instance_count);
             s_tes_vertex_multi_instance_logged = 1;
         }
@@ -1028,7 +1031,9 @@ done:
     /* The set releases every handle this method kept alive, plus its own
      * reference (the ARC scope-exit releases). */
     if (temporaries) {
-        mglRendererTemporariesRelease(temporaries);
+        void *cb = mglRenderCommandBufferOwnerGetCurrent(
+            mglTessDispatchCommandBufferOwner(&areas));
+        mglRendererTemporariesReleaseOnCommandBuffer(temporaries, cb);
     }
     return ok;
 }
@@ -1163,7 +1168,7 @@ bool mglTessDispatchAIRTessEvalCompute(
             fprintf(stderr,
                     "MGL TESS ERROR: multi-instance TES with TCS reuses "
                     "instance-0 control points (program=%u instances=%d); "
-                    "set MGL_TESS_MULTI_INSTANCE_ERROR=1 to fail the draw",
+                    "set MGL_TESS_MULTI_INSTANCE_ERROR=0 to allow (AUDIT-050)",
                     (unsigned)tes_program->name, (int)instance_count);
             s_multi_instance_tcs_logged = 1;
         }
@@ -1764,7 +1769,9 @@ done:
      * block lives in the set for exactly as long as the plan does. */
     mglClearStageBindingCopyBacks(renderer, &stage_copy_backs);
     if (temporaries) {
-        mglRendererTemporariesRelease(temporaries);
+        void *cb = mglRenderCommandBufferOwnerGetCurrent(
+            mglTessDispatchCommandBufferOwner(&areas));
+        mglRendererTemporariesReleaseOnCommandBuffer(temporaries, cb);
     }
     CFRelease((CFTypeRef)tes_pipeline);
     return ok;

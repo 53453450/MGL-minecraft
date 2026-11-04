@@ -44,6 +44,7 @@
 #include "glm_limits.h"             /* TEXTURE_UNITS */
 #include "glm_context.h"            /* mglRecordActiveComputeShaderQueryDispatch */
 #include "mgl_render_api_binding.h"
+#include "mgl_render_api_command.h" /* mglRenderCommandBufferOwnerGetCurrent */
 #include "mgl_render_api_query.h"
 #include "mgl_render_api_texture.h"
 #include "mgl_render_api_buffer.h"
@@ -330,9 +331,12 @@ bool mglComputeRunDispatchOrchestrationLocked(
         return false;
     }
 
-    /* The plan held every temporary alive while it was encoded and dispatched;
-     * the Objective-C version dropped its NSMutableArray here. */
-    mglRendererTemporariesRelease(executionTemporaries);
+    /* AUDIT-053: keep temps until the CB that encoded the plan completes. */
+    {
+        void *cb =
+            mglRenderCommandBufferOwnerGetCurrent(command_buffer_owner);
+        mglRendererTemporariesReleaseOnCommandBuffer(executionTemporaries, cb);
+    }
 
     mglMarkRendererDirtyBits(
         glm_ctx->active_state,

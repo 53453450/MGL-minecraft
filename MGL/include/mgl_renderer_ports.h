@@ -488,10 +488,14 @@ void mglPlatformShellGpuCaptureStop(void *renderer);
 
 /* Keep-alive set for the temporaries a binding plan borrows (the Objective-C
  * side used an NSMutableArray).  Create returns +1; add retains the object for
- * the set's lifetime; release drops the whole set. */
+ * the set's lifetime; release drops the whole set. Prefer
+ * ReleaseOnCommandBuffer when a CB is available so the drop waits for GPU
+ * completion (AUDIT-053); plain Release uses a deferred ring fallback. */
 void *mglRendererTemporariesCreate(void);
 void mglRendererTemporariesAdd(void *temporaries, void *object);
 void mglRendererTemporariesRelease(void *temporaries);
+void mglRendererTemporariesReleaseOnCommandBuffer(void *temporaries,
+                                                  void *command_buffer);
 
 /* The pipeline cache's state record (active pipeline handle, pipeline program
  * name, formats).  C readers use the fields directly. */

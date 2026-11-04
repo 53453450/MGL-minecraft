@@ -2289,8 +2289,16 @@ extern "C" int mglTessMultiInstanceTCSReuseWarn(int from_tcs,
 extern "C" int mglTessMultiInstanceTCSReuseIsError(int from_tcs,
                                                    int32_t instance_count)
 {
-    return mglTessMultiInstanceTCSReuseWarn(from_tcs, instance_count) &&
-           mgl_env_flag_enabled("MGL_TESS_MULTI_INSTANCE_ERROR");
+    /* AUDIT-050: default hard-fail. Opt out with MGL_TESS_MULTI_INSTANCE_ERROR=0
+     * only for experiments that intentionally reuse instance-0 TCS outs. */
+    if (!mglTessMultiInstanceTCSReuseWarn(from_tcs, instance_count)) {
+        return 0;
+    }
+    const char *v = getenv("MGL_TESS_MULTI_INSTANCE_ERROR");
+    if (v && v[0] == '0' && v[1] == '\0') {
+        return 0;
+    }
+    return 1;
 }
 
 extern "C" int mglTessEvalIndexedGatherReady(int indexed, int has_gather,
