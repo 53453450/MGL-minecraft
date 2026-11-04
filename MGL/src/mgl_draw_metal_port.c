@@ -213,18 +213,20 @@ void mglDrawSupportDrawIndexedPrimitives(
     void *renderEncoderOwner,
     uint32_t primitiveType,
     size_t indexCount,
+    uint32_t indexType,
     void * indexBuffer,
     size_t indexBufferOffset,
     size_t instanceCount,
     int64_t baseVertex,
     size_t baseInstance)
 {
+    /* AUDIT-029: use the caller's real index type (Prepare may yield U8/U16). */
     (void)mglRenderEncodeDrawForRenderEncoderOwner(renderEncoderOwner,
         &(MGLRenderDrawPlan){
             .kind = MGL_RENDER_DRAW_INDEXED,
             .primitive_type = (uint32_t)primitiveType,
             .index_count = indexCount,
-            .index_type = (uint32_t)MGL_DRAW_INDEX_UINT32,
+            .index_type = indexType,
             .index_buffer = indexBuffer,
             .index_buffer_offset = indexBufferOffset,
             .instance_count = instanceCount,
@@ -1389,6 +1391,7 @@ static int mglStageTryArraySplitEncode(void *renderer, void *device,
 static void mglStageDrawIndexedPrimsPort(void *encoder_owner,
                                          uint32_t primitive_type,
                                          uint64_t index_count,
+                                         uint32_t index_type,
                                          void *index_buffer,
                                          uint64_t index_offset,
                                          uint64_t instance_count,
@@ -1396,10 +1399,9 @@ static void mglStageDrawIndexedPrimsPort(void *encoder_owner,
                                          uint64_t base_instance)
 {
     mglDrawSupportDrawIndexedPrimitives(
-        encoder_owner, primitive_type, (size_t)index_count,
-        index_buffer, (size_t)index_offset,
-        (size_t)instance_count, (int64_t)base_vertex,
-        (size_t)base_instance);
+        encoder_owner, primitive_type, (size_t)index_count, index_type,
+        index_buffer, (size_t)index_offset, (size_t)instance_count,
+        (int64_t)base_vertex, (size_t)base_instance);
 }
 
 static int mglStageEncodeCtxActive(const void *enc_ctx)
@@ -2107,12 +2109,23 @@ bool mglDrawHostResolveIndirectBuffer(void *renderer, GLMContext ctx,
                                       const char *label, Buffer **glBufferOut,
                                       void **metalBufferOut)
 {
+    return mglDrawHostResolveIndirectBufferSpan(renderer, ctx, label, 0u, 0u,
+                                                glBufferOut, metalBufferOut);
+}
+
+bool mglDrawHostResolveIndirectBufferSpan(void *renderer, GLMContext ctx,
+                                          const char *label, uint64_t offset,
+                                          uint64_t need_bytes,
+                                          Buffer **glBufferOut,
+                                          void **metalBufferOut)
+{
     if (!renderer) {
         return false;
     }
     void *metalBuffer = NULL;
-    if (!mglDrawResolveIndirectBuffer(renderer, label ? label : "indirectDraw",
-                                      ctx, glBufferOut, &metalBuffer)) {
+    if (!mglDrawResolveIndirectBufferSpan(
+            renderer, label ? label : "indirectDraw", ctx, offset, need_bytes,
+            glBufferOut, &metalBuffer)) {
         return false;
     }
     if (metalBufferOut) {

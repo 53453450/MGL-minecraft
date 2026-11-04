@@ -37,6 +37,13 @@ int mglDrawResolveIndirectBuffer(void *renderer, const char *label,
                                  GLMContext ctx, Buffer **gl_out,
                                  void **mtl_out);
 
+/* Same as Resolve, plus an optional Metal span check (AUDIT-032). Pass
+ * need_bytes == 0 to skip the span check. */
+int mglDrawResolveIndirectBufferSpan(void *renderer, const char *label,
+                                     GLMContext ctx, uint64_t offset,
+                                     uint64_t need_bytes, Buffer **gl_out,
+                                     void **mtl_out);
+
 /* True when the current viewport/scissor and render-pass attachments leave no
  * rasterizable pixels. */
 int mglDrawRasterizationIsEmpty(void *renderer);

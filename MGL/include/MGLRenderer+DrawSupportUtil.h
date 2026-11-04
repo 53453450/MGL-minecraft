@@ -69,6 +69,7 @@ void mglDrawSupportDrawIndexedPrimitives(
     void *renderEncoderOwner,
     uint32_t primitiveType,
     size_t indexCount,
+    uint32_t indexType,
     void * indexBuffer,
     size_t indexBufferOffset,
     size_t instanceCount,

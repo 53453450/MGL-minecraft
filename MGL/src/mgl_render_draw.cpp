@@ -304,6 +304,12 @@ int mglRenderDrawPrimitivesIndirect(void* render_encoder,
         static_cast<MTL::RenderCommandEncoder*>(render_encoder);
     MTL::Buffer* indirect = static_cast<MTL::Buffer*>(indirect_buffer);
     if (!encoder || !indirect) return -1;
+    /* AUDIT-033: drawPrimitives indirect args are 4×uint32. */
+    constexpr uint64_t kArgsBytes = 16u;
+    if (indirect_buffer_offset > indirect->length() ||
+        kArgsBytes > indirect->length() - indirect_buffer_offset) {
+        return -1;
+    }
     encoder->drawPrimitives(
         static_cast<MTL::PrimitiveType>(primitive_type), indirect,
         static_cast<NS::UInteger>(indirect_buffer_offset));
@@ -323,6 +329,12 @@ int mglRenderDrawIndexedPrimitivesIndirect(
     MTL::Buffer* indices = static_cast<MTL::Buffer*>(index_buffer);
     MTL::Buffer* indirect = static_cast<MTL::Buffer*>(indirect_buffer);
     if (!encoder || !indices || !indirect) return -1;
+    /* AUDIT-033: drawIndexedPrimitives indirect args are 5×uint32. */
+    constexpr uint64_t kArgsBytes = 20u;
+    if (indirect_buffer_offset > indirect->length() ||
+        kArgsBytes > indirect->length() - indirect_buffer_offset) {
+        return -1;
+    }
     encoder->drawIndexedPrimitives(
         static_cast<MTL::PrimitiveType>(primitive_type),
         static_cast<MTL::IndexType>(index_type), indices,

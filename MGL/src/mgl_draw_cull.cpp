@@ -10,6 +10,7 @@
 
 #include "mgl_draw_cull.h"
 
+#include "mgl_draw_encode.h" /* MGL_DRAW_INDEX_UINT32 */
 #include "mgl_draw_tess.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_draw.h"
@@ -224,10 +225,12 @@ extern "C" int mglDrawEncodeCullDistanceElement(
         }
         ops->bind_cull_emu(ops->renderer, mode, 0u, primitive.vertices,
                            primitive.vertex_count, enc_ctx);
+        /* Cull-distance expand always writes uint32 index buffers. */
         ops->draw_indexed_primitives(
             encoder, primitive.primitive_type, primitive.index_count,
-            indexBufferHandle, primitive.index_buffer_offset,
-            (uint64_t)instanceCount, 0, (uint64_t)baseInstance);
+            (uint32_t)MGL_DRAW_INDEX_UINT32, indexBufferHandle,
+            primitive.index_buffer_offset, (uint64_t)instanceCount, 0,
+            (uint64_t)baseInstance);
     }
     mglRenderDestroyCullDistanceIndexPlan(reinterpret_cast<MGLCullDistanceIndexPlan**>(&planOwner));
     return 1;
