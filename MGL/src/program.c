@@ -54,8 +54,6 @@
 #include "mgl_compile_artifact.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_env_flag.h"
-#include "mgl_glsl_ast.h" /* Phase 4: uniform seed still walks TU (ARCH-008) */
-#include "mgl_frontend_session.h" /* mglFrontendBuiltinUsed until abi move */
 #include "mgl_render_api_program.h"
 
 
@@ -253,192 +251,7 @@ static void mglRestoreSavedLinkExecutable(Program *pptr, MGLSavedLinkExecutable 
 
 static _Atomic uint64_t mglNextMSLTextureCacheInstanceID = 1u;
 
-/* Evaluate a GLSL constant initializer into up to 16 x 32-bit words.
- * Covers scalar / small-vector literals and constructors used as uniform
- * defaults (CTS `uniform uint id = 2;`). Returns word count, or 0. */
-static uint32_t mglEvalConstUniformInit(const MGLExpr *e, uint32_t words[16],
-                                        uint32_t *out_base)
-{
-    if (!e || !words || !out_base) {
-        return 0u;
-    }
-    if (e->kind == MGL_EXPR_LITERAL) {
-        *out_base = e->u.literal.base;
-        switch (e->u.literal.base) {
-        case MGL_AST_TYPE_BOOL:
-        case MGL_AST_TYPE_INT: {
-            GLint v = (GLint)e->u.literal.value;
-            memcpy(words, &v, sizeof(v));
-            return 1u;
-        }
-        case MGL_AST_TYPE_UINT: {
-            GLuint v = (GLuint)e->u.literal.value;
-            memcpy(words, &v, sizeof(v));
-            return 1u;
-        }
-        case MGL_AST_TYPE_FLOAT: {
-            GLfloat v = (GLfloat)e->u.literal.value;
-            memcpy(words, &v, sizeof(v));
-            return 1u;
-        }
-        default:
-            return 0u;
-        }
-    }
-    if (e->kind == MGL_EXPR_UNARY && e->u.unary.op == MGL_OP_SUB &&
-        e->u.unary.operand) {
-        uint32_t base = 0u;
-        uint32_t n = mglEvalConstUniformInit(e->u.unary.operand, words, &base);
-        if (n != 1u) {
-            return 0u;
-        }
-        *out_base = base;
-        if (base == MGL_AST_TYPE_FLOAT) {
-            GLfloat v;
-            memcpy(&v, words, sizeof(v));
-            v = -v;
-            memcpy(words, &v, sizeof(v));
-            return 1u;
-        }
-        if (base == MGL_AST_TYPE_INT || base == MGL_AST_TYPE_BOOL) {
-            GLint v;
-            memcpy(&v, words, sizeof(v));
-            v = -v;
-            memcpy(words, &v, sizeof(v));
-            return 1u;
-        }
-        return 0u;
-    }
-    if (e->kind == MGL_EXPR_CALL && e->u.call.name && e->u.call.arg_count > 0u &&
-        e->u.call.arg_count <= 16u) {
-        /* Scalar/vector constructors and array ctors: int(x), uint[8](...),
-         * int[](...). */
-        const char *name = e->u.call.name;
-        uint32_t expect_base = 0u;
-        uint32_t expect_comps = 1u;
-        const int is_arr = e->u.call.is_array_ctor;
-        if (strcmp(name, "int") == 0) {
-            expect_base = MGL_AST_TYPE_INT;
-            expect_comps = is_arr ? e->u.call.arg_count : 1u;
-        } else if (strcmp(name, "uint") == 0) {
-            expect_base = MGL_AST_TYPE_UINT;
-            expect_comps = is_arr ? e->u.call.arg_count : 1u;
-        } else if (strcmp(name, "float") == 0) {
-            expect_base = MGL_AST_TYPE_FLOAT;
-            expect_comps = is_arr ? e->u.call.arg_count : 1u;
-        } else if (strcmp(name, "bool") == 0) {
-            expect_base = MGL_AST_TYPE_BOOL;
-            expect_comps = is_arr ? e->u.call.arg_count : 1u;
-        } else if (strcmp(name, "ivec2") == 0 || strcmp(name, "ivec3") == 0 ||
-                   strcmp(name, "ivec4") == 0) {
-            expect_base = MGL_AST_TYPE_INT;
-            expect_comps = (uint32_t)(name[4] - '0');
-        } else if (strcmp(name, "uvec2") == 0 || strcmp(name, "uvec3") == 0 ||
-                   strcmp(name, "uvec4") == 0) {
-            expect_base = MGL_AST_TYPE_UINT;
-            expect_comps = (uint32_t)(name[4] - '0');
-        } else if (strcmp(name, "vec2") == 0 || strcmp(name, "vec3") == 0 ||
-                   strcmp(name, "vec4") == 0) {
-            expect_base = MGL_AST_TYPE_FLOAT;
-            expect_comps = (uint32_t)(name[3] - '0');
-        } else if (strncmp(name, "mat", 3) == 0 && name[3] >= '2' &&
-                   name[3] <= '4') {
-            expect_base = MGL_AST_TYPE_FLOAT;
-            if (name[4] == '\0') {
-                uint32_t d = (uint32_t)(name[3] - '0');
-                expect_comps = d * d;
-            } else if (name[4] == 'x' && name[5] >= '2' && name[5] <= '4' &&
-                       name[6] == '\0') {
-                expect_comps = (uint32_t)(name[3] - '0') *
-                               (uint32_t)(name[5] - '0');
-            } else {
-                return 0u;
-            }
-        } else {
-            return 0u;
-        }
-        if (is_arr) {
-            expect_comps = e->u.call.arg_count;
-        }
-        if (expect_comps == 0u || expect_comps > 16u) {
-            return 0u;
-        }
-        *out_base = expect_base;
-        uint32_t woff = 0u;
-        const int splat = !is_arr && e->u.call.arg_count == 1u &&
-            expect_comps > 1u && strncmp(name, "mat", 3) != 0;
-        for (uint32_t ai = 0u; ai < e->u.call.arg_count; ai++) {
-            uint32_t ab = 0u;
-            uint32_t tmp[16];
-            uint32_t na = mglEvalConstUniformInit(e->u.call.args[ai], tmp, &ab);
-            if (na == 0u) {
-                return 0u;
-            }
-            if (splat) {
-                if (na != 1u) {
-                    return 0u;
-                }
-                na = expect_comps;
-                for (uint32_t k = 1u; k < na; k++) {
-                    tmp[k] = tmp[0];
-                }
-            }
-            if (woff + na > expect_comps) {
-                return 0u;
-            }
-            for (uint32_t k = 0u; k < na; k++) {
-                uint32_t src = tmp[splat ? 0u : k];
-                if (expect_base == MGL_AST_TYPE_FLOAT &&
-                    ab != MGL_AST_TYPE_FLOAT) {
-                    GLfloat fv = 0.0f;
-                    if (ab == MGL_AST_TYPE_INT || ab == MGL_AST_TYPE_BOOL) {
-                        GLint iv;
-                        memcpy(&iv, &src, sizeof(iv));
-                        fv = (GLfloat)iv;
-                    } else if (ab == MGL_AST_TYPE_UINT) {
-                        GLuint uv;
-                        memcpy(&uv, &src, sizeof(uv));
-                        fv = (GLfloat)uv;
-                    } else {
-                        return 0u;
-                    }
-                    memcpy(&words[woff], &fv, sizeof(fv));
-                } else if (expect_base != MGL_AST_TYPE_FLOAT &&
-                           ab == MGL_AST_TYPE_FLOAT) {
-                    GLfloat fv;
-                    memcpy(&fv, &src, sizeof(fv));
-                    if (expect_base == MGL_AST_TYPE_UINT) {
-                        GLuint uv = (GLuint)fv;
-                        memcpy(&words[woff], &uv, sizeof(uv));
-                    } else {
-                        GLint iv = (GLint)fv;
-                        memcpy(&words[woff], &iv, sizeof(iv));
-                    }
-                } else {
-                    words[woff] = src;
-                }
-                if (expect_base == MGL_AST_TYPE_BOOL) {
-                    GLint bv;
-                    memcpy(&bv, &words[woff], sizeof(bv));
-                    bv = bv ? 1 : 0;
-                    memcpy(&words[woff], &bv, sizeof(bv));
-                }
-                woff++;
-            }
-            if (splat) {
-                break;
-            }
-        }
-        if (woff != expect_comps) {
-            return 0u;
-        }
-        return expect_comps;
-    }
-    return 0u;
-}
-
-/* Seed plain-uniform CPU slots from GLSL default initializers so the first
- * draw sees defaults without SSA-folding them (which would ignore glUniform*). */
+/* Drop CPU-side plain-uniform buffers that cache glUniform* writes. */
 static void mglProgramClearPlainUniformStorage(GLMContext ctx, Program *pptr)
 {
     if (!ctx || !pptr) {
@@ -465,205 +278,6 @@ static void mglProgramClearPlainUniformStorage(GLMContext ctx, Program *pptr)
     }
     memset(pptr->plain_uniform_active_mask, 0,
            sizeof(pptr->plain_uniform_active_mask));
-}
-
-static void mglSeedUniformInitializers(GLMContext ctx, Program *pptr)
-{
-    if (!ctx || !pptr) {
-        return;
-    }
-    Program *prev_prog = STATE(program);
-    GLuint prev_name = STATE(program_name);
-    STATE(program) = pptr;
-    STATE(program_name) = pptr->name;
-
-    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-        Shader *shader = pptr->shader_slots[stage];
-        if (!shader || !shader->src) {
-            continue;
-        }
-        MGLTranslationUnit *tu = shader->frontend_tu;
-        if (!tu) {
-            continue;
-        }
-        for (uint32_t di = 0; di < tu->decl_count; di++) {
-            for (MGLDecl *d = tu->decls[di]; d; d = d->next_declarator) {
-                if (!d->name || !d->init || d->body) {
-                    continue;
-                }
-                if (!(d->qualifiers & MGL_AST_Q_UNIFORM) ||
-                    (d->qualifiers & MGL_AST_Q_BUFFER) ||
-                    (d->qualifiers & MGL_AST_Q_CONST)) {
-                    continue;
-                }
-                /* Skip interface blocks / opaque types. */
-                if (d->struct_members ||
-                    (d->type && (d->type->base == MGL_AST_TYPE_SAMPLER ||
-                                 d->type->base == MGL_AST_TYPE_IMAGE ||
-                                 d->type->base == MGL_AST_TYPE_ATOMIC_UINT ||
-                                 d->type->base == MGL_AST_TYPE_STRUCT))) {
-                    continue;
-                }
-                GLint loc = mglGetUniformLocation(ctx, pptr->name, d->name);
-                if (loc < 0) {
-                    continue;
-                }
-                uint32_t words_local[16];
-                uint32_t *words = words_local;
-                uint32_t *words_heap = NULL;
-                uint32_t base = 0u;
-                uint32_t n = 0u;
-                const int is_init_list = (d->init->kind == MGL_EXPR_INIT_LIST);
-                const int is_arr_ctor =
-                    (d->init->kind == MGL_EXPR_CALL &&
-                     d->init->u.call.is_array_ctor);
-                if (is_init_list || is_arr_ctor) {
-                    uint32_t argc = is_init_list
-                        ? d->init->u.init_list.arg_count
-                        : d->init->u.call.arg_count;
-                    MGLExpr **args = is_init_list
-                        ? d->init->u.init_list.args
-                        : d->init->u.call.args;
-                    if (argc == 0u || !args) {
-                        continue;
-                    }
-                    uint32_t elem_comps = 1u;
-                    if (d->type && d->type->vec_size > 1)
-                        elem_comps = (uint32_t)d->type->vec_size;
-                    uint32_t cap = argc * elem_comps;
-                    if (cap < argc)
-                        cap = argc;
-                    if (cap > 16u) {
-                        words_heap = (uint32_t *)calloc(cap, sizeof(uint32_t));
-                        if (!words_heap) {
-                            continue;
-                        }
-                        words = words_heap;
-                    }
-                    int ok = 1;
-                    uint32_t want = (d->type && d->type->base)
-                        ? d->type->base : 0u;
-                    uint32_t woff = 0u;
-                    for (uint32_t ei = 0u; ei < argc; ei++) {
-                        uint32_t tmp[16];
-                        uint32_t ab = 0u;
-                        uint32_t nw = mglEvalConstUniformInit(args[ei], tmp,
-                                                              &ab);
-                        if (nw == 0u || woff + nw > cap) {
-                            ok = 0;
-                            break;
-                        }
-                        if (ei == 0u) {
-                            base = want ? want : ab;
-                        }
-                        for (uint32_t k = 0u; k < nw; k++) {
-                            if (want == MGL_AST_TYPE_FLOAT &&
-                                ab != MGL_AST_TYPE_FLOAT) {
-                                GLfloat fv = 0.0f;
-                                if (ab == MGL_AST_TYPE_INT ||
-                                    ab == MGL_AST_TYPE_BOOL) {
-                                    GLint iv;
-                                    memcpy(&iv, tmp + k, sizeof(iv));
-                                    fv = (GLfloat)iv;
-                                } else if (ab == MGL_AST_TYPE_UINT) {
-                                    GLuint uv;
-                                    memcpy(&uv, tmp + k, sizeof(uv));
-                                    fv = (GLfloat)uv;
-                                }
-                                memcpy(&words[woff], &fv, sizeof(fv));
-                            } else {
-                                words[woff] = tmp[k];
-                            }
-                            woff++;
-                        }
-                    }
-                    if (!ok) {
-                        free(words_heap);
-                        continue;
-                    }
-                    n = woff;
-                    if (want) {
-                        base = want;
-                    }
-                } else {
-                    n = mglEvalConstUniformInit(d->init, words, &base);
-                }
-                if (n == 0u) {
-                    static int s_seedFailLogged;
-                    if (!s_seedFailLogged) {
-                        fprintf(stderr,
-                                "MGL WARNING: uniform initializer seeding "
-                                "failed (first: '%s' program=%u); defaults "
-                                "may be zero\n",
-                                d->name, (unsigned)pptr->name);
-                        s_seedFailLogged = 1;
-                    }
-                    free(words_heap);
-                    continue;
-                }
-                const int is_array = (d->array_count > 0u) ||
-                    (d->init && d->init->kind == MGL_EXPR_INIT_LIST) ||
-                    (d->init && d->init->kind == MGL_EXPR_CALL &&
-                     d->init->u.call.is_array_ctor);
-                switch (base) {
-                case MGL_AST_TYPE_BOOL:
-                case MGL_AST_TYPE_INT:
-                    if (is_array || n > 4u) {
-                        mglUniform1iv(ctx, loc, (GLsizei)n, (const GLint *)words);
-                    } else if (n == 1u) {
-                        GLint v;
-                        memcpy(&v, words, sizeof(v));
-                        mglUniform1i(ctx, loc, v);
-                    } else if (n == 2u) {
-                        mglUniform2iv(ctx, loc, 1, (const GLint *)words);
-                    } else if (n == 3u) {
-                        mglUniform3iv(ctx, loc, 1, (const GLint *)words);
-                    } else if (n == 4u) {
-                        mglUniform4iv(ctx, loc, 1, (const GLint *)words);
-                    }
-                    break;
-                case MGL_AST_TYPE_UINT:
-                    if (is_array || n > 4u) {
-                        mglUniform1uiv(ctx, loc, (GLsizei)n,
-                                       (const GLuint *)words);
-                    } else if (n == 1u) {
-                        GLuint v;
-                        memcpy(&v, words, sizeof(v));
-                        mglUniform1ui(ctx, loc, v);
-                    } else if (n == 2u) {
-                        mglUniform2uiv(ctx, loc, 1, (const GLuint *)words);
-                    } else if (n == 3u) {
-                        mglUniform3uiv(ctx, loc, 1, (const GLuint *)words);
-                    } else if (n == 4u) {
-                        mglUniform4uiv(ctx, loc, 1, (const GLuint *)words);
-                    }
-                    break;
-                case MGL_AST_TYPE_FLOAT:
-                    if (is_array || n > 4u) {
-                        mglUniform1fv(ctx, loc, (GLsizei)n,
-                                      (const GLfloat *)words);
-                    } else if (n == 1u) {
-                        GLfloat v;
-                        memcpy(&v, words, sizeof(v));
-                        mglUniform1f(ctx, loc, v);
-                    } else if (n == 2u) {
-                        mglUniform2fv(ctx, loc, 1, (const GLfloat *)words);
-                    } else if (n == 3u) {
-                        mglUniform3fv(ctx, loc, 1, (const GLfloat *)words);
-                    } else if (n == 4u) {
-                        mglUniform4fv(ctx, loc, 1, (const GLfloat *)words);
-                    }
-                    break;
-                default:
-                    break;
-                }
-                free(words_heap);
-            }
-        }
-    }
-
-    STATE(program) = prev_prog;
-    STATE(program_name) = prev_name;
 }
 
 /* gl_-prefixed uniforms can only come from the legacy matrix injection.
@@ -1863,28 +1477,29 @@ static int mglComputeLocalSizeLinkOk(Program *pptr)
         if (!tu) {
             continue;
         }
-        if (tu->layout_local_size_x < 0 && tu->layout_local_size_y < 0 &&
-            tu->layout_local_size_z < 0) {
+        int32_t tx = -1, ty = -1, tz = -1;
+        mglCompileTUGetComputeLocalSize(tu, &tx, &ty, &tz);
+        if (tx < 0 && ty < 0 && tz < 0) {
             continue;
         }
         declared = 1;
-        if (tu->layout_local_size_x >= 0) {
-            if (lx >= 0 && lx != tu->layout_local_size_x) {
+        if (tx >= 0) {
+            if (lx >= 0 && lx != tx) {
                 return 0;
             }
-            lx = tu->layout_local_size_x;
+            lx = tx;
         }
-        if (tu->layout_local_size_y >= 0) {
-            if (ly >= 0 && ly != tu->layout_local_size_y) {
+        if (ty >= 0) {
+            if (ly >= 0 && ly != ty) {
                 return 0;
             }
-            ly = tu->layout_local_size_y;
+            ly = ty;
         }
-        if (tu->layout_local_size_z >= 0) {
-            if (lz >= 0 && lz != tu->layout_local_size_z) {
+        if (tz >= 0) {
+            if (lz >= 0 && lz != tz) {
                 return 0;
             }
-            lz = tu->layout_local_size_z;
+            lz = tz;
         }
     }
     return declared;
@@ -2739,31 +2354,31 @@ static void mglProgramApplyBuiltinInterface(Program *pptr)
         if (!tu)
             continue;
         if (stage == _VERTEX_SHADER) {
-            if (mglFrontendBuiltinUsed(NULL, tu, "gl_VertexID"))
+            if (mglCompileTUBuiltinUsed(tu, "gl_VertexID"))
                 mglProgramPushBuiltinResource(
                     pptr->builtin_program_inputs[stage],
                     &pptr->builtin_program_input_count[stage],
                     "gl_VertexID", GL_INT, 1, GL_FALSE);
-            if (mglFrontendBuiltinUsed(NULL, tu, "gl_InstanceID"))
+            if (mglCompileTUBuiltinUsed(tu, "gl_InstanceID"))
                 mglProgramPushBuiltinResource(
                     pptr->builtin_program_inputs[stage],
                     &pptr->builtin_program_input_count[stage],
                     "gl_InstanceID", GL_INT, 1, GL_FALSE);
         }
         if (stage == _FRAGMENT_SHADER) {
-            if (mglFrontendBuiltinUsed(NULL, tu, "gl_FragDepth"))
+            if (mglCompileTUBuiltinUsed(tu, "gl_FragDepth"))
                 mglProgramPushBuiltinResource(
                     pptr->builtin_program_outputs[stage],
                     &pptr->builtin_program_output_count[stage],
                     "gl_FragDepth", GL_FLOAT, 1, GL_FALSE);
-            if (mglFrontendBuiltinUsed(NULL, tu, "gl_SampleMask"))
+            if (mglCompileTUBuiltinUsed(tu, "gl_SampleMask"))
                 mglProgramPushBuiltinResource(
                     pptr->builtin_program_outputs[stage],
                     &pptr->builtin_program_output_count[stage],
                     "gl_SampleMask", GL_INT, 1, GL_TRUE);
         }
         if (stage == _TESS_CONTROL_SHADER) {
-            if (mglFrontendBuiltinUsed(NULL, tu, "gl_InvocationID"))
+            if (mglCompileTUBuiltinUsed(tu, "gl_InvocationID"))
                 mglProgramPushBuiltinResource(
                     pptr->builtin_program_inputs[stage],
                     &pptr->builtin_program_input_count[stage],
@@ -2982,15 +2597,10 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
             if (!tu)
                 continue;
             saw_tu = GL_TRUE;
-            for (uint32_t di = 0; di < tu->decl_count; di++) {
-                const MGLDecl *d = tu->decls[di];
-                if (d && d->name && d->body && strcmp(d->name, "main") == 0) {
-                    have_main = GL_TRUE;
-                    break;
-                }
-            }
-            if (have_main)
+            if (mglCompileTUHasNamedFunction(tu, "main")) {
+                have_main = GL_TRUE;
                 break;
+            }
         }
         if (saw_tu && !have_main) {
             fprintf(stderr,

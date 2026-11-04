@@ -37,7 +37,7 @@
 #include "mgl_pixel_format.h"
 #include "mgl_texture_compat.h"
 #include "pixel_utils.h"
-#include "mgl_renderer_backend.h"
+#include "mgl_render_api_query.h"
 
 void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data);
 
@@ -1267,7 +1267,7 @@ static bool mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         }
         case GL_TIMESTAMP:
         {
-            uint64_t ns = mglRendererGetGPUTimestamp(ctx);
+            uint64_t ns = mglRenderGetGPUTimestamp(ctx);
             switch(type) {
                 case kBool: RET_BOOL(ns);
                 case kInt: RET_INT(ns > INT_MAX ? INT_MAX : (GLint)ns);
@@ -1403,7 +1403,7 @@ void mglGetInteger64v(GLMContext ctx, GLenum pname, GLint64 *data)
         return;
     }
     if (pname == GL_TIMESTAMP) {
-        *data = (GLint64)mglRendererGetGPUTimestamp(ctx);
+        *data = (GLint64)mglRenderGetGPUTimestamp(ctx);
         return;
     }
 

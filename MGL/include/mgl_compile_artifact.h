@@ -16,6 +16,7 @@
 #include "mgl_types_program.h"
 
 struct MGLTranslationUnit;
+typedef struct MGLTranslationUnit MGLTranslationUnit;
 
 #ifdef __cplusplus
 extern "C" {
@@ -123,6 +124,14 @@ int mglCompileArtifactCanReuseAtLink(const MGLCompileArtifact *art,
                                      uint32_t air_flags,
                                      const void *iface_peers,
                                      const char *const *attrib_names);
+
+/* Opaque TranslationUnit queries for FE (no mgl_glsl_ast.h). */
+int mglCompileTUHasNamedFunction(const struct MGLTranslationUnit *tu,
+                                 const char *name);
+void mglCompileTUGetComputeLocalSize(const struct MGLTranslationUnit *tu,
+                                     int32_t *x, int32_t *y, int32_t *z);
+int mglCompileTUBuiltinUsed(const struct MGLTranslationUnit *tu,
+                            const char *name);
 
 #ifdef __cplusplus
 }

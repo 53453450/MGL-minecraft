@@ -13,6 +13,7 @@
 #include "mgl_air_reflect.h"
 #include "mgl_shader_abi.h"
 #include "mgl_glsl_parser.h"
+#include "mgl_glsl_ast.h"
 #include "mgl_frontend_session.h"
 #include "glm_limits.h"
 
@@ -194,4 +195,39 @@ uint32_t mglCompileFrontendParseCount(void)
 void mglCompileFrontendNoteReuse(void)
 {
     mglFrontendNoteReuse();
+}
+
+int mglCompileTUHasNamedFunction(const struct MGLTranslationUnit *tu,
+                                 const char *name)
+{
+    if (!tu || !name) {
+        return 0;
+    }
+    for (uint32_t di = 0; di < tu->decl_count; di++) {
+        const MGLDecl *d = tu->decls[di];
+        if (d && d->name && d->body && strcmp(d->name, name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void mglCompileTUGetComputeLocalSize(const struct MGLTranslationUnit *tu,
+                                     int32_t *x, int32_t *y, int32_t *z)
+{
+    if (x) {
+        *x = tu ? tu->layout_local_size_x : -1;
+    }
+    if (y) {
+        *y = tu ? tu->layout_local_size_y : -1;
+    }
+    if (z) {
+        *z = tu ? tu->layout_local_size_z : -1;
+    }
+}
+
+int mglCompileTUBuiltinUsed(const struct MGLTranslationUnit *tu,
+                            const char *name)
+{
+    return mglFrontendBuiltinUsed(NULL, tu, name);
 }

@@ -2,4 +2,3 @@
 # Format: rule path count. Counts may only go down; --update after paying debt.
 # See docs/MGL-architecture-design.md §9.
 
-Lyr-FE-Compiler MGL/src/program.c 1
