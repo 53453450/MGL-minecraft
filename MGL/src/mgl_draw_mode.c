@@ -66,10 +66,16 @@ uint32_t mglRenderPrimitiveVertexCountForMode(uint32_t mode) {
         case GL_TRIANGLES:
         case GL_TRIANGLE_STRIP:
         case GL_TRIANGLE_FAN:
+        /* AUDIT-034: adjacency assembly drops adjacent verts; the rasterized
+         * primitive still has 3 (tri) / 2 (line) vertices for cull emu. */
+        case GL_TRIANGLES_ADJACENCY:
+        case GL_TRIANGLE_STRIP_ADJACENCY:
             return 3u;
         case GL_LINES:
         case GL_LINE_STRIP:
         case GL_LINE_LOOP:
+        case GL_LINES_ADJACENCY:
+        case GL_LINE_STRIP_ADJACENCY:
             return 2u;
         case GL_QUADS:
             return 4u;

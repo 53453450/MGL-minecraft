@@ -4816,9 +4816,13 @@ static int verifyPolygonOffsetAndPrimCount(void) {
     if (mglRenderPrimitiveVertexCountForMode(GL_TRIANGLES) != 3 ||
         mglRenderPrimitiveVertexCountForMode(GL_TRIANGLE_STRIP) != 3 ||
         mglRenderPrimitiveVertexCountForMode(GL_TRIANGLE_FAN) != 3 ||
+        mglRenderPrimitiveVertexCountForMode(GL_TRIANGLES_ADJACENCY) != 3 ||
+        mglRenderPrimitiveVertexCountForMode(GL_TRIANGLE_STRIP_ADJACENCY) != 3 ||
         mglRenderPrimitiveVertexCountForMode(GL_LINES) != 2 ||
         mglRenderPrimitiveVertexCountForMode(GL_LINE_STRIP) != 2 ||
         mglRenderPrimitiveVertexCountForMode(GL_LINE_LOOP) != 2 ||
+        mglRenderPrimitiveVertexCountForMode(GL_LINES_ADJACENCY) != 2 ||
+        mglRenderPrimitiveVertexCountForMode(GL_LINE_STRIP_ADJACENCY) != 2 ||
         mglRenderPrimitiveVertexCountForMode(GL_QUADS) != 4 ||
         mglRenderPrimitiveVertexCountForMode(GL_POINTS) != 1 ||
         mglRenderPrimitiveVertexCountForMode(0x1234) != 1) {
