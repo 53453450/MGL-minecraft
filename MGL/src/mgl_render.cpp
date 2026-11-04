@@ -144,9 +144,25 @@ void mglRenderShutdown(void) {
             return;
         }
         renderer.users = 0;
-        /* AUDIT-012/047: callers must drain in-flight CBs (e.g. destroyGLMContext
-         * → mglRendererFlush(..., true)) before the last shutdown; this path
-         * only drops process-wide caches once the last user leaves. */
+        /* AUDIT-012: drain process-wide sparse queues before releasing caches /
+         * device. Context CBs are still flushed by destroyGLMContext
+         * (mglRendererFlush(..., true)); these queues are the singleton's own
+         * in-flight path (sparse Map/Unmap). */
+        if (renderer.sparseQueue) {
+            if (MTL::CommandBuffer* cb = renderer.sparseQueue->commandBuffer()) {
+                cb->commit();
+                cb->waitUntilCompleted();
+                cb->release();
+            }
+        }
+        if (renderer.sparseMtl4Queue && renderer.device) {
+            if (MTL::SharedEvent* ev = renderer.device->newSharedEvent()) {
+                renderer.sparseMtl4Queue->signalEvent(ev, 1);
+                /* Same timeout unit as mglRenderSparseTextureCommit (ms). */
+                (void)ev->waitUntilSignaledValue(1, 5000ull);
+                ev->release();
+            }
+        }
         mgl::releasePipelineCaches(renderer);
         mgl::releaseBindingStates(renderer);
         mgl::releasePackedStructBuffers(renderer);
