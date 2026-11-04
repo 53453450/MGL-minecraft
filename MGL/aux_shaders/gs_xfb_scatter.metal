@@ -74,11 +74,18 @@ kernel void mgl_gs_xfb_scatter(
     device uint *written [[buffer(5)]]) {
     if (gid >= p.work_item_count) return;
 
+    /* AUDIT-041: clamp table sizes to the constant arrays this kernel owns. */
+    const uint fieldCount = min(p.field_count, MGL_GS_XFB_MAX_FIELDS);
+    const uint bufferCount = min(p.buffer_count, MGL_GS_XFB_MAX_STREAMS);
     const uint recStride = p.stage_out_stride;
     const device uchar *runBase =
         stage_out + (ulong)gid * (ulong)p.records_per_primitive * recStride +
         (ulong)p.expanded_offset_records * recStride;
-    const uint expanded = p.records_per_primitive - p.expanded_offset_records;
+    /* AUDIT-041: avoid unsigned underflow when expanded_offset > records. */
+    const uint expanded =
+        (p.records_per_primitive > p.expanded_offset_records)
+            ? (p.records_per_primitive - p.expanded_offset_records)
+            : 0u;
 
     /* Per-buffer running write cursor within this work item, starting at the
      * ordered prefix offset for this work item, and the visible byte budget
@@ -89,8 +96,8 @@ kernel void mgl_gs_xfb_scatter(
     uint budget[MGL_GS_XFB_MAX_STREAMS];
     for (uint b = 0; b < MGL_GS_XFB_MAX_STREAMS; b++) {
         uint idx = gid * MGL_GS_XFB_MAX_STREAMS + b;
-        uint visBytes = (b < p.buffer_count) ? vis[idx] : 0u;
-        uint prefix = (b < p.buffer_count) ? offsets[idx] : 0u;
+        uint visBytes = (b < bufferCount) ? vis[idx] : 0u;
+        uint prefix = (b < bufferCount) ? offsets[idx] : 0u;
         uint cap = p.buffers[b].capacity_bytes;
         uint avail = (prefix < cap) ? (cap - prefix) : 0u;
         base[b] = prefix;
@@ -101,15 +108,26 @@ kernel void mgl_gs_xfb_scatter(
     /* Copy one record's fields for the buffers fed by stream `s`.
      * Caller has already verified the whole primitive fits. */
     auto copyFields = [&](const device uchar *srcRec, uint s) {
-        for (uint f = 0; f < p.field_count; f++) {
+        for (uint f = 0; f < fieldCount; f++) {
             MGLGSXFBFieldDesc fd = p.fields[f];
             uint b = fd.buffer_index;
-            if (b >= p.buffer_count || p.buffer_stream[b] != s) continue;
+            if (b >= bufferCount || p.buffer_stream[b] != s) continue;
+            /* AUDIT-041/060: clamp field writes to the record stride and the
+             * remaining buffer capacity so a wild dst_offset/byte_count cannot
+             * scribble past the XFB store. */
+            uint stride = p.buffers[b].stride;
+            if (stride == 0u || fd.dst_offset >= stride) continue;
+            uint n = min(fd.byte_count, stride - fd.dst_offset);
+            if (recStride == 0u || fd.src_offset >= recStride) continue;
+            n = min(n, recStride - fd.src_offset);
+            uint abs_off = base[b] + consumed[b] + fd.dst_offset;
+            uint cap = p.buffers[b].capacity_bytes;
+            if (abs_off >= cap) continue;
+            n = min(n, cap - abs_off);
             device uchar *dst =
-                xfb_out + (ulong)p.buffers[b].capture_base +
-                (ulong)(base[b] + consumed[b]) + fd.dst_offset;
+                xfb_out + (ulong)p.buffers[b].capture_base + (ulong)abs_off;
             const device uchar *src = srcRec + fd.src_offset;
-            for (uint k = 0; k < fd.byte_count; k++) dst[k] = src[k];
+            for (uint k = 0; k < n; k++) dst[k] = src[k];
         }
     };
 
@@ -117,7 +135,7 @@ kernel void mgl_gs_xfb_scatter(
      * truncation: the first non-fitting primitive stops the stream because
      * later primitives need the same bytes. */
     uint b0 = MGL_GS_XFB_NO_STREAM;
-    for (uint b = 0; b < p.buffer_count; b++) {
+    for (uint b = 0; b < bufferCount; b++) {
         if (p.buffer_stream[b] == 0u && p.buffers[b].stride != 0u) {
             b0 = b;
             break;
@@ -129,7 +147,7 @@ kernel void mgl_gs_xfb_scatter(
                       p.buffers[b0].stride) / vpp;
         for (uint prim = 0; prim < prims; prim++) {
             bool fits = true;
-            for (uint b = 0; b < p.buffer_count && fits; b++) {
+            for (uint b = 0; b < bufferCount && fits; b++) {
                 if (p.buffer_stream[b] != 0u) continue;
                 if (consumed[b] + vpp * p.buffers[b].stride > budget[b])
                     fits = false;
@@ -137,7 +155,7 @@ kernel void mgl_gs_xfb_scatter(
             if (!fits) break;
             for (uint v = 0; v < vpp; v++) {
                 copyFields(runBase + (ulong)(prim * vpp + v) * recStride, 0u);
-                for (uint b = 0; b < p.buffer_count; b++) {
+                for (uint b = 0; b < bufferCount; b++) {
                     if (p.buffer_stream[b] == 0u)
                         consumed[b] += p.buffers[b].stride;
                 }
@@ -151,7 +169,7 @@ kernel void mgl_gs_xfb_scatter(
     /* A stream feeding several buffers emits each record once. */
     uint totalDown = 0u;
     for (uint s = 1u; s < MGL_GS_XFB_MAX_STREAMS; s++) {
-        for (uint b = 0; b < p.buffer_count; b++) {
+        for (uint b = 0; b < bufferCount; b++) {
             if (p.buffer_stream[b] == s && p.buffers[b].stride != 0u) {
                 totalDown += vis[gid * MGL_GS_XFB_MAX_STREAMS + b] /
                              p.buffers[b].stride;
@@ -159,20 +177,21 @@ kernel void mgl_gs_xfb_scatter(
             }
         }
     }
+    if (totalDown > expanded) totalDown = expanded;
     for (uint j = 0; j < totalDown; j++) {
         const device uchar *srcRec =
             runBase + (ulong)(expanded - 1u - j) * recStride;
         uint stamp = *(const device uint *)(srcRec +
                                             MGL_GS_XFB_STREAM_STAMP_OFFSET);
         bool fits = false;
-        for (uint b = 0; b < p.buffer_count; b++) {
+        for (uint b = 0; b < bufferCount; b++) {
             if (p.buffer_stream[b] != stamp) continue;
             if (consumed[b] + p.buffers[b].stride <= budget[b]) fits = true;
             else { fits = false; break; }
         }
         if (!fits) continue;
         copyFields(srcRec, stamp);
-        for (uint b = 0; b < p.buffer_count; b++) {
+        for (uint b = 0; b < bufferCount; b++) {
             if (p.buffer_stream[b] == stamp)
                 consumed[b] += p.buffers[b].stride;
         }
@@ -182,7 +201,7 @@ kernel void mgl_gs_xfb_scatter(
      * disjoint, so a plain store to this work item's accumulator suffices;
      * the renderer reduces across work items after the dispatch. */
     for (uint b = 0; b < MGL_GS_XFB_MAX_STREAMS; b++) {
-        if (b >= p.buffer_count) continue;
+        if (b >= bufferCount) continue;
         written[gid * MGL_GS_XFB_MAX_STREAMS + b] = consumed[b];
     }
 }

@@ -9,8 +9,10 @@ vertex MGLScaledBlitVOut mgl_scaled_depth_blit_vs(uint vid [[vertex_id]], consta
     float2 pos[4] = { float2(-1.0, -1.0), float2(1.0, -1.0), float2(-1.0, 1.0), float2(1.0, 1.0) };
     float2 uv[4] = { float2(p.uvRect.x, p.uvRect.w), float2(p.uvRect.z, p.uvRect.w), float2(p.uvRect.x, p.uvRect.y), float2(p.uvRect.z, p.uvRect.y) };
     MGLScaledBlitVOut o;
-    o.position = float4(pos[vid], 0.0, 1.0);
-    o.uv = uv[vid];
+    /* AUDIT-042: mask vid to the fixed quad (same as clear_rect / scaled_blit). */
+    uint i = vid & 3u;
+    o.position = float4(pos[i], 0.0, 1.0);
+    o.uv = uv[i];
     return o;
 }
 

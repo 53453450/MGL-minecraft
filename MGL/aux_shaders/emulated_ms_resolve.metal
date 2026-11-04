@@ -17,7 +17,12 @@ kernel void mgl_emulated_ms_resolve_float(
 {
     if (gid.x >= p.size.x || gid.y >= p.size.y)
         return;
+    /* AUDIT-042: clamp sampleCount / baseSlice against the array length. */
+    uint layers = src.get_array_size();
+    if (layers == 0u || p.baseSlice >= layers)
+        return;
     uint n = p.sampleCount > 0u ? p.sampleCount : 1u;
+    n = min(n, layers - p.baseSlice);
     float4 sum = float4(0.0);
     for (uint s = 0u; s < n; s++)
         sum += src.read(gid, p.baseSlice + s);
