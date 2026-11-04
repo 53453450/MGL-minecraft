@@ -407,6 +407,12 @@ int mglRenderSparseTextureCommit(void *heap, void *texture,
                                  uint32_t level, int commit,
                                  uint64_t heap_offset);
 
+/* GPU-blit zeros into a mapped sparse region (Private textures). */
+int mglRenderSparseTextureClearRegion(void *texture,
+                                      uint32_t x, uint32_t y, uint32_t z,
+                                      uint32_t width, uint32_t height,
+                                      uint32_t depth, uint32_t level);
+
 int mglRenderCreateBufferTextureFromState(
     void *buffer,
     const MGLRenderTextureDescriptorState *texture_descriptor,

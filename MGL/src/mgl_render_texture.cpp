@@ -949,6 +949,8 @@ int mglRenderPixelFormatIsDepthOrStencil(uint32_t pixel_format) {
     case 253u: /* Stencil8 */
     case 255u: /* Depth24Unorm_Stencil8 */
     case 260u: /* Depth32Float_Stencil8 */
+    case 261u: /* X32_Stencil8 */
+    case 262u: /* X24_Stencil8 */
         return 1;
     default:
         return 0;
@@ -1427,63 +1429,198 @@ extern "C" int mglRenderSparseTextureCommit(void* heap, void* texture,
     std::lock_guard<std::mutex> lock(renderer.mutex);
     if (!renderer.device) return -1;
 
-    const uint32_t tile_x = 64u;
-    const uint32_t tile_y = 64u;
+    /* Use the device tile size for this texture type/format/sampleCount.
+     * Hardcoding 64 mis-maps formats whose Metal tile differs (e.g.
+     * RGBA32Float 32×32, real-MS 64×32) and then scrub cannot Unmap. */
+    MTL::Size tileSz = renderer.device->sparseTileSize(
+        target->textureType(), target->pixelFormat(), target->sampleCount());
+    const uint32_t tile_x =
+        tileSz.width > 0 ? static_cast<uint32_t>(tileSz.width) : 64u;
+    const uint32_t tile_y =
+        tileSz.height > 0 ? static_cast<uint32_t>(tileSz.height) : 64u;
     const bool is_3d = target->textureType() == MTL::TextureType3D;
     const NS::UInteger tiles_x =
         static_cast<NS::UInteger>((width + tile_x - 1) / tile_x);
     const NS::UInteger tiles_y =
         static_cast<NS::UInteger>((height + tile_y - 1) / tile_y);
 
-    MTL4::CommandQueue* queue = renderer.device->newMTL4CommandQueue();
+    /* Prefer ResourceStateCommandEncoder on the standard queue: MTL4
+     * updateTextureMappings Unmap has been observed to leave prior
+     * imageStore contents readable on AGX (MS / r11f UncommittedReads). */
+    MTL::CommandQueue* queue = renderer.device->newCommandQueue();
     if (!queue) return -1;
+    MTL::CommandBuffer* cb = queue->commandBuffer();
+    if (!cb) {
+        queue->release();
+        return -1;
+    }
+    MTL::ResourceStateCommandEncoder* enc = cb->resourceStateCommandEncoder();
+    if (!enc) {
+        cb->release();
+        queue->release();
+        return -1;
+    }
 
-    auto submit = [&](MTL4::UpdateSparseTextureMappingOperation& op) {
-        queue->updateTextureMappings(target, source_heap, &op, 1);
-    };
-
-    MTL4::UpdateSparseTextureMappingOperation op = {};
-    op.mode = commit ? MTL::SparseTextureMappingModeMap
-                     : MTL::SparseTextureMappingModeUnmap;
+    const MTL::SparseTextureMappingMode mode =
+        commit ? MTL::SparseTextureMappingModeMap
+               : MTL::SparseTextureMappingModeUnmap;
 
     if (is_3d) {
-        op.textureRegion = MTL::Region::Make3D(
-            static_cast<NS::UInteger>(x / tile_x),
-            static_cast<NS::UInteger>(y / tile_y),
-            static_cast<NS::UInteger>(z), tiles_x, tiles_y,
-            static_cast<NS::UInteger>(depth ? depth : 1));
-        op.textureSlice = 0;
-        op.textureLevel = level;
-        op.heapOffset = static_cast<NS::UInteger>(heap_offset);
-        submit(op);
-    } else {
-        const uint32_t slices = depth > 0u ? depth : 1u;
-        uint64_t slice_off = heap_offset;
-        const uint64_t tiles_per_slice =
-            (uint64_t)tiles_x * (uint64_t)tiles_y;
-        for (uint32_t s = 0; s < slices; s++) {
+        /* Map still needs the placement heap; ResourceState Map without a
+         * heap offset is not enough for placement-sparse textures.  Fall
+         * back to MTL4 for Map, keep ResourceState for Unmap. */
+        if (commit) {
+            enc->endEncoding();
+            cb->release();
+            queue->release();
+            MTL4::CommandQueue* q4 = renderer.device->newMTL4CommandQueue();
+            if (!q4) return -1;
+            MTL4::UpdateSparseTextureMappingOperation op = {};
+            op.mode = MTL::SparseTextureMappingModeMap;
             op.textureRegion = MTL::Region::Make3D(
                 static_cast<NS::UInteger>(x / tile_x),
                 static_cast<NS::UInteger>(y / tile_y),
-                static_cast<NS::UInteger>(0), tiles_x, tiles_y,
-                static_cast<NS::UInteger>(1));
-            op.textureSlice = z + s;
+                static_cast<NS::UInteger>(z), tiles_x, tiles_y,
+                static_cast<NS::UInteger>(depth ? depth : 1));
+            op.textureSlice = 0;
             op.textureLevel = level;
-            op.heapOffset = static_cast<NS::UInteger>(slice_off);
-            submit(op);
-            if (commit)
+            op.heapOffset = static_cast<NS::UInteger>(heap_offset);
+            q4->updateTextureMappings(target, source_heap, &op, 1);
+            MTL::SharedEvent* ev = renderer.device->newSharedEvent();
+            if (ev) {
+                q4->signalEvent(ev, 1);
+                (void)ev->waitUntilSignaledValue(1, 5000ull);
+                ev->release();
+            }
+            q4->release();
+            return 0;
+        }
+        enc->updateTextureMapping(
+            target, mode,
+            MTL::Region::Make3D(
+                static_cast<NS::UInteger>(x / tile_x),
+                static_cast<NS::UInteger>(y / tile_y),
+                static_cast<NS::UInteger>(z), tiles_x, tiles_y,
+                static_cast<NS::UInteger>(depth ? depth : 1)),
+            level, 0);
+    } else {
+        const uint32_t slices = depth > 0u ? depth : 1u;
+        if (commit) {
+            enc->endEncoding();
+            cb->release();
+            queue->release();
+            MTL4::CommandQueue* q4 = renderer.device->newMTL4CommandQueue();
+            if (!q4) return -1;
+            MTL4::UpdateSparseTextureMappingOperation op = {};
+            op.mode = MTL::SparseTextureMappingModeMap;
+            uint64_t slice_off = heap_offset;
+            const uint64_t tiles_per_slice =
+                (uint64_t)tiles_x * (uint64_t)tiles_y;
+            for (uint32_t s = 0; s < slices; s++) {
+                op.textureRegion = MTL::Region::Make3D(
+                    static_cast<NS::UInteger>(x / tile_x),
+                    static_cast<NS::UInteger>(y / tile_y),
+                    static_cast<NS::UInteger>(0), tiles_x, tiles_y,
+                    static_cast<NS::UInteger>(1));
+                op.textureSlice = z + s;
+                op.textureLevel = level;
+                op.heapOffset = static_cast<NS::UInteger>(slice_off);
+                q4->updateTextureMappings(target, source_heap, &op, 1);
                 slice_off += tiles_per_slice;
+            }
+            MTL::SharedEvent* ev = renderer.device->newSharedEvent();
+            if (ev) {
+                q4->signalEvent(ev, 1);
+                (void)ev->waitUntilSignaledValue(1, 5000ull);
+                ev->release();
+            }
+            q4->release();
+            return 0;
+        }
+        for (uint32_t s = 0; s < slices; s++) {
+            enc->updateTextureMapping(
+                target, mode,
+                MTL::Region::Make3D(
+                    static_cast<NS::UInteger>(x / tile_x),
+                    static_cast<NS::UInteger>(y / tile_y),
+                    static_cast<NS::UInteger>(0), tiles_x, tiles_y,
+                    static_cast<NS::UInteger>(1)),
+                level, z + s);
         }
     }
 
-    /* Mapping is GPU-side; wait so the next compute/draw sees the tiles.
-     * Without this, Clamp LookupColor rgba8 flakes on L0. */
-    MTL::SharedEvent* ev = renderer.device->newSharedEvent();
-    if (ev) {
-        queue->signalEvent(ev, 1);
-        (void)ev->waitUntilSignaledValue(1, /*milliseconds*/ 5000ull);
-        ev->release();
+    enc->endEncoding();
+    cb->commit();
+    cb->waitUntilCompleted();
+    cb->release();
+    queue->release();
+    return 0;
+}
+
+extern "C" int mglRenderSparseTextureClearRegion(
+    void* texture, uint32_t x, uint32_t y, uint32_t z, uint32_t width,
+    uint32_t height, uint32_t depth, uint32_t level) {
+    MTL::Texture* target = static_cast<MTL::Texture*>(texture);
+    if (!target || width == 0 || height == 0)
+        return -1;
+    mgl::Renderer& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.mutex);
+    if (!renderer.device)
+        return -1;
+    const uint32_t bpp = mglRenderMetalPixelFormatBytesPerPixel(
+        static_cast<uint32_t>(target->pixelFormat()));
+    if (bpp == 0)
+        return -1;
+    const bool is_3d = target->textureType() == MTL::TextureType3D;
+    const uint32_t slices = is_3d ? 1u : (depth > 0u ? depth : 1u);
+    const uint32_t depth_ext = is_3d ? (depth > 0u ? depth : 1u) : 1u;
+    const NS::UInteger row_bytes =
+        static_cast<NS::UInteger>(width) * bpp;
+    const NS::UInteger img_bytes =
+        row_bytes * height * (is_3d ? depth_ext : 1u);
+    if (img_bytes == 0 || img_bytes > (32u * 1024u * 1024u))
+        return -1;
+
+    MTL::CommandQueue* queue = renderer.device->newCommandQueue();
+    if (!queue)
+        return -1;
+    MTL::Buffer* zeros = renderer.device->newBuffer(
+        img_bytes, MTL::ResourceStorageModeShared);
+    if (!zeros) {
+        queue->release();
+        return -1;
     }
+    memset(zeros->contents(), 0, img_bytes);
+
+    MTL::CommandBuffer* cb = queue->commandBuffer();
+    MTL::BlitCommandEncoder* blit =
+        cb ? cb->blitCommandEncoder() : nullptr;
+    if (!cb || !blit) {
+        zeros->release();
+        if (cb)
+            cb->release();
+        queue->release();
+        return -1;
+    }
+    if (is_3d) {
+        blit->copyFromBuffer(
+            zeros, 0, row_bytes, row_bytes * height,
+            MTL::Size(width, height, depth_ext), target,
+            0, level, MTL::Origin(x, y, z));
+    } else {
+        for (uint32_t s = 0; s < slices; s++) {
+            blit->copyFromBuffer(
+                zeros, 0, row_bytes, img_bytes,
+                MTL::Size(width, height, 1), target,
+                static_cast<NS::UInteger>(z + s), level,
+                MTL::Origin(x, y, 0));
+        }
+    }
+    blit->endEncoding();
+    cb->commit();
+    cb->waitUntilCompleted();
+    cb->release();
+    zeros->release();
     queue->release();
     return 0;
 }
@@ -1832,6 +1969,11 @@ int mglRenderMetalPixelFormatIsDepthOrStencil(uint32_t pixel_format) {
         case MTL::PixelFormatDepth24Unorm_Stencil8:
         case MTL::PixelFormatDepth32Float_Stencil8:
         case MTL::PixelFormatStencil8:
+        /* Stencil-aspect views of packed depth-stencil (DEPTH_STENCIL_TEXTURE_MODE
+         * = STENCIL_INDEX).  Must count as DS so CreateTextureViewRange does not
+         * refuse Depth*Stencil8 → X*_Stencil8 as a depth↔color cast. */
+        case MTL::PixelFormatX32_Stencil8:
+        case MTL::PixelFormatX24_Stencil8:
             return 1;
         default:
             return 0;

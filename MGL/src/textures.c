@@ -861,19 +861,46 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
             return;
     }
 
-    /* ES 3.1 negative-bind: Gen+Bind with no TexStorage is a mutable
-     * incomplete object and must be INVALID_OPERATION. GL 4.6
-     * basic-api-bind uses complete mutable TexImage* and must succeed. */
-    if (!ptr->immutable_storage && !ptr->complete && ptr->num_levels == 0u) {
-        fprintf(stderr, "MGL Error: mglBindImageTexture: texture %u is not immutable\n", texture);
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
+    /* GL 4.6 §8.26 Errors: BindImageTexture does not reject incomplete or
+     * mutable textures.  Loads from incomplete images return 0 and stores
+     * are ignored (image completeness), which is handled at access time. */
 
     /* Spec: an incompatible <format> vs texture internalformat makes image
      * loads/stores undefined; it is not a BindImageTexture error. CTS
      * basic-api-bind intentionally rebinds one R32F texture with RGBA8/RG16/
      * R32I image formats. Keep the requested format on the image unit. */
+
+    /* CTS advanced-cast: RGBA8 bound as R32I/UI.  PixelFormatView of RGBA8
+     * cannot take ShaderAtomic, so promote the Metal store to R32* while
+     * leaving GL internalformat alone for GetTexImage bit-cast reads. */
+    if (ptr->target != GL_TEXTURE_BUFFER &&
+        (internalformat == GL_R32I || internalformat == GL_R32UI ||
+         internalformat == GL_R32F)) {
+        int known_tex = 0, known_bind = 0;
+        const uint32_t bpp_tex =
+            mglRenderBytesPerPixelForInternalFormat(ptr->internalformat,
+                                                    &known_tex);
+        const uint32_t bpp_bind =
+            mglRenderBytesPerPixelForInternalFormat(internalformat,
+                                                    &known_bind);
+        const uint32_t native_mtl =
+            mtlFormatForGLInternalFormat(ptr->internalformat);
+        if (known_tex && known_bind && bpp_tex == bpp_bind && bpp_tex == 4u &&
+            !mglRenderPixelFormatNeedsShaderAtomic(native_mtl) &&
+            ptr->image_metal_format != internalformat) {
+            ptr->image_metal_format = internalformat;
+            ptr->dirty_bits |= DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA;
+            {
+                GLuint iu;
+                for (iu = 0u; iu < STATE(var).max_image_units; iu++) {
+                    if (STATE(image_units)[iu].tex == ptr) {
+                        mglImageUnitBackendRelease(&STATE(image_units)[iu]);
+                    }
+                }
+            }
+            mglRendererBindTexture(ctx, ptr);
+        }
+    }
 
     /* GL_TEXTURE_BUFFER has no mipmap faces/levels array; completeness is
      * tracked on tex->complete itself and only level==0 is valid per spec. */
@@ -1848,6 +1875,7 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
     tex->mipmapped = 0;
     tex->genmipmaps = GL_FALSE;
     tex->internalformat = 0;
+    tex->image_metal_format = 0;
     tex->compressed_internalformat = 0;
     tex->width = 0;
     tex->height = 0;
@@ -1897,6 +1925,7 @@ void initBaseTexLevel(GLMContext ctx, Texture *tex, GLint internalformat, GLsize
     }
 
     tex->internalformat = internalformat;
+    tex->image_metal_format = 0;
     tex->width = width;
     tex->height = height;
     tex->depth = depth;
@@ -2020,7 +2049,7 @@ static bool mglSparseTexStorageAllowed(GLMContext ctx, Texture *tex,
 static void mglSparseZeroUncommitted(Texture *tex, GLuint face, GLint level,
                                      GLint xoffset, GLint yoffset, GLint zoffset,
                                      GLsizei width, GLsizei height, GLsizei depth);
-static void mglSparseScrubTextureLevel(Texture *tex, GLint level);
+static void mglSparseScrubTextureLevel(Texture *tex, GLint level, int clear);
 
 static bool mglTextureStorageMultisampleMetadata(GLMContext ctx,
                                                  Texture *tex,
@@ -2115,6 +2144,7 @@ static bool mglTextureStorageMultisampleMetadata(GLMContext ctx,
 
     tex->access = GL_READ_ONLY;
     tex->internalformat = internalformat;
+    tex->image_metal_format = 0;
     tex->width = (GLuint)width;
     tex->height = (GLuint)height;
     tex->depth = (GLuint)depth;
@@ -3015,6 +3045,7 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         }
 
         tex->internalformat = internalformat;
+        tex->image_metal_format = 0;
         tex->width = width;
         tex->height = height;
         tex->depth = depth;
@@ -4058,12 +4089,41 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
     }
 
     GLuint block_w = 0u, block_h = 0u, block_d = 1u, block_bytes = 0u;
-    if (lvl->pitch != 0u &&
-        mglCompressedBlockInfoOf((GLenum)tex->internalformat, &block_w, &block_h,
-                                 &block_d, &block_bytes)) {
+    const GLenum store_if = tex->compressed_internalformat
+                                ? tex->compressed_internalformat
+                                : (GLenum)tex->internalformat;
+    const int is_rgtc =
+        store_if == GL_COMPRESSED_RED_RGTC1 ||
+        store_if == GL_COMPRESSED_SIGNED_RED_RGTC1 ||
+        store_if == GL_COMPRESSED_RG_RGTC2 ||
+        store_if == GL_COMPRESSED_SIGNED_RG_RGTC2;
+    const int is_bptc_float =
+        store_if == GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT ||
+        store_if == GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT;
+    if (is_rgtc && lvl->pitch != 0u &&
+        mglCompressedBlockInfoOf(store_if, &block_w, &block_h, &block_d,
+                                 &block_bytes)) {
         GLenum encode_error = mglEncodeRGTCRectToCPU(
-            tex->internalformat, lvl, xoffset, yoffset, zoffset, width, height,
-            depth, format, type, resolved_src, src_pitch, src_image_size);
+            store_if, lvl, xoffset, yoffset, zoffset, width, height, depth,
+            format, type, resolved_src, src_pitch, src_image_size);
+        if (encode_error != GL_NO_ERROR) {
+            ERROR_RETURN_VALUE(encode_error, false);
+        }
+        lvl->has_initialized_data = GL_TRUE;
+        lvl->ever_written = GL_TRUE;
+        lvl->suspicious_zero_upload = GL_FALSE;
+        lvl->metal_data_authoritative = GL_FALSE;
+        lvl->last_init_source = resolved_unpack_buf ? kTexSubImagePBO : kTexSubImageCPU;
+        tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
+        return true;
+    }
+    if (is_bptc_float && lvl->pitch != 0u &&
+        mglCompressedBlockInfoOf(store_if, &block_w, &block_h, &block_d,
+                                 &block_bytes)) {
+        GLenum encode_error = mglEncodeBPTCFloatRectToCPU(
+            store_if, lvl, xoffset, yoffset, zoffset, width, height, depth,
+            format, type, resolved_src, src_pitch, src_image_size);
         if (encode_error != GL_NO_ERROR) {
             ERROR_RETURN_VALUE(encode_error, false);
         }
@@ -4393,6 +4453,19 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         tex->dirty_bits |= DIRTY_TEXTURE_DATA;
     }
     mglTextureViewFamilyWritten(tex);
+
+    /* SubImage onto a sparse texture may Map uncommitted tiles.  Zero the
+     * CPU shadow above; scrub Metal so later imageLoad sees zeros too
+     * (ARB_sparse_texture2 / UncommittedRegionsAccess, esp. r11f). */
+    if (tex->params.sparse) {
+        if (uploaded_direct) {
+            mglFlushCommandBuffer(ctx);
+            mglRendererFlush(ctx, true);
+        }
+        mglSparseScrubTextureLevel(tex, level, 1);
+        mglFlushCommandBuffer(ctx);
+        mglRendererFlush(ctx, true);
+    }
 
     if (trace_upload) {
         fprintf(stderr,
@@ -5295,6 +5368,8 @@ static void mglCommitSparsePages(GLMContext ctx, Texture *tex, GLint level,
          * this texture cannot race the mapping update. */
         mglFlushCommandBuffer(ctx);
         mglRendererFlush(ctx, true);
+        /* Unmap only — nothing written yet.  Clear+Unmap after stores. */
+        mglSparseScrubTextureLevel(tex, level, 0);
     }
 }
 
@@ -5333,20 +5408,25 @@ static int mglSparsePageIntersectsCommit(const Texture *tex, GLint level,
     return 0;
 }
 
-static void mglSparseScrubTextureLevel(Texture *tex, GLint level)
+static void mglSparseScrubTextureLevel(Texture *tex, GLint level, int clear)
 {
     TextureLevel *lvl;
     GLint page_x, page_y, page_z;
     GLint width, height, depth;
     GLint x, y, z;
 
-    if (!tex || !tex->params.sparse || !tex->sparse_heap || !mglTextureMtl(tex))
+    if (!tex || !tex->params.sparse || !tex->sparse_heap)
         return;
     if (level < 0 || (GLuint)level >= tex->num_levels || !tex->faces[0].levels)
         return;
     lvl = &tex->faces[0].levels[level];
     if (!lvl || lvl->width == 0)
         return;
+    if (!mglTextureMtl(tex)) {
+        void *mtl = mglTextureBackendEnsure(tex)->mtl_data;
+        if (!mtl)
+            return;
+    }
 
     page_x = tex->sparse_page_x > 0 ? tex->sparse_page_x : 64;
     page_y = tex->sparse_page_y > 0 ? tex->sparse_page_y : 64;
@@ -5380,7 +5460,14 @@ static void mglSparseScrubTextureLevel(Texture *tex, GLint level)
                     void *mtl = mglTextureBackendEnsure(tex)->mtl_data;
                     if (!mtl)
                         return;
-                    /* Unmap ignores heap_offset. */
+                    /* clear≠0 after imageStore/SubImage remaps; GPU-zero
+                     * while mapped then Unmap.  Skip clear on commit-only
+                     * scrub (unmapped pages — blit would fault). */
+                    if (clear)
+                        (void)mglRenderSparseTextureClearRegion(
+                            mtl, (uint32_t)x, (uint32_t)y, (uint32_t)z,
+                            (uint32_t)pw, (uint32_t)ph, (uint32_t)pd,
+                            (uint32_t)level);
                     (void)mglRenderSparseTextureCommit(
                         tex->sparse_heap, mtl,
                         (uint32_t)x, (uint32_t)y, (uint32_t)z,
@@ -5406,7 +5493,7 @@ void mglSparseScrubBoundImages(GLMContext ctx)
         Texture *tex = iu->tex;
         if (!tex || !tex->params.sparse)
             continue;
-        mglSparseScrubTextureLevel(tex, (GLint)iu->level);
+        mglSparseScrubTextureLevel(tex, (GLint)iu->level, 1);
     }
 }
 
@@ -6540,6 +6627,25 @@ static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
+    /* Views share the root store.  Compressed views have no CPU shadow —
+     * decode from the root level with the view's internalformat so
+     * signed↔unsigned RGTC reinterprets match GPU sampling. */
+    TextureLevel *read_lvl = lvl;
+    if (tex->view_root) {
+        Texture *root = tex->view_root;
+        GLuint root_level = tex->view_min_level + (GLuint)level;
+        GLuint root_face = slice;
+        if (tex->view_min_layer > 0u &&
+            (root->target == GL_TEXTURE_CUBE_MAP ||
+             root->target == GL_TEXTURE_CUBE_MAP_ARRAY)) {
+            root_face = tex->view_min_layer + slice;
+        }
+        if (root_face < 6u && root->faces[root_face].levels &&
+            root_level < root->num_levels &&
+            root->faces[root_face].levels[root_level].data) {
+            read_lvl = &root->faces[root_face].levels[root_level];
+        }
+    }
 
     GLsizei width = (GLsizei)lvl->width;
     GLsizei height = (GLsizei)lvl->height;
@@ -6620,9 +6726,27 @@ static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
         render_target_needs_readback = true;
     }
 
-    if (!render_target_needs_readback &&
-        mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, depth, format, type, &pack_layout, pixels, STATE(pack).swap_bytes == GL_TRUE)) {
-        return;
+    /* Prefer CPU decode for RGTC / BPTC-float even when metal-authoritative.
+     * TextureView marks the root authoritative for GPU sampling; without this
+     * gate GetTexImage falls into Metal getBytes and returns raw BC4/BC6H
+     * blocks (CTS view_classes then builds a bogus FLOAT reference).  Decode
+     * with tex->internalformat so signed↔unsigned views reinterpret the same
+     * root blocks the way Metal sampling does. */
+    {
+        const GLenum view_if = (GLenum)tex->internalformat;
+        const bool prefer_block_cpu =
+            read_lvl && read_lvl->data &&
+            (mglInternalFormatIsRGTC(view_if) ||
+             view_if == GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT ||
+             view_if == GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT);
+        if (prefer_block_cpu || !render_target_needs_readback) {
+            if (mglCopyTextureLevelToPackBuffer(
+                    read_lvl, view_if, width, height, depth, format,
+                    type, &pack_layout, pixels,
+                    STATE(pack).swap_bytes == GL_TRUE)) {
+                return;
+            }
+        }
     }
 
     if (target == GL_TEXTURE_3D ||
@@ -6974,6 +7098,14 @@ void mglGetCompressedTexImage(GLMContext ctx, GLenum target, GLint level, void *
     }
 
     TextureLevel *lvl = &tex->faces[0].levels[level];
+    if (tex->view_root) {
+        Texture *root = tex->view_root;
+        GLuint root_level = tex->view_min_level + (GLuint)level;
+        if (root->faces[0].levels && root_level < root->num_levels &&
+            root->faces[0].levels[root_level].data) {
+            lvl = &root->faces[0].levels[root_level];
+        }
+    }
     if (lvl->data && lvl->data_size > 0u) {
         memcpy(img, (const void *)(uintptr_t)lvl->data, lvl->data_size);
     }
@@ -7003,6 +7135,14 @@ void mglGetnCompressedTexImage(GLMContext ctx, GLenum target, GLint lod, GLsizei
     }
 
     TextureLevel *lvl = &tex->faces[0].levels[lod];
+    if (tex->view_root) {
+        Texture *root = tex->view_root;
+        GLuint root_level = tex->view_min_level + (GLuint)lod;
+        if (root->faces[0].levels && root_level < root->num_levels &&
+            root->faces[0].levels[root_level].data) {
+            lvl = &root->faces[0].levels[root_level];
+        }
+    }
     if (lvl->data_size > (size_t)bufSize) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
