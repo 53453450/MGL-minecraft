@@ -3223,7 +3223,8 @@ int mglRenderAllocateMDIScratch(MGLMDIScratchOwner * owner_handle, uint64_t leng
     uint64_t required = alignedOffset + length;
     if (!owner->buffer || required > owner->capacity) {
         uint64_t nextCapacity = owner->capacity;
-        if (nextCapacity == 0) nextCapacity = 64u * 1024u;
+        /* PERF-026: larger initial floor cuts early multi-draw grow churn. */
+        if (nextCapacity == 0) nextCapacity = 256u * 1024u;
         while (nextCapacity < required) {
             if (nextCapacity > std::numeric_limits<uint64_t>::max() / 2u) {
                 nextCapacity = required;

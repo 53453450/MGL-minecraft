@@ -31,6 +31,7 @@ enum { MGL_RENDERER_CB_NOT_ENQUEUED = 0u };
 #include "mgl_renderer_backend.h" /* backend copy-back clear entries */
 #include "mgl_render_api_buffer.h"
 #include "mgl_render_api_binding.h"
+#include "mgl_env_flag.h"
 
 void mglClearStageBindingCopyBacks(void *renderer,
                                    MGLStageBindingCopyBackList *copy_backs)
@@ -245,7 +246,11 @@ bool mglFlushStageBindingCopyBacks(void *renderer,
 
 
     uint32_t failed_index = entry_count;
-    if (mglRenderCopyBackCPUPrefix(entries, entry_count, &failed_index) != 0) {
+    const int sync_cpu_shadow =
+        require_cpu_visibility_flag ||
+        mgl_env_flag_enabled("MGL_STAGE_COPY_BACK_CPU");
+    if (sync_cpu_shadow &&
+        mglRenderCopyBackCPUPrefix(entries, entry_count, &failed_index) != 0) {
         const MGLRenderCopyBackEntry *failed =
             failed_index < entry_count ? &entries[failed_index] : NULL;
         Buffer *failedBuffer = failed

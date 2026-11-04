@@ -4244,6 +4244,7 @@ static int mglPdSetPipelineTryBody(void *renderer, void *rawCtx)
 /* -processGLStateLocked:. */
 int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
 {
+    /* PERF-016 已修: clean GL state + active encoder skips full sync on draws. */
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
@@ -4354,6 +4355,14 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
                 }
             }
         }
+    }
+
+    if (draw_command && !quarantineBlocks && glState->vao != NULL &&
+        glState->dirty_bits == 0 &&
+        mglRenderEncoderOwnerHasCurrent(
+            commandState->currentRenderEncoderOwner) == 1) {
+        MGL_FRAME_INC(g_mglProcessDrawCallsSinceSwap);
+        return 1;
     }
 
     MGLRenderCommandBufferState processCommandState = {0};

@@ -1784,7 +1784,17 @@ int mglRenderPassPrepareEmulatedIndirectCPURead(void *renderer,
         return 1;
     }
 
-    mglRenderPassFlushCommandBuffer(renderer, 1);
+    mglRenderPassFlushCommandBuffer(renderer, 0);
+    MGLRenderCommandBufferState sync_state = {0};
+    if (commandState &&
+        (mglRenderWaitCommandBufferOwnerLastSubmitted(
+             commandState->currentCommandBufferOwner, &sync_state) != 0 ||
+         sync_state.has_error)) {
+        fprintf(stderr,
+                "MGL WARNING: %s skipped because GPU work did not complete before CPU-read synchronization\n",
+                label ? label : "indirect emulation");
+        return 0;
+    }
     if (!mglRenderPassProcessGLState(renderer, 1)) {
         fprintf(stderr, "MGL WARNING: %s skipped because GL state could not be restored after CPU-read synchronization\n",
               label ? label : "indirect emulation");

@@ -1150,6 +1150,8 @@ int mglRenderWaitCommandBufferOwnerLastSubmitted(MGLCommandBufferOwner * owner_h
     mgl::CommandBufferOwner* owner =
         reinterpret_cast<mgl::CommandBufferOwner*>(static_cast<void*>(owner_handle));
     if (!owner || !state_out) return -1;
+    /* PERF-038 deferred: present/swap still blocks on lastSubmitted
+     * waitUntilCompleted; moving finish off-thread needs CB lifetime work. */
     MTL::CommandBuffer* commandBuffer = owner->lastSubmitted;
     if (!commandBuffer) return 1;
     return mglRenderWaitCommandBufferState(commandBuffer, state_out);

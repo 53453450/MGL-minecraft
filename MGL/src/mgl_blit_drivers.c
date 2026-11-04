@@ -171,6 +171,17 @@ static void *mglBdCommandBufferOwner(const MGLRendererStateView *areas)
     return areas->command ? areas->command->currentCommandBufferOwner : NULL;
 }
 
+static int mglBdWaitLastSubmittedCommandBuffer(const MGLRendererStateView *areas)
+{
+    MGLRenderCommandBufferState state = {0};
+    if (mglRenderWaitCommandBufferOwnerLastSubmitted(
+            mglBdCommandBufferOwner(areas), &state) != 0 ||
+        state.has_error) {
+        return 0;
+    }
+    return 1;
+}
+
 /* The .m's file statics used by these two paths. */
 static void *mglBdCreateBufferWithBytes(const void *bytes, size_t length,
                                         uint64_t options)
@@ -509,7 +520,7 @@ bool mglBlitReadTextureRegion(void *renderer, void *texture,
         return false;
     }
 
-    mglRenderPassFlushCommandBuffer(renderer, 1);
+    mglRenderPassFlushCommandBuffer(renderer, 0);
     MGLRenderCommandBufferState read_state = {0};
     if (mglRenderWaitCommandBufferOwnerLastSubmitted(
             mglBdCommandBufferOwner(&areas), &read_state) != 0 ||
@@ -757,7 +768,7 @@ bool mglBlitCopyImageSubDataCpuToCpu(
                                     "MGL WARNING: CPU-to-CPU Metal update failed "
                                     "(caught exception)\n");
                         }
-                        free(expanded_data);
+                        mglUploadExpandScratchRelease(expanded_data);
                     } else {
                         /* Private storage: blit from a staging buffer.  For bpp
                          * mismatch formats (CPU bpp != Metal bpp), expand CPU
@@ -831,7 +842,7 @@ bool mglBlitCopyImageSubDataCpuToCpu(
                             }
                             mglSafeReleaseMetalObj(&staging_buf);
                         }
-                        free(expanded_data);
+                        mglUploadExpandScratchRelease(expanded_data);
                     }
                 }
             }
@@ -1233,7 +1244,10 @@ bool mglBlitCopyImageSubDataFormatConversion(
     mglRendererEndRenderEncodingLocked(renderer);
     (void)mglRenderPassSynchronizeForTextureReadback(
         renderer, src_texture, "copyImageSubData.formatConv");
-    mglRenderPassFlushCommandBuffer(renderer, 1);
+    mglRenderPassFlushCommandBuffer(renderer, 0);
+    if (!mglBdWaitLastSubmittedCommandBuffer(&areas)) {
+        return true;
+    }
 
     size_t copy_width = mglBdMaxSize((size_t)width, 1u);
     size_t copy_height = mglBdMaxSize((size_t)height, 1u);
@@ -1535,7 +1549,12 @@ static int mglBd3DReadGuarded(void *renderer, void *ctx_raw)
                     (size_t)c->src_level, slice_region.origin, slice_region.size,
                     slice_buffer, 0, c->row_bytes, c->image_bytes);
                 mglBdEndBlitEncoder(read_encoder);
-                mglRenderPassFlushCommandBuffer(c->renderer, 1);
+                mglRenderPassFlushCommandBuffer(c->renderer, 0);
+                if (!mglBdWaitLastSubmittedCommandBuffer(&c->areas)) {
+                    mglSafeReleaseMetalObj(&slice_buffer);
+                    c->early_exit = 1;
+                    return 1;
+                }
                 void *slice_contents = NULL;
                 uint64_t slice_length = 0;
                 if (mglRenderGetBufferContents(slice_buffer, &slice_contents,
@@ -1600,7 +1619,7 @@ static int mglBd3DWriteGuarded(void *renderer, void *ctx_raw)
             mglBdReplaceTextureRegion(c->dst_texture, full_region,
                                       (size_t)c->dst_level, 0, expanded_data,
                                       expanded_bpr, expanded_image_bytes, 1);
-            free(expanded_data);
+            mglUploadExpandScratchRelease(expanded_data);
         } else {
             mglBdReplaceTextureRegion(c->dst_texture, full_region,
                                       (size_t)c->dst_level, 0,
@@ -1663,8 +1682,8 @@ bool mglBlitCopyImageSubDataPostBlitReadback(
             if (dst_metal_bpp > 0 && dst_cpu_bpp == dst_metal_bpp) {
                 (void)mglRenderPassSynchronizeForTextureReadback(
                     renderer, dst_texture, "copyImageSubData.blitReadback");
-                mglRenderPassFlushCommandBuffer(renderer, 1);
-
+                mglRenderPassFlushCommandBuffer(renderer, 0);
+                if (mglBdWaitLastSubmittedCommandBuffer(&areas)) {
                 size_t copy_width = mglBdMaxSize((size_t)width, 1u);
                 size_t copy_height = mglBdMaxSize((size_t)height, 1u);
                 size_t num_slices = mglBdMaxSize((size_t)depth, 1u);
@@ -1770,6 +1789,7 @@ bool mglBlitCopyImageSubDataPostBlitReadback(
                         readback_done = 1;
                     }
                 }
+                }
             }
         }
     }
@@ -1798,8 +1818,8 @@ bool mglBlitCopyImageSubDataPostBlitReadback(
                     (void)mglRenderPassSynchronizeForTextureReadback(
                         renderer, dst_texture,
                         "copyImageSubData.fmtConvReadback");
-                    mglRenderPassFlushCommandBuffer(renderer, 1);
-
+                    mglRenderPassFlushCommandBuffer(renderer, 0);
+                    if (mglBdWaitLastSubmittedCommandBuffer(&areas)) {
                     size_t copy_width = mglBdMaxSize((size_t)width, 1u);
                     size_t copy_height = mglBdMaxSize((size_t)height, 1u);
                     size_t num_slices = mglBdMaxSize((size_t)depth, 1u);
@@ -1929,6 +1949,7 @@ bool mglBlitCopyImageSubDataPostBlitReadback(
                     }
                     free(metal_staging);
                     free(cpu_staging);
+                    }
                 }
             }
         }
@@ -2180,7 +2201,7 @@ static void mglBdPushCpuShadowRegionToMetalSource(
             }
         }
 
-        free(expanded);
+        mglUploadExpandScratchRelease(expanded);
         free(packed);
     }
 }
