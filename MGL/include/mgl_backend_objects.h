@@ -27,6 +27,10 @@ extern "C" {
  * The wait blocks on its completion. */
 struct MGLSyncBackend {
     void *command_buffer; /* retained MTL::CommandBuffer, or NULL */
+    /* 1 when the fence is known complete with no CB to wait on (empty
+     * command stream at FenceSync). Distinguishes "vacuous SIGNALED" from
+     * "GetSync failed / no backend" which must stay UNSIGNALED (AUDIT-044). */
+    int completed;
 };
 
 /* Program: what the AIR backend built for one linked stage.  The metallib

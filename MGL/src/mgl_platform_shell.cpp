@@ -1062,7 +1062,23 @@ void mglRendererTemporariesAdd(void *temporaries, void *object)
 
 void mglRendererTemporariesRelease(void *temporaries)
 {
-    mglBridgingRelease(temporaries);
+    /* AUDIT-053: encode may have just handed these Metal objects to an
+     * in-flight CB. Defer the last retain drop across a small ring so a
+     * subsequent GPU reference cannot UAF after this call returns. */
+    static constexpr size_t kRetiredTempSlots = 8u;
+    static void *retired[kRetiredTempSlots] = {};
+    static size_t retired_count = 0u;
+    if (!temporaries) {
+        return;
+    }
+    if (retired_count == kRetiredTempSlots) {
+        mglBridgingRelease(retired[0]);
+        for (size_t i = 1u; i < kRetiredTempSlots; ++i) {
+            retired[i - 1u] = retired[i];
+        }
+        retired_count = kRetiredTempSlots - 1u;
+    }
+    retired[retired_count++] = temporaries;
 }
 
 /* === swap-path queries and effects that must run on the shell (log 180) == */

@@ -32,6 +32,9 @@
 namespace {
 
 constexpr size_t kLineLoopCacheSlots = 4u;
+/* Ring of retired index-cache buffers: delay release so in-flight draws
+ * that still reference a replaced cache entry cannot UAF (AUDIT-004). */
+constexpr size_t kRetiredIndexSlots = 16u;
 struct ArrayCacheEntry {
     void *buffer = nullptr;
     size_t count = 0;
@@ -47,9 +50,23 @@ struct LineLoopEntry {
     void *buffer = nullptr;
 };
 LineLoopEntry g_line_loop[kLineLoopCacheSlots];
+void *g_retired_index_buffers[kRetiredIndexSlots] = {};
+size_t g_retired_index_count = 0;
 
 void releaseObject(void *object) {
     if (object) static_cast<NS::Object *>(object)->release();
+}
+
+void deferReleaseObject(void *object) {
+    if (!object) return;
+    if (g_retired_index_count == kRetiredIndexSlots) {
+        releaseObject(g_retired_index_buffers[0]);
+        for (size_t i = 1; i < kRetiredIndexSlots; ++i) {
+            g_retired_index_buffers[i - 1u] = g_retired_index_buffers[i];
+        }
+        g_retired_index_count = kRetiredIndexSlots - 1u;
+    }
+    g_retired_index_buffers[g_retired_index_count++] = object;
 }
 
 void *newBuffer(void *device, size_t bytes, void **contents_out) {
@@ -125,7 +142,7 @@ void *cachedPrefix(void *device, ArrayCacheEntry &entry, size_t requested,
     std::free(expanded);
     if (!buffer) return nullptr;
     os_unfair_lock_lock(&g_cache_lock);
-    if (entry.buffer) releaseObject(entry.buffer);
+    if (entry.buffer) deferReleaseObject(entry.buffer);
     entry.buffer = buffer;
     entry.count = requested;
     if (out_count) *out_count = index_count;

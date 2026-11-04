@@ -114,8 +114,14 @@ int mglRenderQueryCapability(void* device_ref,
 
 unsigned int mglRenderGetSyncStatus(GLMContext glm_ctx, Sync* sync) {
     (void)glm_ctx;
-    if (!sync || !sync->backend || !sync->backend->command_buffer) {
-        return mglQuerySignaledValue();
+    if (!sync || !sync->backend) {
+        /* No backend: FenceSync never attached work (or failed). Do not
+         * pretend SIGNALED — that was AUDIT-044. */
+        return mglQueryUnsignaledValue();
+    }
+    if (sync->backend->completed || !sync->backend->command_buffer) {
+        return sync->backend->completed ? mglQuerySignaledValue()
+                                        : mglQueryUnsignaledValue();
     }
     MTL::CommandBuffer* commandBuffer =
         static_cast<MTL::CommandBuffer*>(sync->backend->command_buffer);
@@ -276,11 +282,41 @@ void mglRenderGetSync(GLMContext glm_ctx, Sync* sync) {
         return;
     }
 
+    auto attachHang = [&](MTL::CommandBuffer* hang, int vacuous_completed) {
+        sync->backend = new (std::nothrow) MGLSyncBackend();
+        if (!sync->backend) return;
+        sync->backend->completed = vacuous_completed;
+        sync->backend->command_buffer = nullptr;
+        if (hang) {
+            hang->retain();
+            sync->backend->command_buffer = hang;
+            sync->backend->completed = 0;
+        }
+    };
+
     MGLRenderCommandBufferState state = {};
-    if (mglRenderGetCommandBufferOwnerState(command_owner, &state) != 0 ||
+    const int has_state =
+        mglRenderGetCommandBufferOwnerState(command_owner, &state);
+    if (has_state != 0 ||
         state.status !=
             static_cast<uint32_t>(MTL::CommandBufferStatusNotEnqueued) ||
         state.has_error) {
+        /* AUDIT-044: an in-flight / already-committed CB must hang on the
+         * fence; rotating without attaching made ClientWait see SIGNALED
+         * while GPU work was still running. */
+        MTL::CommandBuffer* hang =
+            static_cast<MTL::CommandBuffer*>(
+                mglRenderCommandBufferOwnerGetCurrent(command_owner));
+        if (!hang) {
+            hang = static_cast<MTL::CommandBuffer*>(
+                mglRenderCommandBufferOwnerGetLastSubmitted(command_owner));
+        }
+        if (hang &&
+            hang->status() != MTL::CommandBufferStatusNotEnqueued) {
+            attachHang(hang, 0);
+        } else {
+            attachHang(nullptr, 1);
+        }
         void* next = nullptr;
         (void)mglRenderCommandBufferOwnerCreateNext(command_owner, &next);
         return;
@@ -292,18 +328,14 @@ void mglRenderGetSync(GLMContext glm_ctx, Sync* sync) {
             command_owner, &submission, &command_buffer) != 0 ||
         !submission || !command_buffer) {
         mglRenderDestroyCommandBufferSubmission(&submission);
+        /* Nothing pending to fence: vacuous SIGNALED is correct. */
+        attachHang(nullptr, 1);
         return;
     }
 
     MTL::CommandBuffer* command =
         static_cast<MTL::CommandBuffer*>(command_buffer);
-    /* Without state to hold it the command buffer still commits; the sync
-     * then reads as signaled. */
-    sync->backend = new (std::nothrow) MGLSyncBackend();
-    if (sync->backend) {
-        command->retain();
-        sync->backend->command_buffer = command;
-    }
+    attachHang(command, 0);
 
     MGLRenderCommandBufferTransaction transaction = {};
     int result = mglRenderCommitCommandBufferTransaction(

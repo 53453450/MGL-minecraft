@@ -815,6 +815,9 @@ int mglRenderCommandBufferOwnerHasState(
  * a borrowed command-buffer pointer to Objective-C. */
 int mglRenderCommandBufferOwnerHasLastSubmitted(MGLCommandBufferOwner *owner);
 
+/* Borrowed pointer to the owner's last accepted submission (may be NULL). */
+void *mglRenderCommandBufferOwnerGetLastSubmitted(MGLCommandBufferOwner *owner);
+
 /* Wait for one submitted command buffer and return a value-state snapshot.
  * Returns 0 on completed success, 1 when the buffer is still NotEnqueued,
  * and -1 for invalid arguments, wait failures, or command-buffer errors. */

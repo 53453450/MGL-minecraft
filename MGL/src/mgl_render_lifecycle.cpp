@@ -552,6 +552,9 @@ void mglRenderResetMDIScratchOwner(MGLMDIScratchOwner * owner_handle) {
     mgl::MDIScratchOwner* owner =
         reinterpret_cast<mgl::MDIScratchOwner*>(static_cast<void*>(owner_handle));
     if (!owner) return;
+    /* Pass / CB boundary: prior GPU work that referenced retired scratch
+     * buffers is assumed complete, so flush deferred releases here. */
+    owner->flushRetired();
     if (owner->buffer) owner->buffer->release();
     owner->buffer = nullptr;
     owner->capacity = 0;

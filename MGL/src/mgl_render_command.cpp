@@ -696,6 +696,12 @@ int mglRenderBlitCopyBuffer(void* blit_encoder,
     MTL::Buffer* destination =
         static_cast<MTL::Buffer*>(destination_buffer);
     if (!encoder || !source || !destination || size == 0) return -1;
+    if (source_offset > source->length() ||
+        size > source->length() - source_offset ||
+        destination_offset > destination->length() ||
+        size > destination->length() - destination_offset) {
+        return -1;
+    }
     encoder->copyFromBuffer(source, static_cast<NS::UInteger>(source_offset),
                             destination,
                             static_cast<NS::UInteger>(destination_offset),
@@ -1057,6 +1063,14 @@ int mglRenderCommandBufferOwnerHasCurrent(MGLCommandBufferOwner * owner_handle) 
     return owner ? (owner->current ? 1 : 0) : -1;
 }
 
+extern "C"
+void* mglRenderCommandBufferOwnerGetLastSubmitted(
+    MGLCommandBufferOwner * owner_handle) {
+    mgl::CommandBufferOwner* owner =
+        reinterpret_cast<mgl::CommandBufferOwner*>(static_cast<void*>(owner_handle));
+    return owner ? static_cast<void*>(owner->lastSubmitted) : nullptr;
+}
+
 int mglRenderCommandBufferOwnerCreateNext(MGLCommandBufferOwner * owner_handle, void** command_buffer_out) {
     if (command_buffer_out) *command_buffer_out = nullptr;
     mgl::CommandBufferOwner* owner =
@@ -1074,6 +1088,8 @@ int mglRenderCommandBufferOwnerCreateNext(MGLCommandBufferOwner * owner_handle, 
             *command_buffer_out = owner->current;
             return 0;
         }
+        /* Keep the committed CB waitable via lastSubmitted (AUDIT-044). */
+        mgl::setLastSubmitted(owner, owner->current);
         owner->current->release();
         owner->current = nullptr;
     }
@@ -1178,6 +1194,17 @@ void mglRenderDiscardCommandBufferOwnerCurrent(MGLCommandBufferOwner * owner_han
     mgl::CommandBufferOwner* owner =
         reinterpret_cast<mgl::CommandBufferOwner*>(static_cast<void*>(owner_handle));
     if (!owner || !owner->current) return;
+    /* AUDIT-051: a committed/scheduled CB may still hold GPU references to
+     * resources. Drain before dropping our retain so recovery/teardown
+     * cannot UAF those resources. */
+    const MTL::CommandBufferStatus status = owner->current->status();
+    if (status == MTL::CommandBufferStatusCommitted ||
+        status == MTL::CommandBufferStatusScheduled) {
+        try {
+            owner->current->waitUntilCompleted();
+        } catch (...) {
+        }
+    }
     owner->current->release();
     owner->current = nullptr;
     owner->transaction_created_current = false;

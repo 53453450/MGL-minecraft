@@ -35,6 +35,7 @@
 
 #include "glm_context.h"
 #include "draw_command.h"
+#include "mgl.h" /* mglFlush for ClientWaitSync FLUSH_COMMANDS_BIT */
 
 Sync *newSync(GLMContext ctx)
 {
@@ -357,6 +358,12 @@ GLenum  mglClientWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint6
         ERROR_RETURN(GL_INVALID_VALUE);
         mglSyncOperationLeave(ctx);
         return GL_WAIT_FAILED;
+    }
+
+    /* GL 4.6 §5.2.2: FLUSH_COMMANDS_BIT flushes the context so the fence can
+     * complete. Without this, ClientWait can time out forever (AUDIT-045). */
+    if (flags & GL_SYNC_FLUSH_COMMANDS_BIT) {
+        mglFlush(ctx);
     }
 
     /* GL_ALREADY_SIGNALED: the fence had already completed at call time, so no

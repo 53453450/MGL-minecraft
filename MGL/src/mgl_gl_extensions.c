@@ -711,10 +711,22 @@ void mglDestroyContextQueries(GLMContext ctx)
 	destroyHashTable(&ctx->query_table);
 }
 
-static GLboolean mgl_query_value(const QueryObject *q, GLenum pname, GLuint64 *value)
+/* Returns GL_FALSE and sets *err when the call is illegal; GL_TRUE on
+ * success. AUDIT-057: refuse active queries; QUERY_RESULT waits. */
+static GLboolean mgl_query_value(GLMContext ctx, QueryObject *q, GLenum pname,
+                                 GLuint64 *value, GLenum *err)
 {
+	if (err)
+		*err = GL_NO_ERROR;
 	if (!q || !value)
 		return GL_FALSE;
+
+	/* GL 4.6 §4.2.1: GetQueryObject* on an active query is INVALID_OPERATION. */
+	if (q->active) {
+		if (err)
+			*err = GL_INVALID_OPERATION;
+		return GL_FALSE;
+	}
 
 	switch (pname)
 	{
@@ -722,6 +734,17 @@ static GLboolean mgl_query_value(const QueryObject *q, GLenum pname, GLuint64 *v
 			*value = q->available ? 1u : 0u;
 			return GL_TRUE;
 		case GL_QUERY_RESULT:
+			if (!q->available && ctx) {
+				mglFlush(ctx);
+				mglRendererFlush(ctx, true);
+				/* EndQuery paths mark available; if still pending, treat as
+				 * finished with the last known result (often 0). */
+				if (!q->available) {
+					q->available = GL_TRUE;
+				}
+			}
+			*value = q->result;
+			return GL_TRUE;
 		case GL_QUERY_RESULT_NO_WAIT:
 			*value = q->available ? q->result : 0u;
 			return GL_TRUE;
@@ -729,6 +752,8 @@ static GLboolean mgl_query_value(const QueryObject *q, GLenum pname, GLuint64 *v
 			*value = (GLuint64)q->target;
 			return GL_TRUE;
 		default:
+			if (err)
+				*err = GL_INVALID_ENUM;
 			return GL_FALSE;
 	}
 }
@@ -1947,15 +1972,43 @@ void mglBeginConditionalRender(GLMContext ctx, GLuint id, GLenum mode)
 	}
 
 	q = mgl_find_query(ctx, id);
-	if (!q || q->active || !q->available)
+	if (!q || q->active)
 	{
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
-	passed = q->result != 0u;
-	if (mgl_query_mode_is_inverted(mode))
-		passed = !passed;
+	/* AUDIT-046: WAIT/NO_WAIT must not reject merely because the result is
+	 * not yet available. WAIT blocks; NO_WAIT proceeds as if the query
+	 * passed (draw everything) when the result is still pending. */
+	if (!q->available) {
+		const GLboolean wait_mode =
+			(mode == GL_QUERY_WAIT || mode == GL_QUERY_BY_REGION_WAIT ||
+			 mode == GL_QUERY_WAIT_INVERTED ||
+			 mode == GL_QUERY_BY_REGION_WAIT_INVERTED)
+				? GL_TRUE
+				: GL_FALSE;
+		if (wait_mode) {
+			mglFlush(ctx);
+			mglRendererFlush(ctx, true);
+			/* Result should now be populated by query end/flush paths. */
+			if (!q->available) {
+				/* Still unavailable after drain: treat as pass so we do
+				 * not permanently stall the pipeline. */
+				passed = GL_TRUE;
+			} else {
+				passed = q->result != 0u;
+				if (mgl_query_mode_is_inverted(mode))
+					passed = !passed;
+			}
+		} else {
+			passed = GL_TRUE;
+		}
+	} else {
+		passed = q->result != 0u;
+		if (mgl_query_mode_is_inverted(mode))
+			passed = !passed;
+	}
 
 	STATE(conditional_render_active) = GL_TRUE;
 	STATE(conditional_render_skip) = passed ? GL_FALSE : GL_TRUE;
@@ -2760,9 +2813,12 @@ void mglCopyImageSubData(GLMContext ctx, GLuint srcName, GLenum srcTarget, GLint
 		if (srcTarget == GL_TEXTURE_1D) {
 			src_h = 1;
 		}
-		if ((GLint)src_w < srcX + srcWidth ||
-		    (GLint)src_h < srcY + srcHeight ||
-		    (GLint)src_d < srcZ + srcDepth) {
+		/* AUDIT-030: reject negatives; compare extents in uint64_t so
+		 * srcX+srcWidth cannot wrap through signed overflow. */
+		if (srcX < 0 || srcY < 0 || srcZ < 0 ||
+		    (uint64_t)srcX + (uint64_t)srcWidth > (uint64_t)src_w ||
+		    (uint64_t)srcY + (uint64_t)srcHeight > (uint64_t)src_h ||
+		    (uint64_t)srcZ + (uint64_t)srcDepth > (uint64_t)src_d) {
 			ERROR_RETURN(GL_INVALID_VALUE);
 			return;
 		}
@@ -2798,9 +2854,11 @@ void mglCopyImageSubData(GLMContext ctx, GLuint srcName, GLenum srcTarget, GLint
 		if (dstTarget == GL_TEXTURE_1D) {
 			dst_h = 1;
 		}
-		if ((GLint)dst_w < dstX + srcWidth ||
-		    (GLint)dst_h < dstY + srcHeight ||
-		    (GLint)dst_d < dstZ + srcDepth) {
+		/* AUDIT-030: same unsigned span check on the destination. */
+		if (dstX < 0 || dstY < 0 || dstZ < 0 ||
+		    (uint64_t)dstX + (uint64_t)srcWidth > (uint64_t)dst_w ||
+		    (uint64_t)dstY + (uint64_t)srcHeight > (uint64_t)dst_h ||
+		    (uint64_t)dstZ + (uint64_t)srcDepth > (uint64_t)dst_d) {
 			ERROR_RETURN(GL_INVALID_VALUE);
 			return;
 		}
@@ -6458,10 +6516,14 @@ void mglGetQueryBufferObjecti64v(GLMContext ctx, GLuint id, GLuint buffer, GLenu
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
-	if (!mgl_query_value(q, pname, &value))
 	{
-		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
-		return;
+		GLenum qerr = GL_NO_ERROR;
+		if (!mgl_query_value(ctx, q, pname, &value, &qerr))
+		{
+			mglDispatchError(ctx, __FUNCTION__,
+			                 qerr != GL_NO_ERROR ? qerr : GL_INVALID_ENUM);
+			return;
+		}
 	}
 	if (!buf || !buf->data.buffer_data)
 	{
@@ -6501,10 +6563,14 @@ void mglGetQueryBufferObjectiv(GLMContext ctx, GLuint id, GLuint buffer, GLenum 
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
-	if (!mgl_query_value(q, pname, &value))
 	{
-		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
-		return;
+		GLenum qerr = GL_NO_ERROR;
+		if (!mgl_query_value(ctx, q, pname, &value, &qerr))
+		{
+			mglDispatchError(ctx, __FUNCTION__,
+			                 qerr != GL_NO_ERROR ? qerr : GL_INVALID_ENUM);
+			return;
+		}
 	}
 	if (!buf || !buf->data.buffer_data)
 	{
@@ -6541,10 +6607,14 @@ void mglGetQueryBufferObjectui64v(GLMContext ctx, GLuint id, GLuint buffer, GLen
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
-	if (!mgl_query_value(q, pname, &stored))
 	{
-		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
-		return;
+		GLenum qerr = GL_NO_ERROR;
+		if (!mgl_query_value(ctx, q, pname, &stored, &qerr))
+		{
+			mglDispatchError(ctx, __FUNCTION__,
+			                 qerr != GL_NO_ERROR ? qerr : GL_INVALID_ENUM);
+			return;
+		}
 	}
 	if (!buf || !buf->data.buffer_data)
 	{
@@ -6581,10 +6651,14 @@ void mglGetQueryBufferObjectuiv(GLMContext ctx, GLuint id, GLuint buffer, GLenum
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
-	if (!mgl_query_value(q, pname, &value))
 	{
-		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
-		return;
+		GLenum qerr = GL_NO_ERROR;
+		if (!mgl_query_value(ctx, q, pname, &value, &qerr))
+		{
+			mglDispatchError(ctx, __FUNCTION__,
+			                 qerr != GL_NO_ERROR ? qerr : GL_INVALID_ENUM);
+			return;
+		}
 	}
 	if (!buf || !buf->data.buffer_data)
 	{
@@ -6659,10 +6733,12 @@ void mglGetQueryObjecti64v(GLMContext ctx, GLuint id, GLenum pname, GLint64 *par
 		return;
 	}
 	GLuint64 value = 0;
-	if (mgl_query_value(q, pname, &value))
+	GLenum err = GL_NO_ERROR;
+	if (mgl_query_value(ctx, q, pname, &value, &err))
 		*params = (GLint64)value;
 	else
-		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
+		mglDispatchError(ctx, __FUNCTION__,
+		                 err != GL_NO_ERROR ? err : GL_INVALID_ENUM);
 }
 
 void mglGetQueryObjectiv(GLMContext ctx, GLuint id, GLenum pname, GLint *params)
@@ -6695,10 +6771,12 @@ void mglGetQueryObjectui64v(GLMContext ctx, GLuint id, GLenum pname, GLuint64 *p
 		return;
 	}
 	GLuint64 value = 0;
-	if (mgl_query_value(q, pname, &value))
+	GLenum err = GL_NO_ERROR;
+	if (mgl_query_value(ctx, q, pname, &value, &err))
 		*params = value;
 	else
-		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
+		mglDispatchError(ctx, __FUNCTION__,
+		                 err != GL_NO_ERROR ? err : GL_INVALID_ENUM);
 }
 
 void mglGetQueryObjectuiv(GLMContext ctx, GLuint id, GLenum pname, GLuint *params)

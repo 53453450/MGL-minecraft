@@ -1001,6 +1001,11 @@ void destroyGLMContext(GLMContext ctx)
     _ctx_explicitly_unbound = GL_FALSE;
 
     mglFlushPendingDraws(ctx);
+    /* AUDIT-047: FlushPending only submits; drain GPU before freeing
+     * Metal-backed GL objects and the renderer backend. */
+    if (mglContextHasReadyRendererBackend(ctx)) {
+        mglRendererFlush(ctx, true);
+    }
     mglResetCommandBufferForContext(ctx, &ctx->draw_command_buffer);
     mglDrainTransientPoolForContext(ctx);
 
