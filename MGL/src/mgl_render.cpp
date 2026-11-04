@@ -3344,10 +3344,15 @@ int mglRenderEncodeTextureUploadLayers(
         return -1;
     }
     /* AUDIT-014: flip_y (and normal) paths index rows via bytes_per_row;
-     * bytes_per_image must cover the full height span. */
+     * bytes_per_image must cover the full height span.  For block-compressed
+     * formats Metal's height is still in pixels while bytes_per_row is a
+     * row-of-blocks stride, so the span is ceil(height/blockH) rows. */
     {
+        const uint64_t upload_rows = mglRenderMetalUploadRowsForPixelFormat(
+            static_cast<uint32_t>(destination->pixelFormat()), source_height);
         uint64_t min_image = 0;
-        if (mglRenderCheckedProduct(source_height, source_bytes_per_row,
+        if (upload_rows == 0u ||
+            mglRenderCheckedProduct(upload_rows, source_bytes_per_row,
                                     &min_image) != 0 ||
             source_bytes_per_image < min_image) {
             return -1;
