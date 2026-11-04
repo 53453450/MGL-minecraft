@@ -26,6 +26,7 @@ extern "C" {
 #include "mgl_render_internal.h"
 #include "mgl_capability.h"
 #include "mgl_sync.h"
+#include "mgl_texture_upload_ops.h"
 #include "glm_limits.h"
 #include "mgl_shader_abi.h"
 #include "mgl_buffer_slots.h"
@@ -554,12 +555,13 @@ void mglRenderResetMDIScratchOwner(MGLMDIScratchOwner * owner_handle) {
     if (!owner) return;
     /* AUDIT-037: at a CB boundary the prior buffer may still be referenced by
      * an in-flight encode. Retire it; only drop the oldest once the ring is
-     * deep enough that those CBs are almost certainly done. */
+     * deep enough that those CBs are almost certainly done.
+     * PERF-026: keep capacity as a peak hint so the next allocate does not
+     * restart from the 64KiB floor every pass. */
     if (owner->buffer) {
         owner->retire(owner->buffer);
         owner->buffer = nullptr;
     }
-    owner->capacity = 0;
     owner->offset = 0;
     constexpr size_t kMaxRetiredMDI = 8u;
     while (owner->retired.size() > kMaxRetiredMDI) {
@@ -648,7 +650,7 @@ uint8_t* mglRenderCreateRGBA8ExpandedUpload(
         return NULL;
     }
 
-    uint8_t* dst = (uint8_t*)malloc(dst_bytes_per_image);
+    uint8_t* dst = mglUploadExpandScratchAcquire(dst_bytes_per_image);
     if (!dst) {
         return NULL;
     }

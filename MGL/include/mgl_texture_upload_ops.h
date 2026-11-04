@@ -123,6 +123,12 @@ void mglTextureTraceSampledReadback(void *renderer, void *texture, Texture *gl_t
                                     uint64_t hit);
 void *mglTextureCreateFallback(void *renderer, Texture *tex);
 
+/* PERF-009/017: process-local upload scratch (expand + 256B align rows). */
+uint8_t *mglUploadExpandScratchAcquire(size_t size);
+void mglUploadExpandScratchRelease(uint8_t *ptr);
+void *mglUploadAlignScratchAcquire(size_t alignment, size_t size);
+void mglUploadAlignScratchRelease(void *ptr);
+
 #ifdef __cplusplus
 }
 #endif

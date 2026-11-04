@@ -29,6 +29,7 @@
 #include "mgl_renderer_ports.h"
 #include "mgl_sync.h"
 #include "mgl_texture_compat.h"
+#include "mgl_texture_backend.h"
 #include "mgl_trace_log.h"
 
 #include "mgl_render_api_command.h"
@@ -1160,6 +1161,7 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
 typedef struct MglPdPreReadbackCtx_t {
     void *renderer;
     void *command_buffer;
+    int wait_until_completed;
 } MglPdPreReadbackCtx;
 
 /* @try of the pre-readback flush: the catch only logs a warning. */
@@ -1167,21 +1169,25 @@ static int mglPdPreReadbackTryBody(void *renderer, void *rawCtx)
 {
     MglPdPreReadbackCtx *ctx = (MglPdPreReadbackCtx *)rawCtx;
     mglRendererCommitCommandBufferWithAGXRecovery(renderer, ctx->command_buffer);
-    (void)mglRenderWaitCommandBuffer(ctx->command_buffer);
+    if (ctx->wait_until_completed) {
+        (void)mglRenderWaitCommandBuffer(ctx->command_buffer);
+    }
     return 1;
 }
 
 /* Commits and waits for the current command buffer so readbacks on a separate
  * command buffer observe every encoded upload and draw. */
 static void mglPdCommitPendingForReadback(void *renderer,
-                                          MGLRendererStateView *areas)
+                                          MGLRendererStateView *areas,
+                                          int wait_until_completed)
 {
     mglRendererEndRenderEncodingLocked(renderer);
     if (mglRenderCommandBufferOwnerHasCurrent(
             areas->command->currentCommandBufferOwner) == 1) {
         void *pendingCB = mglPassManagerDetachCurrentCommandBufferForSubmission(
             areas->render_pass_manager);
-        MglPdPreReadbackCtx preCtx = {renderer, pendingCB};
+        MglPdPreReadbackCtx preCtx = {renderer, pendingCB,
+                                      wait_until_completed};
         (void)mglPlatformShellGuardedCallCtx(renderer, "pre-readback flush",
                                              mglPdPreReadbackTryBody, &preCtx,
                                              NULL);
@@ -1379,7 +1385,7 @@ int mglTextureReadStencilPixels(void *renderer, GLMContext glm_ctx,
             renderer, texture, "mtlReadStencilPixels")) {
         return 0;
     }
-    mglPdCommitPendingForReadback(renderer, &areas);
+    mglPdCommitPendingForReadback(renderer, &areas, 1);
 
     /* GL-order storage addresses the rows as GL gives them. */
     const uint64_t srcRow = (uint64_t)region.origin.y + (uint64_t)clip.dst_y;
@@ -1459,7 +1465,14 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
     /* Ensure any pending texture upload blit commands are committed before
      * reading back. Without this, getBytes may return stale/zero data because
      * the blit encoding the upload is still in the uncommitted command buffer. */
-    mglPdCommitPendingForReadback(renderer, &areas);
+    const int gpu_authoritative = mglRenderTargetHasGPUContent(
+        tex->is_render_target ? 1 : 0, mglTextureWriteVersion(tex));
+    const int wait_for_gpu =
+        gpu_authoritative || (tex->dirty_bits & DIRTY_TEXTURE_DATA);
+    /* PERF-037 (partial): skip waitUntilCompleted when CPU texels are still
+     * authoritative (no recorded RT write version). FBO glReadPixels color
+     * still waits via mglRendererReadDrawable (GPU attachment readback). */
+    mglPdCommitPendingForReadback(renderer, &areas, wait_for_gpu);
 
     MGLRegionValue readRegion = region;
     uint64_t readSlice = slice;

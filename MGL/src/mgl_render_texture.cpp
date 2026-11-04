@@ -1119,8 +1119,11 @@ int mglRenderSetRenderSampler(void* render_encoder,
  * buffer commits and mints the next generation before Destroy runs), so a
  * slot is conservatively held until that generation completes. */
 namespace {
-constexpr size_t kTextureStagingPoolMaxSlots = 8;
-constexpr uint64_t kTextureStagingPoolMaxBytes = 32ull << 20;
+constexpr size_t kTextureStagingPoolMaxSlots = 16;
+constexpr uint64_t kTextureStagingPoolMaxBytes = 64ull << 20;
+/* PERF-034 accepted: pool mutex may nest with renderer.mutex; lock order is
+ * always gTextureStagingPoolMutex alone here — never held while taking
+ * renderer.mutex (create/destroy staging below take only the pool lock). */
 std::mutex gTextureStagingPoolMutex;
 MTL::Buffer* gTextureStagingPoolBuffers[kTextureStagingPoolMaxSlots] = {};
 uint64_t gTextureStagingPoolGenerations[kTextureStagingPoolMaxSlots] = {};
