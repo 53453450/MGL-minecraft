@@ -382,18 +382,12 @@ int mglRenderPassSyncRenderPassStateForContext(void *renderer,
         glm_ctx ? glm_ctx->active_state : mglRsStateView(&areas);
     Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(
         glm_ctx, "processGLState.dirtyFBO");
-    int framebufferBindingDirty =
-        framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING);
-    if (areas.command &&
-        mglRenderEncoderOwnerHasCurrent(
-            areas.command->currentRenderEncoderOwner) == 1 &&
-        !framebufferBindingDirty &&
-        mglRenderPassMatchesCurrentFramebuffer(renderer)) {
-        state->dirty_bits &= ~DIRTY_FBO;
-        return 1;
-    }
 
-    if (framebuffer && framebufferBindingDirty) {
+    /* Refresh attachment bindings before the match test.  DIRTY_FBO_BINDING
+     * used to force a rotate even when the live Metal pass already targeted
+     * the same textures — BindFramebuffer / DrawBuffers often set the bit
+     * without changing the Metal attachment set (MC named-FBO traffic). */
+    if (framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING)) {
         RETURN_FALSE_ON_FAILURE(
             mglRendererBindFramebufferAttachmentTextures(renderer));
         framebuffer = mglRendererGetValidatedFramebuffer(
@@ -401,6 +395,14 @@ int mglRenderPassSyncRenderPassStateForContext(void *renderer,
         if (framebuffer) {
             framebuffer->dirty_bits &= ~DIRTY_FBO_BINDING;
         }
+    }
+
+    if (areas.command &&
+        mglRenderEncoderOwnerHasCurrent(
+            areas.command->currentRenderEncoderOwner) == 1 &&
+        mglRenderPassMatchesCurrentFramebuffer(renderer)) {
+        state->dirty_bits &= ~DIRTY_FBO;
+        return 1;
     }
 
     /* instrumentation: an FBO change forced a real encoder rotation

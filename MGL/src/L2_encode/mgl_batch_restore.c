@@ -115,9 +115,17 @@ uint32_t mgl_batch_restore_fold_fbo_dirty(uint32_t replay_dirty_bits,
     if (!in) {
         return replay_dirty_bits;
     }
+    /* prev_fbo_differs alone is not enough: after restore, pass_matches already
+     * compares the live FBO to the open encoder.  Requiring a rotate whenever
+     * the previous batch's key differed forced DIRTY_FBO (and often a no-op
+     * Sync) on same-pass revisits.
+     *
+     * Caller may clear fbo_binding_dirty via a same-pass attach refresh before
+     * fold; if the bit remains (refresh failed or mismatch), still need Sync. */
     const int need_fbo =
-        in->fbo_binding_dirty || in->prev_fbo_differs ||
-        (in->has_encoder && !in->pass_matches);
+        in->fbo_binding_dirty ||
+        (in->has_encoder && !in->pass_matches) ||
+        (!in->has_encoder && in->prev_fbo_differs && !in->pass_matches);
     if (need_fbo) {
         replay_dirty_bits |= dirty_fbo_mask;
     }
@@ -127,7 +135,7 @@ uint32_t mgl_batch_restore_fold_fbo_dirty(uint32_t replay_dirty_bits,
                                                              : 0u);
         if (in->fbo_binding_dirty ||
             (in->has_encoder && !in->pass_matches) ||
-            in->prev_fbo_differs) {
+            (!in->has_encoder && in->prev_fbo_differs && !in->pass_matches)) {
             replay_dirty_bits |= dirty_fbo_mask;
         }
     }

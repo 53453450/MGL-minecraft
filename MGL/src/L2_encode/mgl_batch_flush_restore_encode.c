@@ -24,6 +24,8 @@
 #include "mgl_batch_replay.h"
 #include "mgl_batch_issue.h"
 #include "mgl_batch_mtl_encode.h"
+#include "mgl_attachment_binding.h"
+#include "mgl_types_framebuffer.h"
 #include <assert.h>
 #include <string.h>
 #include "mgl_buffer_backend.h"
@@ -69,7 +71,12 @@ static void fApplySkip(void *v, uint32_t b)
 { (void)b; FCtx *c = v; MGLRendererStateView areas; mglRendererFillStateView(c->r, &areas);
   if (c->ctx && c->ctx->active_state != c->replay)
       mglRendererSetActiveState(c->r, c->replay);
-  mglClearAllRendererDirtyBits(c->replay); MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap); }
+  mglClearAllRendererDirtyBits(c->replay);
+  /* State key omits VBO content_version; keep buffer/VAO dirty so
+   * processGLState still uploads Metal when SubData landed without a key
+   * change (and without a hazard flush). */
+  mglMarkRendererDirtyBits(c->replay, DIRTY_BUFFER | DIRTY_VAO);
+  MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap); }
 static void fSetAbs(void *v, int w)
 { MGLRendererStateView areas; mglRendererFillStateView(((FCtx *)v)->r, &areas);
   MGLBatchingState *bs = areas.batching;
@@ -346,15 +353,24 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
         mgl_batch_mtl_restore_note_delta_perf(&dflags);
     }
     Framebuffer *replayFBO = replay->framebuffer;
+    const int hasEncoder = mglRenderEncoderOwnerHasCurrent(
+        mglRendererCommandStateFor(renderer)->currentRenderEncoderOwner) ? 1 : 0;
+    const int passMatches =
+        mglRenderPassMatchesCurrentFramebuffer(renderer) ? 1 : 0;
+    /* Same-pass sticky DIRTY_FBO_BINDING: refresh attaches; only clear the bit
+     * on success so fold still forces Sync if bind fails. */
+    if (passMatches && hasEncoder && mglFramebufferBindingDirty(replayFBO) &&
+        mglRendererBindFramebufferAttachmentTextures(renderer)) {
+        replayFBO->dirty_bits &= ~DIRTY_FBO_BINDING;
+    }
     const MGLBatchRestoreFboIn fboIn = {
         .fbo_binding_dirty = (uint8_t)mglFramebufferBindingDirty(replayFBO),
         .prev_fbo_differs =
             (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) ? 1u : 0u,
-        .has_encoder = mglRenderEncoderOwnerHasCurrent(
-                           mglRendererCommandStateFor(renderer)->currentRenderEncoderOwner) ? 1u : 0u,
+        .has_encoder = hasEncoder ? 1u : 0u,
         .bind_valid = (areas.binding_state_owner &&
                        mglBatchBindingStateIsValid(*areas.binding_state_owner)) ? 1u : 0u,
-        .pass_matches = mglRenderPassMatchesCurrentFramebuffer(renderer) ? 1u : 0u,
+        .pass_matches = passMatches ? 1u : 0u,
     };
     replayDirtyBits = mgl_batch_restore_finish_dirty(replayDirtyBits, forcedDirtyBits, kFull,
                                                      DIRTY_FBO, &fboIn);

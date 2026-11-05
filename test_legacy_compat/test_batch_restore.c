@@ -132,13 +132,20 @@ static void test_fbo_fold(void)
     expect(bits == 0x1u, "no fbo pressure → unchanged");
     in.prev_fbo_differs = 1u;
     bits = mgl_batch_restore_fold_fbo_dirty(0x1u, full, dirty_fbo, &in);
-    expect(bits == (0x1u | dirty_fbo), "prev fbo differ → OR DIRTY_FBO");
+    expect(bits == 0x1u,
+           "prev fbo differ but pass matches → no DIRTY_FBO");
+    in.pass_matches = 0u;
+    bits = mgl_batch_restore_fold_fbo_dirty(0x1u, full, dirty_fbo, &in);
+    expect(bits == (0x1u | dirty_fbo),
+           "prev fbo differ + pass mismatch → OR DIRTY_FBO");
     in.prev_fbo_differs = 0u;
+    in.pass_matches = 1u;
     in.has_encoder = 0u;
     bits = mgl_batch_restore_fold_fbo_dirty(0x1u, full, dirty_fbo, &in);
     expect(bits == full, "empty encoder → full domains");
     in.has_encoder = 1u;
     in.bind_valid = 0u;
+    in.pass_matches = 1u;
     in.fbo_binding_dirty = 1u;
     bits = mgl_batch_restore_fold_fbo_dirty(0u, full, dirty_fbo, &in);
     expect((bits & dirty_fbo) != 0u && (bits & full) == full,

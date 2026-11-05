@@ -996,9 +996,13 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
     GLboolean drawFboChanged =
         (target == GL_DRAW_FRAMEBUFFER || target == GL_FRAMEBUFFER) &&
         oldDrawFbo != ptr;
+    /* Defer regardless of whether the CB already has commands: with an empty
+     * CB the old gate still Invalidate'd the live encoder on every named-FBO
+     * rebind, paying a Metal pass break before the next deferred draw could
+     * share it.  Replay rotates when key.fbo_name changes; non-draw paths use
+     * EndIfFramebufferChangedForNonDraw. */
     GLboolean deferFboRotation =
-        drawFboChanged && ctx->draw_defer_enabled && mglBindNoFlushEnabled() &&
-        ctx->draw_command_buffer.total_commands > 0u;
+        drawFboChanged && ctx->draw_defer_enabled && mglBindNoFlushEnabled();
 
     /* Deferred batches carry an FBO snapshot and replay already rotates the
      * render encoder when key.fbo_name changes.  Keep independent FBO draws
