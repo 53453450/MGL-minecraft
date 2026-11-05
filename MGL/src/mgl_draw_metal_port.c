@@ -1786,8 +1786,6 @@ void mglDrawHostGuardIssueArrays(void *renderer, GLMContext ctx, GLenum mode,
     if (!renderer || !ctx) {
         return;
     }
-    MGLRendererStateView areas;
-    mglRendererFillStateView(renderer, &areas);
     METAL_LOCK();
     mglRendererSetLastDrawPrimitiveMode(renderer, mode);
     if (with_ms) {
@@ -1819,8 +1817,6 @@ void mglDrawHostGuardIssueElements(void *renderer, GLMContext ctx, GLenum mode,
     if (!renderer || !ctx) {
         return;
     }
-    MGLRendererStateView areas;
-    mglRendererFillStateView(renderer, &areas);
     METAL_LOCK();
     mglRendererSetLastDrawPrimitiveMode(renderer, mode);
     if (with_ms) {
