@@ -634,9 +634,110 @@ static void mglRegisterBatchVaoHazard(MGLCommandBuffer *cb, MGLDrawBatch *batch)
  * is provided, a donor that matches ignoring uniform ranges can still share:
  * the command stores the live ranges as dynamic overrides (same path as the
  * adjacent-batch UBO merge). */
-/* MC 1.21 frames land ~70–90 batches/CB; 64 left early equal-key donors
- * outside the window so M2 share stayed ~0 (PERF shared=0, ~4MiB snap/frame). */
-enum { kMGLBatchSnapshotDonorWindow = 256u };
+static uint32_t mglSnapshotDonorExactSlot(const MGLStateKey *key)
+{
+    return (uint32_t)mglHashBytesFNV1a(key, sizeof(*key)) &
+           (uint32_t)MGL_SNAPSHOT_DONOR_INDEX_MASK;
+}
+
+static uint32_t mglSnapshotDonorUboSlot(const MGLStateKey *key)
+{
+    /* Same non-UBO identity EqualIgnoringUniformRanges uses: XOR UBO out of
+     * render_state_hash and zero uniform_buffer_hash before hashing. */
+    MGLStateKey stripped = *key;
+    stripped.render_state_hash ^= stripped.uniform_buffer_hash;
+    stripped.uniform_buffer_hash = 0;
+    return (uint32_t)mglHashBytesFNV1a(&stripped, sizeof(stripped)) &
+           (uint32_t)MGL_SNAPSHOT_DONOR_INDEX_MASK;
+}
+
+static void mglSnapshotDonorRegister(MGLCommandBuffer *cb, MGLDrawBatch *donor)
+{
+    if (!cb || !donor) {
+        return;
+    }
+    /* Called before the caller's batch_count++; index is donor - batches. */
+    const ptrdiff_t batch_index = donor - cb->batches;
+    if (batch_index < 0 ||
+        batch_index >= (ptrdiff_t)MGL_MAX_BATCHES) {
+        return;
+    }
+    if (donor->stream_merged || !donor->state_snapshot || donor->snapshot_shared) {
+        /* Sharers do not own memory; only owning donors register. */
+        return;
+    }
+    const uint32_t encoded = (uint32_t)batch_index + 1u;
+    cb->snapshot_donor_exact[mglSnapshotDonorExactSlot(&donor->key)] = encoded;
+    cb->snapshot_donor_ubo[mglSnapshotDonorUboSlot(&donor->key)] = encoded;
+}
+
+static MGLDrawBatch *mglSnapshotDonorLookupExact(MGLCommandBuffer *cb,
+                                                 const MGLStateKey *key,
+                                                 const MGLDrawBatch *self)
+{
+    if (!cb || !key) {
+        return NULL;
+    }
+    uint32_t slot = mglSnapshotDonorExactSlot(key);
+    for (uint32_t probe = 0; probe < 8u; probe++) {
+        const uint32_t enc =
+            cb->snapshot_donor_exact[(slot + probe) &
+                                     (uint32_t)MGL_SNAPSHOT_DONOR_INDEX_MASK];
+        if (enc == 0u) {
+            return NULL;
+        }
+        const uint32_t idx = enc - 1u;
+        /* Donors were registered before batch_count++ so idx may equal the
+         * current count only for the batch being initialized (self). */
+        if (idx > cb->batch_count || idx >= (uint32_t)MGL_MAX_BATCHES) {
+            continue;
+        }
+        MGLDrawBatch *donor = &cb->batches[idx];
+        if (donor == self || donor->stream_merged || !donor->state_snapshot) {
+            continue;
+        }
+        if (idx == cb->batch_count) {
+            continue; /* not yet committed */
+        }
+        if (mglStateKeysEqual(&donor->key, key)) {
+            return donor;
+        }
+    }
+    return NULL;
+}
+
+static MGLDrawBatch *mglSnapshotDonorLookupUbo(MGLCommandBuffer *cb,
+                                               const MGLStateKey *key,
+                                               const MGLDrawBatch *self)
+{
+    if (!cb || !key) {
+        return NULL;
+    }
+    uint32_t slot = mglSnapshotDonorUboSlot(key);
+    for (uint32_t probe = 0; probe < 8u; probe++) {
+        const uint32_t enc =
+            cb->snapshot_donor_ubo[(slot + probe) &
+                                   (uint32_t)MGL_SNAPSHOT_DONOR_INDEX_MASK];
+        if (enc == 0u) {
+            return NULL;
+        }
+        const uint32_t idx = enc - 1u;
+        if (idx > cb->batch_count || idx >= (uint32_t)MGL_MAX_BATCHES) {
+            continue;
+        }
+        MGLDrawBatch *donor = &cb->batches[idx];
+        if (donor == self || donor->stream_merged || !donor->state_snapshot) {
+            continue;
+        }
+        if (idx == cb->batch_count) {
+            continue;
+        }
+        if (mglStateKeysEqualIgnoringUniformRanges(&donor->key, key)) {
+            return donor;
+        }
+    }
+    return NULL;
+}
 
 bool mglInitializeOrShareBatchStateSnapshot(GLMContext ctx,
                                                    MGLCommandBuffer *cb,
@@ -644,77 +745,55 @@ bool mglInitializeOrShareBatchStateSnapshot(GLMContext ctx,
                                                    MGLDrawCommand *first_cmd)
 {
     if (ctx && cb && batch) {
-        /* Bounded donor window: the full cb scan was O(batches²) key memcmps
-         * per flush.  MC frames typically sit under ~64 batches; a 16-wide
-         * window missed equal-key revisits that land just outside it. */
-        const uint32_t window =
-            cb->batch_count > (uint32_t)kMGLBatchSnapshotDonorWindow
-                ? cb->batch_count - (uint32_t)kMGLBatchSnapshotDonorWindow
-                : 0u;
-        MGLDrawBatch *ubo_donor = NULL;
-        for (uint32_t i = window; i < cb->batch_count; i++) {
-            MGLDrawBatch *donor = &cb->batches[i];
-            if (donor == batch || donor->stream_merged || !donor->state_snapshot) {
-                continue;
-            }
-            if (mglStateKeysEqual(&donor->key, &batch->key)) {
-                batch->state_snapshot = donor->state_snapshot;
-                batch->vao_snapshot = donor->vao_snapshot;
-                /* Re-read the live VAO pointer instead of copying the donor's:
-                 * a name-identical VAO could have been recreated between the
-                 * two captures.  The frozen VAO content itself follows the
-                 * donor's capture - the same semantics batch reuse already
-                 * gives equal keys. */
+        MGLDrawBatch *exact =
+            mglSnapshotDonorLookupExact(cb, &batch->key, batch);
+        if (exact) {
+            batch->state_snapshot = exact->state_snapshot;
+            batch->vao_snapshot = exact->vao_snapshot;
+            batch->source_vao = ctx->active_state->vao;
+            batch->snapshot_shared = true;
+            batch->arena_managed =
+                (ctx->batch_arena && ctx->batch_arena->enabled) ? true
+                                                               : false;
+            MGL_PERF_INC(g_mglSnapshotShareHitsSinceSwap);
+            mglRetainBatchProgramReferences(ctx, batch);
+            mglRetainBatchBufferReferences(batch);
+            mglRegisterBatchVaoHazard(cb, batch);
+            return true;
+        }
+        if (first_cmd) {
+            MGLDrawBatch *ubo_donor =
+                mglSnapshotDonorLookupUbo(cb, &batch->key, batch);
+            if (ubo_donor) {
+                batch->state_snapshot = ubo_donor->state_snapshot;
+                batch->vao_snapshot = ubo_donor->vao_snapshot;
                 batch->source_vao = ctx->active_state->vao;
                 batch->snapshot_shared = true;
-                /* Match what a fresh capture would choose for commands
-                 * allocation; the shared snapshot is never freed by this batch
-                 * either way (snapshot_shared). */
+                batch->has_dynamic_uniform_bindings = true;
+                batch->mdi_compatible = false;
                 batch->arena_managed =
                     (ctx->batch_arena && ctx->batch_arena->enabled) ? true
                                                                    : false;
-                MGL_PERF_INC(g_mglSnapshotShareHitsSinceSwap);
-                mglRetainBatchProgramReferences(ctx, batch);
-                mglRetainBatchBufferReferences(batch);
-                mglRegisterBatchVaoHazard(cb, batch);
-                return true;
+                if (mglCaptureDynamicUniformRanges(ctx, batch, first_cmd,
+                                                   true)) {
+                    MGL_PERF_INC(g_mglSnapshotShareHitsSinceSwap);
+                    mglRetainBatchProgramReferences(ctx, batch);
+                    mglRetainBatchBufferReferences(batch);
+                    mglRegisterBatchVaoHazard(cb, batch);
+                    return true;
+                }
+                batch->state_snapshot = NULL;
+                batch->vao_snapshot = NULL;
+                batch->snapshot_shared = false;
+                batch->has_dynamic_uniform_bindings = false;
             }
-            if (first_cmd &&
-                mglStateKeysEqualIgnoringUniformRanges(&donor->key,
-                                                       &batch->key)) {
-                /* Keep the newest match: its frozen UBO ranges are usually
-                 * closer to the live ring position. */
-                ubo_donor = donor;
-            }
-        }
-        if (ubo_donor) {
-            batch->state_snapshot = ubo_donor->state_snapshot;
-            batch->vao_snapshot = ubo_donor->vao_snapshot;
-            batch->source_vao = ctx->active_state->vao;
-            batch->snapshot_shared = true;
-            batch->has_dynamic_uniform_bindings = true;
-            batch->mdi_compatible = false;
-            batch->arena_managed =
-                (ctx->batch_arena && ctx->batch_arena->enabled) ? true : false;
-            if (mglCaptureDynamicUniformRanges(ctx, batch, first_cmd, true)) {
-                MGL_PERF_INC(g_mglSnapshotShareHitsSinceSwap);
-                mglRetainBatchProgramReferences(ctx, batch);
-                mglRetainBatchBufferReferences(batch);
-                mglRegisterBatchVaoHazard(cb, batch);
-                return true;
-            }
-            /* Live UBO object set diverged from the donor snapshot — fall
-             * through to a fresh capture. */
-            batch->state_snapshot = NULL;
-            batch->vao_snapshot = NULL;
-            batch->snapshot_shared = false;
-            batch->has_dynamic_uniform_bindings = false;
         }
     }
     if (!mglInitializeBatchStateSnapshot(ctx, batch)) {
         return false;
     }
     mglRegisterBatchVaoHazard(cb, batch);
+    mglSnapshotDonorRegister(cb, batch);
     return true;
 }
 

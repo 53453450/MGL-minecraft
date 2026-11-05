@@ -76,6 +76,11 @@ typedef struct GLMContextRec_t *GLMContext;
 #define MGL_TEX_WRITE_INDEX_MASK  (MGL_TEX_WRITE_INDEX_SIZE - 1)
 #define MGL_TEX_READ_INDEX_MASK   (MGL_TEX_READ_INDEX_SIZE - 1)
 #define MGL_VAO_REF_INDEX_MASK    (MGL_VAO_REF_INDEX_SIZE - 1)
+/* M2 snapshot donor open-address tables (batch_index+1; 0=empty).  Exact
+ * keys and UBO-range-tolerant keys each get a table so share is O(1) instead
+ * of scanning the donor window. */
+#define MGL_SNAPSHOT_DONOR_INDEX_SIZE 256
+#define MGL_SNAPSHOT_DONOR_INDEX_MASK (MGL_SNAPSHOT_DONOR_INDEX_SIZE - 1)
 
 /* Bump-allocator arena for batch snapshot allocations (Task 4).
  * Gated by env var MGL_ARENA_SNAPSHOT (default ON; =0 disables).  When
@@ -348,6 +353,10 @@ typedef struct {
     uint32_t     pending_vao_name_count;
     bool         pending_vao_name_overflow;
     uint32_t     pending_vao_name_index[MGL_VAO_REF_INDEX_SIZE];
+    /* Latest snapshot-owning donor per key (exact / UBO-tolerant). Zeroed by
+     * the whole-struct memset in reset. */
+    uint32_t     snapshot_donor_exact[MGL_SNAPSHOT_DONOR_INDEX_SIZE];
+    uint32_t     snapshot_donor_ubo[MGL_SNAPSHOT_DONOR_INDEX_SIZE];
 } MGLCommandBuffer;
 
 /* GL API -> DrawCommand Recorder -> DrawCommandBuffer. */
