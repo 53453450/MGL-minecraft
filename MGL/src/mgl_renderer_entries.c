@@ -1248,10 +1248,16 @@ VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where)
         return NULL;
     }
 
+    /* Transient batch VAOs live outside the table, so a table lookup for
+     * them can only miss (and a miss costs a full scan); recognise them by
+     * their own fields first. */
+    if (vao->magic == MGL_VAO_MAGIC && vao->transient_batch_vao) {
+        return vao;
+    }
+
     /* Fast path: hashtable membership implies the table holds a live
      * reference, so the memory is valid and its fields can be read
-     * directly.  The generation cache in mglHashTableContainsData makes
-     * this O(1) in the common case. */
+     * directly. */
     if (mglRendererPointerInHashTable(&ctx->active_state->vao_table, vao)) {
         if (vao->magic != MGL_VAO_MAGIC) {
             fprintf(stderr, "MGL VAO INVALID in %s: vao=%p magic=0x%x\n",
@@ -1294,15 +1300,19 @@ Buffer *mglRendererGetValidatedBuffer(GLMContext ctx, Buffer *candidate, const c
         return NULL;
     }
 
-    /* Fast path: hashtable membership implies memory is valid (table holds
-     * a live reference), so fields can be read directly. */
-    if (ctx && mglRendererPointerInHashTable(&ctx->active_state->buffer_table, candidate)) {
+    /* Transient batch buffers live outside the table, so a table lookup
+     * for them can only miss (and a miss costs a full scan).  The pointer
+     * already passed the plausibility check; read the object's own flag
+     * first. */
+    if (candidate->transient_batch_buffer) {
         return candidate;
     }
 
-    /* Slow path: not a table member.  Transient batch buffers live outside
-     * the table; the pointer already passed the plausibility check, so read
-     * the object's own transient flag directly. */
+    /* Hashtable membership implies memory is valid (table holds a live
+     * reference), so fields can be read directly. */
+    if (ctx && mglRendererPointerInHashTable(&ctx->active_state->buffer_table, candidate)) {
+        return candidate;
+    }
     if (candidate->transient_batch_buffer) {
         return candidate;
     }
