@@ -1413,10 +1413,14 @@ int mglRenderConvertVertexBuffer(
          * (already bumped by mglBufferMarkWrite) instead of re-FNV'ing the
          * whole remaining store every draw — MC VBOs hit this on every
          * integer/normalized attrib conversion.  Prefer last_write_src_hash
-         * when a prior upload already hashed a range that covers this copy. */
+         * when a prior upload already hashed a range that covers this copy.
+         * A persistent-storage buffer is only hash-checked while mapped;
+         * unmapped, every CPU write goes through a GL call that bumps the
+         * version (unmap marks the map write). */
         const bool versionEligible =
             sourceBuffer->data.buffer_data != 0 &&
-            !mglBufferStorageIsPersistent(sourceBuffer->storage_flags) &&
+            !(mglBufferStorageIsPersistent(sourceBuffer->storage_flags) &&
+              sourceBuffer->mapped) &&
             !sourceBuffer->gpu_write_target;
         uint64_t sourceHash = 0;
         if (versionEligible) {
