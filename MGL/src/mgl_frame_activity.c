@@ -173,6 +173,13 @@ _Atomic uint64_t g_mglHashRecomputeRenderSinceSwap        = 0;
 _Atomic uint64_t g_mglHashRecomputeUniformSinceSwap       = 0;
 _Atomic uint64_t g_mglBufferCowCountSinceSwap             = 0;
 _Atomic uint64_t g_mglBufferCowBytesSinceSwap             = 0;
+_Atomic uint64_t g_mglConvertCacheHitSinceSwap            = 0;
+_Atomic uint64_t g_mglConvertCacheRewriteSinceSwap        = 0;
+_Atomic uint64_t g_mglConvertCacheCreateSinceSwap         = 0;
+_Atomic uint64_t g_mglConvertCacheFreelistHitSinceSwap    = 0;
+_Atomic uint64_t g_mglElementScanCacheHitSinceSwap        = 0;
+_Atomic uint64_t g_mglElementScanCacheCoverHitSinceSwap   = 0;
+_Atomic uint64_t g_mglElementScanCacheMissSinceSwap       = 0;
 _Atomic uint64_t g_mglReplayMemcpyCountSinceSwap          = 0;
 _Atomic uint64_t g_mglReplayErrorRedirectsSinceSwap       = 0;
 _Atomic uint64_t g_mglHazardActiveBindingsSinceSwap       = 0;
@@ -204,6 +211,7 @@ _Atomic uint64_t g_mglDeltaDomainRenderStateUboOnlySinceSwap = 0;
 _Atomic uint64_t g_mglStreamDemotedToDirectSinceSwap      = 0;
 _Atomic uint64_t g_mglStreamMergePrepareCallsSinceSwap   = 0;
 _Atomic uint64_t g_mglStreamMergePrepareOkSinceSwap      = 0;
+_Atomic uint64_t g_mglStreamMergePrepareNegHitsSinceSwap = 0;
 
 void mglRecordBufferCowSnapshot(uint64_t bytes)
 {
@@ -237,7 +245,7 @@ void mglPrintPerfSummary(double frame_interval_ms)
           "lock: wait=%.1fms hold=%.1fms | "
           "ds: creates=%llu skips=%llu | "
           "snap: bytes=%llu allocs=%llu shared=%llu | "
-          "bufCow: n=%llu bytes=%llu | "
+          "bufCow: n=%llu bytes=%llu | cv: h=%llu rw=%llu new=%llu fl=%llu | "
           "replay: memcpy=%llu same_key_skip=%llu delta_narrow=%llu batches=%llu oracle=%llu | "
           "hazard: active=%llu ranges=%llu overflow=%llu | "
           "pso_dedup: hits=%llu misses=%llu",
@@ -258,6 +266,8 @@ void mglPrintPerfSummary(double frame_interval_ms)
           c.snapshot_bytes_allocated, c.snapshot_allocation_count,
           c.snapshot_share_hits,
           c.buffer_cow_count, c.buffer_cow_bytes,
+          c.convert_cache_hit, c.convert_cache_rewrite,
+          c.convert_cache_create, c.convert_cache_freelist_hit,
           c.replay_memcpy_count, c.same_key_restore_skips, c.dirty_key_delta_narrow,
           c.batches_replayed, c.same_key_oracle_would_skip,
           c.hazard_active_bindings, c.hazard_range_count, c.hazard_overflow_flushes,
@@ -268,7 +278,7 @@ void mglPrintPerfSummary(double frame_interval_ms)
     fprintf(stderr, "MGL PERF3: skip=%llu skipFail: keyDiffer=%llu bindInvalid=%llu noEncoder=%llu passMismatch=%llu | "
           "deltaNarrow=%llu batchesReplayed=%llu | "
           "deltaDomain: prog=%llu vao=%llu tex=%llu rs=%llu rsUboOnly=%llu | "
-          "smPrep=%llu/%llu smDemote=%llu",
+          "smPrep=%llu/%llu smNeg=%llu smDemote=%llu | elScan=%llu/%llu/%llu",
           c.same_key_restore_skips,
           c.skip_fail_key_differ, c.skip_fail_bind_invalid,
           c.skip_fail_no_encoder, c.skip_fail_pass_mismatch,
@@ -277,7 +287,10 @@ void mglPrintPerfSummary(double frame_interval_ms)
           c.delta_domain_texture, c.delta_domain_render_state,
           c.delta_domain_render_state_ubo_only,
           c.stream_merge_prepare_ok, c.stream_merge_prepare_calls,
-          c.stream_demoted_to_direct);
+          c.stream_merge_prepare_neg_hits,
+          c.stream_demoted_to_direct,
+          c.element_scan_cache_hit, c.element_scan_cache_cover_hit,
+          c.element_scan_cache_miss);
     fprintf(stderr, "MGL PERF4: encReason: fbo=%llu null=%llu clear=%llu draw=%llu vao=%llu rs=%llu cmd=%llu other=%llu | "
           "fboRotKind: def=%llu named=%llu",
           c.encoder_reason_fbo, c.encoder_reason_nil, c.encoder_reason_clear,

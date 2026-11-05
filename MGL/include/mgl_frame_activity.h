@@ -178,6 +178,16 @@ extern MGL_ATOMIC(uint64_t) g_mglHashRecomputeUniformSinceSwap;
 /* Buffer copy-on-write (MTLBuffer reallocation on dirty Shared uploads) */
 extern MGL_ATOMIC(uint64_t) g_mglBufferCowCountSinceSwap;            /* newBufferWithLength snapshots */
 extern MGL_ATOMIC(uint64_t) g_mglBufferCowBytesSinceSwap;            /* bytes of those new MTLBuffers */
+/* Converted-VBO cache (integer/normalized attrib expand): hash hit, idle-slot
+ * Shared memcpy rewrite, Metal newBuffer, freelist recycle of completed bufs. */
+extern MGL_ATOMIC(uint64_t) g_mglConvertCacheHitSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglConvertCacheRewriteSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglConvertCacheCreateSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglConvertCacheFreelistHitSinceSwap;
+/* Element-index min/max scan cache (hazard + stream-merge). */
+extern MGL_ATOMIC(uint64_t) g_mglElementScanCacheHitSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglElementScanCacheCoverHitSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglElementScanCacheMissSinceSwap;
 
 /* State replay */
 extern MGL_ATOMIC(uint64_t) g_mglReplayMemcpyCountSinceSwap;         /* hot-state restore bytes (T11-2) */
@@ -226,10 +236,11 @@ extern MGL_ATOMIC(uint64_t) g_mglDeltaDomainRenderStateUboOnlySinceSwap;
  * from the last batch only by uniform-range identity — the tolerant merge
  * path can absorb them, a stream batch cannot. */
 extern MGL_ATOMIC(uint64_t) g_mglStreamDemotedToDirectSinceSwap;
-/* F1 audit: every RecordDrawCommand calls PrepareStreamMergeCandidate; demote
- * rate = demoted / prepare_ok.  Do not gate Prepare on these — A/B first. */
+/* F1 audit: PrepareStreamMergeCandidate call/ok; demote rate = demoted /
+ * prepare_ok.  Neg hits skip Prepare after a sticky structural reject. */
 extern MGL_ATOMIC(uint64_t) g_mglStreamMergePrepareCallsSinceSwap;
 extern MGL_ATOMIC(uint64_t) g_mglStreamMergePrepareOkSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglStreamMergePrepareNegHitsSinceSwap;
 
 int mglPerfSummaryEnabled(void);
 int mglPerfLockTimingEnabled(void);
@@ -385,6 +396,13 @@ typedef struct MGLPerfCounters {
     /* Buffer copy-on-write */
     uint64_t buffer_cow_count;
     uint64_t buffer_cow_bytes;
+    uint64_t convert_cache_hit;
+    uint64_t convert_cache_rewrite;
+    uint64_t convert_cache_create;
+    uint64_t convert_cache_freelist_hit;
+    uint64_t element_scan_cache_hit;
+    uint64_t element_scan_cache_cover_hit;
+    uint64_t element_scan_cache_miss;
     /* State replay */
     uint64_t replay_memcpy_count;
     /* Hazard tracking */
@@ -419,6 +437,7 @@ typedef struct MGLPerfCounters {
     uint64_t stream_demoted_to_direct;
     uint64_t stream_merge_prepare_calls;
     uint64_t stream_merge_prepare_ok;
+    uint64_t stream_merge_prepare_neg_hits;
 } MGLPerfCounters;
 
 static inline MGLPerfCounters mglSnapshotPerfCounters(void)
@@ -469,6 +488,13 @@ static inline MGLPerfCounters mglSnapshotPerfCounters(void)
     c.snapshot_share_hits = MGL_FRAME_LOAD(g_mglSnapshotShareHitsSinceSwap);
     c.buffer_cow_count        = MGL_FRAME_LOAD(g_mglBufferCowCountSinceSwap);
     c.buffer_cow_bytes        = MGL_FRAME_LOAD(g_mglBufferCowBytesSinceSwap);
+    c.convert_cache_hit       = MGL_FRAME_LOAD(g_mglConvertCacheHitSinceSwap);
+    c.convert_cache_rewrite   = MGL_FRAME_LOAD(g_mglConvertCacheRewriteSinceSwap);
+    c.convert_cache_create    = MGL_FRAME_LOAD(g_mglConvertCacheCreateSinceSwap);
+    c.convert_cache_freelist_hit = MGL_FRAME_LOAD(g_mglConvertCacheFreelistHitSinceSwap);
+    c.element_scan_cache_hit  = MGL_FRAME_LOAD(g_mglElementScanCacheHitSinceSwap);
+    c.element_scan_cache_cover_hit = MGL_FRAME_LOAD(g_mglElementScanCacheCoverHitSinceSwap);
+    c.element_scan_cache_miss = MGL_FRAME_LOAD(g_mglElementScanCacheMissSinceSwap);
     c.replay_memcpy_count     = MGL_FRAME_LOAD(g_mglReplayMemcpyCountSinceSwap);
     c.hazard_active_bindings  = MGL_FRAME_LOAD(g_mglHazardActiveBindingsSinceSwap);
     c.hazard_range_count      = MGL_FRAME_LOAD(g_mglHazardRangeCountSinceSwap);
@@ -499,6 +525,7 @@ static inline MGLPerfCounters mglSnapshotPerfCounters(void)
     c.stream_demoted_to_direct = MGL_FRAME_LOAD(g_mglStreamDemotedToDirectSinceSwap);
     c.stream_merge_prepare_calls = MGL_FRAME_LOAD(g_mglStreamMergePrepareCallsSinceSwap);
     c.stream_merge_prepare_ok = MGL_FRAME_LOAD(g_mglStreamMergePrepareOkSinceSwap);
+    c.stream_merge_prepare_neg_hits = MGL_FRAME_LOAD(g_mglStreamMergePrepareNegHitsSinceSwap);
     return c;
 }
 
@@ -548,6 +575,13 @@ static inline void mglResetPerfCounters(void)
     MGL_FRAME_STORE(g_mglHashRecomputeUniformSinceSwap, 0);
     MGL_FRAME_STORE(g_mglBufferCowCountSinceSwap, 0);
     MGL_FRAME_STORE(g_mglBufferCowBytesSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglConvertCacheHitSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglConvertCacheRewriteSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglConvertCacheCreateSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglConvertCacheFreelistHitSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglElementScanCacheHitSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglElementScanCacheCoverHitSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglElementScanCacheMissSinceSwap, 0);
     MGL_FRAME_STORE(g_mglReplayMemcpyCountSinceSwap, 0);
     MGL_FRAME_STORE(g_mglReplayErrorRedirectsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglHazardActiveBindingsSinceSwap, 0);
@@ -579,6 +613,7 @@ static inline void mglResetPerfCounters(void)
     MGL_FRAME_STORE(g_mglStreamDemotedToDirectSinceSwap, 0);
     MGL_FRAME_STORE(g_mglStreamMergePrepareCallsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglStreamMergePrepareOkSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglStreamMergePrepareNegHitsSinceSwap, 0);
 }
 
 /* Print per-frame perf summary if MGL_PERF_SUMMARY=1.  frame_interval_ms is
