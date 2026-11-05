@@ -102,6 +102,23 @@ static void mglBdMarkTextureLevelCopied(Texture *tex, GLuint level)
     }
 }
 
+/* True when a copy rewrites every texel of a texture that has just one level,
+ * one layer, so the CPU copy of that level is fully superseded. */
+static bool mglBdCopyOverwritesSingleLevel2D(const Texture *tex, uint32_t type,
+                                             GLint level, GLint x, GLint y,
+                                             GLsizei width, GLsizei height,
+                                             GLsizei depth)
+{
+    if (type != MGLTextureType2D || tex->num_levels != 1u || level != 0 ||
+        !tex->faces || !tex->faces[0].levels || depth > 1) {
+        return false;
+    }
+    const TextureLevel *lvl = &tex->faces[0].levels[0];
+    return x == 0 && y == 0 && lvl->width > 0 && lvl->height > 0 &&
+           (size_t)width == (size_t)lvl->width &&
+           (size_t)height == (size_t)lvl->height;
+}
+
 /* The .m's blit statics, in C (thin wrappers over the C render entries). */
 static MGLRenderTextureInfo mglBdTextureInfo(void *texture)
 {
@@ -2386,9 +2403,20 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_te
      * still be pending in the command buffer when the readback occurs. */
     mglRenderPassFlushCommandBuffer(renderer, 0);
 
-    bool readback_done = mglBlitCopyImageSubDataPostBlitReadback(
-        renderer, dst_tex, dst_texture, dst_type, dst_level, dst_x, dst_y, dst_z,
-        width, height, depth);
+    /* Readback only keeps a CPU level that something may still consult.  A
+     * rendered destination is read back from Metal, and a copy that overwrites
+     * the whole of a single-level 2D texture leaves nothing of the CPU level
+     * worth keeping.  Skipping it avoids a GPU stall plus a full getBytes per
+     * copy; the fallback below marks Metal authoritative. */
+    bool readback_done = false;
+    if (!mglRenderTargetHasGPUContent(dst_tex->is_render_target ? 1 : 0,
+                                     mglTextureWriteVersion(dst_tex)) &&
+        !mglBdCopyOverwritesSingleLevel2D(dst_tex, dst_type, dst_level, dst_x,
+                                          dst_y, width, height, depth)) {
+        readback_done = mglBlitCopyImageSubDataPostBlitReadback(
+            renderer, dst_tex, dst_texture, dst_type, dst_level, dst_x, dst_y,
+            dst_z, width, height, depth);
+    }
 
     if (!readback_done) {
         if (dst_type == MGLTextureType3D && dst_tex->faces &&
