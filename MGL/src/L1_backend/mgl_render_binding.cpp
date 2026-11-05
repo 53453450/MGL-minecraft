@@ -730,7 +730,9 @@ int mglRenderBindBufferStorage(Buffer* buffer,
         return MGL_RENDER_BUFFER_ERROR;
     }
 
-    mglBufferBackendEnsure(buffer)->mtl_data = metalBuffer;
+    MGLBufferBackend* backend = mglBufferBackendEnsure(buffer);
+    backend->mtl_data = metalBuffer;
+    backend->mtl_last_use_generation = 0;
     mglBufferBackendSetOwnsCPUStorage(buffer, noCopy ? 1 : 0);
     if (!bytes) buffer->data.buffer_data = 0;
     return MGL_RENDER_BUFFER_BOUND;

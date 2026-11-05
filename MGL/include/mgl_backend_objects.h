@@ -151,6 +151,10 @@ struct MGLBufferBackend {
     size_t element_emulation_out_index_count;
     /* The no-copy MTLBuffer's deallocator owns the CPU range in BufferData. */
     uint8_t owns_cpu_storage;
+    /* Generation of the last encode that referenced mtl_data (0 = never).
+     * Lets unpooled Shared stores take the same idle in-place upload path as
+     * CoW pool slots once gBufferCompletedGeneration catches up. */
+    uint64_t mtl_last_use_generation;
 };
 
 #ifdef __cplusplus

@@ -24,6 +24,7 @@
 #include "mgl_render_api_texture.h"
 #include "mgl_render_api_draw.h"
 #include "mgl_buffer_backend.h"
+#include "mgl_byte_hash.h"
 
 extern "C" void mglMetalCountRelease(int kind);
 extern "C" void mglMetalCountCreate(int kind);
@@ -333,8 +334,11 @@ struct BufferCowSnapshot {
     bool poolOwnsReference = false;
 };
 
+/* Layout-only key.  Content stamp lives on the entry.  Each layout keeps a
+ * 2-slot ring so a content_version bump can fill the idle Shared buffer while
+ * the previous CB still reads the other — never in-place rewrite of an
+ * in-flight store (that raced GPU vertex fetch → MC terrain black flash). */
 struct ConvertedVertexBufferKey {
-    uint64_t sourceHash = 0;
     uint64_t copyLength = 0;
     uint64_t originalStride = 0;
     uint64_t convertedStride = 0;
@@ -351,24 +355,27 @@ struct ConvertedVertexBufferKey {
         return std::tie(sourceName, kind, componentCount, sourceType,
                         normalized, destinationSigned, bindingOffset,
                         relativeOffset, originalStride, convertedStride,
-                        copyLength, sourceHash) <
+                        copyLength) <
                std::tie(other.sourceName, other.kind, other.componentCount,
                         other.sourceType, other.normalized,
                         other.destinationSigned, other.bindingOffset,
                         other.relativeOffset, other.originalStride,
-                        other.convertedStride, other.copyLength,
-                        other.sourceHash);
+                        other.convertedStride, other.copyLength);
     }
 };
 
+struct ConvertedVertexBufferEntry {
+    static constexpr int kSlots = 2;
+    MTL::Buffer* buffers[kSlots] = {};
+    uint64_t hashes[kSlots] = {};
+    uint64_t lastUseGeneration[kSlots] = {};
+};
+
+/* Full-buffer FNV-1a — prefer Buffer::content_version on the converted-VBO
+ * cache path; this remains for persistent / GPU-write sources that can change
+ * without a GL write mark.  Delegates to the shared C core. */
 inline uint64_t hashVertexBytes(const uint8_t* bytes, size_t length) {
-    uint64_t hash = 1469598103934665603ull;
-    if (!bytes) return hash;
-    for (size_t i = 0; i < length; ++i) {
-        hash ^= static_cast<uint64_t>(bytes[i]);
-        hash *= 1099511628211ull;
-    }
-    return hash;
+    return mglHashBytesFNV1a(bytes, length);
 }
 
 inline bool alignVertexStride(size_t stride, size_t* alignedOut) {
@@ -488,7 +495,7 @@ inline BufferCowSnapshot takeBufferCowSnapshot(MTL::Device* device,
         : nullptr;
     if (!snapshot) return {};
 
-    if (pool && pool->slots.size() < 4) {
+    if (pool && pool->slots.size() < 8) {
         try {
             pool->slots.push_back({snapshot, 0});
             return {snapshot, true};
@@ -523,22 +530,26 @@ inline bool bufferShadowUploadRange(const Buffer* buffer,
 }
 
 /* True when the buffer's live Metal store provably has no in-flight command
- * buffer references left: it lives in a pool slot and every command buffer
- * that encoded it (slot.lastUseGeneration) has completed.  Unpooled stores
- * carry no generation tag, so they are conservatively busy. */
+ * buffer references left.  Pooled stores use slot.lastUseGeneration; every
+ * store also carries backend.mtl_last_use_generation (0 = never encoded) so
+ * BindBufferStorage creations that never entered the CoW pool can still take
+ * the idle in-place upload path once the tagging CB has completed. */
 inline bool bufferMetalDataIdle(const Buffer* owner, MTL::Buffer* current) {
     if (!owner || !current || !owner->backend) return false;
-    const BufferCowPool* pool =
-        static_cast<const BufferCowPool*>(owner->backend->cow_pool);
-    if (!pool) return false;
+    if (owner->backend->mtl_data != current) return false;
     const uint64_t completed =
         gBufferCompletedGeneration.load(std::memory_order_acquire);
-    for (const BufferCowSlot& slot : pool->slots) {
-        if (slot.buffer == current) {
-            return completed >= slot.lastUseGeneration;
+    const BufferCowPool* pool =
+        static_cast<const BufferCowPool*>(owner->backend->cow_pool);
+    if (pool) {
+        for (const BufferCowSlot& slot : pool->slots) {
+            if (slot.buffer == current) {
+                return completed >= slot.lastUseGeneration;
+            }
         }
     }
-    return false;
+    const uint64_t last = owner->backend->mtl_last_use_generation;
+    return last == 0 || completed >= last;
 }
 
 /* CPU shadow range not yet folded into the Metal store, for buffers that are
@@ -707,7 +718,7 @@ struct Renderer {
     /* Process-wide archive registry mirrors the former ObjC shared dictionary.
      * Each map entry owns one reference; PipelineCacheOwner retains its own. */
     std::map<std::string, MTL::BinaryArchive*> binaryArchives;
-    std::map<ConvertedVertexBufferKey, MTL::Buffer*>
+    std::map<ConvertedVertexBufferKey, ConvertedVertexBufferEntry>
         convertedVertexBuffers;
     std::array<Buffer*, kPackedStructBufferCapacity> packedStructBuffers{};
     size_t packedStructBufferIndex = 0;
@@ -1091,7 +1102,9 @@ inline void releasePipelineCaches(Renderer& renderer) {
     }
     renderer.binaryArchives.clear();
     for (auto& entry : renderer.convertedVertexBuffers) {
-        if (entry.second) entry.second->release();
+        for (int i = 0; i < ConvertedVertexBufferEntry::kSlots; ++i) {
+            if (entry.second.buffers[i]) entry.second.buffers[i]->release();
+        }
     }
     renderer.convertedVertexBuffers.clear();
     if (renderer.sparseQueue) {

@@ -651,7 +651,9 @@ int mglRenderSetTessellationFactorBuffer(void* render_encoder,
 void mglRenderReleaseBufferMetalData(GLMContext glm_ctx, Buffer* buffer) {
     if (!buffer || !mglBufferMtl(buffer)) return;
     (void)glm_ctx;
-    mgl::releaseBridgedObject(&mglBufferBackendEnsure(buffer)->mtl_data);
+    MGLBufferBackend* backend = mglBufferBackendEnsure(buffer);
+    mgl::releaseBridgedObject(&backend->mtl_data);
+    backend->mtl_last_use_generation = 0;
 }
 
 void mglRenderReleaseBufferBackend(Buffer* buffer) {
@@ -764,10 +766,6 @@ uint64_t mglRenderCurrentBufferGeneration(void) {
 
 void mglRenderNoteBufferEncoded(Buffer* buffer) {
     if (!buffer || !mglBufferMtl(buffer)) return;
-    mgl::BufferCowPool* pool = mgl::bufferCowPool(buffer, false);
-    if (!pool) return;
-    MTL::Buffer* current =
-        static_cast<MTL::Buffer*>(mglBufferMtl(buffer));
     /* The generation belongs to the command buffer that is accumulating right
      * now: the commit which submits it records exactly this value as completed,
      * and that commit is the only thing that mints the next one.  Tagging with
@@ -776,10 +774,17 @@ void mglRenderNoteBufferEncoded(Buffer* buffer) {
      * different generations, and only one of them is ever recorded. */
     const uint64_t generation =
         mgl::gBufferFrameGeneration.load(std::memory_order_acquire);
+    MGLBufferBackend* backend = mglBufferBackendEnsure(buffer);
+    backend->mtl_last_use_generation = generation;
+    mgl::gBufferWindowTagged.store(true, std::memory_order_release);
+
+    mgl::BufferCowPool* pool = mgl::bufferCowPool(buffer, false);
+    if (!pool) return;
+    MTL::Buffer* current =
+        static_cast<MTL::Buffer*>(mglBufferMtl(buffer));
     for (mgl::BufferCowSlot& slot : pool->slots) {
         if (slot.buffer == current) {
             slot.lastUseGeneration = generation;
-            mgl::gBufferWindowTagged.store(true, std::memory_order_release);
             return;
         }
     }
@@ -804,7 +809,7 @@ int mglRenderSnapshotSharedDirtyBuffer(Buffer* buffer,
         ? reinterpret_cast<uint8_t*>(
               static_cast<uintptr_t>(buffer->data.buffer_data))
         : nullptr;
-    if (!current || buffer->transient_batch_buffer ||
+    if (!current ||
         current->storageMode() != MTL::StorageModeShared || !cpuData ||
         mglBufferStorageIsClient(buffer->storage_flags) ||
         cpuData == current->contents()) {
@@ -876,6 +881,7 @@ int mglRenderSnapshotSharedDirtyBuffer(Buffer* buffer,
 
     uint8_t* snapshotData =
         static_cast<uint8_t*>(snapshot.buffer->contents());
+    uint64_t cowBytes = metalLength;
     if (buffer->gpu_write_target) {
         memcpy(snapshotData, current->contents(), metalLength);
         size_t uploadOffset = 0;
@@ -886,15 +892,24 @@ int mglRenderSnapshotSharedDirtyBuffer(Buffer* buffer,
                    uploadLength);
         }
     } else {
-        memcpy(snapshotData, current->contents(), metalLength);
         size_t uploadOffset = 0;
         size_t uploadLength = 0;
-        if (mgl::bufferDirtyShadowRange(
-                buffer, snapshotLength, &uploadOffset, &uploadLength)) {
+        const bool hasDirty = cpuData && mgl::bufferDirtyShadowRange(
+                buffer, snapshotLength, &uploadOffset, &uploadLength);
+        if (hasDirty && uploadOffset == 0 && uploadLength >= snapshotLength) {
+            /* Dirty covers the whole shadow — skip the current→snapshot memcpy
+             * (was a full duplicate before the CPU overlay). */
+            memcpy(snapshotData, cpuData, snapshotLength);
+            cowBytes = snapshotLength;
+        } else if (hasDirty) {
+            memcpy(snapshotData, current->contents(), metalLength);
             memcpy(snapshotData + uploadOffset, cpuData + uploadOffset,
                    uploadLength);
-        } else {
+        } else if (cpuData) {
             memcpy(snapshotData, cpuData, snapshotLength);
+            cowBytes = snapshotLength;
+        } else {
+            memcpy(snapshotData, current->contents(), metalLength);
         }
         if (snapshotLength < metalLength) {
             memset(snapshotData + snapshotLength, 0,
@@ -904,7 +919,7 @@ int mglRenderSnapshotSharedDirtyBuffer(Buffer* buffer,
 
     mgl::installBufferCowSnapshot(buffer, snapshot);
     mglRenderNoteBufferEncoded(buffer);
-    mglRecordBufferCowSnapshot(metalLength);
+    mglRecordBufferCowSnapshot(cowBytes);
     *metal_buffer_out = mglBufferMtl(buffer);
     return 0;
 }
@@ -940,8 +955,7 @@ int mglRenderSnapshotSharedBufferRange(Buffer* buffer,
         }
         return -1;
     }
-    if (buffer->transient_batch_buffer ||
-        current->storageMode() != MTL::StorageModeShared || !cpuData ||
+    if (current->storageMode() != MTL::StorageModeShared || !cpuData ||
         mglBufferStorageIsClient(buffer->storage_flags) ||
         cpuData == current->contents()) {
         return 0;
@@ -1393,10 +1407,36 @@ int mglRenderConvertVertexBuffer(
         }
         const size_t convertedLength = vertexCount * convertedStride;
         const uint8_t* sourceBase = sourceBytes + bindingOffset;
-        const uint64_t sourceHash =
-            mgl::hashVertexBytes(sourceBase, copyLength);
+        /* Same eligibility as the uint16 index expand cache: CPU shadow that
+         * cannot change without a GL write mark.  Key on content_version
+         * (already bumped by mglBufferMarkWrite) instead of re-FNV'ing the
+         * whole remaining store every draw — MC VBOs hit this on every
+         * integer/normalized attrib conversion.  Prefer last_write_src_hash
+         * when a prior upload already hashed a range that covers this copy. */
+        const bool versionEligible =
+            sourceBuffer->data.buffer_data != 0 &&
+            !mglBufferStorageIsPersistent(sourceBuffer->storage_flags) &&
+            !sourceBuffer->gpu_write_target;
+        uint64_t sourceHash = 0;
+        if (versionEligible) {
+            const GLintptr range_end =
+                static_cast<GLintptr>(bindingOffset + copyLength);
+            if (sourceBuffer->last_write_src_hash != 0ull &&
+                sourceBuffer->last_write_offset >= 0 &&
+                sourceBuffer->last_write_size > 0 &&
+                sourceBuffer->last_write_offset <=
+                    static_cast<GLintptr>(bindingOffset) &&
+                sourceBuffer->last_write_offset +
+                        sourceBuffer->last_write_size >=
+                    range_end) {
+                sourceHash = sourceBuffer->last_write_src_hash;
+            } else {
+                sourceHash = sourceBuffer->content_version;
+            }
+        } else {
+            sourceHash = mgl::hashVertexBytes(sourceBase, copyLength);
+        }
         mgl::ConvertedVertexBufferKey key = {};
-        key.sourceHash = sourceHash;
         key.copyLength = copyLength;
         key.originalStride = originalStride;
         key.convertedStride = convertedStride;
@@ -1410,6 +1450,10 @@ int mglRenderConvertVertexBuffer(
         key.destinationSigned = conversion->destination_signed;
 
         mgl::Renderer& renderer = mgl::renderer();
+        const uint64_t encodeGen =
+            mgl::gBufferFrameGeneration.load(std::memory_order_acquire);
+        const uint64_t completedGen =
+            mgl::gBufferCompletedGeneration.load(std::memory_order_acquire);
         {
             std::lock_guard<std::mutex> lock(renderer.mutex);
             if (!renderer.device) {
@@ -1417,12 +1461,18 @@ int mglRenderConvertVertexBuffer(
                 return -1;
             }
             auto found = renderer.convertedVertexBuffers.find(key);
-            if (found != renderer.convertedVertexBuffers.end() &&
-                found->second) {
-                found->second->retain();
-                *convertedStrideOut = convertedStride;
-                *convertedBufferOut = found->second;
-                return 0;
+            if (found != renderer.convertedVertexBuffers.end()) {
+                auto& entry = found->second;
+                for (int i = 0; i < mgl::ConvertedVertexBufferEntry::kSlots;
+                     ++i) {
+                    if (entry.buffers[i] && entry.hashes[i] == sourceHash) {
+                        entry.lastUseGeneration[i] = encodeGen;
+                        entry.buffers[i]->retain();
+                        *convertedStrideOut = convertedStride;
+                        *convertedBufferOut = entry.buffers[i];
+                        return 0;
+                    }
+                }
             }
         }
 
@@ -1597,6 +1647,42 @@ int mglRenderConvertVertexBuffer(
             }
         }
 
+        {
+            std::lock_guard<std::mutex> lock(renderer.mutex);
+            auto found = renderer.convertedVertexBuffers.find(key);
+            if (found != renderer.convertedVertexBuffers.end()) {
+                auto& entry = found->second;
+                for (int i = 0; i < mgl::ConvertedVertexBufferEntry::kSlots;
+                     ++i) {
+                    if (entry.buffers[i] && entry.hashes[i] == sourceHash) {
+                        entry.lastUseGeneration[i] = encodeGen;
+                        entry.buffers[i]->retain();
+                        *convertedBufferOut = entry.buffers[i];
+                        *convertedStrideOut = convertedStride;
+                        return 0;
+                    }
+                }
+                /* Content miss: rewrite only an idle ring slot (other slot may
+                 * still be bound to the previous CB). */
+                for (int i = 0; i < mgl::ConvertedVertexBufferEntry::kSlots;
+                     ++i) {
+                    MTL::Buffer* slot = entry.buffers[i];
+                    if (slot && slot->contents() &&
+                        slot->length() >= convertedLength &&
+                        entry.lastUseGeneration[i] <= completedGen) {
+                        std::memcpy(slot->contents(), converted.data(),
+                                    convertedLength);
+                        entry.hashes[i] = sourceHash;
+                        entry.lastUseGeneration[i] = encodeGen;
+                        slot->retain();
+                        *convertedBufferOut = slot;
+                        *convertedStrideOut = convertedStride;
+                        return 0;
+                    }
+                }
+            }
+        }
+
         void* createdObject = nullptr;
         if (mglRenderCreateBufferWithBytes(
                 converted.data(), convertedLength,
@@ -1609,23 +1695,118 @@ int mglRenderConvertVertexBuffer(
         {
             std::lock_guard<std::mutex> lock(renderer.mutex);
             auto found = renderer.convertedVertexBuffers.find(key);
-            if (found != renderer.convertedVertexBuffers.end() &&
-                found->second) {
-                created->release();
-                found->second->retain();
-                *convertedBufferOut = found->second;
-            } else {
+            if (found != renderer.convertedVertexBuffers.end()) {
+                auto& entry = found->second;
+                for (int i = 0; i < mgl::ConvertedVertexBufferEntry::kSlots;
+                     ++i) {
+                    if (entry.buffers[i] && entry.hashes[i] == sourceHash) {
+                        created->release();
+                        entry.lastUseGeneration[i] = encodeGen;
+                        entry.buffers[i]->retain();
+                        *convertedBufferOut = entry.buffers[i];
+                        *convertedStrideOut = convertedStride;
+                        return 0;
+                    }
+                }
+                int dest = -1;
+                for (int i = 0; i < mgl::ConvertedVertexBufferEntry::kSlots;
+                     ++i) {
+                    if (!entry.buffers[i]) {
+                        dest = i;
+                        break;
+                    }
+                }
+                if (dest < 0) {
+                    for (int i = 0; i < mgl::ConvertedVertexBufferEntry::kSlots;
+                         ++i) {
+                        if (entry.lastUseGeneration[i] <= completedGen) {
+                            dest = i;
+                            break;
+                        }
+                    }
+                }
+                if (dest < 0) {
+                    /* Both slots still in-flight: install the *new* `created`
+                     * buffer into the LRU slot and drop the cache retain on the
+                     * old MTLBuffer (encoder setVertexBuffer retains it).  This
+                     * is not an in-place rewrite of GPU-visible contents. */
+                    dest = 0;
+                    for (int i = 1; i < mgl::ConvertedVertexBufferEntry::kSlots;
+                         ++i) {
+                        if (entry.lastUseGeneration[i] <
+                            entry.lastUseGeneration[dest]) {
+                            dest = i;
+                        }
+                    }
+                }
                 try {
-                    renderer.convertedVertexBuffers.emplace(key, created);
+                    if (entry.buffers[dest]) entry.buffers[dest]->release();
+                    entry.buffers[dest] = created;
+                    entry.hashes[dest] = sourceHash;
+                    entry.lastUseGeneration[dest] = encodeGen;
                     created->retain();
                     *convertedBufferOut = created;
-                    if (renderer.convertedVertexBuffers.size() > 64) {
-                        size_t evictCount =
-                            renderer.convertedVertexBuffers.size() / 4;
-                        while (evictCount-- > 0 &&
+                } catch (const std::bad_alloc&) {
+                    *convertedBufferOut = created;
+                }
+            } else {
+                try {
+                    mgl::ConvertedVertexBufferEntry entry;
+                    entry.buffers[0] = created;
+                    entry.hashes[0] = sourceHash;
+                    entry.lastUseGeneration[0] = encodeGen;
+                    renderer.convertedVertexBuffers.emplace(key, entry);
+                    created->retain();
+                    *convertedBufferOut = created;
+                    constexpr size_t kConvertedVertexCacheMax = 512u;
+                    constexpr size_t kConvertedVertexCacheKeep = 384u;
+                    if (renderer.convertedVertexBuffers.size() >
+                        kConvertedVertexCacheMax) {
+                        while (renderer.convertedVertexBuffers.size() >
+                                   kConvertedVertexCacheKeep &&
                                !renderer.convertedVertexBuffers.empty()) {
-                            auto evict = renderer.convertedVertexBuffers.begin();
-                            if (evict->second) evict->second->release();
+                            /* Evict LRU by min lastUseGeneration, but only when
+                             * that generation has completed — never release a
+                             * Metal buffer that may still be in-flight. */
+                            const uint64_t completedEvict =
+                                mgl::gBufferCompletedGeneration.load(
+                                    std::memory_order_acquire);
+                            auto evict = renderer.convertedVertexBuffers.end();
+                            uint64_t oldest = UINT64_MAX;
+                            for (auto it = renderer.convertedVertexBuffers.begin();
+                                 it != renderer.convertedVertexBuffers.end();
+                                 ++it) {
+                                uint64_t gen = UINT64_MAX;
+                                bool any = false;
+                                for (int i = 0;
+                                     i < mgl::ConvertedVertexBufferEntry::kSlots;
+                                     ++i) {
+                                    if (it->second.buffers[i]) {
+                                        any = true;
+                                        if (it->second.lastUseGeneration[i] <
+                                            gen) {
+                                            gen =
+                                                it->second.lastUseGeneration[i];
+                                        }
+                                    }
+                                }
+                                if (!any) {
+                                    gen = 0;
+                                }
+                                if (gen <= completedEvict && gen < oldest) {
+                                    oldest = gen;
+                                    evict = it;
+                                }
+                            }
+                            if (evict == renderer.convertedVertexBuffers.end()) {
+                                break;
+                            }
+                            for (int i = 0;
+                                 i < mgl::ConvertedVertexBufferEntry::kSlots;
+                                 ++i) {
+                                if (evict->second.buffers[i])
+                                    evict->second.buffers[i]->release();
+                            }
                             renderer.convertedVertexBuffers.erase(evict);
                         }
                     }
