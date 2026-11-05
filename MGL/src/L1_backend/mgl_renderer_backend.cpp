@@ -163,8 +163,11 @@ struct MGLRendererBackendHandle {
     std::vector<MGLRendererBackendStageCopyBackList> stage_copy_back_lists;
     std::array<MGLRendererBackendCurrentAttribCacheEntry, MAX_ATTRIBS>
         current_attrib_cache{};
-    MGLRendererBackendPackedCurrentAttribCacheEntry
+    /* Programs alternate between a few distinct current-value pools within a
+     * frame, so a single entry thrashes; each miss builds a multi-MB buffer. */
+    std::array<MGLRendererBackendPackedCurrentAttribCacheEntry, 8>
         packed_current_attrib_cache{};
+    size_t packed_current_attrib_cache_next = 0;
     std::array<MGLRendererBackendSizeConstantsCacheEntry, 2>
         size_constants_cache{};
     MTL::SamplerState *scaled_blit_nearest_sampler = nullptr;
@@ -311,10 +314,12 @@ static void mglRendererBackendReleaseOwnedState(
         if (entry.buffer) entry.buffer->release();
     }
     backend->current_attrib_cache = {};
-    if (backend->packed_current_attrib_cache.buffer) {
-        backend->packed_current_attrib_cache.buffer->release();
+    for (MGLRendererBackendPackedCurrentAttribCacheEntry &entry :
+         backend->packed_current_attrib_cache) {
+        if (entry.buffer) entry.buffer->release();
     }
     backend->packed_current_attrib_cache = {};
+    backend->packed_current_attrib_cache_next = 0;
     for (MGLRendererBackendSizeConstantsCacheEntry &entry :
          backend->size_constants_cache) {
         if (entry.buffer) entry.buffer->release();
@@ -1099,14 +1104,15 @@ extern "C" void *mglRendererBackendGetPackedCurrentAttribBuffer(
     }
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
-    const MGLRendererBackendPackedCurrentAttribCacheEntry &entry =
-        backend->packed_current_attrib_cache;
-    if (!entry.valid || !entry.buffer || entry.repeat_count != repeat_count ||
-        entry.values.size() != byte_count ||
-        std::memcmp(entry.values.data(), bytes, byte_count) != 0) {
-        return nullptr;
+    for (const MGLRendererBackendPackedCurrentAttribCacheEntry &entry :
+         backend->packed_current_attrib_cache) {
+        if (entry.valid && entry.buffer && entry.repeat_count == repeat_count &&
+            entry.values.size() == byte_count &&
+            std::memcmp(entry.values.data(), bytes, byte_count) == 0) {
+            return entry.buffer;
+        }
     }
-    return entry.buffer;
+    return nullptr;
 }
 
 extern "C" int mglRendererBackendSetPackedCurrentAttribBuffer(
@@ -1120,7 +1126,11 @@ extern "C" int mglRendererBackendSetPackedCurrentAttribBuffer(
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (backend->destroying) return -1;
     MGLRendererBackendPackedCurrentAttribCacheEntry &entry =
-        backend->packed_current_attrib_cache;
+        backend->packed_current_attrib_cache[
+            backend->packed_current_attrib_cache_next];
+    backend->packed_current_attrib_cache_next =
+        (backend->packed_current_attrib_cache_next + 1u) %
+        backend->packed_current_attrib_cache.size();
     mglRendererBackendReplaceObject(backend, entry.buffer, buffer);
     entry.values.assign(static_cast<const uint8_t *>(bytes),
                         static_cast<const uint8_t *>(bytes) + byte_count);
