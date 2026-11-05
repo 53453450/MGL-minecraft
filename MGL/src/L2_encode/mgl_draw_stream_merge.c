@@ -589,6 +589,42 @@ static int mglTransientPoolSlot(GLenum target)
     return (target == GL_ELEMENT_ARRAY_BUFFER) ? 1 : 0;
 }
 
+static Buffer *mglTakeTransientPoolNode(GLMContext ctx, int slot,
+                                        MGLTransientPoolNode **link,
+                                        MGLTransientPoolNode *node,
+                                        GLenum target)
+{
+    Buffer *buffer = node->buffer;
+    *link = node->next;
+    ctx->transient_pool_count[slot]--;
+    free(node);
+
+    /* Restore pristine first-use fields; the CPU backing and the Metal
+     * store (with their larger capacities) are retained.  A busy store is
+     * safe: UpdateDirty CoW-snapshots it before the CPU rewrite lands. */
+    buffer->name = 0;
+    buffer->target = target;
+    buffer->size = 0;
+    buffer->written_min = -1;
+    buffer->written_max = -1;
+    buffer->transient_batch_buffer = GL_TRUE;
+    buffer->data.dirty_bits = 0;
+    buffer->has_initialized_data = GL_FALSE;
+    buffer->ever_written = GL_FALSE;
+    buffer->last_init_source = kInitBufferDataCopy;
+    buffer->last_write_offset = 0;
+    buffer->last_write_size = 0;
+    buffer->last_write_src_ptr = NULL;
+    buffer->last_write_src_hash = 0;
+    /* Derived state must not survive into the new use: the index scan
+     * cache is keyed on content_version, and a recycled buffer keeps both
+     * unless they are bumped here. */
+    buffer->content_version++;
+    buffer->scan_cache_valid = 0;
+    buffer->scan_cache_live_valid = 0;
+    return buffer;
+}
+
 Buffer *mglAcquireTransientBatchBuffer(GLMContext ctx, GLenum target)
 {
     int slot = mglTransientPoolSlot(target);
@@ -601,38 +637,17 @@ Buffer *mglAcquireTransientBatchBuffer(GLMContext ctx, GLenum target)
         MGLTransientPoolNode *node = *head;
         while (node) {
             if (node->generation <= completed) {
-                Buffer *buffer = node->buffer;
-                *link = node->next;
-                ctx->transient_pool_count[slot]--;
-                free(node);
-
-                /* Restore pristine first-use fields; the CPU backing and the
-                 * Metal store (with their larger capacities) are retained. */
-                buffer->name = 0;
-                buffer->target = target;
-                buffer->size = 0;
-                buffer->written_min = -1;
-                buffer->written_max = -1;
-                buffer->transient_batch_buffer = GL_TRUE;
-                buffer->data.dirty_bits = 0;
-                buffer->has_initialized_data = GL_FALSE;
-                buffer->ever_written = GL_FALSE;
-                buffer->last_init_source = kInitBufferDataCopy;
-                buffer->last_write_offset = 0;
-                buffer->last_write_size = 0;
-                buffer->last_write_src_ptr = NULL;
-                buffer->last_write_src_hash = 0;
-                /* Derived state must not survive into the new use: the index
-                 * scan cache is keyed on content_version, and a recycled buffer
-                 * keeps both unless they are bumped here. */
-                buffer->content_version++;
-                buffer->scan_cache_valid = 0;
-                buffer->scan_cache_live_valid = 0;
-                return buffer;
+                return mglTakeTransientPoolNode(ctx, slot, link, node, target);
             }
             link = &node->next;
             node = node->next;
         }
+
+        /* No idle slot: reuse the oldest busy shell.  SnapshotSharedDirty
+         * CoW-protects the in-flight Metal store; without this, each
+         * in-flight batch beyond the pool depth paid CreateBufferWithBytes. */
+        node = *head;
+        return mglTakeTransientPoolNode(ctx, slot, head, node, target);
     }
 
     return mglNewTransientBatchBuffer(target);
@@ -725,7 +740,14 @@ static void mglMarkTransientBufferWritten(Buffer *buffer, size_t bytes)
     if (!buffer) return;
 
     buffer->size = (GLsizeiptr)bytes;
-    buffer->data.dirty_bits |= DIRTY_BUFFER_ADDR | DIRTY_BUFFER_DATA;
+    /* Contents always change; ADDR only when there is no Metal store (or
+     * EnsureCapacity already dropped one that was too small).  Re-setting
+     * ADDR on a live store forced UpdateDirty down the BindBufferStorage
+     * path even though the existing MTLBuffer was reusable. */
+    buffer->data.dirty_bits |= DIRTY_BUFFER_DATA;
+    if (!mglBufferMtl(buffer)) {
+        buffer->data.dirty_bits |= DIRTY_BUFFER_ADDR;
+    }
     buffer->has_initialized_data = GL_TRUE;
     buffer->ever_written = GL_TRUE;
     buffer->written_min = 0;

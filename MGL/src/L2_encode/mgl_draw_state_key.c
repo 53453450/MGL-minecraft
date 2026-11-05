@@ -905,6 +905,11 @@ bool mglCaptureDynamicUniformRanges(GLMContext ctx,
             override->size = current->size;
         }
     }
+    /* count==0 means either no UBOs or every live range already matches the
+     * donor snapshot under !capture_all.  Callers that need a dynamic patch
+     * treat false as "do not share/merge"; returning true here previously
+     * let M2 share with a stale frozen UBO image when ranges had moved but
+     * the capture skipped them — terrain black flash candidate. */
     return cmd->dynamic_uniform_binding_count > 0;
 }
 

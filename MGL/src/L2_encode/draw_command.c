@@ -627,48 +627,88 @@ static void mglRegisterBatchVaoHazard(MGLCommandBuffer *cb, MGLDrawBatch *batch)
  * (patched buffer/element pointers) and never donate.  A sharer owns no
  * snapshot memory: it must not free the shared pointers (snapshot_shared),
  * and it re-retains program/buffer references for itself from the live state
- * and the shared snapshot. */
+ * and the shared snapshot.
+ *
+ * UBO ring offsets (MC BindBufferRange per draw) change the full key without
+ * changing any frozen payload other than buffer_base ranges.  When first_cmd
+ * is provided, a donor that matches ignoring uniform ranges can still share:
+ * the command stores the live ranges as dynamic overrides (same path as the
+ * adjacent-batch UBO merge). */
+/* MC 1.21 frames land ~70–90 batches/CB; 64 left early equal-key donors
+ * outside the window so M2 share stayed ~0 (PERF shared=0, ~4MiB snap/frame). */
+enum { kMGLBatchSnapshotDonorWindow = 256u };
+
 bool mglInitializeOrShareBatchStateSnapshot(GLMContext ctx,
                                                    MGLCommandBuffer *cb,
-                                                   MGLDrawBatch *batch)
+                                                   MGLDrawBatch *batch,
+                                                   MGLDrawCommand *first_cmd)
 {
     if (ctx && cb && batch) {
         /* Bounded donor window: the full cb scan was O(batches²) key memcmps
-         * per flush, and workloads with monotone keys (per-draw UBO ring
-         * offsets) never revisit an earlier state, paying the whole search
-         * for nothing.  Revisited states almost always occur close together,
-         * so the last kMGLBatchSnapshotDonorWindow batches still share;
-         * anything older simply takes a fresh capture (always correct). */
-        const uint32_t window = cb->batch_count > 16u
-            ? cb->batch_count - 16u : 0u;
+         * per flush.  MC frames typically sit under ~64 batches; a 16-wide
+         * window missed equal-key revisits that land just outside it. */
+        const uint32_t window =
+            cb->batch_count > (uint32_t)kMGLBatchSnapshotDonorWindow
+                ? cb->batch_count - (uint32_t)kMGLBatchSnapshotDonorWindow
+                : 0u;
+        MGLDrawBatch *ubo_donor = NULL;
         for (uint32_t i = window; i < cb->batch_count; i++) {
             MGLDrawBatch *donor = &cb->batches[i];
             if (donor == batch || donor->stream_merged || !donor->state_snapshot) {
                 continue;
             }
-            if (!mglStateKeysEqual(&donor->key, &batch->key)) {
-                continue;
+            if (mglStateKeysEqual(&donor->key, &batch->key)) {
+                batch->state_snapshot = donor->state_snapshot;
+                batch->vao_snapshot = donor->vao_snapshot;
+                /* Re-read the live VAO pointer instead of copying the donor's:
+                 * a name-identical VAO could have been recreated between the
+                 * two captures.  The frozen VAO content itself follows the
+                 * donor's capture - the same semantics batch reuse already
+                 * gives equal keys. */
+                batch->source_vao = ctx->active_state->vao;
+                batch->snapshot_shared = true;
+                /* Match what a fresh capture would choose for commands
+                 * allocation; the shared snapshot is never freed by this batch
+                 * either way (snapshot_shared). */
+                batch->arena_managed =
+                    (ctx->batch_arena && ctx->batch_arena->enabled) ? true
+                                                                   : false;
+                MGL_PERF_INC(g_mglSnapshotShareHitsSinceSwap);
+                mglRetainBatchProgramReferences(ctx, batch);
+                mglRetainBatchBufferReferences(batch);
+                mglRegisterBatchVaoHazard(cb, batch);
+                return true;
             }
-            batch->state_snapshot = donor->state_snapshot;
-            batch->vao_snapshot = donor->vao_snapshot;
-            /* Re-read the live VAO pointer instead of copying the donor's:
-             * a name-identical VAO could have been recreated between the
-             * two captures.  The frozen VAO content itself follows the
-             * donor's capture - the same semantics batch reuse already
-             * gives equal keys. */
+            if (first_cmd &&
+                mglStateKeysEqualIgnoringUniformRanges(&donor->key,
+                                                       &batch->key)) {
+                /* Keep the newest match: its frozen UBO ranges are usually
+                 * closer to the live ring position. */
+                ubo_donor = donor;
+            }
+        }
+        if (ubo_donor) {
+            batch->state_snapshot = ubo_donor->state_snapshot;
+            batch->vao_snapshot = ubo_donor->vao_snapshot;
             batch->source_vao = ctx->active_state->vao;
             batch->snapshot_shared = true;
-            /* Match what a fresh capture would choose for commands
-             * allocation; the shared snapshot is never freed by this batch
-             * either way (snapshot_shared). */
+            batch->has_dynamic_uniform_bindings = true;
+            batch->mdi_compatible = false;
             batch->arena_managed =
                 (ctx->batch_arena && ctx->batch_arena->enabled) ? true : false;
-            MGL_PERF_INC(g_mglSnapshotShareHitsSinceSwap);
-            mglRetainBatchProgramReferences(ctx, batch);
-            mglRetainBatchBufferReferences(batch);
-            mglRegisterBatchVaoHazard(cb, batch);
-            MGL_SIGNPOST_END(InitBatchSnapshot);
-            return true;
+            if (mglCaptureDynamicUniformRanges(ctx, batch, first_cmd, true)) {
+                MGL_PERF_INC(g_mglSnapshotShareHitsSinceSwap);
+                mglRetainBatchProgramReferences(ctx, batch);
+                mglRetainBatchBufferReferences(batch);
+                mglRegisterBatchVaoHazard(cb, batch);
+                return true;
+            }
+            /* Live UBO object set diverged from the donor snapshot — fall
+             * through to a fresh capture. */
+            batch->state_snapshot = NULL;
+            batch->vao_snapshot = NULL;
+            batch->snapshot_shared = false;
+            batch->has_dynamic_uniform_bindings = false;
         }
     }
     if (!mglInitializeBatchStateSnapshot(ctx, batch)) {
@@ -937,7 +977,8 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         }
 
         if (!can_stream_merge) {
-            if (!mglInitializeOrShareBatchStateSnapshot(ctx, cb, batch)) {
+            if (!mglInitializeOrShareBatchStateSnapshot(ctx, cb, batch,
+                                                        &stored_cmd)) {
                 fprintf(stderr, "MGL Error: mglAppendDrawCommand: state snapshot alloc failed\n");
                 mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
                 mglReleaseBatch(ctx, batch);
@@ -985,7 +1026,8 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 batch->key = key;
                 batch->mdi_compatible = false;
                 batch->uses_elements = cmd_uses_elements;
-                if (!mglInitializeOrShareBatchStateSnapshot(ctx, cb, batch)) {
+                if (!mglInitializeOrShareBatchStateSnapshot(ctx, cb, batch,
+                                                            &stored_cmd)) {
                     fprintf(stderr, "MGL Error: mglAppendDrawCommand: fallback state snapshot alloc failed\n");
                     mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
                     mglReleaseBatch(ctx, batch);

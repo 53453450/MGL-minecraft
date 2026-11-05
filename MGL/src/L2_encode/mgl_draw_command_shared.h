@@ -187,8 +187,11 @@ void mglDrainTransientPool(GLMContext ctx);
 void mglDestroyTransientBuffer(GLMContext ctx, Buffer *buffer);
 
 bool mglInitializeBatchStateSnapshot(GLMContext ctx, MGLDrawBatch *batch);
+/* first_cmd: when non-NULL, enables UBO-range-tolerant snapshot sharing and
+ * receives the dynamic uniform overrides needed to replay against the donor. */
 bool mglInitializeOrShareBatchStateSnapshot(GLMContext ctx, MGLCommandBuffer *cb,
-                                            MGLDrawBatch *batch);
+                                            MGLDrawBatch *batch,
+                                            MGLDrawCommand *first_cmd);
 void mglReleaseBatch(GLMContext ctx, MGLDrawBatch *batch);
 void mglRetainBatchBufferReferences(MGLDrawBatch *batch);
 void mglRetainBatchProgramReferences(GLMContext ctx, MGLDrawBatch *batch);
