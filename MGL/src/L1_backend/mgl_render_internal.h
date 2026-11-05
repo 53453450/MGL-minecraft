@@ -474,18 +474,23 @@ inline BufferCowSnapshot takeBufferCowSnapshot(MTL::Device* device,
     BufferCowPool* pool = bufferCowPool(owner, true);
     const uint64_t completed =
         gBufferCompletedGeneration.load(std::memory_order_acquire);
-    if (pool) {
+    /* Never hand back an existing Shared MTLBuffer for CPU rewrite — that
+     * raced GPU vertex fetch on MC even when lastUse looked completed.
+     * Idle pool slots may be replaced with a *fresh* newBuffer (encoder may
+     * still retain the old one). */
+    if (pool && device) {
         for (BufferCowSlot& slot : pool->slots) {
-            /* A pooled snapshot must be able to hold the owner's whole Metal
-             * length: the caller memcpy's the CPU shadow into it and then
-             * memsets the tail up to `length`.  The owner can grow between
-             * snapshots (reused glBufferData), so a slot allocated for an
-             * earlier, smaller buffer has to be skipped rather than reused. */
             if (!slot.buffer || slot.buffer == oldBuffer ||
                 static_cast<size_t>(slot.buffer->length()) < length ||
                 completed < slot.lastUseGeneration) {
                 continue;
             }
+            MTL::Buffer* fresh = device->newBuffer(
+                static_cast<NS::UInteger>(length), options);
+            if (!fresh) return {};
+            slot.buffer->release();
+            slot.buffer = fresh;
+            slot.lastUseGeneration = 0;
             return {slot.buffer, true};
         }
     }
@@ -720,6 +725,11 @@ struct Renderer {
     std::map<std::string, MTL::BinaryArchive*> binaryArchives;
     std::map<ConvertedVertexBufferKey, ConvertedVertexBufferEntry>
         convertedVertexBuffers;
+    /* Idle Shared converted VBOs recycled instead of newBufferWithBytes.
+     * Only buffers with lastUseGeneration already completed are put here —
+     * never in-flight GPU storage (black-flash race). */
+    static constexpr size_t kConvertedFreelistMax = 48u;
+    std::vector<MTL::Buffer*> convertedBufferFreelist;
     std::array<Buffer*, kPackedStructBufferCapacity> packedStructBuffers{};
     size_t packedStructBufferIndex = 0;
     std::set<BindingState*> bindingStates;
@@ -1107,6 +1117,10 @@ inline void releasePipelineCaches(Renderer& renderer) {
         }
     }
     renderer.convertedVertexBuffers.clear();
+    for (MTL::Buffer* b : renderer.convertedBufferFreelist) {
+        if (b) b->release();
+    }
+    renderer.convertedBufferFreelist.clear();
     if (renderer.sparseQueue) {
         renderer.sparseQueue->release();
         renderer.sparseQueue = nullptr;
