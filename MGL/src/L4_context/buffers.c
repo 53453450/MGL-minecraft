@@ -1972,6 +1972,55 @@ kern_return_t initBufferData(GLMContext ctx, Buffer *ptr, GLsizeiptr size, const
             }
         }
 
+        /* Same-capacity BufferData: reuse the existing CPU store (and Metal
+         * when it still covers `size`).  Spec permits reinitializing an
+         * existing store; tearing Metal down every call forces
+         * CreateBufferWithBytes on the next draw and drops the encode
+         * generation used for idle in-place uploads.  Pending draws for
+         * this buffer were already flushed above. */
+        if (size > 0 && (size_t)size <= ptr->data.buffer_size)
+        {
+            void *mtl = mglRenderBufferHandle(ptr);
+            bool keep_metal = false;
+            if (mtl) {
+                MGLRenderBufferInfo info;
+                if (mglRenderGetBufferInfo(mtl, &info) == 0 &&
+                    info.length >= (uint64_t)size) {
+                    keep_metal = true;
+                } else {
+                    mglRenderReleaseBufferMetalData(ctx, ptr);
+                }
+            }
+
+            ptr->size = size;
+            if (data) {
+                memcpy((void *)(uintptr_t)ptr->data.buffer_data, data,
+                       (size_t)size);
+                ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+                if (keep_metal) {
+                    ptr->data.dirty_bits &= ~DIRTY_BUFFER_ADDR;
+                } else {
+                    ptr->data.dirty_bits |= DIRTY_BUFFER_ADDR;
+                }
+                const uint64_t init_hash =
+                    (ptr->target == GL_ELEMENT_ARRAY_BUFFER ||
+                     mglTraceLogIsEnabled())
+                        ? mglTraceHashBytes(data, (size_t)size)
+                        : 0ull;
+                mglBufferMarkWrite(ptr, kInitBufferDataCopy, 0, size, data,
+                                   init_hash);
+            } else {
+                mglBufferMarkAllocatedUninitialized(ptr, kInitBufferDataNull);
+                ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+                if (keep_metal) {
+                    ptr->data.dirty_bits &= ~DIRTY_BUFFER_ADDR;
+                } else {
+                    ptr->data.dirty_bits |= DIRTY_BUFFER_ADDR;
+                }
+            }
+            return 0;
+        }
+
         mglReleaseBufferStorage(ptr);
     }
 
