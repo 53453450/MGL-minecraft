@@ -1983,7 +1983,15 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
                         (int)cmd->count, (int)cmd->instanceCount, (int)cmd->baseVertex,
                         (unsigned)cmd->baseInstance,
                         (unsigned)mglTraceDrawProgram(ctx));
-    if (getenv("MGL_CULL_DBG")) fprintf(stderr, "MGL_CULL_DBG: mglDrawDispatch immediate\n");
+    {
+        static int s_cull_dbg = -1;
+        if (s_cull_dbg < 0) {
+            s_cull_dbg = getenv("MGL_CULL_DBG") != NULL ? 1 : 0;
+        }
+        if (s_cull_dbg) {
+            fprintf(stderr, "MGL_CULL_DBG: mglDrawDispatch immediate\n");
+        }
+    }
 
     switch (cmd->type) {
         case MGL_CMD_DRAW_ARRAYS:

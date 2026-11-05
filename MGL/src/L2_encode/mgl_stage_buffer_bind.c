@@ -77,11 +77,14 @@ static int mglSbBindingStateBufferMatches(void *owner, uint32_t stage,
            current == buffer && current_offset == offset;
 }
 
-/* -[MGLRenderer …] bound-verbose logging: the Objective-C header's
- * kMGLVerboseBindLogs macro is getenv("MGL_VERBOSE_BIND") != NULL. */
+/* Match mglSeVerboseBindLogs: getenv once — this sits on the per-draw bind path. */
 static int mglSbVerboseBindLogs(void)
 {
-    return getenv("MGL_VERBOSE_BIND") != NULL;
+    static int cached = -1;
+    if (cached < 0) {
+        cached = getenv("MGL_VERBOSE_BIND") != NULL ? 1 : 0;
+    }
+    return cached;
 }
 
 /* The .m's mglBindingStateBufferLength. */

@@ -483,12 +483,19 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
     GLMState *glState = mglPdState(&areas);
 
     const uint64_t processCall = ++s_pdProcessGLStateCallCount;
-    const double processStartSeconds = mglTraceNowSeconds();
-    const uint64_t processStartNS = mglTraceClockNS();
     const bool traceProcess = mglPdShouldTraceCall(processCall);
-    mglLogLoopHeartbeat("processGLState.loop", processCall, processStartSeconds,
-                        &s_pdProcessGLStateLastCallTime,
-                        &s_pdProcessGLStateLastCallCount, 0.25);
+    /* F4: clock/heartbeat only when tracing or diagnostic logs — every draw
+     * previously paid TraceClockNS×2 (~33 ns) even with kMGLDiagnosticStateLogs=0. */
+    const int timeProcess = (traceProcess || kMGLDiagnosticStateLogs) ? 1 : 0;
+    double processStartSeconds = 0.0;
+    uint64_t processStartNS = 0u;
+    if (timeProcess) {
+        processStartSeconds = mglTraceNowSeconds();
+        processStartNS = mglTraceClockNS();
+        mglLogLoopHeartbeat("processGLState.loop", processCall, processStartSeconds,
+                            &s_pdProcessGLStateLastCallTime,
+                            &s_pdProcessGLStateLastCallCount, 0.25);
+    }
     if (traceProcess) {
         mglTraceLog("MGL TRACE processGLState.begin call=%llu draw=%d",
                     (unsigned long long)processCall, draw_command ? 1 : 0);
@@ -1009,19 +1016,25 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
             renderer, kMGLSamplerWrapBufferIndex);
     }
 
-    const double processElapsedUs = (mglTraceClockNS() - processStartNS) / 1000.0;
-    if (traceProcess) {
-        mglTraceLog("MGL TRACE processGLState.end call=%llu draw=%d elapsed=%.1fus",
-                    (unsigned long long)processCall, draw_command ? 1 : 0,
-                    processElapsedUs);
-        mglLogStateSnapshot("processGLState.exit.ok", ctx,
-                            commandState->currentCommandBufferOwner,
-                            commandState->currentRenderEncoderOwner,
-                            commandState->renderPassStateOwner, areas.drawable);
-    } else if (processElapsedUs >= 25.0) {
-        mglTraceLog("MGL TRACE processGLState.slow call=%llu draw=%d elapsed=%.1fus",
-                    (unsigned long long)processCall, draw_command ? 1 : 0,
-                    processElapsedUs);
+    if (timeProcess) {
+        const double processElapsedUs =
+            (mglTraceClockNS() - processStartNS) / 1000.0;
+        if (traceProcess) {
+            mglTraceLog(
+                "MGL TRACE processGLState.end call=%llu draw=%d elapsed=%.1fus",
+                (unsigned long long)processCall, draw_command ? 1 : 0,
+                processElapsedUs);
+            mglLogStateSnapshot(
+                "processGLState.exit.ok", ctx,
+                commandState->currentCommandBufferOwner,
+                commandState->currentRenderEncoderOwner,
+                commandState->renderPassStateOwner, areas.drawable);
+        } else if (processElapsedUs >= 25.0) {
+            mglTraceLog(
+                "MGL TRACE processGLState.slow call=%llu draw=%d elapsed=%.1fus",
+                (unsigned long long)processCall, draw_command ? 1 : 0,
+                processElapsedUs);
+        }
     }
     return 1;
 }
@@ -1167,9 +1180,18 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
     MGLCommandState *commandState = areas.command;
 
     const uint64_t swapCall = ++s_pdSwapCallCount;
-    const double swapStartSeconds = mglTraceNowSeconds();
-    const uint64_t swapStartNS = mglTraceClockNS();
     const bool traceSwap = mglPdShouldTraceCall(swapCall);
+    const int timeSwap =
+        (traceSwap || kMGLDiagnosticStateLogs || kMglPdVerboseFrameLoopLogs) ? 1
+                                                                            : 0;
+    double swapStartSeconds = 0.0;
+    uint64_t swapStartNS = 0u;
+    if (timeSwap) {
+        swapStartSeconds = mglTraceNowSeconds();
+        swapStartNS = mglTraceClockNS();
+    } else {
+        swapStartSeconds = mglTraceNowSeconds(); /* still stamp LastSwapSeconds */
+    }
     mglTraceNoteFrameBoundary();
     MGL_FRAME_STORE(g_mglSwapCallCount, swapCall);
     /* advance the DontCare frame generation. Any color attachment written
@@ -1186,8 +1208,10 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
             (unsigned long long)MGL_FRAME_LOAD(g_mglDrawElementsSinceSwap),
             (unsigned long long)MGL_FRAME_LOAD(g_mglProcessDrawCallsSinceSwap));
     }
-    mglLogLoopHeartbeat("swap.loop", swapCall, swapStartSeconds,
-                        &s_pdSwapLastCallTime, &s_pdSwapLastCallCount, 0.25);
+    if (timeSwap) {
+        mglLogLoopHeartbeat("swap.loop", swapCall, swapStartSeconds,
+                            &s_pdSwapLastCallTime, &s_pdSwapLastCallCount, 0.25);
+    }
 
     if (!mglPdContextLikelyValid(glm_ctx)) {
         fprintf(stderr, "MGL CRITICAL: swap.begin invalid glm_ctx=%p\n",
@@ -1550,18 +1574,21 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
         mglRendererSetDefaultDrawableWritten(renderer, 0);
         mglMarkRendererDirtyBits(areas.ctx->active_state,
                                  DIRTY_FBO | DIRTY_RENDER_STATE);
-        const double swapElapsedUs = (mglTraceClockNS() - swapStartNS) / 1000.0;
-        if (traceSwap) {
-            mglTraceLog("MGL TRACE swap.end call=%llu elapsed=%.1fus",
-                        (unsigned long long)swapCall, swapElapsedUs);
-            mglLogStateSnapshot("swap.exit.ok", areas.ctx,
-                                commandState->currentCommandBufferOwner,
-                                commandState->currentRenderEncoderOwner,
-                                commandState->renderPassStateOwner,
-                                areas.drawable);
-        } else if (swapElapsedUs >= 25000.0) {
-            mglTraceLog("MGL TRACE swap.slow call=%llu elapsed=%.1fus",
-                        (unsigned long long)swapCall, swapElapsedUs);
+        if (timeSwap) {
+            const double swapElapsedUs =
+                (mglTraceClockNS() - swapStartNS) / 1000.0;
+            if (traceSwap) {
+                mglTraceLog("MGL TRACE swap.end call=%llu elapsed=%.1fus",
+                            (unsigned long long)swapCall, swapElapsedUs);
+                mglLogStateSnapshot("swap.exit.ok", areas.ctx,
+                                    commandState->currentCommandBufferOwner,
+                                    commandState->currentRenderEncoderOwner,
+                                    commandState->renderPassStateOwner,
+                                    areas.drawable);
+            } else if (swapElapsedUs >= 25000.0) {
+                mglTraceLog("MGL TRACE swap.slow call=%llu elapsed=%.1fus",
+                            (unsigned long long)swapCall, swapElapsedUs);
+            }
         }
     } else if (kMglPdVerboseFrameLoopLogs || traceSwap) {
         fprintf(stderr,
