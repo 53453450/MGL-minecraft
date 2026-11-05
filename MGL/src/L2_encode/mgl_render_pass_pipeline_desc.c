@@ -478,13 +478,18 @@ int mglRenderPassGeneratePipelineDescriptorState(
 
         void *rpDepth = mglPdDepthTextureFor(commandState);
         void *rpStencil = mglPdStencilTextureFor(commandState);
-        desc->depth_format = mglRenderAttachmentFormatOrInvalid(
-            rpDepth ? 1 : 0,
-            rpDepth ? (uint32_t)mglPdTextureInfo(rpDepth).pixel_format : 0u);
-        desc->stencil_format = mglRenderAttachmentFormatOrInvalid(
-            rpStencil ? 1 : 0,
-            rpStencil ? (uint32_t)mglPdTextureInfo(rpStencil).pixel_format
-                      : 0u);
+        if (rpDepth) {
+            desc->depth_format = mglRenderDepthFormatOrFallback(
+                (uint32_t)mglPdTextureInfo(rpDepth).pixel_format);
+        } else {
+            desc->depth_format = mglRenderInvalidPixelFormat();
+        }
+        if (rpStencil) {
+            desc->stencil_format = mglRenderStencilFormatOrFallback(
+                (uint32_t)mglPdTextureInfo(rpStencil).pixel_format);
+        } else {
+            desc->stencil_format = mglRenderInvalidPixelFormat();
+        }
     }
 
     const int color0IsIntentionallyDisabled =

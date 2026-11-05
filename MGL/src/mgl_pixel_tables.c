@@ -58,7 +58,13 @@ uint32_t mglNumComponentsForFormat(uint32_t format) {
         case GL_BLUE:
         case GL_STENCIL_INDEX:
         case GL_DEPTH_COMPONENT:
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
         case GL_DEPTH_STENCIL:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
         case GL_ALPHA:
         case 0x803C: /* GL_ALPHA8 */
         case 0x803E: /* GL_ALPHA16 */
@@ -423,10 +429,10 @@ int mglRenderTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
         case GL_R16UI:
         case GL_R32I:
         case GL_R32UI:
-        case GL_DEPTH_COMPONENT16:
-        case GL_DEPTH_COMPONENT24:
-        case GL_DEPTH_COMPONENT32:
-        case GL_DEPTH_COMPONENT32F:
+            /* Depth formats must keep a depth-renderable Metal store so they
+             * remain valid FBO depth attachments (Iris sets DEPTH swizzle;
+             * baking to RGBA32Float crashed PSO validation).  Sampling uses
+             * the depth fallback view path instead. */
             return 1;
         default:
             return 0;
@@ -447,10 +453,6 @@ int mglRenderTextureUploadNeedsSingleChannelSwizzleBake(
         case GL_R32F:
         case GL_R16UI:
         case GL_R32UI:
-        case GL_DEPTH_COMPONENT16:
-        case GL_DEPTH_COMPONENT24:
-        case GL_DEPTH_COMPONENT32:
-        case GL_DEPTH_COMPONENT32F:
             return 1;
         default:
             return 0;

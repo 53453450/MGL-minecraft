@@ -19,6 +19,7 @@
 #include "mgl_pso_format_class.h"
 
 #include "mgl_program_resource.h"  /* mglProgramStageUsesBuiltin */
+#include "mgl_render_api_texture.h" /* mglRenderPixelFormatIsDepthOrStencil */
 #include "mgl_shader_abi.h"        /* MGL_AIR_BUILTIN_* */
 
 #include "glcorearb.h"
@@ -96,11 +97,25 @@ int mglRenderVSWritesLayer(const Program *vertex_program) {
 }
 
 uint32_t mglRenderDepthFormatOrFallback(uint32_t format) {
-    return format == 0u ? mglRenderDefaultDepthPixelFormat() : format;
+    if (format == 0u) {
+        return mglRenderDefaultDepthPixelFormat();
+    }
+    /* Reject color formats (e.g. RGBA32Float after a mistaken depth swizzle
+     * bake) — Metal aborts if depthAttachmentPixelFormat is not depth. */
+    if (mglRenderPixelFormatIsDepthOrStencil(format) == 0) {
+        return mglRenderDefaultDepthPixelFormat();
+    }
+    return format;
 }
 
 uint32_t mglRenderStencilFormatOrFallback(uint32_t format) {
-    return format == 0u ? 253u /* Stencil8 */ : format;
+    if (format == 0u) {
+        return 253u; /* Stencil8 */
+    }
+    if (mglRenderPixelFormatIsDepthOrStencil(format) == 0) {
+        return 253u; /* Stencil8 */
+    }
+    return format;
 }
 
 int mglRenderColorAttachmentBitfieldDone(uint32_t bitfield, int index) {

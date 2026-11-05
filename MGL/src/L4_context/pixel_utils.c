@@ -95,7 +95,13 @@ GLuint numComponentsForFormat(GLenum format)
         case GL_BLUE:
         case GL_STENCIL_INDEX:
         case GL_DEPTH_COMPONENT:
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
         case GL_DEPTH_STENCIL:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
         // Legacy single-channel formats
         case GL_ALPHA:
         case GL_ALPHA8:

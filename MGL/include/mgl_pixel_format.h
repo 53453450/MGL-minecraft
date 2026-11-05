@@ -126,12 +126,8 @@ mglSingleChannelSwizzleStorageClass(uint32_t internal_format)
         case GL_R16_SNORM: return MGL_PIXEL_STORAGE_RGBA16_SNORM;
         case GL_R16F: return MGL_PIXEL_STORAGE_RGBA16_FLOAT;
         case GL_R32F: return MGL_PIXEL_STORAGE_RGBA32_FLOAT;
-        case GL_DEPTH_COMPONENT16: return MGL_PIXEL_STORAGE_RGBA16_UNORM;
-        case GL_DEPTH_COMPONENT24:
-        case GL_DEPTH_COMPONENT32:
-        case GL_DEPTH_COMPONENT32F:
-        case GL_DEPTH24_STENCIL8:
-        case GL_DEPTH32F_STENCIL8: return MGL_PIXEL_STORAGE_RGBA32_FLOAT;
+        /* Depth/stencil: never bake into RGBA* storage — that store is also
+         * the FBO depth attachment and must stay depth-renderable. */
         default: return MGL_PIXEL_STORAGE_INVALID;
     }
 }
