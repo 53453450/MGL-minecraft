@@ -310,18 +310,38 @@ static bool mglScanCommandElementIndices(Buffer *elementBuffer,
     uint64_t maxIndex = 0;
     uint64_t allMinIndex = UINT64_MAX;
     uint64_t allMaxIndex = 0;
-    for (GLsizei i = 0; i < count; i++) {
-        uint64_t index = 0;
-        if (!mglCommandReadIndexValue(data, indexType, i, &index)) {
-            return false;
-        }
-        if (index < allMinIndex) allMinIndex = index;
-        if (index > allMaxIndex) allMaxIndex = index;
-        if (!hasRestart || index != restart) {
-            if (index < minIndex) minIndex = index;
-            if (index > maxIndex) maxIndex = index;
-        }
+    /* Type is dispatched once so each loop is a plain min/max reduction. */
+#define MGL_SCAN_INDEX_TYPE(T)                                                \
+    do {                                                                      \
+        T lo = (T)~(T)0, hi = 0;                                              \
+        for (GLsizei i = 0; i < count; i++) {                                 \
+            T v;                                                              \
+            memcpy(&v, data + (size_t)i * sizeof(T), sizeof(T));              \
+            lo = v < lo ? v : lo;                                             \
+            hi = v > hi ? v : hi;                                             \
+        }                                                                     \
+        allMinIndex = lo;                                                     \
+        allMaxIndex = hi;                                                     \
+        if (!hasRestart) {                                                    \
+            minIndex = lo;                                                    \
+            maxIndex = hi;                                                    \
+        } else {                                                              \
+            for (GLsizei i = 0; i < count; i++) {                             \
+                T v;                                                          \
+                memcpy(&v, data + (size_t)i * sizeof(T), sizeof(T));          \
+                if ((uint64_t)v == restart) continue;                         \
+                if (v < minIndex) minIndex = v;                               \
+                if (v > maxIndex) maxIndex = v;                               \
+            }                                                                 \
+        }                                                                     \
+    } while (0)
+    switch (indexType) {
+        case GL_UNSIGNED_BYTE:  MGL_SCAN_INDEX_TYPE(uint8_t);  break;
+        case GL_UNSIGNED_SHORT: MGL_SCAN_INDEX_TYPE(uint16_t); break;
+        case GL_UNSIGNED_INT:   MGL_SCAN_INDEX_TYPE(uint32_t); break;
+        default: return false;
     }
+#undef MGL_SCAN_INDEX_TYPE
 
     const bool liveValid = (minIndex != UINT64_MAX);
     out->min_index = liveValid ? minIndex : 0;

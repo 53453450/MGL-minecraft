@@ -181,7 +181,9 @@ typedef struct Buffer_t {
      * Keyed on content_version + (offset,count,type,restart).  Multi-slot
      * exact match only (covering/superset hits over-mark hazards on MC).
      * Mapped / persistent / GPU-write targets still rescan every draw. */
-#define MGL_ELEMENT_SCAN_CACHE_SLOTS 16
+/* Iris hitch frames thrash small RR caches (PERF elScan miss≈1.7k @16).
+ * 128 exact slots stay Spec-safe (same keying; still no covering hits). */
+#define MGL_ELEMENT_SCAN_CACHE_SLOTS 128
     struct {
         uint32_t min_index;       /* restart-excluding min */
         uint32_t max_index;       /* restart-excluding max */
