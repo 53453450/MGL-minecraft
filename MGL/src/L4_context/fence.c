@@ -581,7 +581,21 @@ void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
      * subsequent GL draws/reads. No explicit endComputeEncoding is needed here.
      */
     mglFlushCommandBuffer(ctx);
-    mglRendererFlush(ctx, true);
+    /* GL 4.6 §7.13.2: the bits below make shader writes visible to the CPU
+     * (buffer/texture readback, mapped pointers) and need the work finished.
+     * For the remaining bits every consumer is a later GPU command, which
+     * the in-order queue and Metal's resource hazard tracking already
+     * order; committing the command buffer without waiting is enough. */
+    const GLbitfield cpu_visible_bits =
+        GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT |
+        GL_BUFFER_UPDATE_BARRIER_BIT |
+        GL_PIXEL_BUFFER_BARRIER_BIT |
+        GL_TEXTURE_UPDATE_BARRIER_BIT;
+    if (barriers == GL_ALL_BARRIER_BITS || (barriers & cpu_visible_bits)) {
+        mglRendererFlush(ctx, true);
+    } else {
+        mglRendererFlush(ctx, false);
+    }
     /* MGL_SYNC_STRICT: mglFlushCommandBuffer + mtlFlush(ctx, true)
      * (commit + waitUntilCompleted) already ran here, a conservative path
      * that needs no extra strict branch. */
