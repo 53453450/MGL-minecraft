@@ -2760,8 +2760,20 @@ GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *un
         }
     }
 
-    fprintf(stderr, "MGL WARNING: uniform block '%s' binding not found, returning GL_INVALID_INDEX\n",
-            mglSafeCStringForLog(uniformBlockName));
+    /* Spec: inactive / missing block → GL_INVALID_INDEX, no GL error.
+     * Iris queries optional blocks (e.g. iris_CloudInfo) every frame on
+     * programs that lack them; unconditional fprintf dominated stderr CPU. */
+    {
+        static uint64_t s_ubo_miss_warn = 0;
+        uint64_t hit = ++s_ubo_miss_warn;
+        if (hit <= 8ull || (hit % 4096ull) == 0ull) {
+            fprintf(stderr,
+                    "MGL WARNING: uniform block '%s' binding not found, "
+                    "returning GL_INVALID_INDEX hit=%llu\n",
+                    mglSafeCStringForLog(uniformBlockName),
+                    (unsigned long long)hit);
+        }
+    }
     return (GLuint)-1;
 }
 
