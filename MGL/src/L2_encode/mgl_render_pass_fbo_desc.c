@@ -88,9 +88,10 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
     }
     MGLRenderPassIdentityState identity =
         mglRenderPassIdentitySnapshot(areas.command);
-    if (identity.framebuffer != fbo ||
-        identity.framebuffer_name != fboName ||
-        identity.draw_buffer != mglPdStateView(&areas)->draw_buffer ||
+    /* Draw-buffer set must match. FBO object identity does not: Iris binds
+     * distinct FBO names that share Metal attachments; requiring pointer/name
+     * equality forced a rotate every BindFramebuffer (PERF fboRot). */
+    if (identity.draw_buffer != mglPdStateView(&areas)->draw_buffer ||
         identity.draw_buffer_count != (uint32_t)mglMetalDrawBufferCount(ctx)) {
         return 0;
     }
@@ -99,6 +100,7 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
             return 0;
         }
     }
+    (void)fboName;
 
     if (!fbo) {
         GLuint mgl_drawbuffer = mglDefaultDrawBufferIndexForGL(mglPdStateView(&areas)->draw_buffer);
