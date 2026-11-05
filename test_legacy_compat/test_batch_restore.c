@@ -113,7 +113,7 @@ static void test_dirty_delta(void)
     b.uniform_buffer_hash = 2u;
     bits = mgl_batch_compute_key_delta_dirty_bits(1, &a, &b, full, &masks,
                                                   &flags);
-    expect(bits == masks.render_state &&
+    expect(bits == DIRTY_BUFFER_BASE_STATE &&
                flags.domain_render_state_ubo_only == 1u &&
                flags.domain_render_state == 0u,
            "ubo-only render_state_hash noise");

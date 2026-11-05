@@ -26,6 +26,8 @@
 #include "mgl_batch_mtl_encode.h"
 #include "mgl_attachment_binding.h"
 #include "mgl_types_framebuffer.h"
+#include "mgl_draw_command_shared.h"
+#include "mgl_types_state.h"
 #include <assert.h>
 #include <string.h>
 #include "mgl_buffer_backend.h"
@@ -322,15 +324,23 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
     MGL_SIGNPOST_BEGIN(RestoreStateForBatch);
     mglCoreAssertDualProxy(areas.core, glm_ctx);
     if (batch->state_snapshot) {
-        /* Region-skip copy: consecutive batches usually differ only in their
-         * buffer_base slice offsets, so the large unchanged regions of the
-         * snapshot are left untouched instead of rewritten. */
-        const size_t restoredBytes = mglCopyHotStateFieldsIfChanged(
-            replay, (const GLMState *)batch->state_snapshot);
-        MGL_PERF_ADD(g_mglReplayMemcpyCountSinceSwap, restoredBytes);
+        const GLMState *snap = (const GLMState *)batch->state_snapshot;
+        /* UBO-ring narrow path: prev matches ignoring uniform ranges and this
+         * batch has dynamic UBO overrides. Still refresh region 1/3 + hot
+         * buffer_base (UBO baseline required by ApplyDynamicBindings
+         * save/restore) but skip region 5 volatile tail — the Iris memcpy
+         * bulk when only UBO slices change. */
+        const int ubo_ring_only =
+            prevKey != NULL && batch->has_dynamic_uniform_bindings &&
+            mglStateKeysEqualIgnoringUniformRanges(prevKey, &batch->key);
+        size_t restoredBytes =
+            ubo_ring_only
+                ? mglCopyHotStateFieldsIfChangedSkipVolatileTail(replay, snap)
+                : mglCopyHotStateFieldsIfChanged(replay, snap);
         mgl_batch_replay_copy_object_hash_tables(replay, savedState);
         mglRestoreProgramPipelinePair(glm_ctx, replay->program_name,
                                       replay->var.program_pipeline_binding);
+        MGL_PERF_ADD(g_mglReplayMemcpyCountSinceSwap, restoredBytes);
     } else {
         mglBatchRestoreStateFromKey(&batch->key, glm_ctx, replay);
     }

@@ -444,4 +444,41 @@ static inline size_t mglCopyHotStateFieldsIfChanged(GLMState *dst, const GLMStat
     return copied;
 }
 
+/* Like mglCopyHotStateFieldsIfChanged, but skips region 5 ([pack, end) —
+ * volatile hash-cache / binding-mirror var tail). Used when prev/cur keys
+ * match ignoring uniform ranges: that tail is recomputed from live state and
+ * is the bulk of Iris restore memcpy when only UBO slices change. Region 1/3
+ * and hot buffer_base (including UBO baseline for ApplyDynamicBindings) still
+ * refresh. */
+static inline size_t
+mglCopyHotStateFieldsIfChangedSkipVolatileTail(GLMState *dst,
+                                               const GLMState *src)
+{
+    if (!dst || !src || dst == src) return 0;
+
+    size_t copied = sizeof(GLuint);
+    if (dst->dirty_bits != src->dirty_bits) {
+        dst->dirty_bits = src->dirty_bits;
+    }
+
+    copied += mglCopyRegionBlocksIfChanged(
+        (char *)dst + sizeof(GLuint),
+        (const char *)src + sizeof(GLuint),
+        offsetof(GLMState, sync_table) - sizeof(GLuint));
+    copied += mglCopyRegionBlocksIfChanged(
+        (char *)dst + offsetof(GLMState, shaders),
+        (const char *)src + offsetof(GLMState, shaders),
+        offsetof(GLMState, buffer_base) - offsetof(GLMState, shaders));
+
+#define MGL_SNAPSHOT_COPY_HOT_IF_CHANGED_NO_TAIL(_t_)                   \
+    copied += mglCopyRegionBlocksIfChanged(                             \
+        (char *)&dst->buffer_base[_t_],                                 \
+        (const char *)&src->buffer_base[_t_],                           \
+        sizeof(BufferBase));
+    MGL_SNAPSHOT_HOT_BUFFER_BASE_TYPES(MGL_SNAPSHOT_COPY_HOT_IF_CHANGED_NO_TAIL)
+#undef MGL_SNAPSHOT_COPY_HOT_IF_CHANGED_NO_TAIL
+
+    return copied;
+}
+
 #endif /* mgl_types_state_h */

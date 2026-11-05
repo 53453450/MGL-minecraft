@@ -84,18 +84,24 @@ uint32_t mgl_batch_compute_key_delta_dirty_bits(
         prev->scissor_enabled != cur->scissor_enabled ||
         prev->primitive_type != cur->primitive_type ||
         !view_viewport_equal(prev, cur)) {
-        bits |= masks->render_state;
-        if (flags_out) {
-            const int ubo_only =
-                ((prev->render_state_hash ^ prev->uniform_buffer_hash) ==
-                 (cur->render_state_hash ^ cur->uniform_buffer_hash)) &&
-                prev->caps_flags == cur->caps_flags &&
-                prev->scissor_enabled == cur->scissor_enabled &&
-                prev->primitive_type == cur->primitive_type &&
-                view_viewport_equal(prev, cur);
-            if (ubo_only) {
+        /* Iris UBO ring: render_state_hash folds uniform_buffer_hash. When the
+         * non-UBO RS slice is unchanged, only rematerialize buffer-base
+         * bindings — skip render_state_path / encoder recreate. */
+        const int ubo_only =
+            ((prev->render_state_hash ^ prev->uniform_buffer_hash) ==
+             (cur->render_state_hash ^ cur->uniform_buffer_hash)) &&
+            prev->caps_flags == cur->caps_flags &&
+            prev->scissor_enabled == cur->scissor_enabled &&
+            prev->primitive_type == cur->primitive_type &&
+            view_viewport_equal(prev, cur);
+        if (ubo_only) {
+            bits |= DIRTY_BUFFER_BASE_STATE;
+            if (flags_out) {
                 flags_out->domain_render_state_ubo_only = 1u;
-            } else {
+            }
+        } else {
+            bits |= masks->render_state;
+            if (flags_out) {
                 flags_out->domain_render_state = 1u;
             }
         }
