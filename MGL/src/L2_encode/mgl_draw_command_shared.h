@@ -232,6 +232,9 @@ bool mglStateKeysEqualIgnoringUniformElementAndTextures(
 bool mglBatchInitMDICompatible(const MGLDrawBatch *batch, const MGLDrawCommand *cmd);
 void mglBatchUpdateMDIOnAppend(MGLDrawBatch *batch, const MGLDrawCommand *cmd);
 void mglUpdateBatchSamplerSnapshotState(MGLDrawBatch *batch, uint16_t snapshot_id);
+/* True when a prior Prepare recorded a sticky structural cannot-merge for
+ * the current program (+ VAO for excluded layouts).  Caller may skip Prepare. */
+bool mglStreamMergeCannotMergeCached(GLMContext ctx);
 bool mglPrepareStreamMergeCandidate(GLMContext ctx, const MGLDrawCommand *cmd,
                                     bool uses_elements,
                                     MGLStreamMergeCandidate *out);

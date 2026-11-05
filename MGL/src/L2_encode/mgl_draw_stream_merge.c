@@ -279,20 +279,29 @@ static bool mglScanCommandElementIndices(Buffer *elementBuffer,
     }
 
     const uint32_t restart32 = hasRestart ? (uint32_t)restart : 0u;
-    if (mglElementIndexScanCacheable(elementBuffer) &&
-        elementBuffer->scan_cache_valid &&
-        elementBuffer->scan_cache_content_version == elementBuffer->content_version &&
-        elementBuffer->scan_cache_offset == indexOffset &&
-        elementBuffer->scan_cache_count == (uint32_t)count &&
-        elementBuffer->scan_cache_type == indexType &&
-        elementBuffer->scan_cache_restart_enabled == (hasRestart ? 1 : 0) &&
-        elementBuffer->scan_cache_restart_index == restart32) {
-        out->min_index = elementBuffer->scan_cache_min_index;
-        out->max_index = elementBuffer->scan_cache_max_index;
-        out->all_min_index = elementBuffer->scan_cache_all_min_index;
-        out->all_max_index = elementBuffer->scan_cache_all_max_index;
-        out->live_valid = elementBuffer->scan_cache_live_valid != 0;
-        return true;
+    /* Exact (offset,count) hits only.  Covering/superset hits over-mark
+     * pending vertex reads and increase hazard flushes on MC — measured
+     * regress vs exact-only (elscan16 cover collect). */
+    if (mglElementIndexScanCacheable(elementBuffer)) {
+        for (unsigned s = 0; s < MGL_ELEMENT_SCAN_CACHE_SLOTS; s++) {
+            typeof(elementBuffer->scan_cache[0]) *e =
+                &elementBuffer->scan_cache[s];
+            if (e->valid &&
+                e->content_version == elementBuffer->content_version &&
+                e->offset == indexOffset &&
+                e->count == (uint32_t)count &&
+                e->type == indexType &&
+                e->restart_enabled == (hasRestart ? 1 : 0) &&
+                e->restart_index == restart32) {
+                out->min_index = e->min_index;
+                out->max_index = e->max_index;
+                out->all_min_index = e->all_min_index;
+                out->all_max_index = e->all_max_index;
+                out->live_valid = e->live_valid != 0;
+                MGL_PERF_INC(g_mglElementScanCacheHitSinceSwap);
+                return true;
+            }
+        }
     }
 
     const uint8_t *data =
@@ -322,18 +331,25 @@ static bool mglScanCommandElementIndices(Buffer *elementBuffer,
     out->live_valid = liveValid;
 
     if (mglElementIndexScanCacheable(elementBuffer)) {
-        elementBuffer->scan_cache_min_index = (uint32_t)out->min_index;
-        elementBuffer->scan_cache_max_index = (uint32_t)out->max_index;
-        elementBuffer->scan_cache_all_min_index = (uint32_t)allMinIndex;
-        elementBuffer->scan_cache_all_max_index = (uint32_t)allMaxIndex;
-        elementBuffer->scan_cache_content_version = elementBuffer->content_version;
-        elementBuffer->scan_cache_offset = indexOffset;
-        elementBuffer->scan_cache_count = (uint32_t)count;
-        elementBuffer->scan_cache_type = indexType;
-        elementBuffer->scan_cache_restart_index = restart32;
-        elementBuffer->scan_cache_restart_enabled = hasRestart ? 1 : 0;
-        elementBuffer->scan_cache_valid = 1;
-        elementBuffer->scan_cache_live_valid = liveValid ? 1 : 0;
+        unsigned slot =
+            (unsigned)elementBuffer->scan_cache_insert % MGL_ELEMENT_SCAN_CACHE_SLOTS;
+        typeof(elementBuffer->scan_cache[0]) *e =
+            &elementBuffer->scan_cache[slot];
+        e->min_index = (uint32_t)out->min_index;
+        e->max_index = (uint32_t)out->max_index;
+        e->all_min_index = (uint32_t)allMinIndex;
+        e->all_max_index = (uint32_t)allMaxIndex;
+        e->content_version = elementBuffer->content_version;
+        e->offset = indexOffset;
+        e->count = (uint32_t)count;
+        e->type = indexType;
+        e->restart_index = restart32;
+        e->restart_enabled = hasRestart ? 1 : 0;
+        e->valid = 1;
+        e->live_valid = liveValid ? 1 : 0;
+        elementBuffer->scan_cache_insert =
+            (uint8_t)((slot + 1u) % MGL_ELEMENT_SCAN_CACHE_SLOTS);
+        MGL_PERF_INC(g_mglElementScanCacheMissSinceSwap);
     }
     return true;
 }
@@ -620,8 +636,11 @@ static Buffer *mglTakeTransientPoolNode(GLMContext ctx, int slot,
      * cache is keyed on content_version, and a recycled buffer keeps both
      * unless they are bumped here. */
     buffer->content_version++;
-    buffer->scan_cache_valid = 0;
-    buffer->scan_cache_live_valid = 0;
+    for (unsigned s = 0; s < MGL_ELEMENT_SCAN_CACHE_SLOTS; s++) {
+        buffer->scan_cache[s].valid = 0;
+        buffer->scan_cache[s].live_valid = 0;
+    }
+    buffer->scan_cache_insert = 0;
     return buffer;
 }
 
@@ -960,6 +979,196 @@ static bool mglCurrentProgramUsesStreamMergeUnsafeBuiltin(GLMContext ctx)
     return false;
 }
 
+/* Sticky negative cache: program+VAO pairs that can never stream-merge for
+ * structural reasons (unsafe builtin / unconditional excluded layout).
+ * Transient rejects (mapped buffer, draw size, weather state gate) are NOT
+ * cached.  32 direct-mapped slots — MC reuses a small set of hot VAOs. */
+enum {
+    MGL_SM_NEG_UNSAFE = 1,
+    MGL_SM_NEG_EXCLUDED = 2,
+};
+#define MGL_SM_NEG_SLOTS 32
+
+typedef struct {
+    uintptr_t vao_key;
+    uintptr_t prog_key;
+    unsigned vao_name;
+    unsigned prog_name;
+    unsigned enabled_attribs;
+    uint32_t attrib_stamp;
+    uint8_t reason;
+} MGLStreamMergeNegEntry;
+
+static MGLStreamMergeNegEntry s_sm_neg[MGL_SM_NEG_SLOTS];
+
+static unsigned mglSmNegSlot(uintptr_t a, uintptr_t b)
+{
+    uint64_t x = (uint64_t)a ^ ((uint64_t)b * 0x9e3779b97f4a7c15ULL);
+    return (unsigned)(x & (MGL_SM_NEG_SLOTS - 1u));
+}
+
+/* Cheap layout fingerprint so an in-place VAO attrib rewrite with the same
+ * enabled mask cannot sticky-hit a stale excluded entry. */
+static uint32_t mglVaoAttribStamp(const VertexArray *vao)
+{
+    if (!vao) return 0u;
+    uint32_t stamp = 0u;
+    unsigned mask = vao->enabled_attribs;
+    for (GLuint i = 0; i < MAX_ATTRIBS && mask != 0u; i++) {
+        unsigned bit = 1u << i;
+        if ((mask & bit) == 0u) continue;
+        const VertexAttrib *a = &vao->attrib[i];
+        stamp = stamp * 131u + (uint32_t)a->type;
+        stamp = stamp * 131u + (uint32_t)a->size;
+        stamp = stamp * 131u + (uint32_t)a->normalized;
+        stamp = stamp * 131u + (uint32_t)a->integer;
+        stamp = stamp * 131u + (uint32_t)a->relativeoffset;
+        mask &= ~bit;
+    }
+    return stamp;
+}
+
+static void mglSmProgKey(GLMContext ctx, uintptr_t *out_ptr, unsigned *out_name)
+{
+    *out_ptr = 0;
+    *out_name = 0;
+    if (!ctx || !ctx->active_state) return;
+    if (ctx->active_state->program_name != 0u) {
+        *out_ptr = (uintptr_t)ctx->active_state->program;
+        *out_name = ctx->active_state->program_name;
+        return;
+    }
+    ProgramPipeline *pipeline = ctx->active_state->program_pipeline;
+    if (!pipeline && ctx->active_state->var.program_pipeline_binding != 0u) {
+        pipeline = (ProgramPipeline *)searchHashTable(
+            &ctx->active_state->program_pipeline_table,
+            ctx->active_state->var.program_pipeline_binding);
+    }
+    if (pipeline) {
+        *out_ptr = (uintptr_t)pipeline;
+        *out_name = pipeline->name;
+    }
+}
+
+static void mglSmNegFillUnsafe(GLMContext ctx)
+{
+    uintptr_t prog_key = 0;
+    unsigned prog_name = 0;
+    mglSmProgKey(ctx, &prog_key, &prog_name);
+    MGLStreamMergeNegEntry *e = &s_sm_neg[mglSmNegSlot(prog_key, 0)];
+    e->vao_key = 0;
+    e->prog_key = prog_key;
+    e->vao_name = 0;
+    e->prog_name = prog_name;
+    e->enabled_attribs = 0;
+    e->attrib_stamp = 0;
+    e->reason = MGL_SM_NEG_UNSAFE;
+}
+
+static void mglSmNegFillExcluded(GLMContext ctx, const VertexArray *vao)
+{
+    if (!vao) return;
+    uintptr_t prog_key = 0;
+    unsigned prog_name = 0;
+    mglSmProgKey(ctx, &prog_key, &prog_name);
+    MGLStreamMergeNegEntry *e =
+        &s_sm_neg[mglSmNegSlot((uintptr_t)vao, prog_key)];
+    e->vao_key = (uintptr_t)vao;
+    e->prog_key = prog_key;
+    e->vao_name = vao->name;
+    e->prog_name = prog_name;
+    e->enabled_attribs = vao->enabled_attribs;
+    e->attrib_stamp = mglVaoAttribStamp(vao);
+    e->reason = MGL_SM_NEG_EXCLUDED;
+}
+
+bool mglStreamMergeCannotMergeCached(GLMContext ctx)
+{
+    if (!ctx || !ctx->active_state) return false;
+
+    uintptr_t prog_key = 0;
+    unsigned prog_name = 0;
+    mglSmProgKey(ctx, &prog_key, &prog_name);
+
+    MGLStreamMergeNegEntry *ue = &s_sm_neg[mglSmNegSlot(prog_key, 0)];
+    if (ue->reason == MGL_SM_NEG_UNSAFE &&
+        ue->prog_key == prog_key &&
+        ue->prog_name == prog_name) {
+        /* Relink may clear uses_vertex_id / uses_primitive_id — re-check. */
+        if (mglCurrentProgramUsesStreamMergeUnsafeBuiltin(ctx)) {
+            return true;
+        }
+        ue->reason = 0;
+    }
+
+    const VertexArray *vao = ctx->active_state->vao;
+    if (!vao) return false;
+    const MGLStreamMergeNegEntry *ee =
+        &s_sm_neg[mglSmNegSlot((uintptr_t)vao, prog_key)];
+    return ee->reason == MGL_SM_NEG_EXCLUDED &&
+           ee->vao_key == (uintptr_t)vao &&
+           ee->vao_name == vao->name &&
+           ee->enabled_attribs == vao->enabled_attribs &&
+           ee->attrib_stamp == mglVaoAttribStamp(vao) &&
+           ee->prog_key == prog_key &&
+           ee->prog_name == prog_name;
+}
+
+static bool mglStreamMergeExclusionsDisabled(void)
+{
+    static bool sChecked = false;
+    static bool sDisabled = false;
+    if (!sChecked) {
+        sDisabled = (getenv("MGL_DISABLE_STREAM_MERGE_EXCLUSIONS") != NULL);
+        sChecked = true;
+    }
+    return sDisabled;
+}
+
+/* Reject excluded layouts before the full single-buffer attrib walk.
+ * Only cache unconditional exclusions (chunk_terrain); weather_particle
+ * still depends on blend/depth and is re-probed each call. */
+static bool mglStreamMergeEarlyExclude(GLMContext ctx, VertexArray *vao)
+{
+    if (!ctx || !vao || vao->enabled_attribs == 0u) return false;
+    if (mglStreamMergeExclusionsDisabled()) return false;
+
+    GLuint first = (GLuint)__builtin_ctz(vao->enabled_attribs);
+    MGLCommandResolvedAttrib resolved = {0};
+    if (!mglCommandResolveVertexAttrib(vao, first, &resolved) ||
+        resolved.stride == 0u) {
+        return false;
+    }
+
+    const MGLStreamMergeExcludedLayout *excluded = NULL;
+    if (!mglVAOMatchesExcludedLayout(vao, vao->enabled_attribs,
+                                     (size_t)resolved.stride, &excluded)) {
+        return false;
+    }
+    if (!mglStreamMergeExclusionStateOK(ctx, excluded, resolved.buffer)) {
+        return false;
+    }
+
+    static bool sDebugLog = false;
+    static bool sDebugChecked = false;
+    if (!sDebugChecked) {
+        sDebugLog = (getenv("MGL_DEBUG_STREAM_MERGE") != NULL);
+        sDebugChecked = true;
+    }
+    if (sDebugLog && excluded) {
+        fprintf(stderr,
+                "MGL DEBUG: stream-merge excluded layout '%s' "
+                "(stride=%u attribMask=0x%x) [early]\n",
+                excluded->name, resolved.stride, vao->enabled_attribs);
+    }
+    MGL_PERF_INC(g_mglMergeRejectExcludedLayoutSinceSwap);
+    /* weather_particle is state-gated — do not sticky-cache it. */
+    if (excluded && strcmp(excluded->name, "chunk_terrain") == 0) {
+        mglSmNegFillExcluded(ctx, vao);
+    }
+    return true;
+}
+
 bool mglPrepareStreamMergeCandidate(GLMContext ctx,
                                            const MGLDrawCommand *cmd,
                                            bool uses_elements,
@@ -980,6 +1189,7 @@ bool mglPrepareStreamMergeCandidate(GLMContext ctx,
     if (ctx->active_state->var.polygon_mode != GL_FILL) return false;
     if (mglCurrentProgramUsesStreamMergeUnsafeBuiltin(ctx)) {
         MGL_PERF_INC(g_mglMergeRejectUnsafeBuiltinSinceSwap);
+        mglSmNegFillUnsafe(ctx);
         return false;
     }
 
@@ -989,6 +1199,9 @@ bool mglPrepareStreamMergeCandidate(GLMContext ctx,
     uint64_t indexOffset = (uint64_t)cmd->indexBufferOffset;
     const uint8_t *indices = NULL;
     if (!vao) {
+        return false;
+    }
+    if (mglStreamMergeEarlyExclude(ctx, vao)) {
         return false;
     }
     if (uses_elements) {
@@ -1093,37 +1306,31 @@ bool mglPrepareStreamMergeCandidate(GLMContext ctx,
         (uint64_t)cmd->count * (uint64_t)vertexStride > (uint64_t)MGL_STREAM_MERGE_MAX_SOURCE_BYTES) {
         return false;
     }
-    /* Exclude known-incompatible vertex layouts from stream merging.
-     * See kStreamMergeExcludedLayouts above for rationale.  Env var
-     * MGL_DISABLE_STREAM_MERGE_EXCLUSIONS=1 bypasses for testing. */
-    {
-        static bool sExclusionsDisabled = false;
-        static bool sExclusionsChecked = false;
-        if (!sExclusionsChecked) {
-            sExclusionsDisabled = (getenv("MGL_DISABLE_STREAM_MERGE_EXCLUSIONS") != NULL);
-            sExclusionsChecked = true;
-        }
-        if (!sExclusionsDisabled) {
-            const MGLStreamMergeExcludedLayout *excluded = NULL;
-            if (mglVAOMatchesExcludedLayout(vao, attribMask, vertexStride, &excluded)) {
-                if (mglStreamMergeExclusionStateOK(ctx, excluded, vertexBuffer)) {
-                    static bool sDebugLog = false;
-                    static bool sDebugChecked = false;
-                    if (!sDebugChecked) {
-                        sDebugLog = (getenv("MGL_DEBUG_STREAM_MERGE") != NULL);
-                        sDebugChecked = true;
-                    }
-                    if (sDebugLog && excluded) {
-                        fprintf(stderr,
-                                "MGL DEBUG: stream-merge excluded layout '%s' "
-                                "(stride=%zu attribMask=0x%x)\n",
-                                excluded->name, vertexStride, attribMask);
-                    }
-                    MGL_PERF_INC(g_mglMergeRejectExcludedLayoutSinceSwap);
-                    return false;
-                } else {
-                    MGL_PERF_INC(g_mglMergeRejectBufferHazardSinceSwap);
+    /* Safety-net exclusion check (early probe above covers the common path).
+     * See kStreamMergeExcludedLayouts for rationale. */
+    if (!mglStreamMergeExclusionsDisabled()) {
+        const MGLStreamMergeExcludedLayout *excluded = NULL;
+        if (mglVAOMatchesExcludedLayout(vao, attribMask, vertexStride, &excluded)) {
+            if (mglStreamMergeExclusionStateOK(ctx, excluded, vertexBuffer)) {
+                static bool sDebugLog = false;
+                static bool sDebugChecked = false;
+                if (!sDebugChecked) {
+                    sDebugLog = (getenv("MGL_DEBUG_STREAM_MERGE") != NULL);
+                    sDebugChecked = true;
                 }
+                if (sDebugLog && excluded) {
+                    fprintf(stderr,
+                            "MGL DEBUG: stream-merge excluded layout '%s' "
+                            "(stride=%zu attribMask=0x%x)\n",
+                            excluded->name, vertexStride, attribMask);
+                }
+                MGL_PERF_INC(g_mglMergeRejectExcludedLayoutSinceSwap);
+                if (excluded && strcmp(excluded->name, "chunk_terrain") == 0) {
+                    mglSmNegFillExcluded(ctx, vao);
+                }
+                return false;
+            } else {
+                MGL_PERF_INC(g_mglMergeRejectBufferHazardSinceSwap);
             }
         }
     }

@@ -176,24 +176,27 @@ typedef struct Buffer_t {
     GLsizeiptr last_write_size;
     const void *last_write_src_ptr;
     uint64_t last_write_src_hash;
-    /* Cached drawElements index-range scan (min/max), shared by the hazard
-     * vertex-range walk and the stream-merge candidate walk in
-     * draw_command.c.  Keyed on content_version + (offset,count,type,
-     * restart).  Only stored while the bytes came from CPU-side buffer_data
-     * and cannot change without a GL call: mapped, persistently mappable or
-     * GPU-write-target buffers are rescanned every draw. */
-    uint32_t    scan_cache_min_index;   /* restart-excluding min */
-    uint32_t    scan_cache_max_index;   /* restart-excluding max */
-    uint32_t    scan_cache_all_min_index; /* min over every index */
-    uint32_t    scan_cache_all_max_index; /* max over every index */
-    uint64_t    scan_cache_content_version;
-    uint64_t    scan_cache_offset;
-    uint32_t    scan_cache_count;
-    GLenum      scan_cache_type;
-    uint32_t    scan_cache_restart_index;
-    uint8_t     scan_cache_restart_enabled;
-    uint8_t     scan_cache_valid;       /* entry holds a completed scan */
-    uint8_t     scan_cache_live_valid;  /* scan saw a non-restart index */
+    /* Cached drawElements index-range scans (min/max), shared by the hazard
+     * vertex-range walk and the stream-merge candidate walk.
+     * Keyed on content_version + (offset,count,type,restart).  Multi-slot
+     * exact match only (covering/superset hits over-mark hazards on MC).
+     * Mapped / persistent / GPU-write targets still rescan every draw. */
+#define MGL_ELEMENT_SCAN_CACHE_SLOTS 16
+    struct {
+        uint32_t min_index;       /* restart-excluding min */
+        uint32_t max_index;       /* restart-excluding max */
+        uint32_t all_min_index;   /* min over every index */
+        uint32_t all_max_index;   /* max over every index */
+        uint64_t content_version;
+        uint64_t offset;
+        uint32_t count;
+        GLenum   type;
+        uint32_t restart_index;
+        uint8_t  restart_enabled;
+        uint8_t  valid;
+        uint8_t  live_valid;      /* scan saw a non-restart index */
+    } scan_cache[MGL_ELEMENT_SCAN_CACHE_SLOTS];
+    uint8_t     scan_cache_insert; /* next round-robin store slot */
     /* PERF-024: skip restart-index rescans when this draw range had no restart
      * markers (Metal has no HW primitive restart; encode splits segments). */
     uint64_t    restart_absent_encode_key;

@@ -214,7 +214,11 @@ static void mglBufferMarkAllocatedUninitialized(Buffer *ptr, MGLBufferInitSource
     ptr->written_min = -1;
     ptr->written_max = -1;
     ptr->content_version++;
-    ptr->scan_cache_valid = 0;
+    for (unsigned s = 0; s < MGL_ELEMENT_SCAN_CACHE_SLOTS; s++) {
+        ptr->scan_cache[s].valid = 0;
+        ptr->scan_cache[s].live_valid = 0;
+    }
+    ptr->scan_cache_insert = 0;
     ptr->last_init_source = source;
     ptr->last_write_offset = 0;
     ptr->last_write_size = ptr->size;
