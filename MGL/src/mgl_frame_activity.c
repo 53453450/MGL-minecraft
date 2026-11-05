@@ -202,6 +202,8 @@ _Atomic uint64_t g_mglDeltaDomainTextureSinceSwap         = 0;
 _Atomic uint64_t g_mglDeltaDomainRenderStateSinceSwap     = 0;
 _Atomic uint64_t g_mglDeltaDomainRenderStateUboOnlySinceSwap = 0;
 _Atomic uint64_t g_mglStreamDemotedToDirectSinceSwap      = 0;
+_Atomic uint64_t g_mglStreamMergePrepareCallsSinceSwap   = 0;
+_Atomic uint64_t g_mglStreamMergePrepareOkSinceSwap      = 0;
 
 void mglRecordBufferCowSnapshot(uint64_t bytes)
 {
@@ -265,7 +267,8 @@ void mglPrintPerfSummary(double frame_interval_ms)
           c.flush_buffer_range, c.flush_active_tex_war, c.flush_capacity, c.flush_other);
     fprintf(stderr, "MGL PERF3: skip=%llu skipFail: keyDiffer=%llu bindInvalid=%llu noEncoder=%llu passMismatch=%llu | "
           "deltaNarrow=%llu batchesReplayed=%llu | "
-          "deltaDomain: prog=%llu vao=%llu tex=%llu rs=%llu rsUboOnly=%llu | smDemote=%llu",
+          "deltaDomain: prog=%llu vao=%llu tex=%llu rs=%llu rsUboOnly=%llu | "
+          "smPrep=%llu/%llu smDemote=%llu",
           c.same_key_restore_skips,
           c.skip_fail_key_differ, c.skip_fail_bind_invalid,
           c.skip_fail_no_encoder, c.skip_fail_pass_mismatch,
@@ -273,6 +276,7 @@ void mglPrintPerfSummary(double frame_interval_ms)
           c.delta_domain_program, c.delta_domain_vao,
           c.delta_domain_texture, c.delta_domain_render_state,
           c.delta_domain_render_state_ubo_only,
+          c.stream_merge_prepare_ok, c.stream_merge_prepare_calls,
           c.stream_demoted_to_direct);
     fprintf(stderr, "MGL PERF4: encReason: fbo=%llu null=%llu clear=%llu draw=%llu vao=%llu rs=%llu cmd=%llu other=%llu | "
           "fboRotKind: def=%llu named=%llu",

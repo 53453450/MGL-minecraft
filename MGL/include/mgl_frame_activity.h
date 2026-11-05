@@ -226,6 +226,10 @@ extern MGL_ATOMIC(uint64_t) g_mglDeltaDomainRenderStateUboOnlySinceSwap;
  * from the last batch only by uniform-range identity — the tolerant merge
  * path can absorb them, a stream batch cannot. */
 extern MGL_ATOMIC(uint64_t) g_mglStreamDemotedToDirectSinceSwap;
+/* F1 audit: every RecordDrawCommand calls PrepareStreamMergeCandidate; demote
+ * rate = demoted / prepare_ok.  Do not gate Prepare on these — A/B first. */
+extern MGL_ATOMIC(uint64_t) g_mglStreamMergePrepareCallsSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglStreamMergePrepareOkSinceSwap;
 
 int mglPerfSummaryEnabled(void);
 int mglPerfLockTimingEnabled(void);
@@ -413,6 +417,8 @@ typedef struct MGLPerfCounters {
     uint64_t delta_domain_render_state;
     uint64_t delta_domain_render_state_ubo_only;
     uint64_t stream_demoted_to_direct;
+    uint64_t stream_merge_prepare_calls;
+    uint64_t stream_merge_prepare_ok;
 } MGLPerfCounters;
 
 static inline MGLPerfCounters mglSnapshotPerfCounters(void)
@@ -491,6 +497,8 @@ static inline MGLPerfCounters mglSnapshotPerfCounters(void)
     c.delta_domain_render_state = MGL_FRAME_LOAD(g_mglDeltaDomainRenderStateSinceSwap);
     c.delta_domain_render_state_ubo_only = MGL_FRAME_LOAD(g_mglDeltaDomainRenderStateUboOnlySinceSwap);
     c.stream_demoted_to_direct = MGL_FRAME_LOAD(g_mglStreamDemotedToDirectSinceSwap);
+    c.stream_merge_prepare_calls = MGL_FRAME_LOAD(g_mglStreamMergePrepareCallsSinceSwap);
+    c.stream_merge_prepare_ok = MGL_FRAME_LOAD(g_mglStreamMergePrepareOkSinceSwap);
     return c;
 }
 
@@ -569,6 +577,8 @@ static inline void mglResetPerfCounters(void)
     MGL_FRAME_STORE(g_mglDeltaDomainRenderStateSinceSwap, 0);
     MGL_FRAME_STORE(g_mglDeltaDomainRenderStateUboOnlySinceSwap, 0);
     MGL_FRAME_STORE(g_mglStreamDemotedToDirectSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglStreamMergePrepareCallsSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglStreamMergePrepareOkSinceSwap, 0);
 }
 
 /* Print per-frame perf summary if MGL_PERF_SUMMARY=1.  frame_interval_ms is

@@ -804,8 +804,12 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     mglComputeStateKey(ctx, cmd->mode, cmd_uses_elements, &key);
 
     MGLStreamMergeCandidate streamCandidate;
+    MGL_PERF_INC(g_mglStreamMergePrepareCallsSinceSwap);
     bool can_stream_merge =
         mglPrepareStreamMergeCandidate(ctx, cmd, cmd_uses_elements, &streamCandidate);
+    if (can_stream_merge) {
+        MGL_PERF_INC(g_mglStreamMergePrepareOkSinceSwap);
+    }
     if (can_stream_merge && cb->batch_count > 0) {
         MGLDrawBatch *last = &cb->batches[cb->batch_count - 1];
         bool last_keys_match = mglStateKeysEqual(&last->key, &key);
