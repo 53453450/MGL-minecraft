@@ -3641,25 +3641,17 @@ static void mglApplyInvalidateFramebufferAttachments(GLMContext ctx,
                                                      GLsizei numAttachments,
                                                      const GLenum *attachments)
 {
+    /* GL 4.6 §17.4.4: numAttachments is the length of the attachments list.
+     * An empty list invalidates nothing (no-op).  Callers already reject
+     * numAttachments < 0 and (numAttachments > 0 && !attachments). */
+    if (numAttachments == 0 || !attachments) {
+        return;
+    }
     MGL_PERF_INC(g_mglInvalidateFramebufferSinceSwap);
     /* Finish deferred draws into these attachments before discarding. */
     mglFlushPendingDraws(ctx);
     if (!fbo) {
         /* Default framebuffer has no Texture* generation to reset. */
-        return;
-    }
-    /* numAttachments == 0 && attachments == NULL is the GL form for
-     * "invalidate every attachment"; walk the whole FBO in that case. */
-    if (numAttachments <= 0 || !attachments) {
-        for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS; ++i) {
-            if (((fbo->color_attachment_bitfield >> i) & 1u) == 0u) {
-                continue;
-            }
-            mglMarkFboAttachmentContentsUndefined(
-                ctx, &fbo->color_attachments[i]);
-        }
-        mglMarkFboAttachmentContentsUndefined(ctx, &fbo->depth);
-        mglMarkFboAttachmentContentsUndefined(ctx, &fbo->stencil);
         return;
     }
     for (GLsizei i = 0; i < numAttachments; ++i) {
@@ -3737,10 +3729,15 @@ void mglInvalidateSubFramebuffer(GLMContext ctx, GLenum target, GLsizei numAttac
     (void)y;
     (void)width;
     (void)height;
-    /* Partial invalidate is intentionally a no-op beyond validation: Metal
-     * load/store actions cover the whole attachment, so a DontCare load here
-     * would discard the pixels outside the invalidated rect. */
+    /* Partial invalidate cannot become a DontCare load (Metal actions are
+     * whole-attachment), but still flush deferred draws so ordering matches
+     * InvalidateFramebuffer / apps that treat invalidate as an implicit
+     * barrier.  Empty attachment lists remain a no-op. */
+    if (numAttachments == 0) {
+        return;
+    }
     MGL_PERF_INC(g_mglInvalidateFramebufferSinceSwap);
+    mglFlushPendingDraws(ctx);
 }
 
 void mglCreateFramebuffers(GLMContext ctx, GLsizei n, GLuint *framebuffers)
@@ -4115,9 +4112,13 @@ void mglInvalidateNamedFramebufferSubData(GLMContext ctx, GLuint framebuffer, GL
     (void)y;
     (void)width;
     (void)height;
-    /* See mglInvalidateSubFramebuffer: a partial invalidate cannot be turned
-     * into a whole-attachment DontCare load. */
+    /* See mglInvalidateSubFramebuffer: no DontCare load, but flush for
+     * ordering parity with the non-Sub path. */
+    if (numAttachments == 0) {
+        return;
+    }
     MGL_PERF_INC(g_mglInvalidateFramebufferSinceSwap);
+    mglFlushPendingDraws(ctx);
 }
 
 void mglClearNamedFramebufferiv(GLMContext ctx, GLuint framebuffer, GLenum buffer, GLint drawbuffer, const GLint *value)
