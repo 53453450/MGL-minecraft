@@ -34,6 +34,13 @@ int mglRenderThreadgroupSize(
     uint32_t local_x, uint32_t local_y, uint32_t local_z,
     MGLRenderThreadgroupSize *out);
 
+/* Locked compute entry points used by the platform's GL-facing lease frame. */
+void mglComputeMtlDispatchLocked(void *renderer, GLMContext glm_ctx,
+                                 uint32_t groups_x, uint32_t groups_y,
+                                 uint32_t groups_z);
+void mglComputeMtlDispatchIndirectLocked(void *renderer, GLMContext glm_ctx,
+                                         intptr_t indirect);
+
 typedef struct MGLRenderScaledBlitUVs_t {
     float uv_left;
     float uv_top;

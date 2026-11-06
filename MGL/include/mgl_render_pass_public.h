@@ -30,6 +30,9 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command);
 int mglRenderPassRestoreRenderEncoderAfterTextureUpload(void *renderer,
                                                         const char *reason);
 
+/* End the current encoder before a platform or resource operation. */
+void mglRendererEndRenderEncodingLocked(void *renderer);
+
 /* FBO / pass identity prepare (alias of ensure-match for draw). */
 int mglRenderPassEnsureCurrentRenderPassMatchesFramebufferForDraw(
     void *renderer);

@@ -39,15 +39,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "draw_command.h"             /* mglInitBatchArena / mglDestroyBatchArena */
+#include "mgl_batch_arena.h"         /* renderer-owned batch arena lifecycle */
 #include "glm_limits.h"               /* MAX_COLOR_ATTACHMENTS */
 #include "mgl_renderer_binding_ops.h"    /* mglRendererBindingInvalidateLastBoundState */
 #include "mgl.h"                      /* mglDrawBuffer */
 #include "mgl_capability.h"           /* MGLCapabilityInit */
-#include "mgl_render_pass_manager_ops.h" /* mglRendererEndRenderEncodingLocked */
-#include "mgl_air_loader.h"           /* MGLRenderPipelineDescriptorState */
+#include "mgl_render_pass_public.h" /* mglRendererEndRenderEncodingLocked */
 #include "mgl_aux_assets.h"
-#include "mgl_compute_dispatch.h"     /* mglComputeMtlDispatch*Locked */
 #include "mgl_render_api_command.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_render_api_texture.h"
