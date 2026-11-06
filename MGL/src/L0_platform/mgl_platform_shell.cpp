@@ -59,7 +59,6 @@
 #include "mgl_renderer_host.h"        /* mglRendererEnsureNewCommandBuffer */
 #include "mgl_renderer_ports.h"
 #include "mgl_shader_resource.h"
-#include "mgl_texture_bind.h"          /* mglRendererBindMTLTexture */
 #include "mgl_thread_affinity.h"
 #include "mgl_context_host_ops.h"      /* GLFW-facing C ABI (H2 ops table) */
 
@@ -2324,8 +2323,7 @@ static void mglShellCreateAndBind(MGLObjectId self, SEL cmd, GLMContext glm_ctx,
     }
 
     if (glm_ctx->renderer_backend) {
-        mglRendererBackendDestroy(
-            (MGLRendererBackendHandle **)&glm_ctx->renderer_backend);
+        mglContextDestroyRendererBackend(glm_ctx);
     }
     if (glm_ctx->platform_renderer_shell) {
         CFRelease(glm_ctx->platform_renderer_shell);
@@ -2357,7 +2355,7 @@ static void mglShellCreateAndBind(MGLObjectId self, SEL cmd, GLMContext glm_ctx,
 
     MGLRendererBackendCreateInfo backendInfo = {
         .objc_device = (void *)device,
-        .context = glm_ctx,
+        .platform_shell = (void *)self,
         .binding_slot_count = TEXTURE_UNITS,
         .query_capacity = 256u,
     };
@@ -2952,8 +2950,7 @@ static void mglShellDealloc(MGLObjectId self, SEL cmd)
         if (ivars && ivars->_backend &&
             mglRendererBackendIsDestroying(ivars->_backend) != 1) {
             if (ivars->ctx && ivars->ctx->renderer_backend == ivars->_backend) {
-                mglRendererBackendDestroy(
-                    (MGLRendererBackendHandle **)&ivars->ctx->renderer_backend);
+                mglContextDestroyRendererBackend(ivars->ctx);
             } else {
                 mglRendererBackendDestroy(&ivars->_backend);
             }

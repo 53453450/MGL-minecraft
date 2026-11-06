@@ -5,7 +5,6 @@
 #include "mgl_air_loader.h"
 #include "mgl_buffer_slots.h"
 #include "mgl_renderer_backend.h"
-#include "glm_context.h"
 #include "mgl_render_internal.h"
 
 extern "C"

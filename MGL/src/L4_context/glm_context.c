@@ -1084,8 +1084,7 @@ void destroyGLMContext(GLMContext ctx)
 
     #undef MGL_FREE_HASH_TABLE
 
-    mglRendererBackendDestroy(
-        (MGLRendererBackendHandle **)&ctx->renderer_backend);
+    mglContextDestroyRendererBackend(ctx);
     if (ctx->platform_renderer_shell) {
         CFRelease(ctx->platform_renderer_shell);
         ctx->platform_renderer_shell = NULL;

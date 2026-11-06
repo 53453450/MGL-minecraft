@@ -39,7 +39,7 @@ extern "C" {
 #include "mgl_types_program.h"
 #include "mgl_types_state.h"
 #include "mgl_types_sync.h"
-#include "glm_context.h"
+#include "glm_context_fwd.h"
 #include "mgl_capability.h"
 #include "mgl_sync.h"
 #include "glm_limits.h"
@@ -224,8 +224,8 @@ void mglRenderFlush(GLMContext glm_ctx, bool finish) {
     MGLBackendLeaseScope lease(glm_ctx);
     if (!lease.ok()) return;
     MGLCommandBufferOwner* command_owner =
-        static_cast<MGLCommandBufferOwner*>(rendererOwner(
-            glm_ctx, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER));
+        static_cast<MGLCommandBufferOwner*>(lease.owner(
+            MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER));
     if (!command_owner) return;
 
     Sync boundary = {};
@@ -246,19 +246,21 @@ void mglRenderFlush(GLMContext glm_ctx, bool finish) {
 
 
 int mglRenderAttachRuntimeOwners(GLMContext glm_ctx, MGLCommandBufferOwner * command_buffer_owner, MGLRenderEncoderOwner * render_encoder_owner, MGLRenderPassStateOwner * render_pass_state_owner) {
-    MGLRendererBackendHandle* backend = rendererBackend(glm_ctx);
-    return backend
-        ? mglRendererBackendAttachRuntimeOwners(
-              backend, command_buffer_owner,
-              render_encoder_owner, render_pass_state_owner)
-        : -1;
+    MGLRendererBackendLease lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &lease) != 0) return -1;
+    int result = mglRendererBackendAttachRuntimeOwners(
+        lease.backend, command_buffer_owner,
+        render_encoder_owner, render_pass_state_owner);
+    mglRendererBackendEnd(&lease);
+    return result;
 }
 
 void mglRenderDetachRuntimeOwners(GLMContext glm_ctx) {
-    if (MGLRendererBackendHandle* backend = rendererBackend(glm_ctx)) {
-        (void)mglRendererBackendAttachRuntimeOwners(
-            backend, nullptr, nullptr, nullptr);
-    }
+    MGLRendererBackendLease lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &lease) != 0) return;
+    (void)mglRendererBackendAttachRuntimeOwners(
+        lease.backend, nullptr, nullptr, nullptr);
+    mglRendererBackendEnd(&lease);
 }
 
 

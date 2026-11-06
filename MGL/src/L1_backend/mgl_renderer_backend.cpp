@@ -17,7 +17,7 @@
 #include <mutex>
 #include <vector>
 
-#include "glm_context.h"
+#include "glm_context_fwd.h"
 #include "mgl_metal.h"
 #include "mgl_program_resource.h"
 #include "mgl_render_api_command.h"
@@ -30,7 +30,7 @@
 #include "mgl_shader_resource.h"
 
 /* The single MGLBackendLeaseScope definition, shared with the render
- * translation units (it owns the full GLMContextRec_t + pthread glue). */
+ * translation units through the opaque-context lease API. */
 #include "mgl_backend_lease_scope.h"
 
 extern "C" Program *mglResolveProgramForStageFromState(
@@ -140,7 +140,7 @@ struct MGLRendererBackendSizeConstantsCacheEntry {
 
 struct MGLRendererBackendHandle {
     std::mutex mutex;
-    GLMContext context = nullptr;
+    void *platform_shell = nullptr;
     MTL::Device *device = nullptr;
     MGLCommandQueueOwner *command_queue_owner = nullptr;
     MTL::CommandQueue *command_queue = nullptr;
@@ -578,7 +578,7 @@ extern "C" int mglRendererBackendCreate(
     }
 
     MGLRendererBackendHandle *backend = new MGLRendererBackendHandle();
-    backend->context = info->context;
+    backend->platform_shell = info->platform_shell;
     backend->device = static_cast<MTL::Device *>(info->objc_device);
     backend->device->retain();
     if (mglRenderInit(info->objc_device) != 0) {
@@ -657,31 +657,6 @@ extern "C" int mglRendererBackendBegin(
     lease_out->backend = backend;
     lease_out->generation = generation;
     return 0;
-}
-
-extern "C" int mglRendererBackendBeginContext(
-    GLMContext context, MGLRendererBackendLease *lease_out)
-{
-    if (lease_out) {
-        lease_out->backend = nullptr;
-        lease_out->generation = 0;
-    }
-    if (!context) return -1;
-
-    /* Attach lock covers load of renderer_backend through active_leases++
-     * inside Begin, so Destroy cannot delete the handle in between. */
-    if (context->renderer_backend_lock_initialized) {
-        if (pthread_mutex_lock(&context->renderer_backend_lock) != 0) {
-            return -1;
-        }
-    }
-    MGLRendererBackendHandle *backend =
-        static_cast<MGLRendererBackendHandle *>(context->renderer_backend);
-    int result = backend ? mglRendererBackendBegin(backend, lease_out) : -1;
-    if (context->renderer_backend_lock_initialized) {
-        (void)pthread_mutex_unlock(&context->renderer_backend_lock);
-    }
-    return result;
 }
 
 extern "C" void mglRendererBackendEnd(MGLRendererBackendLease *lease)
@@ -1722,26 +1697,10 @@ extern "C" void mglRendererBackendDestroy(
     if (!backend_ptr || !*backend_ptr) return;
     MGLRendererBackendHandle *backend = *backend_ptr;
     *backend_ptr = nullptr;
-    void *platform_shell = nullptr;
-    GLMContext context = backend->context;
+    void *platform_shell = backend->platform_shell;
 
-    /* Detach from context under the attach lock before waiting/deleting so
-     * BeginContext cannot observe this handle after teardown starts. */
-    if (context && context->renderer_backend_lock_initialized) {
-        if (pthread_mutex_lock(&context->renderer_backend_lock) == 0) {
-            if (context->renderer_backend == backend) {
-                context->renderer_backend = nullptr;
-            }
-            platform_shell = context->platform_renderer_shell;
-            (void)pthread_mutex_unlock(&context->renderer_backend_lock);
-        }
-    } else if (context) {
-        platform_shell = context->platform_renderer_shell;
-        if (context->renderer_backend == backend) {
-            context->renderer_backend = nullptr;
-        }
-    }
-
+    /* The context owner has already detached this handle. Wait for outstanding
+     * leases before notifying the platform shell or releasing owned state. */
     {
         std::unique_lock<std::mutex> lock(backend->mutex);
         if (backend->destroying) return;

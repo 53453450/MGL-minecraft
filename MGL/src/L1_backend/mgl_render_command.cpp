@@ -23,7 +23,7 @@ extern "C" {
 #include "mgl_types_program.h"
 #include "mgl_types_state.h"
 #include "mgl_types_sync.h"
-#include "glm_context.h"
+#include "glm_context_fwd.h"
 #include "mgl_render_internal.h"
 #include "mgl_capability.h"
 #include "mgl_sync.h"
@@ -1841,8 +1841,8 @@ void mglRenderInvalidateRenderPass(GLMContext glm_ctx) {
     MGLBackendLeaseScope lease(glm_ctx);
     if (!lease.ok()) return;
     MGLRenderEncoderOwner* render_owner =
-        static_cast<MGLRenderEncoderOwner*>(rendererOwner(
-            glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER));
+        static_cast<MGLRenderEncoderOwner*>(lease.owner(
+            MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER));
     if (!render_owner) return;
     if (mglRenderEncoderOwnerHasCurrent(render_owner) == 1) {
         (void)mglRenderEndRenderEncoderOwner(render_owner);

@@ -24,7 +24,7 @@ extern "C" {
 #include "mgl_types_program.h"
 #include "mgl_types_state.h"
 #include "mgl_types_sync.h"
-#include "glm_context.h"
+#include "glm_context_fwd.h"
 #include "mgl_render_internal.h"
 #include "mgl_capability.h"
 #include "mgl_sync.h"
@@ -269,13 +269,13 @@ void mglRenderGetSync(GLMContext glm_ctx, Sync* sync) {
     MGLBackendLeaseScope lease(glm_ctx);
     if (!lease.ok()) return;
     MGLCommandBufferOwner* command_owner =
-        static_cast<MGLCommandBufferOwner*>(rendererOwner(
-            glm_ctx, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER));
+        static_cast<MGLCommandBufferOwner*>(lease.owner(
+            MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER));
     if (!command_owner) return;
 
     MGLRenderEncoderOwner* render_owner =
-        static_cast<MGLRenderEncoderOwner*>(rendererOwner(
-            glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER));
+        static_cast<MGLRenderEncoderOwner*>(lease.owner(
+            MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER));
     if (render_owner &&
         mglRenderEncoderOwnerHasCurrent(render_owner) == 1 &&
         mglRenderEndRenderEncoderOwner(render_owner) != 0) {
@@ -340,8 +340,8 @@ void mglRenderGetSync(GLMContext glm_ctx, Sync* sync) {
     MGLRenderCommandBufferTransaction transaction = {};
     int result = mglRenderCommitCommandBufferTransaction(
         command_owner, &submission, command_buffer,
-        static_cast<MGLCommandBufferRecoveryOwner*>(rendererOwner(
-            glm_ctx, MGL_RENDERER_BACKEND_OWNER_RECOVERY)),
+        static_cast<MGLCommandBufferRecoveryOwner*>(lease.owner(
+            MGL_RENDERER_BACKEND_OWNER_RECOVERY)),
         0u, &transaction);
     mglRenderDestroyCommandBufferSubmission(&submission);
     if (result != 0 &&
@@ -610,8 +610,8 @@ void mglRenderBeginSampleQueryCallback(GLMContext glm_ctx,
     MGLBackendLeaseScope lease(glm_ctx);
     if (!lease.ok()) return;
     MGLQueryStateOwner* query_owner =
-        static_cast<MGLQueryStateOwner*>(rendererOwner(
-            glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY));
+        static_cast<MGLQueryStateOwner*>(lease.owner(
+            MGL_RENDERER_BACKEND_OWNER_QUERY));
     if (!query_owner) return;
 
     void* visibility_buffer = nullptr;
@@ -633,8 +633,8 @@ void mglRenderBeginSampleQueryCallback(GLMContext glm_ctx,
     bool pass_has_visibility = false;
     MGLRenderPassState pass = {};
     MGLRenderPassStateOwner* render_pass_owner =
-        static_cast<MGLRenderPassStateOwner*>(rendererOwner(
-            glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_PASS));
+        static_cast<MGLRenderPassStateOwner*>(lease.owner(
+            MGL_RENDERER_BACKEND_OWNER_RENDER_PASS));
     if (render_pass_owner &&
         mglRenderGetRenderPassStateOwner(
             render_pass_owner, &pass) == 0) {
@@ -642,8 +642,8 @@ void mglRenderBeginSampleQueryCallback(GLMContext glm_ctx,
     }
 
     MGLRenderEncoderOwner* render_owner =
-        static_cast<MGLRenderEncoderOwner*>(rendererOwner(
-            glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER));
+        static_cast<MGLRenderEncoderOwner*>(lease.owner(
+            MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER));
     if (!render_owner ||
         mglRenderEncoderOwnerHasCurrent(render_owner) != 1) {
         return;
@@ -659,13 +659,13 @@ uint64_t mglRenderEndSampleQueryCallback(GLMContext glm_ctx) {
     MGLBackendLeaseScope lease(glm_ctx);
     if (!lease.ok()) return 0;
     MGLQueryStateOwner* query_owner =
-        static_cast<MGLQueryStateOwner*>(rendererOwner(
-            glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY));
+        static_cast<MGLQueryStateOwner*>(lease.owner(
+            MGL_RENDERER_BACKEND_OWNER_QUERY));
     if (!query_owner) return 0;
 
     MGLRenderEncoderOwner* render_owner =
-        static_cast<MGLRenderEncoderOwner*>(rendererOwner(
-            glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER));
+        static_cast<MGLRenderEncoderOwner*>(lease.owner(
+            MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER));
     if (render_owner &&
         mglRenderEncoderOwnerHasCurrent(render_owner) == 1) {
         (void)mglRenderEndRenderEncoderOwner(render_owner);
@@ -691,8 +691,8 @@ void mglRenderBeginTimerQueryCallback(GLMContext glm_ctx) {
     MGLBackendLeaseScope lease(glm_ctx);
     if (!lease.ok()) return;
     MGLQueryStateOwner* query_owner =
-        static_cast<MGLQueryStateOwner*>(rendererOwner(
-            glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY));
+        static_cast<MGLQueryStateOwner*>(lease.owner(
+            MGL_RENDERER_BACKEND_OWNER_QUERY));
     if (!query_owner || mglRenderBeginTimerQuery(query_owner) != 0) {
         fprintf(stderr, "MGL ERROR: failed to begin Metal-cpp timer query\n");
     }
@@ -702,8 +702,8 @@ uint64_t mglRenderEndTimerQueryCallback(GLMContext glm_ctx) {
     MGLBackendLeaseScope lease(glm_ctx);
     if (!lease.ok()) return 0;
     MGLQueryStateOwner* query_owner =
-        static_cast<MGLQueryStateOwner*>(rendererOwner(
-            glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY));
+        static_cast<MGLQueryStateOwner*>(lease.owner(
+            MGL_RENDERER_BACKEND_OWNER_QUERY));
     uint64_t elapsed = 0;
     return query_owner &&
            mglRenderEndTimerQuery(query_owner, &elapsed) == 0

@@ -31,7 +31,7 @@ extern "C" void mglMetalCountCreate(int kind);
 extern "C" void mglRecordBufferCowSnapshot(uint64_t bytes);
 
 /* Types shared by the render translation units. Include after mgl_metal.h,
- * mgl_renderer_backend.h, and glm_context.h. Not for C translation units. */
+ * mgl_renderer_backend.h, and glm_context_fwd.h. Not for C translation units. */
 
 namespace mgl {
 
@@ -942,6 +942,8 @@ struct TextureStagingOwner {
     }
 
     MTL::Buffer* buffer = nullptr;
+    /* Borrowed identity used only to prevent cross-device pool reuse. */
+    MTL::Device* device = nullptr;
     /* Resource options the buffer was created with; carried to the staging
      * pool on destroy so reuse only matches compatible allocations. */
     uint64_t options = 0;
@@ -1519,20 +1521,9 @@ inline bool appendCullDistanceSegment(
 
 } // namespace mgl
 
-inline MGLRendererBackendHandle* rendererBackend(GLMContext context) {
-    return context
-        ? static_cast<MGLRendererBackendHandle*>(context->renderer_backend)
-        : nullptr;
-}
-
-/* MGLBackendLeaseScope lives in mgl_backend_lease_scope.h (included above),
- * not here: the backend translation unit needs the same scope, and it cannot
- * pull in this header's long render-side include chain, so the scope got a
- * self-contained home that only needs glm_context.h + pthread. */
-
-inline void* rendererOwner(GLMContext context, MGLRendererBackendOwnerKind kind) {
-    return mglRendererBackendGetOwner(rendererBackend(context), kind);
-}
+/* MGLBackendLeaseScope lives in mgl_backend_lease_scope.h (included above).
+ * Its owner() accessor returns lease-scoped backend owners without exposing
+ * the GL context record to the render translation units. */
 
 /* Cross-TU helpers formerly file-static in mgl_render.cpp. */
 void* mglRenderActiveRenderEncoder(MGLRenderEncoderOwner* owner_handle);

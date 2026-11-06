@@ -67,7 +67,8 @@ typedef enum MGLRendererBackendFallbackResourceKind {
 
 typedef struct MGLRendererBackendCreateInfo {
     void *objc_device;
-    GLMContext context;
+    /* Borrowed platform shell used for the backend-destroy notification. */
+    void *platform_shell;
     uint32_t binding_slot_count;
     uint32_t query_capacity;
 } MGLRendererBackendCreateInfo;
@@ -94,6 +95,8 @@ int mglRendererBackendIsReady(const MGLRendererBackendHandle *backend);
  * shutting down. Nested Begin on the same backend is allowed; End must pair. */
 int mglRendererBackendBegin(MGLRendererBackendHandle *backend,
                             MGLRendererBackendLease *lease_out);
+/* Context attachment is owned by L4. Returns 0 on success, 1 when the context
+ * has no backend, and -1 for invalid input or a lease/lock failure. */
 int mglRendererBackendBeginContext(GLMContext context,
                                    MGLRendererBackendLease *lease_out);
 void mglRendererBackendEnd(MGLRendererBackendLease *lease);
@@ -275,7 +278,9 @@ void *mglRendererBackendGetOwner(const MGLRendererBackendHandle *backend,
                                  MGLRendererBackendOwnerKind kind);
 int mglRendererBackendShutdown(MGLRendererBackendHandle *backend,
                                MGLRendererBackendShutdownResult *result_out);
+/* Destroy an unattached backend. Context owners use the detach wrapper below. */
 void mglRendererBackendDestroy(MGLRendererBackendHandle **backend);
+void mglContextDestroyRendererBackend(GLMContext context);
 
 /* Fixed renderer ABI. GL state calls these directly; capability is determined
  * once by mglRendererBackendIsReady rather than by nullable function slots. */

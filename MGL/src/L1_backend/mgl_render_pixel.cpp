@@ -23,7 +23,6 @@ extern "C" {
 #include "mgl_types_program.h"
 #include "mgl_types_state.h"
 #include "mgl_types_sync.h"
-#include "glm_context.h"
 #include "mgl_capability.h"
 #include "mgl_sync.h"
 #include "glm_limits.h"

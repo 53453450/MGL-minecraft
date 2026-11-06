@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <vector>
 
 #include "mgl_backend_objects.h"
 #include "mgl_render.h"
@@ -33,6 +34,8 @@
 #include "mgl_readback_policy.h"
 #include "mgl_program_backend.h"
 #include "mgl_buffer_backend.h"
+#include "mgl_frame_activity.h"
+#include "mgl_texture_upload_ops.h"
 
 /* This target exercises the renderer facade without constructing AIR loader
  * objects. Product builds link the real implementation. */
@@ -42,6 +45,25 @@ extern "C" int mglAirLoadLibrary(const void *, const unsigned char *, size_t,
 extern "C" int mglAirCreateRenderPipelineWithArchive(
     const void *, void *, void *, const MGLRenderPipelineDescriptorState *,
     void *, void **, char *, size_t) { return -1; }
+extern "C" int mglAirCreateRenderPipelineStateAsyncWait(
+    void *device, void *descriptor, void **pso_out, char *err, size_t errcap) {
+    if (pso_out) *pso_out = NULL;
+    if (!device || !descriptor || !pso_out) return -1;
+    NSError *error = nil;
+    id<MTLRenderPipelineState> pipeline =
+        [(__bridge id<MTLDevice>)device
+            newRenderPipelineStateWithDescriptor:
+                (__bridge MTLRenderPipelineDescriptor *)descriptor
+                                         error:&error];
+    if (!pipeline) {
+        if (err && errcap) {
+            snprintf(err, errcap, "%s", error.localizedDescription.UTF8String);
+        }
+        return -1;
+    }
+    *pso_out = (__bridge_retained void *)pipeline;
+    return 0;
+}
 extern "C" MGLShaderResource *mglProgramFindStageOutputForXFBName(
     Program *program, int stage, const char *xfb_name)
 {
@@ -66,6 +88,14 @@ static uint64_t s_metalReleaseCount = 0;
 static uint64_t s_metalCreateCount = 0;
 extern "C" void mglMetalCountRelease(int) { ++s_metalReleaseCount; }
 extern "C" void mglMetalCountCreate(int) { ++s_metalCreateCount; }
+extern "C" int mglPerfSummaryEnabled(void) { return 0; }
+extern "C" std::atomic<uint64_t> g_mglConvertCacheHitSinceSwap{0};
+extern "C" std::atomic<uint64_t> g_mglConvertCacheCreateSinceSwap{0};
+extern "C" uint8_t *mglUploadExpandScratchAcquire(size_t size)
+{
+    return static_cast<uint8_t *>(malloc(size));
+}
+extern "C" void mglUploadExpandScratchRelease(uint8_t *ptr) { free(ptr); }
 extern "C" void mglRecordBufferCowSnapshot(uint64_t) {}
 extern "C" void mglDispatchError(GLMContext, const char *, GLenum) {}
 extern "C" bool mglTexLevelInternalFormatCompressed(GLint) { return false; }
@@ -254,12 +284,23 @@ extern "C" void mglRendererCopyImageSubData(GLMContext, Texture *, int32_t, int3
     Texture *, int32_t, int32_t, int32_t, int32_t,
     int32_t, int32_t, int32_t) {}
 
+static void smokeDestroyBackend(GLMContext context,
+                                MGLRendererBackendHandle **backend) {
+    if (context && backend && *backend &&
+        context->renderer_backend == *backend) {
+        mglContextDestroyRendererBackend(context);
+        *backend = nullptr;
+        return;
+    }
+    mglRendererBackendDestroy(backend);
+}
+
 static int smokeCreateBackend(id<MTLDevice> device,
                               GLMContext context,
                               MGLRendererBackendHandle **backendOut) {
     MGLRendererBackendCreateInfo info = {};
     info.objc_device = (__bridge void *)device;
-    info.context = context;
+    info.platform_shell = context ? context->platform_renderer_shell : nullptr;
     info.binding_slot_count = 64;
     info.query_capacity = 8;
     void *queue = nullptr;
@@ -269,7 +310,7 @@ static int smokeCreateBackend(id<MTLDevice> device,
     context->renderer_backend = *backendOut;
     if (mglRendererBackendResetCommandQueue(*backendOut, 2, &queue) != 0 ||
         !queue || mglRendererBackendIsReady(*backendOut) != 1) {
-        mglRendererBackendDestroy(backendOut);
+        smokeDestroyBackend(context, backendOut);
         return -1;
     }
     return 0;
@@ -277,12 +318,19 @@ static int smokeCreateBackend(id<MTLDevice> device,
 
 static int verifyDirectRendererABI(id<MTLDevice> device) {
     GLMContextRec_t context = {};
+    context.platform_renderer_shell = &context;
     MGLRendererBackendHandle *backend = nullptr;
+    MGLRendererBackendLease emptyLease = {};
+    if (mglRendererBackendBeginContext(&context, &emptyLease) != 1 ||
+        emptyLease.backend || emptyLease.generation ||
+        mglRendererBackendBeginContext(NULL, &emptyLease) != -1) {
+        fprintf(stderr, "FAIL: context lease without backend\n");
+        return 1;
+    }
     if (smokeCreateBackend(device, &context, &backend) != 0) {
         fprintf(stderr, "FAIL: renderer backend fixture\n");
         return 1;
     }
-    context.platform_renderer_shell = &context;
 
     mglRendererDispatchCompute(&context, 2, 3, 4);
     mglRendererDispatchComputeIndirect(&context, 64);
@@ -296,7 +344,7 @@ static int verifyDirectRendererABI(id<MTLDevice> device) {
                 "FAIL: fixed operation dispatch direct=%d indirect=%d draw=%d resource=%d\n",
                 s_operationComputeCount, s_operationComputeIndirectCount,
                 s_operationDrawCount, s_operationResourceCount);
-        mglRendererBackendDestroy(&backend);
+        smokeDestroyBackend(&context, &backend);
         return 1;
     }
 
@@ -306,7 +354,7 @@ static int verifyDirectRendererABI(id<MTLDevice> device) {
     MGLRendererBackendLease ownerLease = {};
     if (mglRendererBackendBegin(backend, &ownerLease) != 0) {
         fprintf(stderr, "FAIL: runtime owner lease\n");
-        mglRendererBackendDestroy(&backend);
+        smokeDestroyBackend(&context, &backend);
         return 1;
     }
     if (mglRenderAttachRuntimeOwners(
@@ -323,7 +371,7 @@ static int verifyDirectRendererABI(id<MTLDevice> device) {
             &ownerLease, MGL_RENDERER_BACKEND_OWNER_RECOVERY)) {
         fprintf(stderr, "FAIL: runtime owner attach\n");
         mglRendererBackendEnd(&ownerLease);
-        mglRendererBackendDestroy(&backend);
+        smokeDestroyBackend(&context, &backend);
         return 1;
     }
     mglRenderDetachRuntimeOwners(&context);
@@ -335,11 +383,11 @@ static int verifyDirectRendererABI(id<MTLDevice> device) {
             &ownerLease, MGL_RENDERER_BACKEND_OWNER_RENDER_PASS)) {
         fprintf(stderr, "FAIL: runtime owner detach\n");
         mglRendererBackendEnd(&ownerLease);
-        mglRendererBackendDestroy(&backend);
+        smokeDestroyBackend(&context, &backend);
         return 1;
     }
     mglRendererBackendEnd(&ownerLease);
-    mglRendererBackendDestroy(&backend);
+    smokeDestroyBackend(&context, &backend);
     if (context.renderer_backend != nullptr) {
         fprintf(stderr, "FAIL: backend destroy did not clear context\n");
         return 1;
@@ -512,10 +560,10 @@ static int verifyBufferBinding(void) {
     mglRenderRecordBufferGenerationCompleted(generation1);
     cowValue = 73u;
     mglRenderBufferSubData(NULL, &buffer, 0, sizeof(cowValue), &cowValue);
-    if (mglBufferMtl(&buffer) != firstCowBacking ||
+    if (mglBufferMtl(&buffer) == firstCowBacking ||
         mglRenderCompletedBufferGeneration() < generation1 ||
         generation2 <= generation1) {
-        fprintf(stderr, "FAIL: completed COW slot was not reused\n");
+        fprintf(stderr, "FAIL: completed COW slot reused its retired backing\n");
         return 1;
     }
     mglRenderReleaseBufferMetalData(NULL, &buffer);
@@ -529,9 +577,10 @@ static int verifyBufferBinding(void) {
         return 1;
     }
 
-    /* The reuse pool keeps at most four snapshots; once all are in flight a
+    /* The reuse pool keeps at most eight snapshots; once all are in flight a
      * new snapshot is owned only by the Buffer and dies when replaced. */
     {
+        const uint32_t poolCapacity = 8u;
         uint32_t capSource[4] = {1u, 2u, 3u, 4u};
         Buffer capped = {};
         capped.name = 102u;
@@ -546,14 +595,14 @@ static int verifyBufferBinding(void) {
         }
         __weak id<MTLBuffer> lastPooled = nil;
         __weak id<MTLBuffer> overflow = nil;
-        for (uint32_t i = 0; i < 6u; ++i) {
+        for (uint32_t i = 0; i < poolCapacity + 2u; ++i) {
             (void)mglRenderAdvanceBufferGeneration();
             mglRenderNoteBufferEncoded(&capped);
             uint32_t value = 90u + i;
             mglRenderBufferSubData(NULL, &capped, 0, sizeof(value), &value);
             @autoreleasepool {
-                if (i == 3u) lastPooled = (__bridge id<MTLBuffer>)mglBufferMtl(&capped);
-                if (i == 4u) overflow = (__bridge id<MTLBuffer>)mglBufferMtl(&capped);
+                if (i == poolCapacity - 1u) lastPooled = (__bridge id<MTLBuffer>)mglBufferMtl(&capped);
+                if (i == poolCapacity) overflow = (__bridge id<MTLBuffer>)mglBufferMtl(&capped);
             }
         }
         bool pooledAlive = false, overflowAlive = false;
@@ -850,15 +899,21 @@ static int verifyBufferBinding(void) {
 }
 
 static int verifyPackedStructBufferRing(void) {
-    const uint8_t firstBytes[] = {0x12, 0x34, 0x56, 0x78, 0x9a};
+    std::vector<uint8_t> firstBytes(4097, 0);
+    firstBytes[0] = 0x12;
+    firstBytes[1] = 0x34;
+    firstBytes[2] = 0x56;
+    firstBytes[3] = 0x78;
+    firstBytes[4] = 0x9a;
     char message[256] = {0};
     Buffer *slots[128] = {};
     const uint64_t createCountBefore = s_metalCreateCount;
     const uint64_t releaseCountBefore = s_metalReleaseCount;
     slots[0] = mglRenderAcquirePackedStructBuffer(
-        firstBytes, sizeof(firstBytes), message, sizeof(message));
+        firstBytes.data(), firstBytes.size(), message, sizeof(message));
     if (!slots[0] || !mglBufferMtl(slots[0]) ||
-        slots[0]->size != 256 || slots[0]->data.buffer_size != 256 ||
+        slots[0]->size != firstBytes.size() ||
+        slots[0]->data.buffer_size != firstBytes.size() ||
         slots[0]->target != GL_UNIFORM_BUFFER ||
         slots[0]->usage != GL_STATIC_DRAW ||
         !slots[0]->transient_batch_buffer) {
@@ -871,24 +926,17 @@ static int verifyPackedStructBufferRing(void) {
         (__bridge id<MTLBuffer>)mglBufferMtl(slots[0]);
     const uint8_t *firstContents =
         static_cast<const uint8_t *>(firstMetal.contents);
-    if (firstMetal.length != 256 || !firstContents ||
-        memcmp(firstContents, firstBytes, sizeof(firstBytes)) != 0) {
-        fprintf(stderr, "FAIL: packed struct contents or padding size\n");
+    if (firstMetal.length != firstBytes.size() || !firstContents ||
+        memcmp(firstContents, firstBytes.data(), firstBytes.size()) != 0) {
+        fprintf(stderr, "FAIL: packed struct Metal contents\n");
         return 1;
-    }
-    for (NSUInteger i = sizeof(firstBytes); i < firstMetal.length; ++i) {
-        if (firstContents[i] != 0) {
-            fprintf(stderr, "FAIL: packed struct padding was not zeroed\n");
-            return 1;
-        }
     }
 
     void *firstBackingAddress = mglBufferMtl(slots[0]);
     firstMetal = nil;
     for (size_t i = 1; i < 128; ++i) {
-        uint32_t value = static_cast<uint32_t>(i);
         slots[i] = mglRenderAcquirePackedStructBuffer(
-            &value, sizeof(value), message, sizeof(message));
+            firstBytes.data(), firstBytes.size(), message, sizeof(message));
         if (!slots[i] || slots[i] == slots[0] ||
             slots[i]->name != (0xF0000000u | static_cast<GLuint>(i))) {
             fprintf(stderr, "FAIL: packed struct ring slot %zu: %s\n", i,
@@ -898,8 +946,10 @@ static int verifyPackedStructBufferRing(void) {
     }
 
     const uint32_t wrappedValue = 0xdecafbadU;
+    std::vector<uint8_t> wrappedBytes = firstBytes;
+    memcpy(wrappedBytes.data(), &wrappedValue, sizeof(wrappedValue));
     Buffer *wrapped = mglRenderAcquirePackedStructBuffer(
-        &wrappedValue, sizeof(wrappedValue), message, sizeof(message));
+        wrappedBytes.data(), wrappedBytes.size(), message, sizeof(message));
     if (wrapped != slots[0] ||
         mglBufferMtl(wrapped) == firstBackingAddress ||
         s_metalCreateCount != createCountBefore + 129 ||
@@ -910,9 +960,29 @@ static int verifyPackedStructBufferRing(void) {
     id<MTLBuffer> wrappedMetal =
         (__bridge id<MTLBuffer>)mglBufferMtl(wrapped);
     if (!wrappedMetal.contents ||
-        memcmp(wrappedMetal.contents, &wrappedValue, sizeof(wrappedValue)) != 0) {
+        memcmp(wrappedMetal.contents, wrappedBytes.data(), wrappedBytes.size()) != 0) {
         fprintf(stderr, "FAIL: wrapped packed struct contents\n");
         return 1;
+    }
+
+    const uint8_t inlineBytes[] = {0x12, 0x34, 0x56, 0x78, 0x9a};
+    Buffer *inlineBuffer = mglRenderAcquirePackedStructBuffer(
+        inlineBytes, sizeof(inlineBytes), message, sizeof(message));
+    const uint8_t *inlineContents = inlineBuffer
+        ? reinterpret_cast<const uint8_t *>(inlineBuffer->data.buffer_data)
+        : nullptr;
+    if (!inlineBuffer || mglBufferMtl(inlineBuffer) || !inlineContents ||
+        inlineBuffer->size != 256 || inlineBuffer->data.buffer_size != 256 ||
+        memcmp(inlineContents, inlineBytes, sizeof(inlineBytes)) != 0) {
+        fprintf(stderr, "FAIL: inline packed struct initialization: %s\n",
+                message[0] ? message : "unknown");
+        return 1;
+    }
+    for (size_t i = sizeof(inlineBytes); i < 256; ++i) {
+        if (inlineContents[i] != 0) {
+            fprintf(stderr, "FAIL: inline packed struct padding was not zeroed\n");
+            return 1;
+        }
     }
 
     printf("PACKED_STRUCT_RING_OK\n");
@@ -2013,7 +2083,7 @@ static int verifyPipelineCacheOwner(id<MTLDevice> device) {
         return 1;
     }
 
-    /* Miss on a different key; at capacity (256) the least recently used
+    /* Miss on a different key; at capacity (1024) the least recently used
      * quarter is evicted and a just-touched key survives. */
     uint64_t missKey[MGL_RENDER_PIPELINE_CACHE_KEY_WORDS] =
         {77, 1, 2, 3, 4, 5, 7};
@@ -2022,7 +2092,7 @@ static int verifyPipelineCacheOwner(id<MTLDevice> device) {
         mglRenderDestroyPipelineCacheOwner(&owner);
         return 1;
     }
-    for (uint64_t i = 1; i < 256; i++) {
+    for (uint64_t i = 1; i < 1024; i++) {
         uint64_t fill[MGL_RENDER_PIPELINE_CACHE_KEY_WORDS] =
             {1000 + i, 0, 0, 0, 0, 0, 0};
         if (mglRenderStorePipeline(owner, fill, &active, &evicted) != 0 ||
@@ -2036,10 +2106,10 @@ static int verifyPipelineCacheOwner(id<MTLDevice> device) {
     uint64_t oldestKey[MGL_RENDER_PIPELINE_CACHE_KEY_WORDS] =
         {1001, 0, 0, 0, 0, 0, 0};
     uint64_t overflowKey[MGL_RENDER_PIPELINE_CACHE_KEY_WORDS] =
-        {2000, 0, 0, 0, 0, 0, 0};
+        {3000, 0, 0, 0, 0, 0, 0};
     if (mglRenderLookupPipeline(owner, key, &cached) != 1 ||
         mglRenderStorePipeline(owner, overflowKey, &active, &evicted) != 0 ||
-        evicted != 64 ||
+        evicted != 256 ||
         mglRenderLookupPipeline(owner, key, &cached) != 1 ||
         mglRenderLookupPipeline(owner, oldestKey, &cached) != 0 ||
         mglRenderLookupPipeline(owner, overflowKey, &cached) != 1) {
@@ -2661,7 +2731,7 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
         mglRenderAttachRuntimeOwners(&context, commandOwner, NULL, NULL) != 0) {
         fprintf(stderr, "FAIL: sync capture owner fixture\n");
         mglRenderDestroyCommandBufferOwner(&commandOwner);
-        mglRendererBackendDestroy(&backend);
+        smokeDestroyBackend(&context, &backend);
         return 1;
     }
     mglRenderGetSync(&context, &captured);
@@ -2675,7 +2745,7 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
         mglRenderReleaseSync(&context, &captured);
         mglRenderDetachRuntimeOwners(&context);
         mglRenderDestroyCommandBufferOwner(&commandOwner);
-        mglRendererBackendDestroy(&backend);
+        smokeDestroyBackend(&context, &backend);
         return 1;
     }
     mglRenderWaitForSync(&context, &captured);
@@ -2684,12 +2754,12 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
         fprintf(stderr, "FAIL: captured sync wait/release\n");
         mglRenderDetachRuntimeOwners(&context);
         mglRenderDestroyCommandBufferOwner(&commandOwner);
-        mglRendererBackendDestroy(&backend);
+        smokeDestroyBackend(&context, &backend);
         return 1;
     }
     mglRenderDetachRuntimeOwners(&context);
     mglRenderDestroyCommandBufferOwner(&commandOwner);
-    mglRendererBackendDestroy(&backend);
+    smokeDestroyBackend(&context, &backend);
     printf("SYNC_CALLBACKS_OK\n");
     return 0;
 }
@@ -3538,8 +3608,8 @@ static int verifyMDIScratchOwner(void) {
     void *grownBuffer = NULL;
     uint64_t offset3 = 0;
     if (mglRenderAllocateMDIScratch(
-            owner, 200000, 256, &grownBuffer, &offset3, &capacity) != 0 ||
-        !grownBuffer || offset3 != 0 || capacity < 200000) {
+            owner, 300000, 256, &grownBuffer, &offset3, &capacity) != 0 ||
+        !grownBuffer || offset3 != 0 || capacity < 300000) {
         fprintf(stderr, "FAIL: mdi grow (off=%llu cap=%llu)\n",
                 (unsigned long long)offset3, (unsigned long long)capacity);
         return 1;
@@ -3837,14 +3907,13 @@ static int verifyIntegerAttribConversionFormat(void) {
          MTLVertexFormatUInt3},
         {"byte-uvec4-4", GL_BYTE, GL_UNSIGNED_INT_VEC4, 4u,
          MTLVertexFormatUInt4},
-        /* Narrow integer sources widen into the shader's integer vector
-         * regardless of signedness (see src_narrow in
-         * mglRenderIntegerAttribConversionFormat); only 32-bit sources need
-         * the sign flip to stay representable. */
-        {"short-ivec4-widen", GL_SHORT, GL_INT_VEC4, 4u,
-         MTLVertexFormatInt4},
-        {"ushort-uvec4-widen", GL_UNSIGNED_SHORT, GL_UNSIGNED_INT_VEC4, 4u,
-         MTLVertexFormatUInt4},
+        /* Matching-signedness narrow sources use native Metal formats and
+         * need no conversion.  Opposite-signedness sources widen into the
+         * shader's integer vector so every source value stays representable. */
+        {"short-ivec4-native", GL_SHORT, GL_INT_VEC4, 4u,
+         MTLVertexFormatInvalid},
+        {"ushort-uvec4-native", GL_UNSIGNED_SHORT, GL_UNSIGNED_INT_VEC4, 4u,
+         MTLVertexFormatInvalid},
         {"float-shader", GL_UNSIGNED_BYTE, GL_FLOAT_VEC4, 4u,
          MTLVertexFormatInvalid},
         {"unknown-source", 0xfeedu, GL_INT_VEC4, 4u,
@@ -8200,7 +8269,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             src565, 1, 1, 2, GL_RGB565, &bpr, &bpi);
         if (!out || bpr != 4 || bpi != 4) {
             fprintf(stderr, "FAIL: rgba8 expand RGB565 alloc\n");
-            free(out);
+            mglUploadExpandScratchRelease(out);
             return 1;
         }
         const uint8_t want565[4] = {255, 255, 255, 255};
@@ -8208,10 +8277,10 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             fprintf(stderr,
                     "FAIL: rgba8 expand RGB565 got %u %u %u %u\n",
                     out[0], out[1], out[2], out[3]);
-            free(out);
+            mglUploadExpandScratchRelease(out);
             return 1;
         }
-        free(out);
+        mglUploadExpandScratchRelease(out);
 
         /* RGB8 3 texels 1x3: alpha 255. */
         const uint8_t src8[] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
@@ -8219,7 +8288,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             src8, 3, 1, 3 * 3, GL_RGB8, &bpr, &bpi);
         if (!out || bpi != 12) {
             fprintf(stderr, "FAIL: rgba8 expand RGB8 alloc\n");
-            free(out);
+            mglUploadExpandScratchRelease(out);
             return 1;
         }
         const uint8_t want8[12] = {
@@ -8229,10 +8298,10 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         };
         if (memcmp(out, want8, sizeof(want8)) != 0) {
             fprintf(stderr, "FAIL: rgba8 expand RGB8 mismatch\n");
-            free(out);
+            mglUploadExpandScratchRelease(out);
             return 1;
         }
-        free(out);
+        mglUploadExpandScratchRelease(out);
 
         /* RGBA4: packed 4_4_4_4 (R bits 12-15): 0xFFFF -> all 255. */
         const uint8_t src444[] = {0xFF, 0xFF};
@@ -8246,10 +8315,10 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         if (memcmp(out, want444, 4) != 0) {
             fprintf(stderr, "FAIL: rgba8 expand RGBA4 got %u %u %u %u\n",
                     out[0], out[1], out[2], out[3]);
-            free(out);
+            mglUploadExpandScratchRelease(out);
             return 1;
         }
-        free(out);
+        mglUploadExpandScratchRelease(out);
 
         if (mglRenderCreateRGBA8ExpandedUpload(
                 NULL, 1, 1, 2, GL_RGB565, &bpr, &bpi) != NULL ||
@@ -9003,11 +9072,11 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
                 "FAIL: timer query callbacks elapsed=%llu flush=%d finish=%d\n",
                 (unsigned long long)callbackElapsed,
                 s_legacyFlushCount, s_legacyFlushFinish ? 1 : 0);
-        mglRendererBackendDestroy(&callbackBackend);
+        smokeDestroyBackend(&callbackContext, &callbackBackend);
         mglRenderDestroyQueryStateOwner(&queryOwner);
         return 1;
     }
-    mglRendererBackendDestroy(&callbackBackend);
+    smokeDestroyBackend(&callbackContext, &callbackBackend);
     printf("TIMER_QUERY_CALLBACKS_OK\n");
     visibility = nil;
     mglRenderDestroyQueryStateOwner(&queryOwner);
@@ -9207,7 +9276,7 @@ static int verifyRawRenderAndBlitFacade(id<MTLDevice> device) {
 static int verifyRendererBackend(id<MTLDevice> device) {
     MGLRendererBackendCreateInfo info = {
         .objc_device = (__bridge void *)device,
-        .context = NULL,
+        .platform_shell = NULL,
         .binding_slot_count = 128u,
         .query_capacity = 32u,
     };
@@ -9736,7 +9805,7 @@ static int verifyBackendLeaseDestroyBarrier(id<MTLDevice> device)
 {
     MGLRendererBackendCreateInfo info = {
         .objc_device = (__bridge void *)device,
-        .context = NULL,
+        .platform_shell = NULL,
         .binding_slot_count = 8u,
         .query_capacity = 4u,
     };
@@ -9935,35 +10004,73 @@ int main(void) {
         }
 
         const uint32_t teardownValue = 0x10203040u;
+        std::vector<uint8_t> teardownBytes(4097, 0);
+        memcpy(teardownBytes.data(), &teardownValue, sizeof(teardownValue));
         Buffer *teardownSlot = mglRenderAcquirePackedStructBuffer(
-            &teardownValue, sizeof(teardownValue), NULL, 0);
+            teardownBytes.data(), teardownBytes.size(), NULL, 0);
         if (!teardownSlot || !mglBufferMtl(teardownSlot)) {
             fprintf(stderr, "FAIL: packed struct teardown fixture\n");
+            return 1;
+        }
+        __weak id<MTLBuffer> teardownMetal =
+            (__bridge id<MTLBuffer>)mglBufferMtl(teardownSlot);
+
+        const uint32_t stagingValue = 0x55667788u;
+        MGLTextureStagingOwner *shutdownOwner = NULL;
+        void *shutdownStagingRaw = NULL;
+        if (mglRenderCreateTextureStagingOwner(
+                &stagingValue, sizeof(stagingValue), MTLResourceStorageModeShared,
+                &shutdownOwner, &shutdownStagingRaw) != 0 ||
+            !shutdownOwner || !shutdownStagingRaw) {
+            fprintf(stderr, "FAIL: staging shutdown fixture\n");
+            mglRenderDestroyTextureStagingOwner(&shutdownOwner);
+            return 1;
+        }
+        __weak id<MTLBuffer> shutdownStaging =
+            (__bridge id<MTLBuffer>)shutdownStagingRaw;
+        mglRenderDestroyTextureStagingOwner(&shutdownOwner);
+        if (!shutdownStaging) {
+            fprintf(stderr, "FAIL: staging pool did not retain returned buffer\n");
             return 1;
         }
         const uint64_t releaseCountBeforeShutdown = s_metalReleaseCount;
 
         mglRenderShutdown();
-        if (mglRenderIsInitialized() != 1 ||
+        if (mglRenderIsInitialized() != 1 || !shutdownStaging ||
             s_metalReleaseCount != releaseCountBeforeShutdown) {
             fprintf(stderr,
                     "FAIL: first shutdown dropped shared renderer state\n");
             return 1;
         }
         mglRenderShutdown();
-        if (mglRenderIsInitialized() != 0 ||
-            s_metalReleaseCount != releaseCountBeforeShutdown + 128) {
+        if (mglRenderIsInitialized() != 0 || teardownMetal != nil ||
+            s_metalReleaseCount <= releaseCountBeforeShutdown) {
             fprintf(stderr,
-                    "FAIL: final shutdown did not clear renderer state\n");
+                    "FAIL: final shutdown did not clear renderer state "
+                    "(teardown=%p releases=%llu/%llu)\n",
+                    (__bridge void *)teardownMetal,
+                    (unsigned long long)s_metalReleaseCount,
+                    (unsigned long long)releaseCountBeforeShutdown);
             return 1;
         }
         mglRenderShutdown(); // 二次 shutdown 幂等
 
-        // 重建
+        // 重建后不得复用旧 renderer 代际留下的 staging buffer。
         if (mglRenderInit((__bridge void*)device) != 0) {
             fprintf(stderr, "FAIL: reinit\n");
             return 1;
         }
+        MGLTextureStagingOwner *reinitOwner = NULL;
+        void *reinitStagingRaw = NULL;
+        if (mglRenderCreateTextureStagingOwner(
+                &stagingValue, sizeof(stagingValue), MTLResourceStorageModeShared,
+                &reinitOwner, &reinitStagingRaw) != 0 || !reinitStagingRaw ||
+            (shutdownStaging && reinitStagingRaw == shutdownStagingRaw)) {
+            fprintf(stderr, "FAIL: reinit reused a pre-shutdown staging buffer\n");
+            mglRenderDestroyTextureStagingOwner(&reinitOwner);
+            return 1;
+        }
+        mglRenderDestroyTextureStagingOwner(&reinitOwner);
         mglRenderShutdown();
 
         printf("SMOKE_DONE\n");
