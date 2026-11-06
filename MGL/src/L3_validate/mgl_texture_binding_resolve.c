@@ -24,11 +24,6 @@
 
 #include <stdio.h>
 #include <string.h>
-#include "mgl_backend_objects.h"
-#include "mgl_metal_ref.h" /* mglSafeReleaseMetalObj */
-
-#include <stdlib.h>
-#include "mgl_texture_backend.h"
 
 Texture *mglTextureForSampledResource(GLMContext ctx, MGLShaderResource *sampledResource,
                                        GLuint metalBinding, int stage,
@@ -229,62 +224,6 @@ Texture *mglTextureForSampledResourceForStage(GLMContext ctx, MGLShaderResource 
     }
     GLuint textureUnit = mglTextureUnitForSampledResource(sampledResource, mglResolveProgramForStageFromState(ctx, stage), metalBinding, stage);
     return mglTextureForSampledResource(ctx, sampledResource, metalBinding, stage, expectedType, textureUnit);
-}
-
-void mglTextureSampledFacts(const Texture *tex, MGLTextureSampledFacts *out)
-{
-    if (!out) {
-        return;
-    }
-    memset(out, 0, sizeof(*out));
-    if (!tex) {
-        return;
-    }
-    out->has_tex = 1;
-    out->has_mtl = mglTextureMtl(tex) ? 1 : 0;
-    out->dirty = tex->dirty_bits ? 1 : 0;
-    out->is_rt = tex->is_render_target ? 1 : 0;
-    out->mtl_texture = mglTextureMtl(tex);
-    out->param_sampler_mtl = mglTextureSamplerState(tex);
-}
-
-void *mglSamplerBackendState(const Sampler *sampler)
-{
-    return sampler && sampler->backend ? sampler->backend->state : NULL;
-}
-
-void mglSamplerBackendResetState(Sampler *sampler)
-{
-    if (sampler && sampler->backend) {
-        mglSafeReleaseMetalObj(&sampler->backend->state);
-    }
-}
-
-void mglSamplerBackendSetState(Sampler *sampler, void *state)
-{
-    if (!sampler) {
-        return;
-    }
-    if (!sampler->backend) {
-        sampler->backend = (struct MGLSamplerBackend *)calloc(
-            1, sizeof(*sampler->backend));
-        if (!sampler->backend) {
-            mglSafeReleaseMetalObj(&state);
-            return;
-        }
-    }
-    mglSafeReleaseMetalObj(&sampler->backend->state);
-    sampler->backend->state = state;
-}
-
-void mglSamplerBackendRelease(Sampler *sampler)
-{
-    if (!sampler || !sampler->backend) {
-        return;
-    }
-    mglSafeReleaseMetalObj(&sampler->backend->state);
-    free(sampler->backend);
-    sampler->backend = NULL;
 }
 
 void *mglSamplerCleanMtl(const Sampler *sampler)

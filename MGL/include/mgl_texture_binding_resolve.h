@@ -23,6 +23,7 @@
 
 #include "glm_context.h"
 #include "mgl_types_texture.h"
+#include "mgl_sampler_backend.h"
 #include "mgl_shader_resource.h"   /* MGLShaderResource */
 
 #ifdef __cplusplus
@@ -58,16 +59,6 @@ void mglTextureSampledFacts(const Texture *tex, MGLTextureSampledFacts *out);
 
 /* The sampler object's Metal state when it is up to date, else NULL. */
 void *mglSamplerCleanMtl(const Sampler *sampler);
-
-/* The Metal sampler kept for `sampler`, or NULL. */
-void *mglSamplerBackendState(const Sampler *sampler);
-/* Keep `state` (a reference the caller hands over) as the sampler's Metal
- * sampler; the previous one is released. */
-void mglSamplerBackendSetState(Sampler *sampler, void *state);
-/* Release the Metal sampler but keep the backend struct. */
-void mglSamplerBackendResetState(Sampler *sampler);
-/* Release everything the backend keeps for `sampler`. */
-void mglSamplerBackendRelease(Sampler *sampler);
 
 #ifdef __cplusplus
 }

@@ -7,6 +7,24 @@
 #include "mgl_texture_backend.h"
 #include "mgl_render_api_lifecycle.h" /* mglRenderReleaseMetalObject */
 #include "mgl_render_api_texture.h"
+#include "mgl_texture_binding_resolve.h"
+
+void mglTextureSampledFacts(const Texture *tex, MGLTextureSampledFacts *out)
+{
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!tex) {
+        return;
+    }
+    out->has_tex = 1;
+    out->has_mtl = mglTextureMtl(tex) ? 1 : 0;
+    out->dirty = tex->dirty_bits ? 1 : 0;
+    out->is_rt = tex->is_render_target ? 1 : 0;
+    out->mtl_texture = mglTextureMtl(tex);
+    out->param_sampler_mtl = mglTextureSamplerState(tex);
+}
 
 void *mglRenderTextureHandle(const Texture *texture)
 {

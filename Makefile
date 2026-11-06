@@ -1082,31 +1082,47 @@ $(build_dir)/test_sampler_plan: test_legacy_compat/test_sampler_plan.c \
 test-sampler-plan: $(build_dir)/test_sampler_plan
 	$(build_dir)/test_sampler_plan
 
+$(build_dir)/test_sampler_backend_impl.o: MGL/src/L1_backend/mgl_sampler_backend.c \
+		MGL/include/mgl_sampler_backend.h MGL/include/mgl_backend_objects.h
+	@mkdir -p $(dir $@)
+	$(CC) -Wall -Wextra -Werror -g -O0 -std=c11 -isysroot $(SDK_ROOT) \
+		-IMGL/include -IMGL/include/GL -Dcalloc=mglTestCalloc -c $< -o $@
+
+$(build_dir)/test_sampler_backend: test_legacy_compat/test_sampler_backend.c \
+		$(build_dir)/test_sampler_backend_impl.o MGL/src/L1_backend/mgl_metal_ref.c
+	$(CC) -Wall -Wextra -Werror -g -O0 -std=c11 -isysroot $(SDK_ROOT) \
+		-IMGL/include -IMGL/include/GL test_legacy_compat/test_sampler_backend.c \
+		$(build_dir)/test_sampler_backend_impl.o MGL/src/L1_backend/mgl_metal_ref.c \
+		-framework CoreFoundation -o $@
+
+test-sampler-backend: $(build_dir)/test_sampler_backend
+	$(build_dir)/test_sampler_backend
+
 
 $(build_dir)/test_binding_stage: test_legacy_compat/test_binding_stage.c \
-	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h
+	MGL/src/L3_validate/mgl_binding_stage.c MGL/include/mgl_binding_stage.h
 	@mkdir -p $(dir $@)
 	$(CC) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -g -O0 -std=c11 \
 		-IMGL/include -IMGL/src \
 		test_legacy_compat/test_binding_stage.c \
-		MGL/src/mgl_binding_stage.c \
+		MGL/src/L3_validate/mgl_binding_stage.c \
 		-o $@
 
 $(build_dir)/test_binding_texture: test_legacy_compat/test_binding_texture.c \
-	MGL/src/mgl_binding_texture.c MGL/include/mgl_binding_texture.h \
-	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h \
+	MGL/src/L3_validate/mgl_binding_texture.c MGL/include/mgl_binding_texture.h \
+	MGL/src/L3_validate/mgl_binding_stage.c MGL/include/mgl_binding_stage.h \
 	MGL/src/L3_validate/mgl_binding_policy.c MGL/include/mgl_binding_policy.h \
-	MGL/src/mgl_byte_hash.c MGL/include/mgl_byte_hash.h
+	MGL/src/L0_platform/mgl_byte_hash.c MGL/include/mgl_byte_hash.h
 	@mkdir -p $(dir $@)
 	$(CC) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -g -O0 -std=c11 \
 		-IMGL/include -IMGL/src \
 		test_legacy_compat/test_binding_texture.c \
-		MGL/src/mgl_binding_texture.c \
-		MGL/src/mgl_binding_stage.c \
+		MGL/src/L3_validate/mgl_binding_texture.c \
+		MGL/src/L3_validate/mgl_binding_stage.c \
 		MGL/src/L3_validate/mgl_binding_policy.c \
-		MGL/src/mgl_byte_hash.c \
-		MGL/src/mgl_trace_log.c \
-		MGL/src/mgl_env_flag.c \
+		MGL/src/L0_platform/mgl_byte_hash.c \
+		MGL/src/L0_platform/mgl_trace_log.c \
+		MGL/src/L0_platform/mgl_env_flag.c \
 		-o $@
 
 test-binding-stage: $(build_dir)/test_binding_stage $(build_dir)/test_binding_texture
