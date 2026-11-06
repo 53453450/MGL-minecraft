@@ -653,6 +653,31 @@ TEST(Metallib, VertexSSBOHelperInlinesOnTypeMismatch) {
     EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
 }
 
+TEST(Metallib, HelperRebindsResourceArguments) {
+    static const char *src =
+        "#version 460 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(std140, binding = 0) uniform Uniforms {\n"
+        "  float scale;\n"
+        "} uniforms[2];\n"
+        "layout(std430, binding = 1) buffer Data {\n"
+        "  float values[4];\n"
+        "} data[2];\n"
+        "uniform sampler2D tex[2];\n"
+        "layout(binding = 0) uniform atomic_uint counter;\n"
+        "float helper() {\n"
+        "  return texture(tex[1], vec2(0.5)).r * uniforms[1].scale +\n"
+        "         data[1].values[0] + float(atomicCounter(counter));\n"
+        "}\n"
+        "void main() {\n"
+        "  data[0].values[0] = helper();\n"
+        "}\n";
+    CompileResult r = compile(src, MGL_STAGE_COMPUTE);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
+}
+
 TEST(Metallib, ComputeWorkGroupID) {
     static const char *src =
         "#version 460 core\n"
@@ -940,6 +965,50 @@ TEST(Metallib, LoopAssignsFragOutput) {
     CompileResult r = compile(src, MGL_STAGE_FRAGMENT);
     EXPECT_EQ(0, r.rc) << r.err;
     ASSERT_FALSE(r.bytes.empty());
+}
+
+TEST(Metallib, LoopBreakAndContinuePreserveLiveValues) {
+    static const char *src =
+        "#version 450 core\n"
+        "uniform int limit;\n"
+        "layout(location = 0) out vec4 o_color;\n"
+        "void main() {\n"
+        "  int sum = 0;\n"
+        "  for (int i = 0; i < limit; ++i) {\n"
+        "    if (i == 2) continue;\n"
+        "    if (i == 5) break;\n"
+        "    sum += i;\n"
+        "  }\n"
+        "  o_color = vec4(float(sum));\n"
+        "}\n";
+    CompileResult r = compile(src, MGL_STAGE_FRAGMENT);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
+}
+
+TEST(Metallib, SwitchFallthroughAndBreakPreserveLiveValues) {
+    static const char *src =
+        "#version 450 core\n"
+        "uniform int selector;\n"
+        "layout(location = 0) out vec4 o_color;\n"
+        "void main() {\n"
+        "  int value = 1;\n"
+        "  switch (selector) {\n"
+        "  case 0:\n"
+        "    value += 2;\n"
+        "  case 1:\n"
+        "    value += 4;\n"
+        "    break;\n"
+        "  default:\n"
+        "    value = 8;\n"
+        "  }\n"
+        "  o_color = vec4(float(value));\n"
+        "}\n";
+    CompileResult r = compile(src, MGL_STAGE_FRAGMENT);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
 }
 
 TEST(Metallib, RejectsSyntaxError) {

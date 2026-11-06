@@ -238,11 +238,11 @@ llvm::Value *emitMatrixBuiltin(Codegen &cg, const MGLExpr *e,
 }
 
 
-/* Resolve a sampler argument: a global sampler2D uniform (cg.texValues)
+/* Resolve a sampler argument: a global sampler2D uniform (cg.resources.texValues)
  * or a user-function parameter bound in cg.lvalues. */
 static llvm::Value *samplerTexValue(Codegen &cg, const char *name) {
-    auto t = cg.texValues.find(name);
-    if (t != cg.texValues.end()) return t->second;
+    auto t = cg.resources.texValues.find(name);
+    if (t != cg.resources.texValues.end()) return t->second;
     auto l = cg.lvalues.find(name);
     if (l != cg.lvalues.end()) return l->second;
     return nullptr;

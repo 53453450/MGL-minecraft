@@ -33,6 +33,8 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Value.h"
 
+#include "mgl_air_control_flow.h"
+#include "mgl_air_resource_binding.h"
 #include "mgl_air_type.h"
 #include "mgl_glsl_ast.h"
 #include "mgl_ir.h"
@@ -73,23 +75,19 @@ struct VarSym {
     const MGLIRType *opaqueType = nullptr; /* nested sampler/image leaf */
 };
 
-struct LoopCtx {
-    llvm::BasicBlock *condBB = nullptr;  /* do-while continue target */
-    llvm::BasicBlock *endBB = nullptr;   /* break target */
-    llvm::BasicBlock *incrBB = nullptr;  /* merge block; while/for continue target */
-    llvm::BasicBlock *condExitBB = nullptr; /* false-condition exit (after side effects) */
-    std::map<std::string, llvm::Value *> condExitSnap;
-    std::map<std::string, llvm::PHINode *> phis;
+struct InlineState {
+    /* STMT_RETURN captures into retVal instead of emitting CreateRet. */
+    bool inliningHelper = false;
+    /* Bound recursive inlining even when a subroutine call reaches a cycle
+     * that the sema call graph did not reject. */
+    uint32_t inlineDepth = 0;
+    llvm::Value *inlineRetVal = nullptr;
+    llvm::BasicBlock *inlineExitBB = nullptr;
+    llvm::PHINode *inlineRetPhi = nullptr;
+    /* Return edges can originate in nested control flow; their live values are
+     * merged at inlineExitBB rather than assumed to dominate that block. */
     std::vector<std::pair<llvm::BasicBlock *,
-                          std::map<std::string, llvm::Value *>>> contSnaps;
-};
-
-/* Shared by loops and switch: break jumps to endBB carrying a snapshot
- * of the live values; the owner merges them into phis at endBB. */
-struct BreakCtx {
-    llvm::BasicBlock *endBB;
-    std::vector<std::pair<llvm::BasicBlock *,
-                          std::map<std::string, llvm::Value *>>> snaps;
+                          std::map<std::string, llvm::Value *>>> inlineExitSnaps;
 };
 
 struct Codegen {
@@ -187,30 +185,7 @@ struct Codegen {
     bool pointSize = false;              /* vertex: writes gl_PointSize */
     bool layerViewport = false;          /* writes gl_Layer / gl_ViewportIndex */
     bool primitiveIdWritten = false;     /* writes gl_PrimitiveID (GS out) */
-    std::map<std::string, llvm::Value *> ssboPtrs;  /* SSBO instance -> buffer */
-    std::map<std::string, llvm::Value *> acPtrs;  /* atomic_uint -> ACBO */
-    /* UBO/SSBO instance arrays: element pointers stashed in an entry-block
-     * alloca so member reads can index by runtime value. */
-    std::map<std::string, llvm::Value *> uboElemSlot;
-    std::map<std::string, llvm::Type *> uboElemArrTy;
-    std::map<std::string, llvm::Value *> ssboElemSlot;
-    std::map<std::string, llvm::Type *> ssboElemArrTy;
-    std::map<std::string, uint32_t> ssboSlots;      /* SSBO instance -> Metal slot */
-    std::map<std::string, uint32_t> acSlots;        /* atomic_uint -> Metal slot */
-    std::map<std::string, llvm::Value *> uboPtrs;   /* uniform block -> buffer */
-    std::map<std::string, llvm::Value *> texValues;  /* sampler name -> texture */
-    std::map<std::string, llvm::Value *> smpValues;  /* sampler name -> sampler */
-    std::map<std::string, uint32_t> texMetalIndex; /* sampler -> Metal tex slot */
-    llvm::Value *samplerWrapPtr = nullptr; /* integer gather wrap/border table */
-    /* GL 4.6 §8.14.1 packed table at kMGLLodBiasMaxBufferIndex:
-     *   float biasmax;
-     *   float deriv_scale_x;  // fb_w / viewport_w (Metal→GL dFdx)
-     *   float deriv_scale_y;
-     *   float _pad;
-     *   float bias[TEXTURE_UNITS];  // TEXTURE_LOD_BIAS per Metal tex slot */
-    llvm::Value *lodBiasPtr = nullptr;
-    std::map<std::string, std::vector<llvm::Value *>> texArrayValues;
-    std::map<std::string, std::vector<llvm::Value *>> smpArrayValues;
+    ResourceBindingState resources;
     /* Same-invocation imageStore→imageLoad forwarding (GLSL 4.60 §8.12 /
      * coherent).  Metal texture.fence()+read is not reliable for VS
      * imageBuffer on AGX (CTS advanced-memory-order).  Entries are only
@@ -224,7 +199,6 @@ struct Codegen {
         llvm::Value *value = nullptr;
     };
     std::vector<ImageStoreFwd> imageStoreFwd;
-    std::map<std::string, const MGLIRType *> samplerIRTypes;
     /* Stage outputs living in entry-block allocas so user functions can
      * write them through hidden pointer args (SET_RESULT→helper pattern). */
     std::map<std::string, llvm::Value *> outPtrs;
@@ -263,24 +237,7 @@ struct Codegen {
     std::map<std::string, MGLDecl *> *userFnDecls = nullptr;
     bool userFnPassCull = false;
     bool userFnPassClip = false;
-    /* When true, STMT_RETURN captures into inlineRetVal instead of
-     * emitting CreateRet (GS/TCS/compute helper inlining). */
-    bool inliningHelper = false;
-    /* Nesting depth of emitCallUserFunction.  Recursive user functions are
-     * illegal in GLSL (GL 4.6 §12.1) but a subroutine call can reach one
-     * through a chain the sema call graph does not see, so bound the inlining
-     * to keep the compiler from overflowing the stack. */
-    uint32_t inlineDepth = 0;
-    llvm::Value *inlineRetVal = nullptr;
-    llvm::BasicBlock *inlineExitBB = nullptr;
-    llvm::PHINode *inlineRetPhi = nullptr;
-    /* Live values captured at each inlined `return` (block -> snapshot).
-     * The inline exit joins return edges that may originate inside a nested
-     * loop/if, so a value merged in one of those blocks does not dominate the
-     * exit; the caller merges these snapshots into phis at inlineExitBB,
-     * exactly as BreakCtx::snaps does for `break`. */
-    std::vector<std::pair<llvm::BasicBlock *,
-                          std::map<std::string, llvm::Value *>>> inlineExitSnaps;
+    InlineState inlining;
     /* Named user struct types from the TU (`struct S { … };`), used for
      * S(...) / S[](...) constructors and local member ExtractValue. */
     std::map<std::string, MGLIRType *> structTypes;
@@ -288,8 +245,7 @@ struct Codegen {
     std::map<std::string, const MGLIRType *> localIRTypes;
     int err = 0;
     std::string errmsg;                  /* specific diagnostic when set */
-    std::vector<LoopCtx *> loopStack;    /* innermost loop is last */
-    std::vector<BreakCtx *> breakStack;  /* innermost loop/switch is last */
+    ControlFlowState controlFlow;
 };
 
 } /* namespace air */

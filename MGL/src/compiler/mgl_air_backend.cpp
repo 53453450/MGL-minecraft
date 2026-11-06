@@ -88,6 +88,7 @@
 #include "mgl_env_flag.h"
 #include "mgl_air_type.h"
 #include "mgl_air_codegen.h"
+#include "mgl_air_expr_support.h"
 #include "mgl_air_resource.h"
 #include "mgl_air_math.h"
 #include "mgl_air_matrix.h"
@@ -152,13 +153,23 @@ using mgl::air::ensureArrayMem;
 using mgl::air::arrayMemGEP;
 using mgl::air::llvmTypeFromIR;
 using mgl::air::coerceScalar;
+using mgl::air::findSymbol;
+using mgl::air::swizzleIndices;
+using mgl::air::swizzleType;
+using mgl::air::emitSwizzleValue;
+using mgl::air::scalarizeBoolCompare;
+using mgl::air::tryFoldConst;
+using mgl::air::emitNumericBinOp;
+using mgl::air::emitAggregateCompare;
+using mgl::air::broadcastTo;
+using mgl::air::dotProduct;
 
 /* Restore helpers deleted by C1f without being relocated: resolve a
- * sampler argument (global sampler2D uniform in cg.texValues, or a
+ * sampler argument (global sampler2D uniform in cg.resources.texValues, or a
  * user-function parameter bound in cg.lvalues). */
 static llvm::Value *samplerTexValue(Codegen &cg, const char *name) {
-    auto t = cg.texValues.find(name);
-    if (t != cg.texValues.end()) return t->second;
+    auto t = cg.resources.texValues.find(name);
+    if (t != cg.resources.texValues.end()) return t->second;
     auto l = cg.lvalues.find(name);
     if (l != cg.lvalues.end()) return l->second;
     return nullptr;
@@ -215,12 +226,12 @@ static llvm::Value *emitIntegerGather2D(
     llvm::Value *wrapS = cg.b->getInt32(GL_REPEAT);
     llvm::Value *wrapT = cg.b->getInt32(GL_REPEAT);
     llvm::Value *border = llvm::Constant::getNullValue(v4i32);
-    if (cg.samplerWrapPtr) {
+    if (cg.resources.samplerWrapPtr) {
         llvm::Value *idx = metalSlotDyn
             ? metalSlotDyn
             : (llvm::Value *)cg.b->getInt32(metalSlot);
         llvm::Value *base = cg.b->CreateBitCast(
-            cg.samplerWrapPtr, i32->getPointerTo(1));
+            cg.resources.samplerWrapPtr, i32->getPointerTo(1));
         llvm::Value *off8 = cg.b->CreateMul(idx, cg.b->getInt32(8));
         wrapS = cg.b->CreateAlignedLoad(
             i32, cg.b->CreateGEP(i32, base, off8), llvm::Align(4));
@@ -338,7 +349,7 @@ static llvm::Value *emitIntegerSample2D(
     MGLIRScalar texel, MGLIRTexKind kind, uint32_t metalSlot,
     llvm::Value *metalSlotDyn, llvm::Value *metalFallback)
 {
-    if (!cg.samplerWrapPtr || !metalFallback)
+    if (!cg.resources.samplerWrapPtr || !metalFallback)
         return metalFallback;
     llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
     llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
@@ -353,7 +364,7 @@ static llvm::Value *emitIntegerSample2D(
         ? metalSlotDyn
         : (llvm::Value *)cg.b->getInt32(metalSlot);
     llvm::Value *base = cg.b->CreateBitCast(
-        cg.samplerWrapPtr, i32->getPointerTo(1));
+        cg.resources.samplerWrapPtr, i32->getPointerTo(1));
     llvm::Value *off8 = cg.b->CreateMul(idx, cg.b->getInt32(8));
     llvm::Value *wrapS = cg.b->CreateAlignedLoad(
         i32, cg.b->CreateGEP(i32, base, off8), llvm::Align(4));
@@ -684,15 +695,6 @@ static void storeStageOut(Codegen &cg, const char *name, llvm::Value *v)
 
 /* ---- expression codegen ----------------------------------------------- */
 
-const MGLIRSymbol *findSymbol(const MGLIRModule *mod, const char *name) {
-    for (uint32_t i = 0; i < mod->symbol_count; i++) {
-        if (!mod->symbols[i]->is_function &&
-            strcmp(mod->symbols[i]->name, name) == 0)
-            return mod->symbols[i];
-    }
-    return nullptr;
-}
-
 static std::string userFnKey(const char *name, uint32_t n,
                              MGLIRType *const *pts)
 {
@@ -824,51 +826,6 @@ static const MGLIRSymbol *fnSymForDecl(const MGLIRModule *mod, const MGLDecl *d)
         if (ok) return fs;
     }
     return nullptr;
-}
-
-bool swizzleIndices(const char *field, std::vector<uint32_t> *out) {
-    static const char *valid = "xyzwrgbastpq";
-    out->clear();
-    for (const char *p = field; *p; p++) {
-        const char *f = strchr(valid, *p);
-        if (!f) return false;
-        out->push_back((uint32_t)(f - valid) % 4);
-    }
-    return !out->empty();
-}
-
-MType swizzleType(const MType &base, size_t lanes) {
-    MType t = base;
-    if (base.isMatrix()) return base; /* unsupported, keep */
-    /* GLSL 4.60 5.5: single-component swizzle yields a scalar. */
-    t.vec = lanes == 1 ? 0 : (uint32_t)lanes;
-    return t;
-}
-
-static llvm::Value *emitSwizzleValue(Codegen &cg, llvm::Value *obj,
-                                     const std::vector<uint32_t> &idx)
-{
-    if (!obj || idx.empty()) return nullptr;
-    if (!obj->getType()->isVectorTy()) {
-        if (idx.size() == 1) return obj;
-        llvm::Type *vt = llvm::FixedVectorType::get(
-            obj->getType(), (unsigned)idx.size());
-        llvm::Value *v = llvm::UndefValue::get(vt);
-        for (unsigned i = 0; i < idx.size(); i++)
-            v = cg.b->CreateInsertElement(v, obj, cg.b->getInt32(i));
-        return v;
-    }
-    if (idx.size() == 1)
-        return cg.b->CreateExtractElement(
-            obj, llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx),
-                                        idx[0]));
-    llvm::SmallVector<llvm::Constant *, 4> mask;
-    for (uint32_t i : idx)
-        mask.push_back(llvm::ConstantInt::get(
-            llvm::Type::getInt32Ty(*cg.ctx), i));
-    return cg.b->CreateShuffleVector(
-        obj, llvm::UndefValue::get(obj->getType()),
-        llvm::ConstantVector::get(mask));
 }
 
 static MGLIRScalar astBaseToIRScalar(uint32_t base) {
@@ -1094,244 +1051,6 @@ static llvm::Value *emitGLSLTypeLength(
     Codegen &cg, const MGLExpr *object, const MGLIRModule *mod,
     const std::map<std::string, MType> &locals);
 
-/* Broadcast a scalar to the lane type of a vector type. */
-llvm::Value *broadcastTo(Codegen &cg, llvm::Value *v, llvm::Type *vecTy);
-
-/* Constant-fold a numeric binary op when both operands are constants of
- * the same type; returns null when folding is not possible.  Mirrors the
- * runtime signedness/comparison semantics of emitNumericBinOp. */
-/* GLSL 4.60 §5.9: == / != on vector operands yield a scalar bool
- * (all lanes equal / any lane differs).  Relational operators keep
- * their vector (bvec) results for any()/all()/equal(). */
-static llvm::Value *scalarizeBoolCompare(Codegen &cg, uint32_t op,
-                                         llvm::Value *cmp) {
-    if (op != MGL_OP_EQ && op != MGL_OP_NE) return cmp;
-    if (!cmp->getType()->isVectorTy()) return cmp;
-    auto *vt = llvm::cast<llvm::FixedVectorType>(cmp->getType());
-    uint32_t n = (uint32_t)vt->getElementCount().getFixedValue();
-    llvm::Value *acc = cg.b->CreateExtractElement(cmp, (uint64_t)0);
-    for (uint32_t i = 1; i < n; i++) {
-        llvm::Value *lane = cg.b->CreateExtractElement(cmp, (uint64_t)i);
-        acc = op == MGL_OP_EQ ? cg.b->CreateAnd(acc, lane)
-                              : cg.b->CreateOr(acc, lane);
-    }
-    return acc;
-}
-
-llvm::Value *tryFoldConst(Codegen &cg, uint32_t op, llvm::Value *l,
-                          llvm::Value *r, bool uns) {
-    auto *lc = llvm::dyn_cast<llvm::Constant>(l);
-    auto *rc = llvm::dyn_cast<llvm::Constant>(r);
-    if (!lc || !rc) return nullptr;
-    if (l->getType() != r->getType()) return nullptr;
-    /* Aggregate ==/!= must walk members; ConstantExpr::getCompare on
-     * struct/array constants infinite-recurses in LLVM's folder. */
-    if (l->getType()->isStructTy() || l->getType()->isArrayTy())
-        return nullptr;
-    bool fp = l->getType()->isFPOrFPVectorTy();
-    if (op == MGL_OP_LAND || op == MGL_OP_LOR) {
-        if (!l->getType()->isIntegerTy(1)) return nullptr;
-        unsigned llo = op == MGL_OP_LAND ? llvm::Instruction::And
-                                         : llvm::Instruction::Or;
-        return llvm::ConstantFoldBinaryInstruction(llo, lc, rc);
-    }
-    unsigned llo;
-    switch (op) {
-    case MGL_OP_ADD: llo = fp ? llvm::Instruction::FAdd
-                              : llvm::Instruction::Add; break;
-    case MGL_OP_SUB: llo = fp ? llvm::Instruction::FSub
-                              : llvm::Instruction::Sub; break;
-    case MGL_OP_MUL: llo = fp ? llvm::Instruction::FMul
-                              : llvm::Instruction::Mul; break;
-    case MGL_OP_DIV: llo = fp ? llvm::Instruction::FDiv
-                 : uns ? llvm::Instruction::UDiv
-                       : llvm::Instruction::SDiv; break;
-    case MGL_OP_MOD: llo = fp ? llvm::Instruction::FRem
-                 : uns ? llvm::Instruction::URem
-                       : llvm::Instruction::SRem; break;
-    case MGL_OP_SHL: llo = llvm::Instruction::Shl; break;
-    case MGL_OP_SHR: llo = uns ? llvm::Instruction::LShr
-                               : llvm::Instruction::AShr; break;
-    case MGL_OP_AND: llo = llvm::Instruction::And; break;
-    case MGL_OP_OR:  llo = llvm::Instruction::Or; break;
-    case MGL_OP_XOR: llo = llvm::Instruction::Xor; break;
-    case MGL_OP_EQ:
-        return scalarizeBoolCompare(cg, op,
-            llvm::ConstantExpr::getCompare(fp ? llvm::CmpInst::FCMP_OEQ
-                                              : llvm::CmpInst::ICMP_EQ,
-                                           lc, rc));
-    case MGL_OP_NE:
-        return scalarizeBoolCompare(cg, op,
-            llvm::ConstantExpr::getCompare(fp ? llvm::CmpInst::FCMP_UNE
-                                              : llvm::CmpInst::ICMP_NE,
-                                           lc, rc));
-    case MGL_OP_LT:
-        return llvm::ConstantExpr::getCompare(
-            fp ? llvm::CmpInst::FCMP_OLT
-               : uns ? llvm::CmpInst::ICMP_ULT : llvm::CmpInst::ICMP_SLT,
-            lc, rc);
-    case MGL_OP_GT:
-        return llvm::ConstantExpr::getCompare(
-            fp ? llvm::CmpInst::FCMP_OGT
-               : uns ? llvm::CmpInst::ICMP_UGT : llvm::CmpInst::ICMP_SGT,
-            lc, rc);
-    case MGL_OP_LE:
-        return llvm::ConstantExpr::getCompare(
-            fp ? llvm::CmpInst::FCMP_OLE
-               : uns ? llvm::CmpInst::ICMP_ULE : llvm::CmpInst::ICMP_SLE,
-            lc, rc);
-    case MGL_OP_GE:
-        return llvm::ConstantExpr::getCompare(
-            fp ? llvm::CmpInst::FCMP_OGE
-               : uns ? llvm::CmpInst::ICMP_UGE : llvm::CmpInst::ICMP_SGE,
-            lc, rc);
-    default:
-        return nullptr;
-    }
-    return llvm::ConstantFoldBinaryInstruction(llo, lc, rc);
-}
-
-/* Scalar/vector numeric binary op (no matrices).  Signedness follows the
- * operand types; comparisons yield bool per GLSL; && / || use LLVM's
- * branch-based short-circuit ops. */
-llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
-                              llvm::Value *r, const MType &lt,
-                              const MType &rt) {
-    /* AGX double is an i64 payload with no f64 ALU.  Soft-float any operand
-     * typed DOUBLE (or carrying i64) before arithmetic / ordered compares so
-     * we never integer-add IEEE bit patterns or ICmp mismatched widths. */
-    const bool l_double = lt.scalar == MGLIR_SCALAR_DOUBLE ||
-        (l->getType()->isIntOrIntVectorTy() &&
-         l->getType()->getScalarSizeInBits() == 64);
-    const bool r_double = rt.scalar == MGLIR_SCALAR_DOUBLE ||
-        (r->getType()->isIntOrIntVectorTy() &&
-         r->getType()->getScalarSizeInBits() == 64);
-    const bool soft_double = l_double || r_double;
-    if (soft_double) {
-        l = coerceScalar(cg, l, MGLIR_SCALAR_FLOAT, lt.scalar);
-        r = coerceScalar(cg, r, MGLIR_SCALAR_FLOAT, rt.scalar);
-    }
-    bool lfp = l->getType()->isFPOrFPVectorTy();
-    bool rfp = r->getType()->isFPOrFPVectorTy();
-    if (lfp != rfp) {
-        /* The integer side must be told its own signedness: `uintExpr * 2.0`
-         * has to convert with UIToFP.  coerceScalar cannot recover it from the
-         * LLVM value (i32 carries no signedness), and SIToFP would turn every
-         * operand >= 2^31 into a NEGATIVE float.  Both operand MTypes are in
-         * scope here — the only place in this function that needs them. */
-        if (lfp) r = coerceScalar(cg, r, MGLIR_SCALAR_FLOAT, rt.scalar);
-        else l = coerceScalar(cg, l, MGLIR_SCALAR_FLOAT, lt.scalar);
-        rfp = r->getType()->isFPOrFPVectorTy();
-    }
-    bool lv = l->getType()->isVectorTy();
-    bool rv = r->getType()->isVectorTy();
-        if (lv != rv) {
-        if (lv) r = broadcastTo(cg, r, l->getType());
-        else l = broadcastTo(cg, l, r->getType());
-    }
-    bool fp = l->getType()->isFPOrFPVectorTy();
-    bool uns = lt.scalar == MGLIR_SCALAR_UINT || rt.scalar == MGLIR_SCALAR_UINT;
-    auto widen_double = [&](llvm::Value *v) -> llvm::Value * {
-        return soft_double ? coerceScalar(cg, v, MGLIR_SCALAR_DOUBLE) : v;
-    };
-    llvm::CmpInst::Predicate pred;
-    switch (op) {
-    case MGL_OP_ADD: return widen_double(fp ? cg.b->CreateFAdd(l, r)
-                                            : cg.b->CreateAdd(l, r));
-    case MGL_OP_SUB: return widen_double(fp ? cg.b->CreateFSub(l, r)
-                                            : cg.b->CreateSub(l, r));
-    case MGL_OP_MUL: return widen_double(fp ? cg.b->CreateFMul(l, r)
-                                            : cg.b->CreateMul(l, r));
-    case MGL_OP_DIV: return widen_double(fp ? cg.b->CreateFDiv(l, r)
-                   : uns ? cg.b->CreateUDiv(l, r) : cg.b->CreateSDiv(l, r));
-    case MGL_OP_MOD: return widen_double(fp ? cg.b->CreateFRem(l, r)
-                   : uns ? cg.b->CreateURem(l, r) : cg.b->CreateSRem(l, r));
-    case MGL_OP_SHL: return cg.b->CreateShl(l, r);
-    case MGL_OP_SHR: return uns ? cg.b->CreateLShr(l, r) : cg.b->CreateAShr(l, r);
-    case MGL_OP_AND: return cg.b->CreateAnd(l, r);
-    case MGL_OP_OR:  return cg.b->CreateOr(l, r);
-    case MGL_OP_XOR: return cg.b->CreateXor(l, r);
-    case MGL_OP_LAND: return cg.b->CreateLogicalAnd(l, r);
-    case MGL_OP_LOR:  return cg.b->CreateLogicalOr(l, r);
-    case MGL_OP_EQ: pred = fp ? llvm::CmpInst::FCMP_OEQ : llvm::CmpInst::ICMP_EQ; break;
-    /* GLSL 4.60 §5.9: float != is true if either operand is NaN. */
-    case MGL_OP_NE: pred = fp ? llvm::CmpInst::FCMP_UNE : llvm::CmpInst::ICMP_NE; break;
-    case MGL_OP_LT: pred = fp ? llvm::CmpInst::FCMP_OLT
-                     : uns ? llvm::CmpInst::ICMP_ULT : llvm::CmpInst::ICMP_SLT; break;
-    case MGL_OP_LE: pred = fp ? llvm::CmpInst::FCMP_OLE
-                     : uns ? llvm::CmpInst::ICMP_ULE : llvm::CmpInst::ICMP_SLE; break;
-    case MGL_OP_GT: pred = fp ? llvm::CmpInst::FCMP_OGT
-                     : uns ? llvm::CmpInst::ICMP_UGT : llvm::CmpInst::ICMP_SGT; break;
-    case MGL_OP_GE: pred = fp ? llvm::CmpInst::FCMP_OGE
-                     : uns ? llvm::CmpInst::ICMP_UGE : llvm::CmpInst::ICMP_SGE; break;
-    default: return nullptr;
-    }
-    return scalarizeBoolCompare(
-        cg, op, fp ? cg.b->CreateFCmp(pred, l, r) : cg.b->CreateICmp(pred, l, r));
-}
-
-/* GLSL 4.60 §5.9: struct/array == and != are element-wise, yielding a
- * scalar bool.  Vectors still go through emitNumericBinOp. */
-static llvm::Value *emitAggregateCompare(Codegen &cg, uint32_t op,
-                                         llvm::Value *l, llvm::Value *r) {
-    if (op != MGL_OP_EQ && op != MGL_OP_NE) return nullptr;
-    if (!l || !r || l->getType() != r->getType()) return nullptr;
-    llvm::Type *ty = l->getType();
-    if (ty->isStructTy() || ty->isArrayTy()) {
-        unsigned n = ty->isStructTy()
-                         ? ty->getStructNumElements()
-                         : (unsigned)ty->getArrayNumElements();
-        llvm::Value *acc = nullptr;
-        for (unsigned i = 0; i < n; i++) {
-            llvm::Value *lv = cg.b->CreateExtractValue(l, i);
-            llvm::Value *rv = cg.b->CreateExtractValue(r, i);
-            llvm::Value *cmp = emitAggregateCompare(cg, op, lv, rv);
-            if (!cmp) {
-                MType dummy;
-                dummy.scalar = MGLIR_SCALAR_INT;
-                cmp = emitNumericBinOp(cg, op, lv, rv, dummy, dummy);
-            }
-            if (!cmp) return nullptr;
-            acc = !acc ? cmp
-                       : (op == MGL_OP_EQ ? cg.b->CreateAnd(acc, cmp)
-                                          : cg.b->CreateOr(acc, cmp));
-        }
-        return acc ? acc
-                   : llvm::ConstantInt::get(cg.b->getInt1Ty(),
-                                            op == MGL_OP_EQ);
-    }
-    return nullptr;
-}
-
-/* Broadcast a scalar to a vector type; identity if already matching. */
-llvm::Value *broadcastTo(Codegen &cg, llvm::Value *v, llvm::Type *vecTy) {
-    if (v->getType() == vecTy) return v;
-    if (!vecTy->isVectorTy()) return v;
-    auto *vt = llvm::cast<llvm::FixedVectorType>(vecTy);
-    return cg.b->CreateVectorSplat(
-        (uint32_t)vt->getElementCount().getFixedValue(), v);
-}
-
-/* Scalar or vector dot product with a fixed lane order. */
-llvm::Value *dotProduct(Codegen &cg, llvm::Value *a, llvm::Value *b) {
-    llvm::Type *t = a->getType();
-    if (!t->isVectorTy()) return cg.b->CreateFMul(a, b);
-    auto *vt = llvm::cast<llvm::FixedVectorType>(t);
-    uint32_t n = (uint32_t)vt->getElementCount().getFixedValue();
-    llvm::Value *e0 = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0);
-    llvm::Value *acc = cg.b->CreateFMul(
-        cg.b->CreateExtractElement(a, e0), cg.b->CreateExtractElement(b, e0));
-    for (uint32_t i = 1; i < n; i++) {
-        llvm::Value *ix = llvm::ConstantInt::get(
-            llvm::Type::getInt32Ty(*cg.ctx), i);
-        llvm::Value *p = cg.b->CreateFMul(
-            cg.b->CreateExtractElement(a, ix),
-            cg.b->CreateExtractElement(b, ix));
-        acc = cg.b->CreateFAdd(acc, p);
-    }
-    return acc;
-}
-
 /* GLSL 4.60 §8.9 textureProj*: divide by the last used component.
  * 1D: vec2 → s/t, vec4 → s/q; 2D/rect: vec3 → xy/z, vec4 → xy/w;
  * 3D: vec4 → xyz/w. */
@@ -1455,16 +1174,16 @@ static llvm::Value *emitCombinedLodBias(Codegen &cg, const char *samplerName,
     llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
     llvm::Value *shader =
         shaderBias ? shaderBias : llvm::ConstantFP::get(f32, 0.0);
-    if (!cg.lodBiasPtr)
+    if (!cg.resources.lodBiasPtr)
         return shader;
     uint32_t slot = 0u;
     if (samplerName) {
-        auto it = cg.texMetalIndex.find(samplerName);
-        if (it != cg.texMetalIndex.end())
+        auto it = cg.resources.texMetalIndex.find(samplerName);
+        if (it != cg.resources.texMetalIndex.end())
             slot = it->second;
     }
     llvm::Value *base =
-        cg.b->CreateBitCast(cg.lodBiasPtr, f32->getPointerTo(1));
+        cg.b->CreateBitCast(cg.resources.lodBiasPtr, f32->getPointerTo(1));
     llvm::Value *maxV =
         cg.b->CreateAlignedLoad(f32, base, llvm::Align(4), "lod_bias_max");
     llvm::Value *texBias = cg.b->CreateAlignedLoad(
@@ -1483,7 +1202,7 @@ static llvm::Value *emitCombinedLodBias(Codegen &cg, const char *samplerName,
 static void loadLodDerivScales(Codegen &cg, llvm::Value **outSx,
                                llvm::Value **outSy) {
     llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
-    if (!cg.lodBiasPtr || !outSx || !outSy) {
+    if (!cg.resources.lodBiasPtr || !outSx || !outSy) {
         if (outSx)
             *outSx = llvm::ConstantFP::get(f32, 1.0);
         if (outSy)
@@ -1491,7 +1210,7 @@ static void loadLodDerivScales(Codegen &cg, llvm::Value **outSx,
         return;
     }
     llvm::Value *base =
-        cg.b->CreateBitCast(cg.lodBiasPtr, f32->getPointerTo(1));
+        cg.b->CreateBitCast(cg.resources.lodBiasPtr, f32->getPointerTo(1));
     *outSx = cg.b->CreateAlignedLoad(
         f32, cg.b->CreateGEP(f32, base, cg.b->getInt32(1)), llvm::Align(4));
     *outSy = cg.b->CreateAlignedLoad(
@@ -1925,8 +1644,8 @@ static llvm::Value *resolveImageTex(
         llvm::Value *index = emitExpr(cg, indexExpr, mod, locals);
         if (!index) return nullptr;
         index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
-        auto ti = cg.texArrayValues.find(imageName);
-        if (ti == cg.texArrayValues.end()) {
+        auto ti = cg.resources.texArrayValues.find(imageName);
+        if (ti == cg.resources.texArrayValues.end()) {
             cg.err = 1;
             cg.errmsg = "codegen: missing image array binding";
             return nullptr;
@@ -2474,8 +2193,8 @@ llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
                                           : cur->u.member.object;
     }
     std::reverse(path.begin(), path.end());
-    auto pit = cg.ssboPtrs.find(bufName);
-    if (pit == cg.ssboPtrs.end() || !pit->second) {
+    auto pit = cg.resources.ssboPtrs.find(bufName);
+    if (pit == cg.resources.ssboPtrs.end() || !pit->second) {
         cg.err = 1;
         cg.errmsg = std::string("codegen: SSBO '") + bufName +
                     "' has no device buffer";
@@ -2490,10 +2209,10 @@ llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
         path[0]->u.index.object->kind == MGL_EXPR_VAR_REF &&
         path[0]->u.index.object->u.var_ref.name &&
         strcmp(path[0]->u.index.object->u.var_ref.name, sb->name) == 0) {
-        auto slotIt = cg.ssboElemSlot.find(bufName);
-        auto tyIt = cg.ssboElemArrTy.find(bufName);
-        if (slotIt == cg.ssboElemSlot.end() ||
-            tyIt == cg.ssboElemArrTy.end()) {
+        auto slotIt = cg.resources.ssboElemSlot.find(bufName);
+        auto tyIt = cg.resources.ssboElemArrTy.find(bufName);
+        if (slotIt == cg.resources.ssboElemSlot.end() ||
+            tyIt == cg.resources.ssboElemArrTy.end()) {
             cg.err = 1;
             cg.errmsg = std::string("codegen: SSBO block array '") +
                         bufName + "' has no element buffers";
@@ -2777,8 +2496,8 @@ llvm::Value *emitAtomicCounterAddress(
         cg.errmsg = "codegen: atomic counter lvalue required";
         return nullptr;
     }
-    auto it = cg.acPtrs.find(rootName);
-    if (it == cg.acPtrs.end()) {
+    auto it = cg.resources.acPtrs.find(rootName);
+    if (it == cg.resources.acPtrs.end()) {
         cg.err = 1;
         cg.errmsg = std::string("codegen: unknown atomic counter '") +
                     rootName + "'";
@@ -3236,8 +2955,8 @@ llvm::Value *varValue(Codegen &cg, const VarSym &v, const MGLIRModule *mod) {
             fprintf(stderr, "VAR %s kind=%d block=%s\n", v.name.c_str(),
                     (int)v.kind, bs ? (bs->block_name ? bs->block_name : "-") : "-");
         if (bs && bs->block_name) {
-            llvm::Value *base = cg.uboPtrs.count(bs->block_name)
-                                    ? cg.uboPtrs[bs->block_name]
+            llvm::Value *base = cg.resources.uboPtrs.count(bs->block_name)
+                                    ? cg.resources.uboPtrs[bs->block_name]
                                     : nullptr;
             if (base) {
                 const MGLIRSymbol *blk = findSymbol(mod, bs->block_name);
@@ -6780,10 +6499,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 if (rootIndexExpr) {
                     /* Instance array: each element binds its own device
                      * buffer; pick it through the entry alloca. */
-                    auto slotIt = cg.uboElemSlot.find(objName);
-                    auto tyIt = cg.uboElemArrTy.find(objName);
-                    if (slotIt == cg.uboElemSlot.end() ||
-                        tyIt == cg.uboElemArrTy.end()) {
+                    auto slotIt = cg.resources.uboElemSlot.find(objName);
+                    auto tyIt = cg.resources.uboElemArrTy.find(objName);
+                    if (slotIt == cg.resources.uboElemSlot.end() ||
+                        tyIt == cg.resources.uboElemArrTy.end()) {
                         cg.err = 1;
                         cg.errmsg =
                             std::string("codegen: uniform block array '") +
@@ -6823,8 +6542,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         llvm::Type::getInt8Ty(*cg.ctx)->getPointerTo(1),
                         gep);
                 } else {
-                    base = bufName && cg.uboPtrs.count(bufName)
-                               ? cg.uboPtrs[bufName]
+                    base = bufName && cg.resources.uboPtrs.count(bufName)
+                               ? cg.resources.uboPtrs[bufName]
                                : nullptr;
                 }
                 if (!base) {
@@ -7031,10 +6750,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 uint32_t plainOff = startOff;
                 if (ov->is_interface_block || ov->block_name) {
                 if (rootIndexExpr) {
-                    auto slotIt = cg.uboElemSlot.find(objName);
-                    auto tyIt = cg.uboElemArrTy.find(objName);
-                    if (slotIt == cg.uboElemSlot.end() ||
-                        tyIt == cg.uboElemArrTy.end()) {
+                    auto slotIt = cg.resources.uboElemSlot.find(objName);
+                    auto tyIt = cg.resources.uboElemArrTy.find(objName);
+                    if (slotIt == cg.resources.uboElemSlot.end() ||
+                        tyIt == cg.resources.uboElemArrTy.end()) {
                         cg.err = 1;
                         cg.errmsg =
                             std::string("codegen: uniform block array '") +
@@ -7054,8 +6773,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         llvm::Type::getInt8Ty(*cg.ctx)->getPointerTo(1),
                         gep);
                 } else {
-                    base = bufName && cg.uboPtrs.count(bufName)
-                               ? cg.uboPtrs[bufName]
+                    base = bufName && cg.resources.uboPtrs.count(bufName)
+                               ? cg.resources.uboPtrs[bufName]
                                : nullptr;
                 }
                 if (!base) {
@@ -7124,8 +6843,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             const MGLIRSymbol *bs = findSymbol(mod, aname);
             if (bs && bs->block_name && !bs->is_function &&
                 (bs->qualifiers & MGL_AST_Q_UNIFORM) && bs->type) {
-                llvm::Value *base = cg.uboPtrs.count(bs->block_name)
-                                        ? cg.uboPtrs[bs->block_name]
+                llvm::Value *base = cg.resources.uboPtrs.count(bs->block_name)
+                                        ? cg.resources.uboPtrs[bs->block_name]
                                         : nullptr;
                 if (!base) {
                     cg.err = 1;
@@ -8913,9 +8632,9 @@ static bool emitCallImageLoadStore(
                             ia->u.index.object->kind == MGL_EXPR_VAR_REF
                         ? ia->u.index.object->u.var_ref.name
                         : nullptr;
-                auto ti = imageName ? cg.texArrayValues.find(imageName)
-                                    : cg.texArrayValues.end();
-                if (ti == cg.texArrayValues.end() || ti->second.empty())
+                auto ti = imageName ? cg.resources.texArrayValues.find(imageName)
+                                    : cg.resources.texArrayValues.end();
+                if (ti == cg.resources.texArrayValues.end() || ti->second.empty())
                     return (*out = emitSize(tex), true);
                 const bool scalarSize =
                     tk == MGLIR_TEX_1D || tk == MGLIR_TEX_BUFFER;
@@ -9134,9 +8853,9 @@ static bool emitCallImageLoadStore(
                                 ia->u.index.object->kind == MGL_EXPR_VAR_REF
                             ? ia->u.index.object->u.var_ref.name
                             : nullptr;
-                    auto ti = imageName ? cg.texArrayValues.find(imageName)
-                                        : cg.texArrayValues.end();
-                    if (ti != cg.texArrayValues.end() &&
+                    auto ti = imageName ? cg.resources.texArrayValues.find(imageName)
+                                        : cg.resources.texArrayValues.end();
+                    if (ti != cg.resources.texArrayValues.end() &&
                         !ti->second.empty()) {
                         return (*out = sampleArrayElementBySwitch(
                             cg, index, ti->second, {}, vecTy, emitLoad), true);
@@ -9255,9 +8974,9 @@ static bool emitCallImageLoadStore(
                             ia->u.index.object->kind == MGL_EXPR_VAR_REF
                         ? ia->u.index.object->u.var_ref.name
                         : nullptr;
-                auto ti = imageName ? cg.texArrayValues.find(imageName)
-                                    : cg.texArrayValues.end();
-                if (ti != cg.texArrayValues.end() && !ti->second.empty()) {
+                auto ti = imageName ? cg.resources.texArrayValues.find(imageName)
+                                    : cg.resources.texArrayValues.end();
+                if (ti != cg.resources.texArrayValues.end() && !ti->second.empty()) {
                     storeArrayElementBySwitch(cg, index, ti->second,
                                               emitWrite);
                     return (*out = cg.b->getInt32(0), true);
@@ -9312,8 +9031,8 @@ static bool emitCallTexelFetch(
                 emitExpr(cg, sa->u.index.index, mod, locals);
             if (!index) return true;
             index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
-            auto ti = cg.texArrayValues.find(samplerName);
-            if (ti == cg.texArrayValues.end()) {
+            auto ti = cg.resources.texArrayValues.find(samplerName);
+            if (ti == cg.resources.texArrayValues.end()) {
                 cg.err = 1;
                 cg.errmsg = "codegen: texelFetch first argument must be a "
                             "sampler variable";
@@ -9346,8 +9065,8 @@ static bool emitCallTexelFetch(
             return true;
         }
         const MGLIRType *sampleType = nullptr;
-        auto sti = cg.samplerIRTypes.find(samplerName);
-        if (sti != cg.samplerIRTypes.end())
+        auto sti = cg.resources.samplerIRTypes.find(samplerName);
+        if (sti != cg.resources.samplerIRTypes.end())
             sampleType = sti->second;
         else {
             const MGLIRSymbol *ts = findSymbol(mod, samplerName);
@@ -10185,7 +9904,7 @@ static bool emitCallUserFunction(
     /* GLSL forbids recursion (GL 4.6 §12.1); a subroutine call can hide a
      * cycle from the sema call graph, so refuse to inline past a sane depth
      * instead of recursing until the stack dies. */
-    if (cg.inlineDepth > 64u) {
+    if (cg.inlining.inlineDepth > 64u) {
         if (!cg.err) {
             cg.err = 1;
             cg.errmsg = std::string("codegen: call to '") +
@@ -10194,10 +9913,10 @@ static bool emitCallUserFunction(
         }
         return true;
     }
-    cg.inlineDepth++;
+    cg.inlining.inlineDepth++;
     struct InlineDepthGuard {
         Codegen &cg;
-        ~InlineDepthGuard() { cg.inlineDepth--; }
+        ~InlineDepthGuard() { cg.inlining.inlineDepth--; }
     } depthGuard{cg};
     if (mod) {
         const MGLSubroutineType *sub = mglIRSubroutineTypeForUniform(mod, name);
@@ -10721,28 +10440,28 @@ static bool emitCallUserFunction(
                     }
                 }
                 int savedErr = cg.err;
-                bool savedInline = cg.inliningHelper;
-                llvm::Value *savedRet = cg.inlineRetVal;
-                llvm::BasicBlock *savedExit = cg.inlineExitBB;
-                llvm::PHINode *savedPhi = cg.inlineRetPhi;
-                auto savedExitSnaps = cg.inlineExitSnaps;
-                cg.inliningHelper = true;
-                cg.inlineRetVal = nullptr;
-                cg.inlineExitBB = nullptr;
-                cg.inlineRetPhi = nullptr;
-                cg.inlineExitSnaps.clear();
+                bool savedInline = cg.inlining.inliningHelper;
+                llvm::Value *savedRet = cg.inlining.inlineRetVal;
+                llvm::BasicBlock *savedExit = cg.inlining.inlineExitBB;
+                llvm::PHINode *savedPhi = cg.inlining.inlineRetPhi;
+                auto savedExitSnaps = cg.inlining.inlineExitSnaps;
+                cg.inlining.inliningHelper = true;
+                cg.inlining.inlineRetVal = nullptr;
+                cg.inlining.inlineExitBB = nullptr;
+                cg.inlining.inlineRetPhi = nullptr;
+                cg.inlining.inlineExitSnaps.clear();
                 cg.err = 0;
                 emitStmt(cg, fd->body, mod, &ilocals);
-                if (cg.inlineExitBB) {
+                if (cg.inlining.inlineExitBB) {
                     llvm::BasicBlock *cur = cg.b->GetInsertBlock();
                     bool fellThrough = cur && !cur->getTerminator();
                     if (fellThrough) {
-                        if (cg.inlineRetPhi)
-                            cg.inlineRetPhi->addIncoming(
+                        if (cg.inlining.inlineRetPhi)
+                            cg.inlining.inlineRetPhi->addIncoming(
                                 llvm::UndefValue::get(
-                                    cg.inlineRetPhi->getType()),
+                                    cg.inlining.inlineRetPhi->getType()),
                                 cur);
-                        cg.b->CreateBr(cg.inlineExitBB);
+                        cg.b->CreateBr(cg.inlining.inlineExitBB);
                     }
                     /* Merge the live values at the exit.  A return edge may
                      * originate inside a nested loop/if, so a value merged
@@ -10754,14 +10473,14 @@ static bool emitCallUserFunction(
                      * so it is left as is.  Mirrors BreakCtx::snaps. */
                     if (cg.err != 1) {
                         std::set<std::string> names;
-                        for (const auto &s : cg.inlineExitSnaps)
+                        for (const auto &s : cg.inlining.inlineExitSnaps)
                             for (const auto &kv : s.second)
                                 names.insert(kv.first);
                         if (fellThrough)
                             for (const auto &kv : cg.lvalues)
                                 names.insert(kv.first);
                         unsigned nEdges =
-                            (unsigned)cg.inlineExitSnaps.size() +
+                            (unsigned)cg.inlining.inlineExitSnaps.size() +
                             (fellThrough ? 1u : 0u);
                         for (const auto &n : names) {
                             if (nEdges == 0u) break;
@@ -10780,7 +10499,7 @@ static bool emitCallUserFunction(
                                 if (v->getType() != ty || v != first)
                                     mismatch++;
                             };
-                            for (const auto &s : cg.inlineExitSnaps) {
+                            for (const auto &s : cg.inlining.inlineExitSnaps) {
                                 auto it = s.second.find(n);
                                 observe(it != s.second.end() ? it->second
                                                              : nullptr);
@@ -10797,8 +10516,8 @@ static bool emitCallUserFunction(
                             if (!ty || (present == nEdges && mismatch == 0))
                                 continue;
                             auto *phi = llvm::PHINode::Create(
-                                ty, nEdges, n, cg.inlineExitBB);
-                            for (const auto &s : cg.inlineExitSnaps) {
+                                ty, nEdges, n, cg.inlining.inlineExitBB);
+                            for (const auto &s : cg.inlining.inlineExitSnaps) {
                                 auto it = s.second.find(n);
                                 llvm::Value *v =
                                     (it != s.second.end() &&
@@ -10819,16 +10538,16 @@ static bool emitCallUserFunction(
                             cg.lvalues[n] = phi;
                         }
                     }
-                    cg.b->SetInsertPoint(cg.inlineExitBB);
+                    cg.b->SetInsertPoint(cg.inlining.inlineExitBB);
                 }
-                llvm::Value *ret = cg.inlineRetPhi
-                    ? (llvm::Value *)cg.inlineRetPhi
-                    : cg.inlineRetVal;
-                cg.inliningHelper = savedInline;
-                cg.inlineRetVal = savedRet;
-                cg.inlineExitBB = savedExit;
-                cg.inlineRetPhi = savedPhi;
-                cg.inlineExitSnaps = savedExitSnaps;
+                llvm::Value *ret = cg.inlining.inlineRetPhi
+                    ? (llvm::Value *)cg.inlining.inlineRetPhi
+                    : cg.inlining.inlineRetVal;
+                cg.inlining.inliningHelper = savedInline;
+                cg.inlining.inlineRetVal = savedRet;
+                cg.inlining.inlineExitBB = savedExit;
+                cg.inlining.inlineRetPhi = savedPhi;
+                cg.inlining.inlineExitSnaps = savedExitSnaps;
                 /* GLSL out/inout: write the final param value back to
                  * the caller's lvalue argument before unshadowing. */
                 for (uint32_t a = 0; a < fd->param_count &&
@@ -11085,11 +10804,11 @@ static bool emitCallUserFunction(
                 }
                 args.push_back(av);
             }
-            for (const auto &kv : cg.uboPtrs)
+            for (const auto &kv : cg.resources.uboPtrs)
                 args.push_back(kv.second);
-            for (const auto &kv : cg.ssboPtrs)
+            for (const auto &kv : cg.resources.ssboPtrs)
                 args.push_back(kv.second);
-            for (const auto &kv : cg.acPtrs)
+            for (const auto &kv : cg.resources.acPtrs)
                 args.push_back(kv.second);
             if (cg.bufferSizePtr)
                 args.push_back(cg.bufferSizePtr);
@@ -11118,14 +10837,14 @@ static bool emitCallUserFunction(
             if (cg.isCompute && cg.threadPos)
                 args.push_back(cg.threadPos);
             if (!cg.isGeometry && !cg.isTessControl) {
-                for (const auto &kv : cg.texValues)
+                for (const auto &kv : cg.resources.texValues)
                     args.push_back(kv.second);
-                for (const auto &kv : cg.smpValues)
+                for (const auto &kv : cg.resources.smpValues)
                     args.push_back(kv.second);
-                for (const auto &kv : cg.texArrayValues)
+                for (const auto &kv : cg.resources.texArrayValues)
                     for (llvm::Value *tv : kv.second)
                         args.push_back(tv);
-                for (const auto &kv : cg.smpArrayValues)
+                for (const auto &kv : cg.resources.smpArrayValues)
                     for (llvm::Value *sv : kv.second)
                         args.push_back(sv);
             }
@@ -11418,8 +11137,8 @@ static bool emitCallSparseTexture(
                 sname = args_buf[0]->u.var_ref.name;
             const MGLIRType *st = nullptr;
             if (sname) {
-                auto sti = cg.samplerIRTypes.find(sname);
-                if (sti != cg.samplerIRTypes.end())
+                auto sti = cg.resources.samplerIRTypes.find(sname);
+                if (sti != cg.resources.samplerIRTypes.end())
                     st = sti->second;
                 else {
                     const MGLIRSymbol *sy = findSymbol(mod, sname);
@@ -11563,9 +11282,9 @@ static bool emitCallTextureSample(
             llvm::Value *index = emitExpr(cg, sa->u.index.index, mod, locals);
             if (!index) return true;
             index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
-            auto ti = cg.texArrayValues.find(samplerName);
-            auto si = cg.smpArrayValues.find(samplerName);
-            if (ti == cg.texArrayValues.end()) {
+            auto ti = cg.resources.texArrayValues.find(samplerName);
+            auto si = cg.resources.smpArrayValues.find(samplerName);
+            if (ti == cg.resources.texArrayValues.end()) {
                 cg.err = 1;
                 cg.errmsg = "codegen: texture argument must be a sampler2D "
                             "variable";
@@ -11575,12 +11294,12 @@ static bool emitCallTextureSample(
                 uint32_t k = (uint32_t)ci->getZExtValue();
                 if (k < ti->second.size()) {
                     tex = ti->second[k];
-                    if (si != cg.smpArrayValues.end() &&
+                    if (si != cg.resources.smpArrayValues.end() &&
                         k < si->second.size())
                         smp = si->second[k];
                 } else if (!ti->second.empty()) {
                     tex = ti->second.back();
-                    if (si != cg.smpArrayValues.end() &&
+                    if (si != cg.resources.smpArrayValues.end() &&
                         !si->second.empty())
                         smp = si->second.back();
                 }
@@ -11588,14 +11307,14 @@ static bool emitCallTextureSample(
                 dynamicSamplerArray = true;
                 arrayIndex = index;
                 texArray = &ti->second;
-                if (si != cg.smpArrayValues.end())
+                if (si != cg.resources.smpArrayValues.end())
                     smpArray = &si->second;
             }
         } else if (resolveSamplerAccessName(sa, &samplerPath)) {
             samplerName = samplerPath.c_str();
             tex = samplerTexValue(cg, samplerName);
-            auto si = cg.smpValues.find(samplerName);
-            if (si != cg.smpValues.end()) smp = si->second;
+            auto si = cg.resources.smpValues.find(samplerName);
+            if (si != cg.resources.smpValues.end()) smp = si->second;
         } else {
             cg.err = 1;
             cg.errmsg = "codegen: texture argument must be a sampler2D "
@@ -11618,8 +11337,8 @@ static bool emitCallTextureSample(
         }
         const MGLIRType *sampleTypeForDim = nullptr;
         {
-            auto sti = cg.samplerIRTypes.find(samplerName);
-            if (sti != cg.samplerIRTypes.end())
+            auto sti = cg.resources.samplerIRTypes.find(samplerName);
+            if (sti != cg.resources.samplerIRTypes.end())
                 sampleTypeForDim = sti->second;
             else {
                 const MGLIRSymbol *tss = findSymbol(mod, samplerName);
@@ -12067,12 +11786,12 @@ static bool emitCallTextureSample(
                      texel == MGLIR_SCALAR_UINT) &&
                     (sampleKind == MGLIR_TEX_2D ||
                      sampleKind == MGLIR_TEX_2D_ARRAY) &&
-                    cg.samplerWrapPtr;
+                    cg.resources.samplerWrapPtr;
                 if (int2dGather) {
                     uint32_t slot = 0;
                     llvm::Value *slotDyn = nullptr;
-                    auto mi = cg.texMetalIndex.find(samplerName);
-                    if (mi != cg.texMetalIndex.end())
+                    auto mi = cg.resources.texMetalIndex.find(samplerName);
+                    if (mi != cg.resources.texMetalIndex.end())
                         slot = mi->second;
                     if (dynamicSamplerArray && arrayIndex)
                         slotDyn = cg.b->CreateAdd(
@@ -12781,12 +12500,12 @@ static bool emitCallTextureSample(
                     (sampleKind != MGLIR_TEX_2D &&
                      sampleKind != MGLIR_TEX_2D_ARRAY &&
                      sampleKind != MGLIR_TEX_3D) ||
-                    !cg.samplerWrapPtr || isGrad || explicitLod)
+                    !cg.resources.samplerWrapPtr || isGrad || explicitLod)
                     return metal;
                 uint32_t slot = 0;
                 llvm::Value *slotDyn = nullptr;
-                auto mi = cg.texMetalIndex.find(samplerName);
-                if (mi != cg.texMetalIndex.end())
+                auto mi = cg.resources.texMetalIndex.find(samplerName);
+                if (mi != cg.resources.texMetalIndex.end())
                     slot = mi->second;
                 if (dynamicSamplerArray && arrayIndex)
                     slotDyn = cg.b->CreateAdd(
@@ -12807,7 +12526,7 @@ static bool emitCallTextureSample(
             const bool useScaledGrad =
                 !explicitLod && !cg.isVS && !cg.isCompute &&
                 !cg.isTessControl && !cg.isTessEval && !cg.isGeometry &&
-                cg.lodBiasPtr && !cubeSample &&
+                cg.resources.lodBiasPtr && !cubeSample &&
                 (sampleKind == MGLIR_TEX_2D ||
                  sampleKind == MGLIR_TEX_2D_ARRAY ||
                  sampleKind == MGLIR_TEX_1D ||
@@ -13221,8 +12940,8 @@ static bool emitCallArrayLength(
             const char *slotName =
                 (sb->block_name && sb->block_name[0]) ? sb->block_name
                                                      : sb->name;
-            auto slot = cg.ssboSlots.find(slotName);
-            if (!cg.bufferSizePtr || slot == cg.ssboSlots.end()) {
+            auto slot = cg.resources.ssboSlots.find(slotName);
+            if (!cg.bufferSizePtr || slot == cg.resources.ssboSlots.end()) {
                 cg.err = 1;
                 cg.errmsg = "codegen: runtime SSBO length requires buffer(25) sizes";
                 return true;
@@ -16100,7 +15819,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         uint32_t nelems =
             uniformBlockElementCount(us ? us->type : nullptr);
         if (!uniformBlockIsInstanceArray(us ? us->type : nullptr)) {
-            cg.ssboPtrs[v.name] = fn->getArg(argSlot++);
+            cg.resources.ssboPtrs[v.name] = fn->getArg(argSlot++);
             continue;
         }
         llvm::Type *ptrTy = llvm::Type::getInt8Ty(ctx)->getPointerTo(1);
@@ -16112,9 +15831,9 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         llvm::Value *slot =
             cg.b->CreateAlloca(arrTy, nullptr, v.name + "_elems");
         cg.b->CreateStore(agg, slot);
-        cg.ssboElemSlot[v.name] = slot;
-        cg.ssboElemArrTy[v.name] = arrTy;
-        cg.ssboPtrs[v.name] = agg; /* unused for arrays; kept non-null */
+        cg.resources.ssboElemSlot[v.name] = slot;
+        cg.resources.ssboElemArrTy[v.name] = arrTy;
+        cg.resources.ssboPtrs[v.name] = agg; /* unused for arrays; kept non-null */
     }
     for (VarSym &v : syms) {
         if (v.kind != VarSym::UBO) continue;
@@ -16122,7 +15841,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         uint32_t uelems =
             uniformBlockElementCount(us ? us->type : nullptr);
         if (!uniformBlockIsInstanceArray(us ? us->type : nullptr)) {
-            cg.uboPtrs[v.name] = fn->getArg(argSlot++);
+            cg.resources.uboPtrs[v.name] = fn->getArg(argSlot++);
             continue;
         }
         llvm::Type *ptrTy = llvm::Type::getInt8Ty(ctx)->getPointerTo(1);
@@ -16134,13 +15853,13 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         llvm::Value *slot =
             cg.b->CreateAlloca(arrTy, nullptr, v.name + "_elems");
         cg.b->CreateStore(agg, slot);
-        cg.uboElemSlot[v.name] = slot;
-        cg.uboElemArrTy[v.name] = arrTy;
-        cg.uboPtrs[v.name] = agg; /* unused for arrays; kept non-null */
+        cg.resources.uboElemSlot[v.name] = slot;
+        cg.resources.uboElemArrTy[v.name] = arrTy;
+        cg.resources.uboPtrs[v.name] = agg; /* unused for arrays; kept non-null */
     }
     for (VarSym &v : syms) {
         if (v.kind != VarSym::ATOMIC_COUNTER) continue;
-        cg.acPtrs[v.name] = fn->getArg(argSlot++);
+        cg.resources.acPtrs[v.name] = fn->getArg(argSlot++);
     }
     if (needsBufferSizeBuffer)
         cg.bufferSizePtr = fn->getArg(argSlot++);
@@ -16149,10 +15868,10 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         if (v.kind != VarSym::TEXTURE) continue;
         uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         if (v.opaqueType)
-            cg.samplerIRTypes[v.name] = v.opaqueType;
+            cg.resources.samplerIRTypes[v.name] = v.opaqueType;
         else {
             const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
-            if (ts) cg.samplerIRTypes[v.name] = ts->type;
+            if (ts) cg.resources.samplerIRTypes[v.name] = ts->type;
         }
         const MGLIRType *stBind = v.opaqueType;
         if (!stBind) {
@@ -16165,13 +15884,13 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             stBind && stBind->kind == MGLIR_TYPE_SAMPLER &&
             stBind->tex_kind == MGLIR_TEX_BUFFER;
         if (v.type.arr == 0) {
-            cg.texMetalIndex[v.name] = texLocRun;
-            cg.texValues[v.name] = fn->getArg(argSlot++);
+            cg.resources.texMetalIndex[v.name] = texLocRun;
+            cg.resources.texValues[v.name] = fn->getArg(argSlot++);
             if (!isBufTex)
-                cg.smpValues[v.name] = fn->getArg(argSlot++);
+                cg.resources.smpValues[v.name] = fn->getArg(argSlot++);
             texLocRun++;
         } else {
-            cg.texMetalIndex[v.name] = texLocRun;
+            cg.resources.texMetalIndex[v.name] = texLocRun;
             std::vector<llvm::Value *> texes, samplers;
             for (uint32_t k = 0; k < elements; k++) {
                 texes.push_back(fn->getArg(argSlot++));
@@ -16179,21 +15898,21 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                     samplers.push_back(fn->getArg(argSlot++));
                 texLocRun++;
             }
-            cg.texArrayValues[v.name] = std::move(texes);
+            cg.resources.texArrayValues[v.name] = std::move(texes);
             if (!isBufTex)
-                cg.smpArrayValues[v.name] = std::move(samplers);
+                cg.resources.smpArrayValues[v.name] = std::move(samplers);
         }
     }
     for (VarSym &v : syms) {
         if (v.kind != VarSym::IMAGE) continue;
         uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         if (v.type.arr == 0) {
-            cg.texValues[v.name] = fn->getArg(argSlot++);
+            cg.resources.texValues[v.name] = fn->getArg(argSlot++);
         } else {
             std::vector<llvm::Value *> texes;
             for (uint32_t k = 0; k < elements; k++)
                 texes.push_back(fn->getArg(argSlot++));
-            cg.texArrayValues[v.name] = std::move(texes);
+            cg.resources.texArrayValues[v.name] = std::move(texes);
         }
     }
     {
@@ -16204,13 +15923,13 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
             uint32_t nelems =
                 uniformBlockElementCount(us ? us->type : nullptr);
-            cg.ssboSlots[v.name] = location;
+            cg.resources.ssboSlots[v.name] = location;
             location += nelems;
         }
         location += uboCount;
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATOMIC_COUNTER) continue;
-            cg.acSlots[v.name] = location++;
+            cg.resources.acSlots[v.name] = location++;
         }
     }
     for (VarSym &v : syms) {
@@ -16728,9 +16447,9 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     if (isTESCompute)
         cg.patchPos = fn->getArg(argSlot++);
     if (needsSamplerWrapBuf)
-        cg.samplerWrapPtr = fn->getArg(argSlot++);
+        cg.resources.samplerWrapPtr = fn->getArg(argSlot++);
     if (needsLodBias)
-        cg.lodBiasPtr = fn->getArg(argSlot++);
+        cg.resources.lodBiasPtr = fn->getArg(argSlot++);
     if (isGS) {
         cg.geometryWorkItemId = cg.threadPos
             ? cg.b->CreateExtractElement(cg.threadPos, cg.b->getInt32(0))
@@ -16939,11 +16658,11 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         /* Hidden trailing arguments: UBO values (a pointer for a scalar block,
          * an aggregate of pointers for an instance array) and SSBO pointers,
          * so user functions can read global blocks of their own. */
-        for (const auto &kv : cg.uboPtrs)
+        for (const auto &kv : cg.resources.uboPtrs)
             pts.push_back(kv.second->getType());
-        for (const auto &kv : cg.ssboPtrs)
+        for (const auto &kv : cg.resources.ssboPtrs)
             pts.push_back(kv.second->getType());
-        for (const auto &kv : cg.acPtrs)
+        for (const auto &kv : cg.resources.acPtrs)
             pts.push_back(llvm::Type::getInt8PtrTy(ctx, 1));
         if (cg.bufferSizePtr)
             pts.push_back(llvm::Type::getInt32PtrTy(ctx, 2));
@@ -16972,14 +16691,14 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
          * Metal GS/TCS compute pipeline loader (materializeAll).  Regular
          * compute and raster stages accept them. */
         if (!isGS && !isTCS) {
-            for (const auto &kv : cg.texValues)
+            for (const auto &kv : cg.resources.texValues)
                 pts.push_back(kv.second->getType());
-            for (const auto &kv : cg.smpValues)
+            for (const auto &kv : cg.resources.smpValues)
                 pts.push_back(kv.second->getType());
-            for (const auto &kv : cg.texArrayValues)
+            for (const auto &kv : cg.resources.texArrayValues)
                 for (llvm::Value *tv : kv.second)
                     pts.push_back(tv->getType());
-            for (const auto &kv : cg.smpArrayValues)
+            for (const auto &kv : cg.resources.smpArrayValues)
                 for (llvm::Value *sv : kv.second)
                     pts.push_back(sv->getType());
         }
@@ -17061,13 +16780,13 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         fc.vertexId = cg.vertexId;
         fc.fragPos = cg.fragPos;
         fc.pointSize = cg.pointSize;
-        fc.ssboPtrs = cg.ssboPtrs;
-        fc.ssboSlots = cg.ssboSlots;
-        fc.ssboElemSlot = cg.ssboElemSlot;
-        fc.ssboElemArrTy = cg.ssboElemArrTy;
-        fc.acPtrs = cg.acPtrs;
-        fc.acSlots = cg.acSlots;
-        fc.uboPtrs = cg.uboPtrs;
+        fc.resources.ssboPtrs = cg.resources.ssboPtrs;
+        fc.resources.ssboSlots = cg.resources.ssboSlots;
+        fc.resources.ssboElemSlot = cg.resources.ssboElemSlot;
+        fc.resources.ssboElemArrTy = cg.resources.ssboElemArrTy;
+        fc.resources.acPtrs = cg.resources.acPtrs;
+        fc.resources.acSlots = cg.resources.acSlots;
+        fc.resources.uboPtrs = cg.resources.uboPtrs;
         /* tex/smp/outPtrs rebound from hidden args below — do not copy
          * main's Argument* values (illegal cross-function use). */
         fc.bufferOffsets = cg.bufferOffsets;
@@ -17105,32 +16824,32 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         }
         {
             uint32_t hidx = (uint32_t)d->param_count;
-            for (const auto &kv : cg.uboPtrs) {
+            for (const auto &kv : cg.resources.uboPtrs) {
                 llvm::Value *value = f->getArg(hidx++);
-                fc.uboPtrs[kv.first] = value;
+                fc.resources.uboPtrs[kv.first] = value;
                 if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
                         value->getType())) {
                     llvm::Value *slot = fb.CreateAlloca(
                         arrTy, nullptr, kv.first + "_elems");
                     fb.CreateStore(value, slot);
-                    fc.uboElemSlot[kv.first] = slot;
-                    fc.uboElemArrTy[kv.first] = arrTy;
+                    fc.resources.uboElemSlot[kv.first] = slot;
+                    fc.resources.uboElemArrTy[kv.first] = arrTy;
                 }
             }
-            for (const auto &kv : cg.ssboPtrs) {
+            for (const auto &kv : cg.resources.ssboPtrs) {
                 llvm::Value *value = f->getArg(hidx++);
-                fc.ssboPtrs[kv.first] = value;
+                fc.resources.ssboPtrs[kv.first] = value;
                 if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
                         value->getType())) {
                     llvm::Value *slot = fb.CreateAlloca(
                         arrTy, nullptr, kv.first + "_elems");
                     fb.CreateStore(value, slot);
-                    fc.ssboElemSlot[kv.first] = slot;
-                    fc.ssboElemArrTy[kv.first] = arrTy;
+                    fc.resources.ssboElemSlot[kv.first] = slot;
+                    fc.resources.ssboElemArrTy[kv.first] = arrTy;
                 }
             }
-            for (const auto &kv : cg.acPtrs)
-                fc.acPtrs[kv.first] = f->getArg(hidx++);
+            for (const auto &kv : cg.resources.acPtrs)
+                fc.resources.acPtrs[kv.first] = f->getArg(hidx++);
             if (cg.bufferSizePtr)
                 fc.bufferSizePtr = f->getArg(hidx++);
             if (cg.userFnPassCull)
@@ -17157,26 +16876,26 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             }
             if (isCompute && cg.threadPos)
                 fc.threadPos = f->getArg(hidx++);
-            fc.texValues.clear();
-            fc.smpValues.clear();
-            fc.texArrayValues.clear();
-            fc.smpArrayValues.clear();
+            fc.resources.texValues.clear();
+            fc.resources.smpValues.clear();
+            fc.resources.texArrayValues.clear();
+            fc.resources.smpArrayValues.clear();
             if (!isGS && !isTCS) {
-                for (const auto &kv : cg.texValues)
-                    fc.texValues[kv.first] = f->getArg(hidx++);
-                for (const auto &kv : cg.smpValues)
-                    fc.smpValues[kv.first] = f->getArg(hidx++);
-                for (const auto &kv : cg.texArrayValues) {
+                for (const auto &kv : cg.resources.texValues)
+                    fc.resources.texValues[kv.first] = f->getArg(hidx++);
+                for (const auto &kv : cg.resources.smpValues)
+                    fc.resources.smpValues[kv.first] = f->getArg(hidx++);
+                for (const auto &kv : cg.resources.texArrayValues) {
                     std::vector<llvm::Value *> texes;
                     for (size_t ti = 0; ti < kv.second.size(); ti++)
                         texes.push_back(f->getArg(hidx++));
-                    fc.texArrayValues[kv.first] = std::move(texes);
+                    fc.resources.texArrayValues[kv.first] = std::move(texes);
                 }
-                for (const auto &kv : cg.smpArrayValues) {
+                for (const auto &kv : cg.resources.smpArrayValues) {
                     std::vector<llvm::Value *> smps;
                     for (size_t si = 0; si < kv.second.size(); si++)
                         smps.push_back(f->getArg(hidx++));
-                    fc.smpArrayValues[kv.first] = std::move(smps);
+                    fc.resources.smpArrayValues[kv.first] = std::move(smps);
                 }
             }
             if (cg.bufferPtr)

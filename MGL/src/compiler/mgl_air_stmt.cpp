@@ -77,8 +77,8 @@ static bool terminatorLeavesHelper(Codegen &cg, llvm::Instruction *term)
 {
     if (!term) return false;
     if (llvm::isa<llvm::ReturnInst>(term)) return true;
-    if (cg.inlineExitBB && term->getNumSuccessors() == 1 &&
-        term->getSuccessor(0) == cg.inlineExitBB)
+    if (cg.inlining.inlineExitBB && term->getNumSuccessors() == 1 &&
+        term->getSuccessor(0) == cg.inlining.inlineExitBB)
         return true;
     return false;
 }
@@ -194,7 +194,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         break;
     }
     case MGL_STMT_RETURN: {
-        if (cg.inliningHelper) {
+        if (cg.inlining.inliningHelper) {
             /* Join every inlined return at one exit block so a switch/if
              * of `return expr;` yields a dominating phi, not a sibling-BB
              * SSA use (poison / 0 on Metal). */
@@ -204,23 +204,23 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                 if (!v) return;
             }
             llvm::BasicBlock *here = cg.b->GetInsertBlock();
-            if (!cg.inlineExitBB)
-                cg.inlineExitBB =
+            if (!cg.inlining.inlineExitBB)
+                cg.inlining.inlineExitBB =
                     llvm::BasicBlock::Create(*cg.ctx, "inline.ret", cg.fn);
             if (v) {
-                if (!cg.inlineRetPhi) {
-                    cg.inlineRetPhi = llvm::PHINode::Create(
-                        v->getType(), 4u, "inline.rval", cg.inlineExitBB);
+                if (!cg.inlining.inlineRetPhi) {
+                    cg.inlining.inlineRetPhi = llvm::PHINode::Create(
+                        v->getType(), 4u, "inline.rval", cg.inlining.inlineExitBB);
                 }
-                cg.inlineRetPhi->addIncoming(v, here);
-                cg.inlineRetVal = cg.inlineRetPhi;
+                cg.inlining.inlineRetPhi->addIncoming(v, here);
+                cg.inlining.inlineRetVal = cg.inlining.inlineRetPhi;
             }
             /* Snapshot the live values on this return edge.  The inline exit
              * may join edges from inside a nested loop/if, where a merged
              * value does not dominate the exit; the caller turns these
              * snapshots into phis at inlineExitBB. */
-            cg.inlineExitSnaps.push_back({here, cg.lvalues});
-            cg.b->CreateBr(cg.inlineExitBB);
+            cg.inlining.inlineExitSnaps.push_back({here, cg.lvalues});
+            cg.b->CreateBr(cg.inlining.inlineExitBB);
             cg.err = 2;
             break;
         }
@@ -509,7 +509,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
          * break jumps to the merge block carrying a value snapshot;
          * continue jumps to the incr/merge block (values merge there with
          * the body tail before the condition phi sees them).  Nested
-         * loops are handled through cg.loopStack. */
+         * loops are handled through cg.controlFlow. */
         LoopCtx lc;
         std::vector<std::string> names;
         for (auto &kv : cg.lvalues) names.push_back(kv.first);
@@ -559,9 +559,8 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             }
         }
 
-        cg.loopStack.push_back(&lc);
         BreakCtx brk{bbEnd, {}};
-        cg.breakStack.push_back(&brk);
+        cg.controlFlow.pushLoop(&lc, &brk);
         if (st->kind == MGL_STMT_DO_WHILE) {
             emitStmt(cg, st->u.whilex.body, mod, locals, deps);
             if (cg.err == 1) return;
@@ -680,8 +679,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             cg.b->CreateBr(bbCond);
             }
         }
-        cg.loopStack.pop_back();
-        cg.breakStack.pop_back();
+        cg.controlFlow.popLoop();
 
         cg.b->SetInsertPoint(bbEnd);
         for (auto &n : names) {
@@ -770,7 +768,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                 llvm::BasicBlock::Create(*cg.ctx, "switch.case", cg.fn);
 
         BreakCtx brk{bbEnd, {}};
-        cg.breakStack.push_back(&brk);
+        cg.controlFlow.pushBreak(&brk);
 
         /* Constant condition: emit only the matching segment (or the
          * default) and its fall-through chain; unselected segment entry
@@ -838,7 +836,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                 cg.b->CreateUnreachable();
                 cg.b->SetInsertPoint(ip);
             }
-            cg.breakStack.pop_back();
+            cg.controlFlow.popBreak();
             if (switchExitUnreachable(bbEnd)) {
                 /* Every segment returned: code after the switch cannot run, so
                  * keep the running values instead of merging.  bbEnd is still
@@ -970,7 +968,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                 }
             }
         }
-        cg.breakStack.pop_back();
+        cg.controlFlow.popBreak();
 
         if (switchExitUnreachable(bbEnd)) {
             /* Every segment returned: see the constant-condition path above
@@ -1029,24 +1027,24 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
     case MGL_STMT_BREAK:
     case MGL_STMT_CONTINUE: {
         if (st->kind == MGL_STMT_BREAK) {
-            if (cg.breakStack.empty()) {
+            BreakCtx *bc = cg.controlFlow.currentBreak();
+            if (!bc) {
                 cg.err = 1;
                 cg.errmsg = "codegen: break outside of a loop or switch";
                 return;
             }
-            BreakCtx *bc = cg.breakStack.back();
             std::map<std::string, llvm::Value *> snapB;
             for (auto &kv : cg.lvalues)
                 snapB[kv.first] = kv.second;
             bc->snaps.push_back({cg.b->GetInsertBlock(), snapB});
             cg.b->CreateBr(bc->endBB);
         } else {
-            if (cg.loopStack.empty()) {
+            LoopCtx *lc = cg.controlFlow.currentLoop();
+            if (!lc) {
                 cg.err = 1;
                 cg.errmsg = "codegen: continue outside of a loop";
                 return;
             }
-            LoopCtx *lc = cg.loopStack.back();
             if (lc->incrBB) {
                 std::map<std::string, llvm::Value *> snap;
                 for (auto &kv : lc->phis)
