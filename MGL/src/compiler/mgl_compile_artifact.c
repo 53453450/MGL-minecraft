@@ -83,6 +83,18 @@ int mglCompileArtifactCanReuseAtLink(const MGLCompileArtifact *art,
     return 1;
 }
 
+int mglCompileArtifactFromPlan(const MGLCompilePlan *plan,
+                               MGLCompileArtifact *art_out,
+                               char *err_buf, size_t err_cap)
+{
+    if (!plan) {
+        return -1;
+    }
+    return mglCompileArtifactFromGLSLEx(
+        plan->source, plan->stage, plan->attrib_names, plan->air_flags,
+        plan->iface_peers, plan->tess_patch_vertices, art_out, err_buf, err_cap);
+}
+
 int mglCompileArtifactFromGLSLEx(const char *src, int stage,
                                  const char *const *attrib_names,
                                  uint32_t air_flags,

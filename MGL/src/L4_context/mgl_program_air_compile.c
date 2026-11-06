@@ -52,6 +52,7 @@
 #include "mgl_buffer_plan.h"
 #include "mgl_shader_resource.h"
 #include "mgl_compile_artifact.h"
+#include "mgl_compile_plan.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_api_program.h"
@@ -172,20 +173,20 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
                 ? pptr->tess_control_output_vertices
                 : 3u;
     }
-    uint32_t air_flags =
-        pptr->shader_slots[_GEOMETRY_SHADER] ? MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER : 0u;
+    MGLCompilePlan plan;
+    mglCompilePlanInit(&plan, compile_src, air_stage, attrib_snapshot);
+    plan.tess_patch_vertices = stage_info.tess_patch_vertices;
     if (attached_count > 1u) {
-        air_flags |= MGL_AIR_COMPILE_STAGE_LINK_MERGE;
+        plan.air_flags |= MGL_AIR_COMPILE_STAGE_LINK_MERGE;
     }
-    /* Bake current ClipControl depth mode into raster VS/TES epilogues so
-     * ZERO_TO_ONE skips the Metal [-1,1]→[0,1] remap (CTS sets ClipControl
-     * before linking the probe program). */
-    if (ctx && ctx->active_state &&
-        STATE(var).clip_depth_mode == GL_ZERO_TO_ONE &&
-        (stage == _VERTEX_SHADER || stage == _TESS_EVALUATION_SHADER ||
-         stage == _GEOMETRY_SHADER)) {
-        air_flags |= MGL_AIR_COMPILE_CLIP_DEPTH_ZERO_TO_ONE;
-    }
+    mglCompilePlanApplyRasterVariant(
+        &plan, stage, pptr->shader_slots[_GEOMETRY_SHADER] != NULL,
+        pptr->program_separable != GL_FALSE,
+        pptr->tess_eval_compute != GL_FALSE,
+        pptr->tess_eval_render_vertex != GL_FALSE,
+        ctx && ctx->active_state &&
+            STATE(var).clip_depth_mode == GL_ZERO_TO_ONE,
+        pptr->clip_distance_count);
     /* Native post-tessellation feeds FS directly: it cannot insert a GS
      * between TES and FS, and cannot feed transform feedback.  Force the
      * compute expansion path for triangles/quads (same as isolines /
@@ -193,7 +194,7 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     if (stage == _TESS_EVALUATION_SHADER &&
         (pptr->transform_feedback_varying_count > 0 ||
          pptr->shader_slots[_GEOMETRY_SHADER])) {
-        air_flags |= MGL_AIR_COMPILE_FORCE_TES_COMPUTE;
+        plan.air_flags |= MGL_AIR_COMPILE_FORCE_TES_COMPUTE;
     }
     /* Isolines / point_mode without XFB or a GS rasterize the expanded
      * stream directly through a render vertex function.  The default-on
@@ -213,7 +214,7 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->transform_feedback_varying_count == 0 &&
         !pptr->shader_slots[_GEOMETRY_SHADER] &&
         mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER")) {
-        air_flags |= MGL_AIR_COMPILE_TES_VERTEX;
+        plan.air_flags |= MGL_AIR_COMPILE_TES_VERTEX;
     }
     /* TES-compute and TES-vertex (isolines / point_mode) both tag outs as
      * mgl_loc_N — same ABI as the GS passthrough.  Without this flag the FS
@@ -227,20 +228,6 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
      * passthrough (or TES-vertex) which emits mgl_loc_N.  Tag separable
      * VS outs and FS ins the same way so Metal can pair them
      * (shader_subroutine.subroutines_with_separate_shader_objects). */
-    if (stage == _FRAGMENT_SHADER &&
-        !pptr->shader_slots[_GEOMETRY_SHADER] &&
-        (pptr->tess_eval_compute || pptr->tess_eval_render_vertex ||
-         pptr->program_separable)) {
-        air_flags |= MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER;
-    }
-    if (stage == _VERTEX_SHADER && pptr->program_separable &&
-        !pptr->shader_slots[_GEOMETRY_SHADER]) {
-        air_flags |= MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER;
-    }
-    /* VS compiles first in this loop, so clip_distance_count is already
-     * known.  Pair the FS with interpolated clip varyings + discard. */
-    if (stage == _FRAGMENT_SHADER && pptr->clip_distance_count > 0u)
-        air_flags |= MGL_AIR_COMPILE_FS_CLIP_INTERP;
     /* When a GS is present, FS mgl_loc_N tags must follow GS output
      * locations (passthrough VS).  Remap by name at compile time.
      * TES-compute / TES-vertex (no GS) remap FS inputs to TES outs the same
@@ -267,10 +254,11 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         iface_peers =
             &pptr->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES];
     }
+    plan.iface_peers = iface_peers;
     int air_rc;
-    if (mglCompileArtifactCanReuseAtLink(shader->cached_artifact, air_stage,
-                                         air_flags, iface_peers,
-                                         attrib_snapshot)) {
+    if (mglCompileArtifactCanReuseAtLink(shader->cached_artifact, plan.stage,
+                                         plan.air_flags, plan.iface_peers,
+                                         plan.attrib_names)) {
         /* R2: adopt glCompileShader CompileArtifact — skip second parse/codegen. */
         MGLCompileArtifact *cached = shader->cached_artifact;
         bytes = cached->metallib_bytes;
@@ -291,12 +279,7 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
          * CompileArtifact.complete so link never binds a half-built executable. */
         MGLCompileArtifact art;
         mglCompileArtifactInit(&art);
-        air_rc = mglCompileArtifactFromGLSLEx(compile_src, air_stage,
-                                              attrib_snapshot, air_flags,
-                                              iface_peers,
-                                              stage_info.tess_patch_vertices,
-                                              &art, err,
-                                              sizeof err);
+        air_rc = mglCompileArtifactFromPlan(&plan, &art, err, sizeof err);
         if (air_rc == 0 && art.complete) {
             bytes = art.metallib_bytes;
             size = art.metallib_size;
@@ -311,7 +294,7 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             mglCompileArtifactDestroy(&art);
             if (shader->frontend_valid &&
                 shader->frontend_stage == air_stage &&
-                air_flags == 0u && iface_peers == NULL) {
+                plan.air_flags == 0u && iface_peers == NULL) {
                 mglCompileFrontendNoteReuse();
             }
         } else {
@@ -433,15 +416,13 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->transform_feedback_varying_count == 0 &&
         !pptr->shader_slots[_GEOMETRY_SHADER] &&
         mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER")) {
-        uint32_t compute_flags =
-            air_flags & (uint32_t)(~MGL_AIR_COMPILE_TES_VERTEX);
+        MGLCompilePlan compute_plan = plan;
+        compute_plan.air_flags &= (uint32_t)(~MGL_AIR_COMPILE_TES_VERTEX);
         MGLCompileArtifact compute_art;
         mglCompileArtifactInit(&compute_art);
         char compute_err[512] = {0};
-        int compute_rc = mglCompileArtifactFromGLSLEx(
-            compile_src, air_stage, attrib_snapshot, compute_flags,
-            iface_peers, stage_info.tess_patch_vertices, &compute_art,
-            compute_err, sizeof compute_err);
+        int compute_rc = mglCompileArtifactFromPlan(
+            &compute_plan, &compute_art, compute_err, sizeof compute_err);
         if (compute_rc == 0 && compute_art.complete) {
             mglRenderProgramSetModuleTesComputeMetallib(
                 pptr, stage, compute_art.metallib_bytes,

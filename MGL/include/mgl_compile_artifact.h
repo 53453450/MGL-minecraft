@@ -14,6 +14,7 @@
 
 #include "mgl_shader_abi.h"
 #include "mgl_types_program.h"
+#include "mgl_compile_plan.h"
 
 struct MGLTranslationUnit;
 typedef struct MGLTranslationUnit MGLTranslationUnit;
@@ -94,6 +95,9 @@ void mglCompileArtifactFree(MGLCompileArtifact *art);
  * size the per-patch control-point offset -- so it has to be passed in, not
  * recovered from reflection afterwards.  0 means "unspecified" and keeps the
  * GL default of 3. */
+int mglCompileArtifactFromPlan(const MGLCompilePlan *plan,
+                               MGLCompileArtifact *art_out,
+                               char *err_buf, size_t err_cap);
 int mglCompileArtifactFromGLSLEx(const char *src, int stage,
                                  const char *const *attrib_names,
                                  uint32_t air_flags,
