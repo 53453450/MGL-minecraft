@@ -820,12 +820,7 @@ uint32_t mglRenderIntegerAttribConversionFormat(
         return static_cast<uint32_t>(MTL::VertexFormatInvalid);
     }
 
-    const bool src_narrow = src_kind == MGL_VFETCH_KIND_S8 ||
-                            src_kind == MGL_VFETCH_KIND_U8 ||
-                            src_kind == MGL_VFETCH_KIND_S16 ||
-                            src_kind == MGL_VFETCH_KIND_U16;
-    if (!src_narrow &&
-        !((shader_is_int && src_is_unsigned) ||
+    if (!((shader_is_int && src_is_unsigned) ||
           (shader_is_uint && src_is_signed))) {
         return static_cast<uint32_t>(MTL::VertexFormatInvalid);
     }

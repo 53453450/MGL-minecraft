@@ -62,7 +62,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 232
+#define MAX_TESTS 233
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -24977,6 +24977,117 @@ static int xfb_atomic_counter_case(const char *label, const char *vs,
     return fail;
 }
 
+/* 8/16-bit glVertexAttribIPointer inputs at nonzero buffer offsets in a
+ * stride-32 interleaved buffer reach uvec/ivec inputs zero- or
+ * sign-extended (GL 4.6 §10.2.1), including after a glBufferSubData. */
+static int test_narrow_integer_attribs(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    enum { N = 4, STRIDE = 32 };
+    static const char *vs =
+        "#version 330 core\n"
+        "layout(location = 0) in uvec2 a_u16;\n"
+        "layout(location = 1) in uvec4 a_u8;\n"
+        "layout(location = 2) in ivec2 a_s16;\n"
+        "flat out uvec4 o_a;\n"
+        "flat out uvec4 o_b;\n"
+        "void main() {\n"
+        "  o_a = uvec4(a_u16, a_u8.xy);\n"
+        "  o_b = uvec4(a_u8.zw, uvec2(a_s16));\n"
+        "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+    static const char *varyings[2] = { "o_a", "o_b" };
+    GLuint sh = compile_shader(GL_VERTEX_SHADER, vs);
+    GLuint prog = glCreateProgram();
+    if (!sh || !prog) return 1;
+    glAttachShader(prog, sh);
+    glTransformFeedbackVaryings(prog, 2, varyings, GL_INTERLEAVED_ATTRIBS);
+    glLinkProgram(prog);
+    glDeleteShader(sh);
+    GLint ok = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        fprintf(stderr, "narrow_integer_attribs: link failed\n");
+        glDeleteProgram(prog);
+        return 1;
+    }
+
+    unsigned char data[N * STRIDE];
+    memset(data, 0xCD, sizeof(data));
+    GLuint want[N][8];
+    for (int v = 0; v < N; v++) {
+        unsigned char *p = data + v * STRIDE;
+        const unsigned short u16[2] = { (unsigned short)(0xFFF0u - v),
+                                        (unsigned short)(40000u + v) };
+        const unsigned char u8[4] = { (unsigned char)(200 + v), 255, 1,
+                                      (unsigned char)(128 + v) };
+        const short s16[2] = { (short)(-2 - v), (short)(-30000 + v) };
+        memcpy(p + 12, u16, 4);
+        memcpy(p + 16, u8, 4);
+        memcpy(p + 20, s16, 4);
+        const GLuint w[8] = { u16[0], u16[1], u8[0], u8[1],
+                              u8[2], u8[3], (GLuint)(GLint)s16[0],
+                              (GLuint)(GLint)s16[1] };
+        memcpy(want[v], w, sizeof(w));
+    }
+
+    GLuint vao = 0, vbo = 0, xfb = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(data), data, GL_DYNAMIC_DRAW);
+    glVertexAttribIPointer(0, 2, GL_UNSIGNED_SHORT, STRIDE, (const void *)12);
+    glVertexAttribIPointer(1, 4, GL_UNSIGNED_BYTE, STRIDE, (const void *)16);
+    glVertexAttribIPointer(2, 2, GL_SHORT, STRIDE, (const void *)20);
+    for (GLuint i = 0; i < 3; i++) glEnableVertexAttribArray(i);
+    glGenBuffers(1, &xfb);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, xfb);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, sizeof(want), NULL, GL_STREAM_COPY);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, xfb);
+    glUseProgram(prog);
+    glEnable(GL_RASTERIZER_DISCARD);
+
+    int fail = 0;
+    for (int pass = 0; pass < 2 && !fail; pass++) {
+        if (pass == 1) {
+            const unsigned short u16 = 7u;
+            memcpy(data + 2 * STRIDE + 12, &u16, 2);
+            glBufferSubData(GL_ARRAY_BUFFER, 2 * STRIDE + 12, 2, &u16);
+            want[2][0] = 7u;
+        }
+        glBeginTransformFeedback(GL_POINTS);
+        glDrawArrays(GL_POINTS, 0, N);
+        glEndTransformFeedback();
+        glFinish();
+        GLuint got[N][8];
+        memset(got, 0, sizeof(got));
+        glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(got), got);
+        for (int v = 0; v < N && !fail; v++) {
+            for (int c = 0; c < 8; c++) {
+                if (got[v][c] != want[v][c]) {
+                    fprintf(stderr,
+                            "narrow_integer_attribs: pass %d v%d c%d = 0x%x want 0x%x\n",
+                            pass, v, c, got[v][c], want[v][c]);
+                    fail = 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    glDisable(GL_RASTERIZER_DISCARD);
+    glUseProgram(0);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, 0);
+    glDeleteBuffers(1, &xfb);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
 static int test_xfb_atomic_counters(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -31174,6 +31285,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("large_uniform_array", test_large_uniform_array),
     SELF_CHECK_TEST("high_uniform_location", test_high_uniform_location),
     SELF_CHECK_TEST("xfb_atomic_counters", test_xfb_atomic_counters),
+    SELF_CHECK_TEST("narrow_integer_attribs", test_narrow_integer_attribs),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
     SELF_CHECK_TEST("depth_blit_orientation", test_depth_blit_orientation),

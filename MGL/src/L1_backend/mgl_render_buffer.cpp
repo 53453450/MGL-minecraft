@@ -707,6 +707,42 @@ Buffer* mglRenderAcquirePackedStructBuffer(const void* data,
 
     const size_t paddedSize =
         std::max(size, mgl::kMinimumStageBindingSize);
+
+    /* Must not exceed the stage-binding byte scratch (4096) so the uniform
+     * constant inline plan binds these with set*Bytes instead of a buffer. */
+    constexpr size_t kPackedStructInlineMax = 4096u;
+    if (paddedSize <= kPackedStructInlineMax) {
+        const size_t index = renderer.packedStructBufferIndex;
+        Buffer*& slot = renderer.packedStructBuffers[index];
+        if (!slot) {
+            slot = mglBufferTransientCreate(0xF0000000u |
+                                            static_cast<GLuint>(index));
+        }
+        void*& cpu = renderer.packedStructCpu[index];
+        if (!cpu) {
+            cpu = std::malloc(kPackedStructInlineMax);
+        }
+        if (!slot || !cpu) {
+            if (err && errcap) {
+                snprintf(err, errcap,
+                         "packed struct CPU storage allocation failed");
+            }
+            return nullptr;
+        }
+        std::memcpy(cpu, data, size);
+        if (paddedSize > size) {
+            std::memset(static_cast<uint8_t*>(cpu) + size, 0,
+                        paddedSize - size);
+        }
+        void* previousStore =
+            mglBufferTransientAdopt(slot, nullptr, paddedSize);
+        mgl::releaseBridgedObject(&previousStore);
+        slot->data.buffer_data = reinterpret_cast<vm_address_t>(cpu);
+        renderer.packedStructBufferIndex =
+            (index + 1) % mgl::kPackedStructBufferCapacity;
+        return slot;
+    }
+
     MTL::Buffer* metalBuffer = renderer.device->newBuffer(
         static_cast<NS::UInteger>(paddedSize),
         MTL::ResourceStorageModeShared);

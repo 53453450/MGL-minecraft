@@ -731,6 +731,9 @@ struct Renderer {
     static constexpr size_t kConvertedFreelistMax = 48u;
     std::vector<MTL::Buffer*> convertedBufferFreelist;
     std::array<Buffer*, kPackedStructBufferCapacity> packedStructBuffers{};
+    /* CPU copies for packed structs small enough for set*Bytes; reused per
+     * slot so the inline path needs no Metal allocation. */
+    std::array<void*, kPackedStructBufferCapacity> packedStructCpu{};
     size_t packedStructBufferIndex = 0;
     std::set<BindingState*> bindingStates;
     /* Shared queues for sparse Map/Unmap/clear — avoid newCommandQueue per
@@ -1144,6 +1147,10 @@ inline void releasePackedStructBuffers(Renderer& renderer) {
         releaseBridgedObject(&mglBufferBackendEnsure(buffer)->mtl_data);
         std::free(buffer);
         buffer = nullptr;
+    }
+    for (size_t i = 0; i < kPackedStructBufferCapacity; ++i) {
+        std::free(renderer.packedStructCpu[i]);
+        renderer.packedStructCpu[i] = nullptr;
     }
     renderer.packedStructBufferIndex = 0;
 }
