@@ -54,6 +54,7 @@ enum {
     MGL_PD_STORAGE_PRIVATE = 2u,
     MGL_PD_PIXEL_FORMAT_INVALID = 0u,
     MGL_PD_DEPTH32_FLOAT = 252u,
+    MGL_PD_LOAD_DONTCARE = 0u,
     MGL_PD_LOAD_LOAD = 1u,
     MGL_PD_STORE_STORE = 1u,
     MGL_PD_PRIMITIVE_TRIANGLE_STRIP = 4u,
@@ -552,7 +553,23 @@ static void mglPdClearRectDraw(void *renderer, GLMContext glm_ctx,
         }
     }
 
+    /* Full-RT clear: previous Store of those attachments is wasted, and the
+     * dedicated clear encoder need not Load prior tiles. Partial/scissored
+     * clears still Load+Store so sibling regions survive. */
+    const int fullCoverage =
+        (x0 == 0 && metalY == 0 && clearW == (GLint)passWidth &&
+         clearH == (GLint)passHeight);
+    /* DontCare is only legal when the clear writes EVERY channel of the whole
+     * attachment.  A partial glColorMaski must preserve the channels it does
+     * not write (GL 4.6 §17.4.3); a dedicated encoder that loads DontCare
+     * would leave them undefined.  Packed depth-stencil is excluded too —
+     * see the depth/stencil load actions below. */
+    const int discardEligible =
+        fullCoverage && wantsColor &&
+        color->write_mask == (uint32_t)MGLColorWriteMaskAll;
+
     if (canReuseCurrentEncoder) {
+        MGL_PERF_INC(g_mglClearEncoderReuseSinceSwap);
         /* areas->binding_state_owner is the ADDRESS of the owner slot (see
          * mgl_renderer_ports.h); every binding call needs the handle.  The .m
          * this path came from passed the ivar itself. */
@@ -601,7 +618,62 @@ static void mglPdClearRectDraw(void *renderer, GLMContext glm_ctx,
     } else {
         /* Fallback: end the current encoder and create a dedicated clear
          * encoder. */
+        MGL_PERF_INC(g_mglClearEncoderFallbackSinceSwap);
+        if (discardEligible) {
+            MGL_PERF_INC(g_mglClearFullCoverageDiscardSinceSwap);
+        }
+        /* Full-coverage color clear: drop Store on the single color slot this
+         * clear overwrites.  Depth/stencil are deliberately NOT discarded —
+         * a packed depth-stencil texture can be attached while only one of
+         * its channels is cleared, and DontCare would destroy the other.
+         *
+         * Store actions live in persistent pass state.  Save and restore the
+         * modified slot right after ending the encoder; otherwise a later pass
+         * whose plan only resets load_action would inherit DontCare. */
+        int savedColorSlotValid = 0;
+        uint64_t savedColorSlot = 0u;
+        uint32_t savedColorLoad = 0u;
+        uint32_t savedColorStore = 0u;
+        uint64_t savedColorOpts = 0u;
+        if (discardEligible && colorTexture &&
+            commandState->renderPassStateOwner &&
+            mglRenderEncoderOwnerHasCurrent(
+                commandState->currentRenderEncoderOwner) == 1) {
+            for (uint64_t slot = 0u; slot < MAX_COLOR_ATTACHMENTS; slot++) {
+                void *passTex = mglRenderGetRenderPassAttachmentTextureOwner(
+                    commandState->renderPassStateOwner,
+                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, slot);
+                if (passTex != colorTexture) {
+                    continue;
+                }
+                uint32_t load_action = 0u;
+                uint32_t store_action = 0u;
+                uint64_t store_opts = 0u;
+                if (mglRenderGetRenderPassAttachmentActionsOwner(
+                        commandState->renderPassStateOwner,
+                        MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, slot,
+                        &load_action, &store_action, &store_opts) == 0) {
+                    savedColorSlotValid = 1;
+                    savedColorSlot = slot;
+                    savedColorLoad = load_action;
+                    savedColorStore = store_action;
+                    savedColorOpts = store_opts;
+                    (void)mglRenderSetRenderPassStateAttachmentActions(
+                        commandState->renderPassStateOwner,
+                        MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, slot,
+                        load_action, (uint32_t)MGLStoreActionDontCare,
+                        store_opts);
+                }
+                break;
+            }
+        }
         mglRendererEndRenderEncodingLocked(renderer);
+        if (savedColorSlotValid) {
+            (void)mglRenderSetRenderPassStateAttachmentActions(
+                commandState->renderPassStateOwner,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, savedColorSlot,
+                savedColorLoad, savedColorStore, savedColorOpts);
+        }
         MGLRenderCommandBufferState clearCommandState = {0};
         if (!mglRenderCommandBufferOwnerHasState(
                 commandState->currentCommandBufferOwner, &clearCommandState) &&
@@ -621,6 +693,11 @@ static void mglPdClearRectDraw(void *renderer, GLMContext glm_ctx,
             }
         }
 
+        /* Only the color attachment may use DontCare.  Depth/stencil must
+         * Load: Metal requires identical actions when both share one packed
+         * texture, and a scissored clear can target just one channel. */
+        const uint32_t colorClearLoad =
+            discardEligible ? MGL_PD_LOAD_DONTCARE : MGL_PD_LOAD_LOAD;
         MGLRenderPassState clearState = {0};
         if (colorTexture) {
             clearState.color[0].attachment.texture = colorTexture;
@@ -628,7 +705,7 @@ static void mglPdClearRectDraw(void *renderer, GLMContext glm_ctx,
             clearState.color[0].attachment.slice = color->subresource.slice;
             clearState.color[0].attachment.depth_plane =
                 color->subresource.depthPlane;
-            clearState.color[0].attachment.load_action = MGL_PD_LOAD_LOAD;
+            clearState.color[0].attachment.load_action = colorClearLoad;
             clearState.color[0].attachment.store_action = MGL_PD_STORE_STORE;
         }
         if (depthTexture) {
@@ -957,8 +1034,12 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
 
     const int scissored = glState->caps.scissor_test != 0;
     if (!scissored && !(flags & MGL_RENDERER_CLEAR_MASKED)) {
+        /* Keep the immediate-clear path conservative.  An earlier attempt to
+         * rewrite Store to DontCare here also hit attachments this clear does
+         * not touch (glClearBufferfv clears a single draw buffer), and the
+         * rewrite could leak into a later pass through persistent pass state.
+         * The dedicated clear encoder created below performs the clear. */
         mglRendererEndRenderEncodingLocked(renderer);
-
         MGLRenderCommandBufferState clearCommandState = {0};
         if (!mglRenderCommandBufferOwnerHasState(
                 commandState->currentCommandBufferOwner,

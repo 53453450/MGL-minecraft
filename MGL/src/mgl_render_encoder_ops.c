@@ -653,6 +653,27 @@ void mglRenderPassEnsureTransientDepthForDefaultFramebuffer(void *renderer)
     }
 }
 
+void mglRenderPassMarkAttachmentContentsUndefined(Texture *texture)
+{
+    /* rt_frame_generation is per-Texture, not per-level/layer.  Resetting it
+     * on a multi-level texture would let a later pass treat an unrelated mip
+     * as first-use and DontCare-load it. */
+    if (texture && texture->num_levels <= 1) {
+        mglTextureSetRtGeneration(texture, 0u);
+    }
+}
+
+static void mglCountLoadAction(uint32_t load_action)
+{
+    if (load_action == (uint32_t)MGLLoadActionClear) {
+        MGL_PERF_INC(g_mglLoadActionClearSinceSwap);
+    } else if (load_action == (uint32_t)MGLLoadActionDontCare) {
+        MGL_PERF_INC(g_mglLoadActionDontCareSinceSwap);
+    } else {
+        MGL_PERF_INC(g_mglLoadActionLoadSinceSwap);
+    }
+}
+
 /* -configureUserFBOLoadStoreActionsLocked:fboColorClearMask:
  *  fboColorAttachment0ClearMask: */
 void mglRenderPassConfigureUserFBOLoadStoreActions(
@@ -685,6 +706,7 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
             mglPdSetPersistentLoadAction(
                 commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
                 colorSlot, MGLLoadActionLoad);
+            mglCountLoadAction(MGLLoadActionLoad);
             continue;
         }
 
@@ -726,6 +748,7 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
             mglPdSetPersistentLoadAction(
                 commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
                 colorSlot, MGLLoadActionLoad);
+            mglCountLoadAction(MGLLoadActionLoad);
             continue;
         }
         if (loadStorePlan.load_action == MGLLoadActionClear) {
@@ -763,6 +786,7 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
                 colorSlot, loadStorePlan.load_action,
                 loadStorePlan.set_store_action ? loadStorePlan.store_action
                                                : MGLStoreActionStore);
+            mglCountLoadAction(loadStorePlan.load_action);
 
             /* Emulated MS stores sample planes as texture2d_array slices;
              * LoadActionClear only hits the attached base slice.  Clear the
@@ -804,6 +828,7 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
             mglPdSetPersistentLoadAction(
                 commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
                 colorSlot, loadStorePlan.load_action);
+            mglCountLoadAction(loadStorePlan.load_action);
         }
     }
 
@@ -833,6 +858,7 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
         mglPdSetPersistentActions(commandState,
                                   MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                                   depthPlan.load_action, depthPlan.store_action);
+        mglCountLoadAction(depthPlan.load_action);
         fbo->depth.clear_bitmask = (GLbitfield)mglRenderClearMaskClearDepth(
             (uint32_t)fbo->depth.clear_bitmask);
         mglMarkTextureLevelRenderTargetWrittenImpl(
@@ -842,6 +868,7 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
         mglPdSetPersistentLoadAction(commandState,
                                      MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                                      depthPlan.load_action);
+        mglCountLoadAction(depthPlan.load_action);
         if (depthPlan.set_store_action) {
             mglPdSetPersistentStoreAction(
                 commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,

@@ -212,6 +212,13 @@ _Atomic uint64_t g_mglStreamDemotedToDirectSinceSwap      = 0;
 _Atomic uint64_t g_mglStreamMergePrepareCallsSinceSwap   = 0;
 _Atomic uint64_t g_mglStreamMergePrepareOkSinceSwap      = 0;
 _Atomic uint64_t g_mglStreamMergePrepareNegHitsSinceSwap = 0;
+_Atomic uint64_t g_mglLoadActionLoadSinceSwap            = 0;
+_Atomic uint64_t g_mglLoadActionClearSinceSwap           = 0;
+_Atomic uint64_t g_mglLoadActionDontCareSinceSwap        = 0;
+_Atomic uint64_t g_mglInvalidateFramebufferSinceSwap     = 0;
+_Atomic uint64_t g_mglClearEncoderReuseSinceSwap         = 0;
+_Atomic uint64_t g_mglClearEncoderFallbackSinceSwap      = 0;
+_Atomic uint64_t g_mglClearFullCoverageDiscardSinceSwap  = 0;
 
 void mglRecordBufferCowSnapshot(uint64_t bytes)
 {
@@ -298,14 +305,19 @@ void mglPrintPerfSummary(double frame_interval_ms)
           c.encoder_reason_cmd, c.encoder_reason_other,
           c.encoder_fbo_rot_default, c.encoder_fbo_rot_named);
     fprintf(stderr, "MGL PERF5: metal alive(+created/-released): buf=+%llu/-%llu tex=+%llu/-%llu smp=+%llu/-%llu "
-          "lib=+%llu/-%llu fn=+%llu/-%llu pso=+%llu/-%llu other=+%llu/-%llu",
+          "lib=+%llu/-%llu fn=+%llu/-%llu pso=+%llu/-%llu other=+%llu/-%llu | "
+          "loadAct: Load=%llu Clear=%llu DontCare=%llu invFbo=%llu | "
+          "clrEnc: reuse=%llu fall=%llu fullDisc=%llu",
           mglMetalGetCreated(MGLMetalKindBuffer), mglMetalGetReleased(MGLMetalKindBuffer),
           mglMetalGetCreated(MGLMetalKindTexture), mglMetalGetReleased(MGLMetalKindTexture),
           mglMetalGetCreated(MGLMetalKindSampler), mglMetalGetReleased(MGLMetalKindSampler),
           mglMetalGetCreated(MGLMetalKindLibrary), mglMetalGetReleased(MGLMetalKindLibrary),
           mglMetalGetCreated(MGLMetalKindFunction), mglMetalGetReleased(MGLMetalKindFunction),
           mglMetalGetCreated(MGLMetalKindPSO), mglMetalGetReleased(MGLMetalKindPSO),
-          mglMetalGetCreated(MGLMetalKindOther), mglMetalGetReleased(MGLMetalKindOther));
+          mglMetalGetCreated(MGLMetalKindOther), mglMetalGetReleased(MGLMetalKindOther),
+          c.load_action_load, c.load_action_clear, c.load_action_dontcare,
+          c.invalidate_framebuffer, c.clear_encoder_reuse,
+          c.clear_encoder_fallback, c.clear_full_coverage_discard);
 
     if (frame_interval_ms > 33.0) {
         fprintf(stderr, "MGL PERF SLOW FRAME: %.1fms — see counters above for breakdown", frame_interval_ms);

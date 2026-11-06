@@ -30,6 +30,11 @@ int mglRenderPassConfigureDefaultFramebufferAttachments(void *renderer);
 /* -ensureTransientDepthForDefaultFramebufferLocked */
 void mglRenderPassEnsureTransientDepthForDefaultFramebuffer(void *renderer);
 
+/* glInvalidateFramebuffer: mark a whole attachment's contents undefined for
+ * load-action planning.  Lives here so L4_context (an FE TU) does not have to
+ * include the Metal backend accessor header (Lyr-FE-Metal). */
+void mglRenderPassMarkAttachmentContentsUndefined(Texture *texture);
+
 /* -configureUserFBOLoadStoreActionsLocked:fboColorClearMask:
  *  fboColorAttachment0ClearMask: */
 void mglRenderPassConfigureUserFBOLoadStoreActions(

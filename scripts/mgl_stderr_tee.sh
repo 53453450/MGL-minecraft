@@ -16,4 +16,12 @@ mkdir -p "$(dirname "$LOG")"
 # Keep a fresh file per launch.
 : > "$LOG"
 echo "MGL_STDERR_TEE log=$LOG pid=$$" >> "$LOG"
+# Force Iris perf capture even if Prism cached an older Env=0.
+export MGL_PERF_SUMMARY="${MGL_PERF_SUMMARY:-1}"
+export MGL_PERF_SUMMARY_EVERY="${MGL_PERF_SUMMARY_EVERY:-15}"
+export MTL_HUD_ENABLED="${MTL_HUD_ENABLED:-1}"
+# A/B: first-use color attachments without blend become DontCare (see
+# mglRenderPassPlanLoadStore). Default off in code; enable for Iris bandwidth.
+export MGL_ENABLE_DONTCARE_LOAD="${MGL_ENABLE_DONTCARE_LOAD:-1}"
+echo "MGL_STDERR_TEE env MGL_PERF_SUMMARY=$MGL_PERF_SUMMARY EVERY=$MGL_PERF_SUMMARY_EVERY DONTCARE_LOAD=$MGL_ENABLE_DONTCARE_LOAD" >> "$LOG"
 exec "$@" 2> >(tee -a "$LOG" >&2)

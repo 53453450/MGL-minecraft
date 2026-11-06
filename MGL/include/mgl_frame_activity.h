@@ -241,6 +241,18 @@ extern MGL_ATOMIC(uint64_t) g_mglStreamDemotedToDirectSinceSwap;
 extern MGL_ATOMIC(uint64_t) g_mglStreamMergePrepareCallsSinceSwap;
 extern MGL_ATOMIC(uint64_t) g_mglStreamMergePrepareOkSinceSwap;
 extern MGL_ATOMIC(uint64_t) g_mglStreamMergePrepareNegHitsSinceSwap;
+/* Render-pass attachment load actions chosen in
+ * mglRenderPassConfigureUserFBOLoadStoreActions. */
+extern MGL_ATOMIC(uint64_t) g_mglLoadActionLoadSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglLoadActionClearSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglLoadActionDontCareSinceSwap;
+/* glInvalidateFramebuffer* calls that passed validation (per swap window). */
+extern MGL_ATOMIC(uint64_t) g_mglInvalidateFramebufferSinceSwap;
+/* Scissored/masked clear encoder reuse vs dedicated-encoder fallback. */
+extern MGL_ATOMIC(uint64_t) g_mglClearEncoderReuseSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglClearEncoderFallbackSinceSwap;
+/* Full-coverage scissored clears eligible for a color Store/Load discard. */
+extern MGL_ATOMIC(uint64_t) g_mglClearFullCoverageDiscardSinceSwap;
 
 int mglPerfSummaryEnabled(void);
 int mglPerfLockTimingEnabled(void);
@@ -438,6 +450,13 @@ typedef struct MGLPerfCounters {
     uint64_t stream_merge_prepare_calls;
     uint64_t stream_merge_prepare_ok;
     uint64_t stream_merge_prepare_neg_hits;
+    uint64_t load_action_load;
+    uint64_t load_action_clear;
+    uint64_t load_action_dontcare;
+    uint64_t invalidate_framebuffer;
+    uint64_t clear_encoder_reuse;
+    uint64_t clear_encoder_fallback;
+    uint64_t clear_full_coverage_discard;
 } MGLPerfCounters;
 
 static inline MGLPerfCounters mglSnapshotPerfCounters(void)
@@ -526,6 +545,16 @@ static inline MGLPerfCounters mglSnapshotPerfCounters(void)
     c.stream_merge_prepare_calls = MGL_FRAME_LOAD(g_mglStreamMergePrepareCallsSinceSwap);
     c.stream_merge_prepare_ok = MGL_FRAME_LOAD(g_mglStreamMergePrepareOkSinceSwap);
     c.stream_merge_prepare_neg_hits = MGL_FRAME_LOAD(g_mglStreamMergePrepareNegHitsSinceSwap);
+    c.load_action_load = MGL_FRAME_LOAD(g_mglLoadActionLoadSinceSwap);
+    c.load_action_clear = MGL_FRAME_LOAD(g_mglLoadActionClearSinceSwap);
+    c.load_action_dontcare = MGL_FRAME_LOAD(g_mglLoadActionDontCareSinceSwap);
+    c.invalidate_framebuffer =
+        MGL_FRAME_LOAD(g_mglInvalidateFramebufferSinceSwap);
+    c.clear_encoder_reuse = MGL_FRAME_LOAD(g_mglClearEncoderReuseSinceSwap);
+    c.clear_encoder_fallback =
+        MGL_FRAME_LOAD(g_mglClearEncoderFallbackSinceSwap);
+    c.clear_full_coverage_discard =
+        MGL_FRAME_LOAD(g_mglClearFullCoverageDiscardSinceSwap);
     return c;
 }
 
@@ -614,6 +643,13 @@ static inline void mglResetPerfCounters(void)
     MGL_FRAME_STORE(g_mglStreamMergePrepareCallsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglStreamMergePrepareOkSinceSwap, 0);
     MGL_FRAME_STORE(g_mglStreamMergePrepareNegHitsSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglLoadActionLoadSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglLoadActionClearSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglLoadActionDontCareSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglInvalidateFramebufferSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglClearEncoderReuseSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglClearEncoderFallbackSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglClearFullCoverageDiscardSinceSwap, 0);
 }
 
 /* Print per-frame perf summary if MGL_PERF_SUMMARY=1.  frame_interval_ms is
