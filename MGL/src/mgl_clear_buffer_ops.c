@@ -630,6 +630,19 @@ static void mglPdClearRectDraw(void *renderer, GLMContext glm_ctx,
          * Store actions live in persistent pass state.  Save and restore the
          * modified slot right after ending the encoder; otherwise a later pass
          * whose plan only resets load_action would inherit DontCare. */
+        /* Allocate the integer clear source before ending the current encoder
+         * so a failure leaves the active pass intact and reports OOM. */
+        void *valueTexture = NULL;
+        if (integerColor) {
+            valueTexture = mglPdNewClearValueTexture(colorTexture, values);
+            if (!valueTexture) {
+                fprintf(stderr,
+                        "MGL ERROR: integer clear failed to create value texture\n");
+                mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+                return;
+            }
+        }
+
         int savedColorSlotValid = 0;
         uint64_t savedColorSlot = 0u;
         uint32_t savedColorLoad = 0u;
@@ -680,17 +693,11 @@ static void mglPdClearRectDraw(void *renderer, GLMContext glm_ctx,
             !mglRenderPassNewCommandBufferLocked(renderer)) {
             fprintf(stderr,
                     "MGL ERROR: scissored clear failed to create command buffer\n");
-            return;
-        }
-
-        void *valueTexture = NULL;
-        if (integerColor) {
-            valueTexture = mglPdNewClearValueTexture(colorTexture, values);
-            if (!valueTexture) {
-                fprintf(stderr,
-                        "MGL ERROR: integer clear failed to create value texture\n");
-                return;
+            if (valueTexture) {
+                mglReleaseMetalObjNoNull(valueTexture);
             }
+            mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+            return;
         }
 
         /* Only the color attachment may use DontCare.  Depth/stencil must
@@ -743,6 +750,7 @@ static void mglPdClearRectDraw(void *renderer, GLMContext glm_ctx,
                 if (valueTexture) {
                     mglReleaseMetalObjNoNull(valueTexture);
                 }
+                mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
                 return;
             }
 
@@ -802,7 +810,6 @@ static void mglPdClearRectDraw(void *renderer, GLMContext glm_ctx,
         mglMarkTextureLevelRenderTargetWrittenImpl(
             ds->stencil_obj, ds->stencil_attachment->level, __func__, __LINE__);
     }
-    (void)glm_ctx;
 }
 
 /* Draw-based clear of every selected draw buffer (values->draw_buffer, or all
