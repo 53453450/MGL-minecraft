@@ -10,6 +10,12 @@ run --update after paying debt).
 Rules:
   Lyr-FE-Metal      FE TUs must not include metal_ref / backend_objects /
                     *_backend accessor headers (G1 / ARCH-005/007).
+  Lyr-Plan-Metal     L3 Validate/Plan must not include backend object or
+                    Metal lifecycle headers.
+  Lyr-Platform-Internals
+                    L0 must not include batch/pass/AIR/compute/texture internals.
+  Lyr-Backend-Ctx-FanIn
+                    Count of L1 TUs directly including the full GL context.
   Lyr-FE-Compiler   FE + draw/batch/pass must not include mgl_glsl_* /
                     mgl_air_* except abi/artifact allowlist (G4 / ARCH-008).
   Lyr-Pass-Batch    mgl_render_pass_*.c must not call/include mglBatch* /
@@ -47,6 +53,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASELINE = os.path.join(ROOT, "scripts", "arch_layer_gates_baseline.txt")
 SRC = os.path.join(ROOT, "MGL", "src")
 INC = os.path.join(ROOT, "MGL", "include")
+LAYER_DIRS = {
+    "L0": "L0_platform",
+    "L1": "L1_backend",
+    "L2": "L2_encode",
+    "L3": "L3_validate",
+    "L4": "L4_context",
+    "L5": "L5_api",
+}
 
 FE_FILES = (
     "buffers.c",
@@ -90,6 +104,16 @@ BATCH_PASS_OPS = re.compile(
 
 PRIVATE_INC = re.compile(
     r'#\s*(?:include|import)\s*[<"]([^>"]*Private[^>"]*)[>\"]'
+)
+
+PLATFORM_INTERNAL_HEADERS = re.compile(
+    r'#\s*include\s*[<"](?:'
+    r"draw_command\.h|"
+    r"mgl_render_pass_manager_ops\.h|"
+    r"mgl_air_loader\.h|"
+    r"mgl_compute_dispatch\.h|"
+    r"mgl_texture_bind\.h"
+    r")[>\"]"
 )
 
 ACTIVE_STATE_ASSIGN = re.compile(
@@ -143,7 +167,8 @@ def rel(path: str) -> str:
 
 
 def scan_file(path: str, regex: re.Pattern) -> list[tuple[int, str]]:
-    text = strip_comments(open(path, encoding="utf-8", errors="ignore").read())
+    with open(path, encoding="utf-8", errors="ignore") as source:
+        text = strip_comments(source.read())
     out = []
     for i, line in enumerate(text.splitlines(), 1):
         if regex.search(line):
@@ -151,8 +176,11 @@ def scan_file(path: str, regex: re.Pattern) -> list[tuple[int, str]]:
     return out
 
 
-def iter_src_files(*suffixes: str):
-    for dirpath, _, files in os.walk(SRC):
+def iter_src_files(*suffixes: str, layer: str | None = None):
+    root = SRC if layer is None else os.path.join(SRC, LAYER_DIRS[layer])
+    if not os.path.isdir(root):
+        return
+    for dirpath, _, files in os.walk(root):
         for name in sorted(files):
             if name.endswith(suffixes):
                 yield os.path.join(dirpath, name)
@@ -172,6 +200,15 @@ def collect() -> dict[tuple[str, str], list[tuple[int, str]]]:
         ]
         for path in matches:
             add("Lyr-FE-Metal", path, scan_file(path, METAL_HEADERS))
+
+    # Lyr-Plan-Metal: Validate/Plan produces POD, never owns backend objects.
+    for path in iter_src_files(".c", ".cpp", layer="L3"):
+        add("Lyr-Plan-Metal", path, scan_file(path, METAL_HEADERS))
+
+    # Lyr-Platform-Internals: the shell uses public batch/render facades.
+    for path in iter_src_files(".c", ".cpp", layer="L0"):
+        add("Lyr-Platform-Internals", path,
+            scan_file(path, PLATFORM_INTERNAL_HEADERS))
 
     # Lyr-FE-Compiler
     for path in iter_src_files(".c", ".cpp"):
@@ -265,6 +302,26 @@ def collect() -> dict[tuple[str, str], list[tuple[int, str]]]:
         hits[("Lyr-Ctx-FanIn", "MGL/src")] = [
             (ln, path) for ln, path in ctx_hits
         ]
+
+    backend_ctx_hits: list[tuple[int, str]] = []
+    for path in iter_src_files(".c", ".cpp", layer="L1"):
+        found = scan_file(path, CTX_FULL_INCLUDE)
+        if found:
+            backend_ctx_hits.append((found[0][0], rel(path)))
+    if backend_ctx_hits:
+        hits[("Lyr-Backend-Ctx-FanIn", "MGL/src/L1_backend")] = [
+            (ln, path) for ln, path in backend_ctx_hits
+        ]
+
+    # Lyr-Root-Sources: implementation TUs belong to a physical layer.
+    root_sources: list[tuple[int, str]] = []
+    if os.path.isdir(SRC):
+        for name in sorted(os.listdir(SRC)):
+            path = os.path.join(SRC, name)
+            if os.path.isfile(path) and name.endswith((".c", ".cpp", ".m", ".mm")):
+                root_sources.append((1, rel(path)))
+    if root_sources:
+        hits[("Lyr-Root-Sources", "MGL/src")] = root_sources
 
     return hits
 

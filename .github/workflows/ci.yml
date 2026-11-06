@@ -1,8 +1,10 @@
 name: ci
 
-# Automatic CI paused (hosted macos-26 Paravirt differs from physical Apple Silicon).
-# Re-enable push/pull_request triggers when the runner environment is sorted.
+# Static and CPU-only gates run on every change. GPU jobs stay manual because
+# hosted macos-26 Paravirt differs from physical Apple Silicon.
 on:
+  push:
+  pull_request:
   workflow_dispatch:
     inputs:
       full_gpu:
@@ -11,7 +13,28 @@ on:
         default: false
 
 jobs:
+  architecture-static:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify toolchain
+        run: make verify-toolchain
+      - name: Architecture and state contracts
+        run: |
+          make test-architecture-gates
+          make check-c-duplicates
+          make check-layering
+          make test-state-invariants
+          make test-arch-layer-gates
+          make test-state-dataflow
+          make test-compile-plan
+          make test-sampler-plan
+          make test-sampler-backend
+          make test-active-state-restore
+
   macos-gate:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     # macOS 26+ only.  The aux metallibs injected into mgl_aux_assets.c are
     # produced by the Metal 4 frontend (Xcode 26 / macOS 26 SDK).  Xcode 15.4
     # on macos-14 ships a Metal 3 frontend and rejects them outright with

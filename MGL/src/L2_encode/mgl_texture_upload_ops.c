@@ -1063,7 +1063,7 @@ int mglTextureUploadFullCPUData(void *renderer, Texture *tex, void *texture,
         bool uploaded = mglTextureUploadSliceViaBlit(
             renderer, texture, tex->name, tex->target, op->data, (uint64_t)op->bytes_per_row, (uint64_t)op->bytes_per_image, (uint64_t)op->width, (uint64_t)op->height, (uint64_t)op->copy_depth, op->level, 0, 0);
         if (op->owns_data) {
-            free((void *)op->data);
+            mglUploadExpandScratchRelease((uint8_t *)op->data);
         }
         if (uploaded) {
             uploadedAny = true;
