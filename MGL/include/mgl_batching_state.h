@@ -20,7 +20,7 @@
 #ifndef MGL_BATCHING_STATE_H
 #define MGL_BATCHING_STATE_H
 
-#include "draw_command.h"   /* MGLBatchArena */
+#include "mgl_batch_arena.h"   /* MGLBatchArena */
 
 #include <stdint.h>
 

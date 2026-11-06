@@ -37,6 +37,7 @@
 #include <string.h>
 
 #include "mgl_backend_handles.h"
+#include "mgl_batch_arena.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -81,21 +82,6 @@ typedef struct GLMContextRec_t *GLMContext;
  * of scanning the donor window. */
 #define MGL_SNAPSHOT_DONOR_INDEX_SIZE 256
 #define MGL_SNAPSHOT_DONOR_INDEX_MASK (MGL_SNAPSHOT_DONOR_INDEX_SIZE - 1)
-
-/* Bump-allocator arena for batch snapshot allocations (Task 4).
- * Gated by env var MGL_ARENA_SNAPSHOT (default ON; =0 disables).  When
- * enabled, state_snapshot, vao_snapshot, and the commands array are allocated
- * from this arena instead of individual malloc calls, and freed via arena
- * reset instead of individual free calls.  The arena is owned by MGLRenderer
- * and accessed from C via GLMContextRec_t::batch_arena. */
-typedef struct MGLBatchArenaChunk MGLBatchArenaChunk;
-
-typedef struct MGLBatchArena {
-    MGLBatchArenaChunk *head;
-    MGLBatchArenaChunk *current;
-    size_t              initial_capacity;
-    int                 enabled;
-} MGLBatchArena;
 
 typedef enum {
     MGL_CMD_DRAW_ARRAYS = 0,
@@ -391,20 +377,6 @@ int mglBindNoFlushEnabled(void);
  * every pending draw has a complete immutable sampler snapshot. */
 int mglSamplerSnapshotEnabled(void);
 bool mglSamplerSnapshotCanDeferParameter(GLMContext ctx, GLenum pname);
-
-/* Initializes an address-stable, chunked batch arena. */
-bool mglInitBatchArena(MGLBatchArena *arena, size_t initial_capacity);
-
-/* Allocate from an enabled batch arena (16-byte aligned). NULL if disabled. */
-void *mglBatchArenaAlloc(MGLBatchArena *arena, size_t size);
-
-/* Reset the batch arena (sets chunk offsets to 0, keeping all chunks).
- * Safe to call only when no worker/encoder is accessing snapshot data
- * (i.e. after teardownBatchReplayForContext).  No-op if arena is NULL. */
-void mglResetBatchArena(MGLBatchArena *arena);
-
-/* Releases every backing chunk and clears the arena. */
-void mglDestroyBatchArena(MGLBatchArena *arena);
 
 /* Draw command classification helpers (pure functions, no ctx dependency). */
 

@@ -8,10 +8,10 @@
 #   MGL/include/mgl_types_state.h      GLMState, dirty bits, hot-copy regions
 #   MGL/include/mgl_dirty_bits.h       authoritative DIRTY_* masks (M0)
 #   MGL/include/draw_command.h         MGLStateKey, MGLDrawCommand, MGLDrawBatch
-#   MGL/src/state.c                    GL API state setters
-#   MGL/src/draw_command.c             recorder, key builder, flush entry
-#   MGL/src/mgl_batch_*.c|.cpp         batch restore / issue / encode / replay
-#   MGL/src/mgl_renderer_core_state.c  the dual-proxy (active_state) invariant
+#   MGL/src/L4_context/state.c           GL API state setters
+#   MGL/src/L2_encode/draw_command.c     recorder and flush entry
+#   MGL/src/**/mgl_batch_*.c|.cpp        batch restore / issue / encode / replay
+#   MGL/src/L4_context/mgl_renderer_core_state.c  active_state invariant
 #
 # It is ~12.7k lines but carries the correctness of everything else
 # (docs/C_LAYER_ARCHITECTURE_REVIEW.md §5.1, docs/STATE_DATAFLOW_TODO.md).
@@ -40,6 +40,16 @@ def rel(p):
 def read(p):
     with open(p, encoding="utf-8", errors="ignore") as fh:
         return fh.read()
+
+
+def is_batch_cluster_file(name):
+    return (name.startswith(("mgl_batch_", "mgl_draw_batch_"))
+            or name in {
+                "draw_command.c",
+                "mgl_draw_state_key.c",
+                "mgl_draw_stream_merge.c",
+                "mgl_renderer_core_state.c",
+            })
 
 
 def strip_comments(text):
@@ -426,9 +436,7 @@ def check_batch_boundary(root, _unused=None):
     Fails when a TU outside the cluster references a batch symbol that the
     public header does not declare.
     """
-    cluster = lambda base: (base.startswith("mgl_batch_")
-                            or base == "draw_command.c"
-                            or base == "mgl_renderer_core_state.c")
+    cluster = lambda base: is_batch_cluster_file(base)
 
     declared = {}
     for name in sorted(os.listdir(os.path.join(root, "MGL/include"))):
@@ -439,14 +447,17 @@ def check_batch_boundary(root, _unused=None):
                 r"(?m)^[A-Za-z_][\w \*]*?\b(mgl[A-Za-z_0-9]+)\s*\(", src):
             declared.setdefault(m.group(1), set()).add(name)
 
-    public_path = os.path.join(root, "MGL/include/mgl_batch_public.h")
+    public_paths = [
+        os.path.join(root, "MGL/include/mgl_batch_public.h"),
+        os.path.join(root, "MGL/include/mgl_batch_arena.h"),
+    ]
     public = set()
-    if os.path.exists(public_path):
+    for public_path in public_paths:
+        if not os.path.exists(public_path):
+            return None, f"{os.path.basename(public_path)} missing"
         src = strip_comments(read(public_path))
-        public = set(re.findall(
+        public.update(re.findall(
             r"(?m)^[A-Za-z_][\w \*]*?\b(mgl[A-Za-z_0-9]+)\s*\(", src))
-    else:
-        return None, "mgl_batch_public.h missing"
 
     # Enumerate the tree here rather than trusting a caller-supplied list:
     # main()'s `cluster` holds ONLY cluster files, and passing that in made this
@@ -473,27 +484,71 @@ def check_batch_boundary(root, _unused=None):
     return findings, f"{len(declared)} declared / {len(public)} public"
 
 
+def snapshot_cold_buffer_types(root):
+    path = os.path.join(root, "MGL/include/mgl_types_buffer.h")
+    types = set()
+    collecting = False
+    for raw in read(path).splitlines():
+        if raw.startswith("#define MGL_SNAPSHOT_COLD_BUFFER_BASE_TYPES"):
+            collecting = True
+        if collecting:
+            m = re.search(r"\b_X_\s*\(\s*(_[A-Z0-9_]+)\s*\)", raw)
+            if m:
+                types.add(m.group(1))
+            if not raw.rstrip().endswith("\\"):
+                break
+    return types
+
+
+def check_replay_cold_buffer_reads(root, _unused=None):
+    cold = snapshot_cold_buffer_types(root)
+    if not cold:
+        return ["could not parse cold snapshot buffer types"]
+    findings = []
+    src_dir = os.path.join(root, "MGL/src")
+    for dirpath, _, files in os.walk(src_dir):
+        for name in sorted(files):
+            if not name.startswith(("mgl_batch_", "mgl_draw_batch_")):
+                continue
+            path = os.path.join(dirpath, name)
+            if not name.endswith((".c", ".cpp")):
+                continue
+            text = strip_comments(read(path))
+            for m in re.finditer(
+                    r"buffer_base\s*\[\s*(_[A-Z0-9_]+)\s*\]", text):
+                if m.group(1) in cold:
+                    line = text.count("\n", 0, m.start()) + 1
+                    findings.append(
+                        f"{rel(path)}:{line} accesses cold {m.group(1)} "
+                        "during batch replay")
+    return findings
+
+
 def main():
     state_h = os.path.join(ROOT, "MGL/include/mgl_types_state.h")
     dirty_h = os.path.join(ROOT, "MGL/include/mgl_dirty_bits.h")
     key_h = os.path.join(ROOT, "MGL/include/draw_command.h")
     draw_c = None
+    key_c = None
     src_root = os.path.join(ROOT, "MGL", "src")
     for dirpath, _, files in os.walk(src_root):
         if "draw_command.c" in files:
             draw_c = os.path.join(dirpath, "draw_command.c")
-            break
+        if "mgl_draw_state_key.c" in files:
+            key_c = os.path.join(dirpath, "mgl_draw_state_key.c")
     if not draw_c:
         raise SystemExit("draw_command.c not found under MGL/src")
+    if not key_c:
+        raise SystemExit("mgl_draw_state_key.c not found under MGL/src")
 
     state_src = read(state_h)
     key_src = read(key_h)
-    draw_lines = read(draw_c).split("\n")
+    key_lines = read(key_c).split("\n")
 
     cluster = [draw_c, state_h, dirty_h, key_h]
     for dirpath, _, files in os.walk(src_root):
         for name in sorted(files):
-            if name.startswith("mgl_batch_") or name == "mgl_renderer_core_state.c":
+            if is_batch_cluster_file(name):
                 cluster.append(os.path.join(dirpath, name))
 
     key_fields = field_names(struct_body(key_src, "MGLStateKey") or "")
@@ -509,7 +564,7 @@ def main():
     findings = []
 
     # I1
-    missing, note = check_key_populated(draw_lines, key_fields)
+    missing, note = check_key_populated(key_lines, key_fields)
     print("=" * 78)
     print("I1  every MGLStateKey field written by mglComputeStateKey")
     print("=" * 78)
@@ -621,6 +676,19 @@ def main():
         findings.extend(f"I8: {f}" for f in bfind)
     else:
         print(f"  OK    no undeclared cross-boundary batch call  ({bnote})")
+    print()
+
+    # I9
+    cold = check_replay_cold_buffer_reads(ROOT)
+    print("=" * 78)
+    print("I9  batch replay does not access cold buffer_base domains")
+    print("=" * 78)
+    if cold:
+        for f in cold:
+            print(f"  FAIL  {f}")
+        findings.extend(f"I9: {f}" for f in cold)
+    else:
+        print("  OK    no direct cold-domain buffer_base access")
     print()
 
     # ---- baseline gate ----------------------------------------------------

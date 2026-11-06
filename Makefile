@@ -1201,6 +1201,18 @@ check-layering:
 test-state-invariants:
 	python3 scripts/state_machine_invariants.py
 
+$(build_dir)/test_active_state_restore: test_legacy_compat/test_active_state_restore.c \
+		MGL/src/L4_context/mgl_renderer_core_state.c \
+		MGL/include/mgl_renderer_core_state.h
+	@mkdir -p $(dir $@)
+	$(CC) -Wall -Wextra -Werror -g -O0 -std=c11 -isysroot $(SDK_ROOT) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		test_legacy_compat/test_active_state_restore.c \
+		MGL/src/L4_context/mgl_renderer_core_state.c -o $@
+
+test-active-state-restore: $(build_dir)/test_active_state_restore
+	$(build_dir)/test_active_state_restore
+
 # Architecture layer gates (docs/MGL-architecture-design.md §9 Phase 0):
 # freeze NEW FE↔Metal / Pass↔Batch / Compiler / Private / DualProxy violations.
 test-arch-layer-gates:

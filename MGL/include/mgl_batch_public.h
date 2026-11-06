@@ -27,7 +27,8 @@
  *
  *   outside (includes THIS header, not the mgl_batch_*.h ones):
  *     everything else - in particular the render-pass, platform-shell and draw
- *     submission paths that drive a flush.
+ *     submission paths that drive a flush.  The standalone arena owner API is
+ *     the exception: include mgl_batch_arena.h for arena lifecycle/allocation.
  *
  * If you are outside and need something that is not declared here, widen this
  * header deliberately and say who needs it and why - rather than including

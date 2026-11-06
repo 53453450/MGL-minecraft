@@ -371,7 +371,7 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
      * on success so fold still forces Sync if bind fails. */
     if (passMatches && hasEncoder && mglFramebufferBindingDirty(replayFBO) &&
         mglRendererBindFramebufferAttachmentTextures(renderer)) {
-        replayFBO->dirty_bits &= ~DIRTY_FBO_BINDING;
+        mglFramebufferClearBindingDirty(replayFBO);
     }
     const MGLBatchRestoreFboIn fboIn = {
         .fbo_binding_dirty = (uint8_t)mglFramebufferBindingDirty(replayFBO),

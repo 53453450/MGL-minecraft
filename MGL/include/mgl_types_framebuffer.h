@@ -88,6 +88,13 @@ static inline int mglFramebufferBindingDirty(const Framebuffer *fbo)
     return fbo && (fbo->dirty_bits & DIRTY_FBO_BINDING) ? 1 : 0;
 }
 
+static inline void mglFramebufferClearBindingDirty(Framebuffer *fbo)
+{
+    if (fbo) {
+        fbo->dirty_bits &= ~DIRTY_FBO_BINDING;
+    }
+}
+
 /* Slices per GL layer when a layered attachment of the framebuffer is an
  * emulated multisample array (a fixed plane stride), else 1.  NULL = 1. */
 #ifdef __cplusplus
