@@ -656,9 +656,12 @@ void mglRenderPassEnsureTransientDepthForDefaultFramebuffer(void *renderer)
 void mglRenderPassMarkAttachmentContentsUndefined(Texture *texture)
 {
     /* rt_frame_generation is per-Texture, not per-level/layer.  Resetting it
-     * on a multi-level texture would let a later pass treat an unrelated mip
-     * as first-use and DontCare-load it. */
-    if (texture && texture->num_levels <= 1) {
+     * lets load planning DontCare the next use of this texture as an RT
+     * (including mipmapped FBOs).  Trade-off: if another level of the same
+     * texture is also an RT later this frame, that level may look like
+     * first-use too. Prefer correct invalidate over skipping all multi-mip
+     * attachments. */
+    if (texture) {
         mglTextureSetRtGeneration(texture, 0u);
     }
 }
