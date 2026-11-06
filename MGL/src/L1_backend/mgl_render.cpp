@@ -163,6 +163,7 @@ void mglRenderShutdown(void) {
                 ev->release();
             }
         }
+        mglRenderTextureStagingPoolShutdown();
         mgl::releasePipelineCaches(renderer);
         mgl::releaseBindingStates(renderer);
         mgl::releasePackedStructBuffers(renderer);

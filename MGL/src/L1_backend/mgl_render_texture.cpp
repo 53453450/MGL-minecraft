@@ -27,7 +27,6 @@ extern "C" {
 #include "mgl_types_program.h"
 #include "mgl_types_state.h"
 #include "mgl_types_sync.h"
-#include "glm_context.h"
 #include "mgl_render_internal.h"
 #include "mgl_render_values.h"
 #include "mgl_capability.h"
@@ -1124,11 +1123,17 @@ constexpr uint64_t kTextureStagingPoolMaxBytes = 64ull << 20;
 /* PERF-034 accepted: pool mutex may nest with renderer.mutex; lock order is
  * always gTextureStagingPoolMutex alone here — never held while taking
  * renderer.mutex (create/destroy staging below take only the pool lock). */
-std::mutex gTextureStagingPoolMutex;
+/* The lock intentionally outlives static destruction: context auto-cleanup may
+ * call the pool shutdown from process finalization. */
+std::mutex& textureStagingPoolMutex() {
+    static std::mutex* mutex = new std::mutex();
+    return *mutex;
+}
 MTL::Buffer* gTextureStagingPoolBuffers[kTextureStagingPoolMaxSlots] = {};
 uint64_t gTextureStagingPoolGenerations[kTextureStagingPoolMaxSlots] = {};
 uint64_t gTextureStagingPoolOptions[kTextureStagingPoolMaxSlots] = {};
 uint64_t gTextureStagingPoolBytes = 0;
+MTL::Device* gTextureStagingPoolDevice = nullptr;
 
 void mglTextureStagingPoolReleaseLocked(size_t index) {
     MTL::Buffer* buffer = gTextureStagingPoolBuffers[index];
@@ -1141,13 +1146,34 @@ void mglTextureStagingPoolReleaseLocked(size_t index) {
 }
 }  // namespace
 
+void mglRenderTextureStagingPoolShutdown() {
+    std::lock_guard<std::mutex> lock(textureStagingPoolMutex());
+    for (size_t i = 0; i < kTextureStagingPoolMaxSlots; ++i) {
+        mglTextureStagingPoolReleaseLocked(i);
+    }
+    gTextureStagingPoolDevice = nullptr;
+}
+
 int mglRenderCreateTextureStagingOwner(const void* bytes, uint64_t length, uint64_t resource_options, MGLTextureStagingOwner ** owner_out, void** buffer_out) {
     if (owner_out) *owner_out = nullptr;
     if (buffer_out) *buffer_out = nullptr;
     if (!owner_out || !buffer_out || !bytes || length == 0) return -1;
+    MTL::Device* device = nullptr;
+    {
+        mgl::Renderer& renderer = mgl::renderer();
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        device = renderer.device;
+    }
+    if (!device) return -1;
     MTL::Buffer* pooled = nullptr;
     {
-        std::lock_guard<std::mutex> lock(gTextureStagingPoolMutex);
+        std::lock_guard<std::mutex> lock(textureStagingPoolMutex());
+        if (gTextureStagingPoolDevice != device) {
+            for (size_t i = 0; i < kTextureStagingPoolMaxSlots; ++i) {
+                mglTextureStagingPoolReleaseLocked(i);
+            }
+            gTextureStagingPoolDevice = device;
+        }
         const uint64_t completed = mglRenderCompletedBufferGeneration();
         size_t best = SIZE_MAX;
         NS::UInteger bestLength = 0;
@@ -1187,6 +1213,7 @@ int mglRenderCreateTextureStagingOwner(const void* bytes, uint64_t length, uint6
         buffer->release();
         return -1;
     }
+    owner->device = device;
     owner->buffer = buffer;
     owner->options = resource_options;
     *owner_out = reinterpret_cast<decltype(*owner_out)>(owner);
@@ -1201,11 +1228,16 @@ static void mglTextureStagingOwnerReturn(mgl::TextureStagingOwner* owner,
                                          uint64_t generation) {
     if (!owner) return;
     MTL::Buffer* buffer = owner->buffer;
+    MTL::Device* device = owner->device;
     const uint64_t options = owner->options;
     owner->buffer = nullptr;
     delete owner;
     if (!buffer) return;
-    std::lock_guard<std::mutex> lock(gTextureStagingPoolMutex);
+    std::lock_guard<std::mutex> lock(textureStagingPoolMutex());
+    if (gTextureStagingPoolDevice != device) {
+        buffer->release();
+        return;
+    }
     const uint64_t length = static_cast<uint64_t>(buffer->length());
     if (length > kTextureStagingPoolMaxBytes) {
         buffer->release();
