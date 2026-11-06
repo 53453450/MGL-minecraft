@@ -37,6 +37,7 @@
 #include "mgl_types_buffer.h"
 #include "mgl_types_texture.h"
 #include "mgl_subroutine_table.h"
+#include "mgl_gs_xfb_layout.h"
 
 typedef struct GLMContextRec_t *GLMContext;
 
@@ -297,7 +298,7 @@ typedef struct MGLBufferBindingPlan MGLBufferBindingPlan;
  * attribute* budget (30) reported as GL_MAX_VERTEX_ATTRIBS and tied to
  * Metal's vertex descriptor layout.  64 leaves headroom for scalar varyings
  * packed into the same 128 components. */
-#define MGL_MAX_TRANSFORM_FEEDBACK_VARYINGS 64u
+#define MGL_MAX_TRANSFORM_FEEDBACK_VARYINGS MGL_GS_XFB_MAX_FIELDS
 
 /* Link-time transform-feedback scatter plan.  The plan is populated even for
  * the currently unsupported GS SEPARATE_ATTRIBS execution route so that link

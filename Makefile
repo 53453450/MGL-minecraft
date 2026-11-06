@@ -203,10 +203,10 @@ AUX_BUILD_DIR := $(build_dir)/aux
 AUX_METALLIBS := $(patsubst MGL/aux_shaders/%.metal,$(AUX_BUILD_DIR)/%.metallib,$(AUX_METAL_SRCS))
 AUX_ASSET_STAMP := $(AUX_BUILD_DIR)/aux_assets.stamp
 
-$(AUX_BUILD_DIR)/%.air: MGL/aux_shaders/%.metal
+$(AUX_BUILD_DIR)/%.air: MGL/aux_shaders/%.metal MGL/include/mgl_gs_xfb_layout.h
 	@mkdir -p $(dir $@)
 	@test -n "$(MGL_METAL)" || { echo "ERROR: metal compiler not found (xcrun --find metal); refusing to emit an empty $@"; exit 1; }
-	$(MGL_METAL) -c $< -o $@
+	$(MGL_METAL) -c -IMGL/include $< -o $@
 	@test -s $@ && test $$(stat -f%z $@) -gt 1024 || { echo "ERROR: $@ is empty or truncated (metal toolchain broken?)"; exit 1; }
 
 $(AUX_BUILD_DIR)/%.metallib: $(AUX_BUILD_DIR)/%.air

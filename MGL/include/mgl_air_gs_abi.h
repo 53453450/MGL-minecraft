@@ -38,6 +38,7 @@
 #include "mgl_buffer_slots.h" /* compute physical buffer-index boundary */
 #include "mgl_shader_abi.h" /* MGLAIRPerVertexRecord, MGL_AIR_PER_VERTEX_* */
 #include "mgl_types_program.h" /* MGL_MAX_TRANSFORM_FEEDBACK_VARYINGS */
+#include "mgl_gs_xfb_layout.h" /* shared C / Metal scatter layout */
 
 #if defined(__cplusplus)
 #define MGL_AIR_STATIC_ASSERT(c, m) static_assert((c), m)
@@ -267,10 +268,10 @@ typedef struct MGLAIRGSIndexGatherParams {
  * and whole-primitive truncation are handled by the ordered 2-pass path
  * in section 5b below; the meta block carries no GPU cursors.
  * ===================================================================== */
-#define MGL_AIR_GS_MAX_STREAMS 4u
+#define MGL_AIR_GS_MAX_STREAMS MGL_GS_XFB_MAX_STREAMS
 
 /* buffer_stream[] sentinel: buffer not fed by any stream. */
-#define MGL_AIR_GS_XFB_NO_STREAM 0xFFFFFFFFu
+#define MGL_AIR_GS_XFB_NO_STREAM MGL_GS_XFB_NO_STREAM
 
 typedef struct MGLAIRGSXFBStreamMeta {
     uint32_t stride;          /* bytes per XFB vertex; 0 = capture off    */
@@ -400,6 +401,14 @@ MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBScatterParams, buffers) == 48u,
                       "buffer metas follow the 12-word header");
 MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBScatterParams, fields) == 112u,
                       "field descriptors follow 48 + 4*16 bytes");
+MGL_AIR_STATIC_ASSERT(MGL_AIR_GS_XFB_MAX_FIELDS == MGL_GS_XFB_MAX_FIELDS,
+                      "GS XFB capacity uses the shared layout header");
+MGL_AIR_STATIC_ASSERT(MGL_AIR_PER_VERTEX_STREAM_OFFSET ==
+                          MGL_GS_XFB_STREAM_STAMP_OFFSET,
+                      "GS XFB stream stamp uses the shared layout header");
+MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBScatterParams) ==
+                          112u + MGL_GS_XFB_MAX_FIELDS * 16u,
+                      "GS XFB parameter size matches the shared capacity");
 
 /* Visibility buffer layout: workItemCount * MGL_AIR_GS_MAX_STREAMS u32, with
  * entry [w * 4 + b] = bytes work item w would write to buffer b.  The offset

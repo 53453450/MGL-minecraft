@@ -62,7 +62,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 233
+#define MAX_TESTS 234
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -25088,6 +25088,148 @@ static int test_narrow_integer_attribs(unsigned char *pixels, const char *out_pa
     return fail;
 }
 
+#define GS_XFB_MANY_FIELDS(X) \
+    X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7) \
+    X(8) X(9) X(10) X(11) X(12) X(13) X(14) X(15) \
+    X(16) X(17) X(18) X(19) X(20) X(21) X(22) X(23) \
+    X(24) X(25) X(26) X(27) X(28) X(29) X(30) X(31) \
+    X(32) X(33) X(34) X(35) X(36) X(37) X(38) X(39) \
+    X(40) X(41) X(42) X(43) X(44) X(45) X(46) X(47) \
+    X(48) X(49) X(50) X(51) X(52) X(53) X(54) X(55) \
+    X(56) X(57) X(58) X(59) X(60) X(61) X(62) X(63)
+#define GS_XFB_STR_INNER(i) #i
+#define GS_XFB_STR(i) GS_XFB_STR_INNER(i)
+#define GS_XFB_VS_DECL(i) "out float v" GS_XFB_STR(i) ";\n"
+#define GS_XFB_VS_ASSIGN(i) "  v" GS_XFB_STR(i) " = " GS_XFB_STR(i) ".0;\n"
+#define GS_XFB_GS_IN_DECL(i) "in float v" GS_XFB_STR(i) "[];\n"
+#define GS_XFB_GS_OUT_DECL(i) "out float o" GS_XFB_STR(i) ";\n"
+#define GS_XFB_GS_ASSIGN(i) \
+    "  o" GS_XFB_STR(i) " = v" GS_XFB_STR(i) "[0] + 0.5;\n"
+#define GS_XFB_NAME(i) "o" GS_XFB_STR(i),
+
+static int test_air_geometry_xfb_many_fields(unsigned char *pixels,
+                                              const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char vs[] =
+        "#version 450 core\n"
+        GS_XFB_MANY_FIELDS(GS_XFB_VS_DECL)
+        "void main() {\n"
+        GS_XFB_MANY_FIELDS(GS_XFB_VS_ASSIGN)
+        "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+        "  gl_PointSize = 1.0;\n"
+        "}\n";
+    static const char gs[] =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices = 1) out;\n"
+        GS_XFB_MANY_FIELDS(GS_XFB_GS_IN_DECL)
+        GS_XFB_MANY_FIELDS(GS_XFB_GS_OUT_DECL)
+        "void main() {\n"
+        GS_XFB_MANY_FIELDS(GS_XFB_GS_ASSIGN)
+        "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+        "  gl_PointSize = 1.0;\n"
+        "  EmitVertex(); EndPrimitive();\n"
+        "}\n";
+    static const char *names[] = {
+        GS_XFB_MANY_FIELDS(GS_XFB_NAME)
+    };
+    static const int counts[] = {30, 31, 32, 64};
+    GLuint vao = 0, xfb = 0;
+    GLuint shaders[2] = {
+        compile_shader(GL_VERTEX_SHADER, vs),
+        compile_shader(GL_GEOMETRY_SHADER, gs),
+    };
+    int fail = 0;
+    if (!shaders[0] || !shaders[1]) {
+        fail = 1;
+        goto cleanup;
+    }
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glEnable(GL_RASTERIZER_DISCARD);
+    for (size_t ci = 0; ci < sizeof(counts) / sizeof(counts[0]); ci++) {
+        const int count = counts[ci];
+        GLuint program = glCreateProgram();
+        glAttachShader(program, shaders[0]);
+        glAttachShader(program, shaders[1]);
+        glTransformFeedbackVaryings(program, count, names,
+                                    GL_INTERLEAVED_ATTRIBS);
+        glLinkProgram(program);
+        GLint ok = 0;
+        glGetProgramiv(program, GL_LINK_STATUS, &ok);
+        if (!ok) {
+            char log[2048];
+            glGetProgramInfoLog(program, sizeof(log), NULL, log);
+            fprintf(stderr, "air_geometry_xfb_many_fields: %d link: %s\n",
+                    count, log);
+            glDeleteProgram(program);
+            fail = 1;
+            goto cleanup;
+        }
+        glUseProgram(program);
+        glGenBuffers(1, &xfb);
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, xfb);
+        glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, count * (GLsizeiptr)sizeof(float),
+                     NULL, GL_STATIC_READ);
+        glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, xfb);
+        glBeginTransformFeedback(GL_POINTS);
+        glDrawArrays(GL_POINTS, 0, 1);
+        glEndTransformFeedback();
+        glFinish();
+        GLfloat got[64];
+        memset(got, 0, sizeof(got));
+        glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0,
+                           count * (GLsizeiptr)sizeof(float), got);
+        for (int i = 0; i < count; i++) {
+            if (got[i] != (GLfloat)i + 0.5f) {
+                fprintf(stderr,
+                        "air_geometry_xfb_many_fields: count=%d field=%d got=%g want=%g\n",
+                        count, i, got[i], (GLfloat)i + 0.5f);
+                fail = 1;
+            }
+        }
+        glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, 0);
+        glDeleteBuffers(1, &xfb);
+        xfb = 0;
+        glDeleteProgram(program);
+        if (fail) goto cleanup;
+    }
+    {
+        GLuint program = glCreateProgram();
+        glTransformFeedbackVaryings(program, 65, names, GL_INTERLEAVED_ATTRIBS);
+        GLenum error = glGetError();
+        if (error != GL_INVALID_VALUE) {
+            fprintf(stderr,
+                    "air_geometry_xfb_many_fields: 65 fields error=0x%x\n",
+                    error);
+            fail = 1;
+        }
+        glDeleteProgram(program);
+    }
+
+cleanup:
+    if (xfb) glDeleteBuffers(1, &xfb);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (shaders[0]) glDeleteShader(shaders[0]);
+    if (shaders[1]) glDeleteShader(shaders[1]);
+    glUseProgram(0);
+    glDisable(GL_RASTERIZER_DISCARD);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
+#undef GS_XFB_MANY_FIELDS
+#undef GS_XFB_STR_INNER
+#undef GS_XFB_STR
+#undef GS_XFB_VS_DECL
+#undef GS_XFB_VS_ASSIGN
+#undef GS_XFB_GS_IN_DECL
+#undef GS_XFB_GS_OUT_DECL
+#undef GS_XFB_GS_ASSIGN
+#undef GS_XFB_NAME
+
 static int test_xfb_atomic_counters(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -31067,6 +31209,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_tessellation_cull_distance",
                     test_air_tessellation_cull_distance),
     SELF_CHECK_TEST("air_geometry_xfb", test_air_geometry_xfb),
+    SELF_CHECK_TEST("air_geometry_xfb_many_fields",
+                    test_air_geometry_xfb_many_fields),
     SELF_CHECK_TEST("air_xfb_link_layout", test_air_xfb_link_layout),
     SELF_CHECK_TEST("air_xfb_reflection", test_air_xfb_reflection),
     SELF_CHECK_TEST("air_geometry_xfb_truncate",

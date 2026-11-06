@@ -28,13 +28,8 @@
  * to match the pass-1 layout; params/vis/offsets take the low slots. */
 
 #include <metal_stdlib>
+#include "mgl_gs_xfb_layout.h"
 using namespace metal;
-
-#define MGL_GS_XFB_MAX_STREAMS 4u
-#define MGL_GS_XFB_MAX_FIELDS 30u
-/* Must match MGL_AIR_PER_VERTEX_STREAM_OFFSET in mgl_shader_abi.h (layout v2). */
-#define MGL_GS_XFB_STREAM_STAMP_OFFSET 60u
-#define MGL_GS_XFB_NO_STREAM 0xFFFFFFFFu
 
 struct MGLGSXFBBufferMeta {
     uint stride;          /* record bytes for this buffer; 0 = unused  */
@@ -63,6 +58,16 @@ struct MGLGSXFBScatterParams {
     MGLGSXFBBufferMeta buffers[MGL_GS_XFB_MAX_STREAMS];
     MGLGSXFBFieldDesc  fields[MGL_GS_XFB_MAX_FIELDS];
 };
+
+static_assert(sizeof(MGLGSXFBBufferMeta) == 16u, "GS XFB buffer ABI");
+static_assert(sizeof(MGLGSXFBFieldDesc) == 16u, "GS XFB field ABI");
+static_assert(__builtin_offsetof(MGLGSXFBScatterParams, buffers) == 48u,
+              "GS XFB buffer offset ABI");
+static_assert(__builtin_offsetof(MGLGSXFBScatterParams, fields) == 112u,
+              "GS XFB field offset ABI");
+static_assert(sizeof(MGLGSXFBScatterParams) ==
+                  112u + MGL_GS_XFB_MAX_FIELDS * 16u,
+              "GS XFB parameter size ABI");
 
 kernel void mgl_gs_xfb_scatter(
     uint gid [[thread_position_in_grid]],
