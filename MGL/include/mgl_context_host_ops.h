@@ -40,7 +40,11 @@
 extern "C" {
 #endif
 
-#define MGL_CONTEXT_HOST_OPS_VERSION 1u
+#define MGL_CONTEXT_HOST_OPS_VERSION 2u
+/* The table is append-only.  A consumer compiled against v2 can still drive a
+ * v1 producer as long as it gates v2 entries on ops->version; accepting v1
+ * avoids GLFW_VERSION_UNAVAILABLE after a partial dylib upgrade. */
+#define MGL_CONTEXT_HOST_OPS_MIN_VERSION 1u
 
 typedef struct MGLContextHostOps {
     /* version must stay the first field; size second. */
@@ -63,6 +67,11 @@ typedef struct MGLContextHostOps {
 
     /* Release the owner handle (balances create_and_bind's +1). */
     void (*release_owner)(void *owner);
+
+    /* GLFW framebuffer-size path (windowDidResize / backing change). Must run
+     * on the main thread; refreshes CAMetalLayer drawable to match the view
+     * so Fn+F fullscreen is not stuck on the pre-fullscreen pixel size. */
+    void (*notify_framebuffer_size)(void *owner, int width, int height);
 } MGLContextHostOps;
 
 /* Stable per-process table; the returned pointer never changes.  Consumers

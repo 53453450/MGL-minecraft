@@ -266,6 +266,8 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
         window->ns.fbWidth  = fbRect.size.width;
         window->ns.fbHeight = fbRect.size.height;
         _glfwInputFramebufferSize(window, fbRect.size.width, fbRect.size.height);
+        _glfwMGLNotifyFramebufferSize(window, (int)fbRect.size.width,
+                                      (int)fbRect.size.height);
     }
 
     if (contentRect.size.width != window->ns.width ||
@@ -544,6 +546,8 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
         window->ns.fbWidth  = fbRect.size.width;
         window->ns.fbHeight = fbRect.size.height;
         _glfwInputFramebufferSize(window, fbRect.size.width, fbRect.size.height);
+        _glfwMGLNotifyFramebufferSize(window, (int)fbRect.size.width,
+                                      (int)fbRect.size.height);
     }
 }
 

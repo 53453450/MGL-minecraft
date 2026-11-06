@@ -31,6 +31,7 @@
 #include <dispatch/dispatch.h>
 
 #include <new>
+#include <atomic>
 #include <unordered_map>
 
 #include <stdatomic.h>
@@ -1046,6 +1047,37 @@ void *mglRendererDrawableTexture(void *renderer)
 /* mglPlatformShellApplyPendingDrawableSizeCGSize lives further down this TU
  * and is shared with the shell's Objective-C half (mgl_platform_shell_internal.h). */
 
+/* Fn+F / fullscreen often updates GLFW's FB size before our KVO fires. When
+ * blit asks for a size that disagrees with the last pending snapshot, ask the
+ * main thread to re-read the view.
+ *
+ * Never dispatch_sync to the main queue from the GL thread: a main thread
+ * waiting on the GL thread (swap / resize handshake) would deadlock.  GLFW's
+ * windowDidResize / viewDidChangeBackingProperties already run
+ * mglMainThreadSyncViewGeometry on the main thread through
+ * notify_framebuffer_size, so an async request is enough; the pending-size
+ * snapshot catches up on the next main-queue turn.  Retain the renderer for
+ * the duration of the block so a context teardown cannot leave a dangling
+ * receiver. */
+static void mglPlatformShellRequestViewGeometryRefresh(void *renderer)
+{
+    MGLObjectId r = (MGLObjectId)renderer;
+    if (!r) {
+        return;
+    }
+    SEL syncSel = sel_registerName("mglMainThreadSyncViewGeometry");
+    if (mglSend<signed char>((MGLObjectId)objc_getClass("NSThread"),
+                             MGL_SEL(s_shellSelIsMainThread, "isMainThread"))) {
+        (void)mglSend<void>(r, syncSel);
+        return;
+    }
+    objc_retain(r);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        (void)mglSend<void>(r, syncSel);
+        mglReleaseObject(r);
+    });
+}
+
 int mglRendererEnsureLayerDrawableSizeAtLeastWidth(void *renderer,
                                                        size_t required_width,
                                                        size_t required_height,
@@ -1060,17 +1092,82 @@ int mglRendererEnsureLayerDrawableSizeAtLeastWidth(void *renderer,
         return 0;
     }
 
+    /* Drawable size must stay at view backing size (layer.frame × scale).
+     * Growing past a STALE viewSync for blitFramebuffer.defaultDraw produced
+     * the Fn+F dual-viewport bug. Growing is fine once viewSync catches up to
+     * the real fullscreen frame. */
     CGSize viewDrawableSize =
         mglPlatformShellApplyPendingDrawableSizeCGSize((void *)r);
-    uint64_t targetWidth = required_width;
     uint64_t viewW = (uint64_t)(viewDrawableSize.width > 1.0 ? viewDrawableSize.width : 1.0);
-    if (viewW > targetWidth) targetWidth = viewW;
-    uint64_t targetHeight = required_height;
     uint64_t viewH = (uint64_t)(viewDrawableSize.height > 1.0 ? viewDrawableSize.height : 1.0);
-    if (viewH > targetHeight) targetHeight = viewH;
+
+    if (required_width != viewW || required_height != viewH) {
+        /* Throttle: fullscreen Fn+F can disagree for many blits/frame.  The GL
+         * thread and the main thread both reach this path, so all state here
+         * is atomic.  A periodic refresh also covers the case where a stale
+         * viewSync keeps producing the same (required, view) pair forever. */
+        static std::atomic<uint64_t> s_lastRefreshReqW{0}, s_lastRefreshReqH{0};
+        static std::atomic<uint64_t> s_lastRefreshViewW{0}, s_lastRefreshViewH{0};
+        static std::atomic<uint64_t> s_refreshChecks{0};
+        static std::atomic<uint64_t> s_refreshLog{0};
+        const uint64_t checks =
+            s_refreshChecks.fetch_add(1, std::memory_order_relaxed) + 1;
+        const int sizePairChanged =
+            required_width != s_lastRefreshReqW.load(std::memory_order_relaxed) ||
+            required_height != s_lastRefreshReqH.load(std::memory_order_relaxed) ||
+            viewW != s_lastRefreshViewW.load(std::memory_order_relaxed) ||
+            viewH != s_lastRefreshViewH.load(std::memory_order_relaxed);
+        if (sizePairChanged || (checks % 60ull) == 0ull) {
+            mglPlatformShellRequestViewGeometryRefresh((void *)r);
+            s_lastRefreshReqW.store((uint64_t)required_width,
+                                    std::memory_order_relaxed);
+            s_lastRefreshReqH.store((uint64_t)required_height,
+                                    std::memory_order_relaxed);
+            /* The request is async: this read still sees the pre-refresh
+             * snapshot.  The next blit / main-queue turn picks up the new
+             * size; clipping below keeps this blit safe in the meantime. */
+            viewDrawableSize =
+                mglPlatformShellApplyPendingDrawableSizeCGSize((void *)r);
+            viewW =
+                (uint64_t)(viewDrawableSize.width > 1.0 ? viewDrawableSize.width
+                                                        : 1.0);
+            viewH =
+                (uint64_t)(viewDrawableSize.height > 1.0 ? viewDrawableSize.height
+                                                         : 1.0);
+            s_lastRefreshViewW.store(viewW, std::memory_order_relaxed);
+            s_lastRefreshViewH.store(viewH, std::memory_order_relaxed);
+            uint64_t rhit = s_refreshLog.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (rhit <= 16ull || (rhit % 60ull) == 0ull) {
+                fprintf(stderr,
+                        "MGL SIZE refresh geometry hit=%llu required=%lux%lu "
+                        "viewSync=%llux%llu\n",
+                        (unsigned long long)rhit,
+                        (unsigned long)required_width,
+                        (unsigned long)required_height,
+                        (unsigned long long)viewW, (unsigned long long)viewH);
+            }
+        }
+    }
+
+    uint64_t targetWidth = viewW;
+    uint64_t targetHeight = viewH;
     CGSize oldDrawableSize =
         mglSend<CGSize>(r, MGL_SEL(s_selMetalLayerDrawableSize,
                                    "mglMetalLayerDrawableSize"));
+
+    if (required_width > viewW || required_height > viewH) {
+        static std::atomic<uint64_t> s_clippedDrawableResizeCount{0};
+        uint64_t hit = s_clippedDrawableResizeCount.fetch_add(
+                           1, std::memory_order_relaxed) + 1;
+        if (hit <= 32ull || (hit % 120ull) == 0ull) {
+            fprintf(stderr,
+                    "MGL SIZE clip drawable reason=%s hit=%llu required=%lux%lu "
+                    "viewSync=%llux%llu (not growing past view)\n",
+                    reason ? reason : "unknown", (unsigned long long)hit,
+                    (unsigned long)required_width, (unsigned long)required_height,
+                    (unsigned long long)viewW, (unsigned long long)viewH);
+        }
+    }
 
     if ((uint64_t)oldDrawableSize.width == targetWidth &&
         (uint64_t)oldDrawableSize.height == targetHeight) {
@@ -1266,10 +1363,39 @@ CGSize mglPlatformShellApplyPendingDrawableSizeCGSize(void *renderer)
                                           memory_order_relaxed);
         uint32_t h = atomic_load_explicit(&ivars->_core.pendingDrawableH,
                                           memory_order_relaxed);
-        CGSize s = CGSizeMake((CGFloat)(w > 1u ? w : 1u),
-                              (CGFloat)(h > 1u ? h : 1u));
+        if (w < 1u) {
+            w = 1u;
+        }
+        if (h < 1u) {
+            h = 1u;
+        }
+        CGSize old = mglSend<CGSize>(r, MGL_SEL(s_selMetalLayerDrawableSize,
+                                                "mglMetalLayerDrawableSize"));
+        CGSize s = CGSizeMake((CGFloat)w, (CGFloat)h);
+        const int sizeChanged =
+            (uint32_t)old.width != w || (uint32_t)old.height != h;
         (void)mglSend<void>(r, MGL_SEL(s_selSetMetalLayerDrawableSize,
                                        "mglSetMetalLayerDrawableSize:"), s);
+        /* SetMetalLayerDrawableSize invalidates prefetch only. Drop the cached
+         * drawable on a real size change — otherwise Fn+F windowed present
+         * keeps a fullscreen-sized texture and tiles/shrinks into the corner. */
+        if (sizeChanged &&
+            mglSend<MGLObjectId>(r, MGL_SEL(s_selDrawable, "drawable"))) {
+            (void)mglSend<void>(r, MGL_SEL(s_selSetDrawable, "setDrawable:"),
+                                (MGLObjectId)NULL);
+        }
+        if (sizeChanged) {
+            static std::atomic<uint64_t> s_applyDrawableResizeCount{0};
+            uint64_t hit = s_applyDrawableResizeCount.fetch_add(
+                               1, std::memory_order_relaxed) + 1;
+            if (hit <= 32ull || (hit % 60ull) == 0ull) {
+                fprintf(stderr,
+                        "MGL SIZE apply pending hit=%llu pending=%ux%u "
+                        "old=%.0fx%.0f new=%ux%u\n",
+                        (unsigned long long)hit, w, h, old.width, old.height, w,
+                        h);
+            }
+        }
         return s;
     }
     return mglSend<CGSize>(r, MGL_SEL(s_selMetalLayerDrawableSize,
@@ -1986,6 +2112,8 @@ extern "C" {
 /* NSString * const, exported by AppKit (see NSWindow.h). */
 extern MGLObjectId const NSWindowDidResizeNotification;
 extern MGLObjectId const NSWindowDidChangeBackingPropertiesNotification;
+extern MGLObjectId const NSWindowDidEnterFullScreenNotification;
+extern MGLObjectId const NSWindowDidExitFullScreenNotification;
 }
 
 /* NSKeyValueObservingOptionInitial */
@@ -2392,6 +2520,12 @@ static void mglShellCreateAndBind(MGLObjectId self, SEL cmd, GLMContext glm_ctx,
                                 "addObserver:forKeyPath:options:context:"),
                         self, mglAutoreleasedUTF8String("bounds"), (unsigned long)0,
                         s_kvoViewGeometryContext);
+    /* GLFW Fn+F / setFrame updates frame; bounds-only KVO misses some paths. */
+    (void)mglSend<void>(view,
+                        MGL_SEL(s_selAddObserverForKeyPath,
+                                "addObserver:forKeyPath:options:context:"),
+                        self, mglAutoreleasedUTF8String("frame"), (unsigned long)0,
+                        s_kvoViewGeometryContext);
     (void)mglSend<void>(view,
                         MGL_SEL(s_selAddObserverForKeyPath,
                                 "addObserver:forKeyPath:options:context:"),
@@ -2504,19 +2638,24 @@ static void mglShellMainThreadSyncViewGeometry(MGLObjectId self, SEL cmd)
         return;
     }
 
-    CGRect bounds = mglSend<CGRect>(view, MGL_SEL(s_selBounds, "bounds"));
-    if (bounds.size.width <= 0.0 || bounds.size.height <= 0.0) {
-        bounds = mglSend<CGRect>(view, MGL_SEL(s_selFrameRect, "frame"));
-        bounds.origin = CGPointMake(0.0, 0.0);   /* NSZeroPoint */
+    /* Match GLFW _glfwGetFramebufferSizeCocoa: use view.frame (not bounds),
+     * then convertRectToBacking. bounds≠frame after Fn+F was a dual-viewport
+     * source when blit used GLFW's larger FB size. */
+    CGRect contentRect = mglSend<CGRect>(view, MGL_SEL(s_selFrameRect, "frame"));
+    if (contentRect.size.width <= 0.0 || contentRect.size.height <= 0.0) {
+        contentRect = mglSend<CGRect>(view, MGL_SEL(s_selBounds, "bounds"));
+        contentRect.origin = CGPointMake(0.0, 0.0);
     }
+    CGRect layerFrame = contentRect;
+    layerFrame.origin = CGPointMake(0.0, 0.0);
 
     CGRect backingBounds =
         mglSend<CGRect>(view, MGL_SEL(s_selConvertRectToBacking,
                                       "convertRectToBacking:"),
-                        bounds);
+                        contentRect);
     double scale = 1.0;
-    if (bounds.size.width > 0.0 && backingBounds.size.width > 0.0) {
-        scale = backingBounds.size.width / bounds.size.width;
+    if (contentRect.size.width > 0.0 && backingBounds.size.width > 0.0) {
+        scale = backingBounds.size.width / contentRect.size.width;
     } else {
         MGLObjectId window = mglSend<MGLObjectId>(view, MGL_SEL(s_selWindow, "window"));
         if (window) {
@@ -2536,14 +2675,14 @@ static void mglShellMainThreadSyncViewGeometry(MGLObjectId self, SEL cmd)
         if (scale <= 0.0) {
             scale = 1.0;
         }
-        backingBounds = CGRectMake(0.0, 0.0, bounds.size.width * scale,
-                                   bounds.size.height * scale);   /* NSMakeRect */
+        backingBounds = CGRectMake(0.0, 0.0, contentRect.size.width * scale,
+                                   contentRect.size.height * scale);
     }
 
     (void)mglSend<void>(self,
                         MGL_SEL(s_selMglSetMetalLayerFrame,
                                 "mglSetMetalLayerFrame:contentsScale:"),
-                        bounds, scale);
+                        layerFrame, scale);
 
     uint32_t pw = (uint32_t)mglMaxDouble(1.0, backingBounds.size.width + 0.5);
     uint32_t ph = (uint32_t)mglMaxDouble(1.0, backingBounds.size.height + 0.5);
@@ -2612,6 +2751,16 @@ static void mglShellUpdateWindowNotificationObserver(MGLObjectId self, SEL cmd)
                                     "removeObserver:name:object:"),
                             self, NSWindowDidChangeBackingPropertiesNotification,
                             observed);
+        (void)mglSend<void>(center,
+                            MGL_SEL(s_selRemoveObserverName,
+                                    "removeObserver:name:object:"),
+                            self, NSWindowDidEnterFullScreenNotification,
+                            observed);
+        (void)mglSend<void>(center,
+                            MGL_SEL(s_selRemoveObserverName,
+                                    "removeObserver:name:object:"),
+                            self, NSWindowDidExitFullScreenNotification,
+                            observed);
     }
     objc_storeWeak((MGLObjectId *)&ivars->_observedWindow, window);
     if (window) {
@@ -2630,6 +2779,20 @@ static void mglShellUpdateWindowNotificationObserver(MGLObjectId self, SEL cmd)
                                     "mglWindowGeometryChanged:"),
                             NSWindowDidChangeBackingPropertiesNotification,
                             window);
+        (void)mglSend<void>(center,
+                            MGL_SEL(s_selAddObserverSelectorName,
+                                    "addObserver:selector:name:object:"),
+                            self,
+                            MGL_SEL(s_selMglWindowGeometryChanged,
+                                    "mglWindowGeometryChanged:"),
+                            NSWindowDidEnterFullScreenNotification, window);
+        (void)mglSend<void>(center,
+                            MGL_SEL(s_selAddObserverSelectorName,
+                                    "addObserver:selector:name:object:"),
+                            self,
+                            MGL_SEL(s_selMglWindowGeometryChanged,
+                                    "mglWindowGeometryChanged:"),
+                            NSWindowDidExitFullScreenNotification, window);
     }
 }
 
@@ -2693,6 +2856,11 @@ static void mglShellDealloc(MGLObjectId self, SEL cmd)
             (void)mglSend<void>(view,
                                 MGL_SEL(s_selRemoveObserverForKeyPath,
                                         "removeObserver:forKeyPath:context:"),
+                                self, mglAutoreleasedUTF8String("frame"),
+                                s_kvoViewGeometryContext);
+            (void)mglSend<void>(view,
+                                MGL_SEL(s_selRemoveObserverForKeyPath,
+                                        "removeObserver:forKeyPath:context:"),
                                 self, mglAutoreleasedUTF8String("window"),
                                 s_kvoViewGeometryContext);
         }
@@ -2712,6 +2880,16 @@ static void mglShellDealloc(MGLObjectId self, SEL cmd)
                                         "removeObserver:name:object:"),
                                 self,
                                 NSWindowDidChangeBackingPropertiesNotification,
+                                observed);
+            (void)mglSend<void>(center,
+                                MGL_SEL(s_selRemoveObserverName,
+                                        "removeObserver:name:object:"),
+                                self, NSWindowDidEnterFullScreenNotification,
+                                observed);
+            (void)mglSend<void>(center,
+                                MGL_SEL(s_selRemoveObserverName,
+                                        "removeObserver:name:object:"),
+                                self, NSWindowDidExitFullScreenNotification,
                                 observed);
             objc_storeWeak((MGLObjectId *)&ivars->_observedWindow, NULL);
         }
@@ -3083,6 +3261,28 @@ static void mglContextHostReleaseOwner(void *owner)
     mglReleaseObject((MGLObjectId)owner);
 }
 
+static void mglContextHostNotifyFramebufferSize(void *owner, int width,
+                                                int height)
+{
+    MGLObjectId r = (MGLObjectId)owner;
+    if (!r) {
+        return;
+    }
+    (void)width;
+    (void)height;
+    /* Re-read the view on the main thread (GLFW cocoa callbacks are main).
+     * Width/height are informational; MainThreadSync is the source of truth
+     * for layer.frame × scale. */
+    (void)mglSend<void>(r, sel_registerName("mglMainThreadSyncViewGeometry"));
+    static std::atomic<uint64_t> s_fbNotifyLog{0};
+    uint64_t hit = s_fbNotifyLog.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (hit <= 16ull || (hit % 60ull) == 0ull) {
+        fprintf(stderr,
+                "MGL SIZE glfw fb notify hit=%llu glfw=%dx%d\n",
+                (unsigned long long)hit, width, height);
+    }
+}
+
 static const MGLContextHostOps g_mglContextHostOps = {
     MGL_CONTEXT_HOST_OPS_VERSION,
     (uint32_t)sizeof(MGLContextHostOps),
@@ -3090,6 +3290,7 @@ static const MGLContextHostOps g_mglContextHostOps = {
     mglContextHostRendererIsReady,
     mglContextHostSetSwapInterval,
     mglContextHostReleaseOwner,
+    mglContextHostNotifyFramebufferSize,
 };
 
 const MGLContextHostOps *mglContextHostOps(void)

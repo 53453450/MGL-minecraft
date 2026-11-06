@@ -316,6 +316,8 @@ void _glfwDestroyContextNSGL(_GLFWwindow* window);
 
 GLFWbool _glfwInitMGL(void);
 void _glfwTerminateMGL(void);
+/* Push GLFW's live FB size into MGL (main thread). */
+void _glfwMGLNotifyFramebufferSize(_GLFWwindow* window, int width, int height);
 GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
                                 const _GLFWctxconfig* ctxconfig,
                                 const _GLFWfbconfig* fbconfig);

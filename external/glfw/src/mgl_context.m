@@ -17,6 +17,7 @@
 #include <math.h>
 #include <dlfcn.h>
 #include <limits.h>
+#include <stddef.h>
 #include <string.h>
 
 #define GL_BGRA                           0x80E1
@@ -118,6 +119,17 @@ static void makeContextCurrentMGL(_GLFWwindow* window)
 static void swapBuffersMGL(_GLFWwindow* window)
 {
     contextFns(window)->swapBuffers(window->context.mgl.ctx);
+}
+
+void _glfwMGLNotifyFramebufferSize(_GLFWwindow* window, int width, int height)
+{
+    if (!window || !window->context.mgl.ops || !window->context.mgl.renderer)
+        return;
+    if (window->context.mgl.ops->version < 2u ||
+        !window->context.mgl.ops->notify_framebuffer_size)
+        return;
+    window->context.mgl.ops->notify_framebuffer_size(window->context.mgl.renderer,
+                                                     width, height);
 }
 
 static void swapIntervalMGL(int interval)
@@ -322,8 +334,16 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
      * a compile-time event for rebuilt consumers and a NULL check for stale
      * ones - not an unrecognized-selector crash. */
     const MGLContextHostOps* ops = fns->hostOps();
-    if (!ops || ops->version != MGL_CONTEXT_HOST_OPS_VERSION ||
-        ops->size < sizeof(MGLContextHostOps))
+    /* The ops table is append-only.  Require the complete v1 field set rather
+     * than an exact version match: a v1 libmgl paired with this GLFW still
+     * works because _glfwMGLNotifyFramebufferSize gates the v2 entry on
+     * ops->version.  An exact match made any partial dylib upgrade fail with
+     * GLFW_VERSION_UNAVAILABLE. */
+    const size_t requiredOpsSize =
+        offsetof(MGLContextHostOps, release_owner) +
+        sizeof(((MGLContextHostOps *)0)->release_owner);
+    if (!ops || ops->version < MGL_CONTEXT_HOST_OPS_MIN_VERSION ||
+        ops->size < requiredOpsSize)
     {
         fns->destroy(window->context.mgl.ctx);
         window->context.mgl.ctx = NULL;
