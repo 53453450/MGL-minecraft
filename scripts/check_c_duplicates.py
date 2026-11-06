@@ -48,7 +48,7 @@ COMMENT_RE = re.compile(r'/\*.*?\*/', re.S)
 
 def definitions():
     defs = collections.defaultdict(list)
-    for path in sorted((ROOT / 'MGL' / 'src').iterdir()):
+    for path in sorted((ROOT / 'MGL' / 'src').rglob('*')):
         if path.suffix not in SUFFIXES or path.name in SKIP:
             continue
         text = path.read_text(errors='replace')

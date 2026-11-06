@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GL_XML = os.path.join(ROOT, "external", "OpenGL-Registry", "xml", "gl.xml")
-GL_CORE = os.path.join(ROOT, "MGL", "src", "gl_core.c")
+GL_CORE = os.path.join(ROOT, "MGL", "src", "L5_api", "gl_core.c")
 LOCK = os.path.join(ROOT, "MGL", "generated", "registry.lock")
 OUT_COMMANDS = os.path.join(ROOT, "MGL", "generated", "gl46_core_commands.txt")
 OUT_ABI = os.path.join(ROOT, "MGL", "generated", "gl46_abi.inc")

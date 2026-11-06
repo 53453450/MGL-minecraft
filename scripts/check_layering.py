@@ -38,7 +38,7 @@ BASELINE = ROOT / 'scripts' / 'layering_baseline.txt'
 # L0: GL entry points and their object tables.
 L0_FILES = [
     'gl_core.c', 'mgl_draw_entry.c', 'mgl_texture_entries.c',
-    'draw_buffers.c', 'rendering.c', 'textures.c', 'buffers.c', 'samplers.c',
+    'draw_buffers.c', 'rendering.c', 'buffers.c', 'samplers.c',
     'framebuffers.c', 'program.c', 'uniforms.c', 'tex_param.c',
     'vertex_arrays.c', 'vertex_buffers.c', 'shaders.c', 'state.c', 'get.c',
     'fence.c', 'compute.c',
@@ -113,18 +113,27 @@ def scan(path, regex):
             if regex.search(line)]
 
 
+def find_sources(name):
+    matches = sorted(SRC.rglob(name))
+    return matches or [SRC / name]
+
+
 def targets():
     for name in L0_FILES:
-        yield 'C1', SRC / name, C1_RE
-    l3 = {p for g in L3_GLOBS for p in SRC.glob(g)}
-    l3 |= {SRC / n for n in L3_FILES}
+        for p in find_sources(name):
+            yield 'C1', p, C1_RE
+    for p in sorted(SRC.rglob('mgl_textures*.c')):
+        yield 'C1', p, C1_RE
+    l3 = {p for g in L3_GLOBS for p in SRC.rglob(g)}
+    for name in L3_FILES:
+        l3.update(find_sources(name))
     for p in sorted(l3):
         yield 'C2', p, C2_RE
-    for p in sorted(SRC.glob(PLAN_GLOB)):
+    for p in sorted(SRC.rglob(PLAN_GLOB)):
         yield 'C3', p, C3_RE
     for name in TYPE_HEADERS:
         yield 'C4', INC / name, C4_RE
-    for p in sorted(SRC.iterdir()):
+    for p in sorted(SRC.rglob('*')):
         if p.suffix in ('.c', '.cpp', '.m', '.mm'):
             yield 'C5', p, C5_RE
             if p.name != C6_OWNER:

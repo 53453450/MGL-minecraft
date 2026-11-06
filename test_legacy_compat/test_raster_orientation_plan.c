@@ -21,13 +21,19 @@
 #include "mgl_pso_format_class.h"
 #include "mgl_program_resource.h"
 
-/* The format-class file reads a program's builtin mask in code this harness
- * does not reach. */
+/* The format-class file reads program builtins and depth/stencil properties in
+ * code this harness does not reach. */
 uint32_t mglProgramStageBuiltinMask(const Program *program, int stage)
 {
     (void)program;
     (void)stage;
     return 0u;
+}
+
+int mglRenderPixelFormatIsDepthOrStencil(uint32_t pixel_format)
+{
+    (void)pixel_format;
+    return 0;
 }
 
 static int tests_run;

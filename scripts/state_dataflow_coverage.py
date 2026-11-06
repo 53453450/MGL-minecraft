@@ -141,14 +141,14 @@ def glm_state_fields(state_src):
     return sorted(set(out))
 
 
-def covered_state_fields(draw_lines):
+def covered_state_fields(key_lines):
     """GLMState member names referenced from key/hash builders."""
     covered = set()
     for pat in _HASH_BUILDER_PATTERNS:
-        span = fn_span(draw_lines, pat)
+        span = fn_span(key_lines, pat)
         if not span:
             continue
-        body = "\n".join(draw_lines[span[0] : span[1] + 1])
+        body = "\n".join(key_lines[span[0] : span[1] + 1])
         for m in re.finditer(
             r"(?:active_state|STATE)\s*(?:->|\()\s*([A-Za-z_][A-Za-z0-9_]*)",
             body,
@@ -186,12 +186,12 @@ def main():
     state_h = os.path.join(ROOT, "MGL/include/mgl_types_state.h")
     key_h = os.path.join(ROOT, "MGL/include/draw_command.h")
     identity_h = os.path.join(ROOT, "MGL/include/mgl_state_identity_table.h")
-    draw_c = os.path.join(ROOT, "MGL/src/draw_command.c")
+    key_c = os.path.join(ROOT, "MGL/src/L2_encode/mgl_draw_state_key.c")
 
     state_src = read(state_h)
     key_src = read(key_h)
     identity_src = read(identity_h)
-    draw_lines = read(draw_c).split("\n")
+    key_lines = read(key_c).split("\n")
     key_fields = field_names(struct_body(key_src, "MGLStateKey") or "")
     table_keys = identity_key_fields(identity_src)
 
@@ -205,7 +205,7 @@ def main():
     findings = []
 
     # ---- CHECK 1 ----------------------------------------------------------
-    missing, note = check_key_populated(draw_lines, key_fields)
+    missing, note = check_key_populated(key_lines, key_fields)
     print("=" * 78)
     print("CHECK 1  every MGLStateKey field written by mglComputeStateKey")
     print("=" * 78)
@@ -240,7 +240,7 @@ def main():
         else:
             print(f"  OK    {len(table_keys)} key columns match MGLStateKey exactly")
         # Table keys must also be written (same as CHECK 1, keyed off the table).
-        missing_tab, _ = check_key_populated(draw_lines, table_keys)
+        missing_tab, _ = check_key_populated(key_lines, table_keys)
         if missing_tab:
             for f in missing_tab:
                 print(f"  FAIL  identity key '{f}' never written by mglComputeStateKey")
@@ -274,7 +274,7 @@ def main():
 
     # ---- CHECK 3 ----------------------------------------------------------
     fields = glm_state_fields(state_src)
-    covered = covered_state_fields(draw_lines)
+    covered = covered_state_fields(key_lines)
     uncovered = [f for f in fields if f not in covered]
     new = sorted(f for f in uncovered if f not in CHECK3_BASELINE)
     stale = sorted(f for f in CHECK3_BASELINE if f in covered)
