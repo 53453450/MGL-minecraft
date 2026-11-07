@@ -930,6 +930,21 @@ static void mglBdSyncCopyTexSubImageCPU(void *renderer, Texture *tex,
 }
 
 
+/* Source last written by a render pass; defined with the blitFramebuffer
+ * scaled path, which needs the same predicate. */
+static int mglBdLevelWrittenByRenderPass(const Texture *tex, GLuint level);
+
+/* Same-format CopyTex of a render-pass-written colour source: sample the
+ * attachment instead of copyFromTexture, which on TBDR may decompress or
+ * read stale tiles (the blitFramebuffer scaled path already does this).
+ * Both sides store GL rows, so the GL rectangle maps onto stored rows
+ * without a Y flip.  Returns false to keep the blit-encoder path. */
+static bool mglBdCopyTexSubImageViaScaledBlit(
+    void *renderer, void *src_texture,
+    MGLMetalAttachmentSubresource src_subresource, void *dest_texture,
+    size_t dest_slice, size_t dest_level, size_t dest_depth_plane, int64_t x,
+    int64_t y, int64_t xoffset, int64_t yoffset, size_t width, size_t height);
+
 /* --- -mtlCopyTexSubImageViaTextureBlit:… --------------------------------- */
 
 typedef struct {
@@ -1119,6 +1134,26 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
     const int64_t src_y = y;
     const int64_t dst_y = yoffset;
 
+    /* A 3D destination has a single slice; zoffset selects its depth plane. */
+    const int dest_is_3d =
+        mglBdTextureInfo(dest_texture).texture_type == MGLTextureType3D;
+    const size_t dest_slice = dest_is_3d ? 0u : slice;
+    const size_t dest_depth_plane = dest_is_3d ? slice : 0u;
+
+    if (!dest_is_depth &&
+        mglBdLevelWrittenByRenderPass(src_tex_obj, src_subresource.level) &&
+        mglBdCopyTexSubImageViaScaledBlit(
+            renderer, src_texture, src_subresource, dest_texture, dest_slice,
+            level, dest_depth_plane, x, y, xoffset, yoffset, width, height)) {
+        mglMarkTextureLevelRenderTargetWrittenImpl(tex, (GLuint)level, __func__,
+                                                   __LINE__);
+        mglBdSyncCopyTexSubImageCPU(renderer, tex, dest_texture, slice, level,
+                                    xoffset, yoffset, width, height);
+        tex->dirty_bits &= ~(DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL);
+        mglMarkRendererDirtyBits(&glm_ctx->state, DIRTY_TEX | DIRTY_TEX_BINDING);
+        return true;
+    }
+
     void *blit_encoder =
         mglRenderCreateBlitEncoderBorrowed(mglBdCommandBufferOwner(&areas));
     if (!blit_encoder) {
@@ -1130,21 +1165,18 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
         return true;
     }
 
-    /* A 3D destination has a single slice; zoffset selects its depth plane. */
-    const int dest_is_3d =
-        mglBdTextureInfo(dest_texture).texture_type == MGLTextureType3D;
     MglBdCopyTexBlitCtx blit_ctx = {
         .blit_encoder = blit_encoder,
         .src_texture = src_texture,
         .src_subresource = src_subresource,
         .dest_texture = dest_texture,
-        .slice = dest_is_3d ? 0u : slice,
+        .slice = dest_slice,
         .level = level,
         .x = (size_t)x,
         .src_y = (size_t)src_y,
         .xoffset = (size_t)xoffset,
         .yoffset = (size_t)dst_y,
-        .zoffset = dest_is_3d ? slice : 0u,
+        .zoffset = dest_depth_plane,
         .width = width,
         .height = height,
         .ended = 0,
@@ -2747,6 +2779,128 @@ static void mglBdEndRenderEncoder(void *encoder)
         return;
     }
     (void)mglRenderEndRenderEncoder(encoder);
+}
+
+static bool mglBdCopyTexSubImageViaScaledBlit(
+    void *renderer, void *src_texture,
+    MGLMetalAttachmentSubresource src_subresource, void *dest_texture,
+    size_t dest_slice, size_t dest_level, size_t dest_depth_plane, int64_t x,
+    int64_t y, int64_t xoffset, int64_t yoffset, size_t width, size_t height)
+{
+    if (!renderer || !src_texture || !dest_texture || src_texture == dest_texture) {
+        return false;
+    }
+    if (src_subresource.depthPlane != 0u) {
+        return false;
+    }
+
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
+
+    const MGLRenderTextureInfo src_info = mglBdTextureInfo(src_texture);
+    const MGLRenderTextureInfo dst_info = mglBdTextureInfo(dest_texture);
+    void *scaled_src = src_texture;
+    int created_view = 0;
+    if (src_subresource.level != 0u || src_subresource.slice != 0u ||
+        src_info.texture_type != MGLTextureType2D) {
+        const int viewable =
+            src_info.texture_type == MGLTextureType2DArray ||
+            src_info.texture_type == MGLTextureTypeCube ||
+            src_info.texture_type == MGLTextureTypeCubeArray ||
+            src_info.texture_type == MGLTextureType2D;
+        size_t slice_count = (size_t)src_info.array_length;
+        if (src_info.texture_type == MGLTextureTypeCube ||
+            src_info.texture_type == MGLTextureTypeCubeArray) {
+            slice_count *= 6u;
+        }
+        if (src_info.texture_type == MGLTextureType2D) {
+            slice_count = 1u;
+        }
+        if (!viewable || src_subresource.slice >= slice_count) {
+            return false;
+        }
+        scaled_src = mglBdCreateTextureView(
+            src_texture, src_info.pixel_format, MGLTextureType2D,
+            (uint64_t)src_subresource.level, 1u,
+            (uint64_t)src_subresource.slice, 1u);
+        if (!scaled_src) {
+            return false;
+        }
+        created_view = 1;
+    }
+
+    void *pipeline =
+        mglBlitScaledPipelineForPixelFormat(renderer, dst_info.pixel_format);
+    void *sampler =
+        mglBlitScaledSamplerForFilter(renderer, mglRenderNearestFilter());
+    if (!pipeline || !sampler) {
+        if (created_view) {
+            mglSafeReleaseMetalObj(&scaled_src);
+        }
+        return false;
+    }
+
+    const size_t src_w = mglMetalTextureLevelDimension(src_info.width,
+                                                       src_subresource.level);
+    const size_t src_h = mglMetalTextureLevelDimension(src_info.height,
+                                                       src_subresource.level);
+    const size_t dst_w =
+        mglMetalTextureLevelDimension(dst_info.width, dest_level);
+    const size_t dst_h =
+        mglMetalTextureLevelDimension(dst_info.height, dest_level);
+    if (src_w == 0u || src_h == 0u || dst_w == 0u || dst_h == 0u) {
+        if (created_view) {
+            mglSafeReleaseMetalObj(&scaled_src);
+        }
+        return false;
+    }
+
+    const float inv_src_w = 1.0f / (float)src_w;
+    const float inv_src_h = 1.0f / (float)src_h;
+    MGLScaledBlitParams params;
+    params.uvRect = (vector_float4){(float)x * inv_src_w, (float)y * inv_src_h,
+                                    (float)(x + (int64_t)width) * inv_src_w,
+                                    (float)(y + (int64_t)height) * inv_src_h};
+    params.forceOpaqueAlpha = 0.0f;
+    params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
+
+    const int full_level = (xoffset == 0 && yoffset == 0 && width == dst_w &&
+                            height == dst_h);
+    MGLRenderPassState pass = mglBdDefaultRenderPassState();
+    pass.color[0].attachment = mglBdRenderPassAttachment(
+        dest_texture, dest_level, dest_slice, dest_depth_plane,
+        full_level ? MGLLoadActionDontCare : MGLLoadActionLoad,
+        MGLStoreActionStore);
+    pass.render_target_width = dst_w;
+    pass.render_target_height = dst_h;
+
+    void *encoder =
+        mglBdCreateRenderEncoder(mglBdCommandBufferOwner(&areas), &pass);
+    if (!encoder) {
+        if (created_view) {
+            mglSafeReleaseMetalObj(&scaled_src);
+        }
+        return false;
+    }
+
+    mglBdSetRenderPipeline(encoder, pipeline);
+    mglBdSetRenderBytes(encoder, &params, sizeof(params),
+                        MGL_RENDER_BINDING_STAGE_VERTEX, 0);
+    mglBdSetRenderBytes(encoder, &params, sizeof(params),
+                        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
+    mglBdSetRenderTexture(encoder, scaled_src, MGL_RENDER_BINDING_STAGE_FRAGMENT,
+                          0);
+    mglBdSetRenderSampler(encoder, sampler, MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
+    mglBdSetRenderViewport(encoder, (double)xoffset, (double)yoffset,
+                           (double)width, (double)height, 0.0, 1.0);
+    mglBdSetRenderScissor(encoder, (size_t)xoffset, (size_t)yoffset, width,
+                          height);
+    mglBdDrawPrimitives(encoder, MGLPrimitiveTypeTriangleStrip, 0, 4);
+    mglBdEndRenderEncoder(encoder);
+    if (created_view) {
+        mglSafeReleaseMetalObj(&scaled_src);
+    }
+    return true;
 }
 
 /* -blitFramebufferScaledColorWithState: */
