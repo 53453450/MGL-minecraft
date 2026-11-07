@@ -563,10 +563,9 @@ static void mglBufferGenerationCompletedBody(
 
 /* Pair the generation tagged by the accumulating command buffer with that
  * command buffer's own completion, then mint the generation for its successor.
- * Every submit path funnels through here, so the pairing holds for the swap,
- * the mid-frame flush, the readback and the blit command buffers alike.  Must
- * run BEFORE commit: Metal asserts when addCompletedHandler: is called on an
- * already-committed buffer. */
+ * Every commit of the context command buffer funnels through here (swap,
+ * mid-frame flush, pre-readback flush).  Must run BEFORE commit: Metal asserts
+ * when addCompletedHandler: is called on an already-committed buffer. */
 static void mglRegisterBufferGenerationCompletion(void *command_buffer) {
     if (!command_buffer) {
         return;
@@ -597,7 +596,9 @@ int mglRenderCommitCommandBuffer(void* command_buffer) {
     MTL::CommandBuffer* command =
         static_cast<MTL::CommandBuffer*>(command_buffer);
     if (!command) return -1;
-    mglRegisterBufferGenerationCompletion(command_buffer);
+    /* Standalone command buffers commit while the context command buffer may
+     * still be accumulating encodes tagged with the current generation; their
+     * completion must not report that generation as finished. */
     command->commit();
     return 0;
 }

@@ -659,6 +659,7 @@ void mglRenderReleaseBufferMetalData(GLMContext glm_ctx, Buffer* buffer) {
     if (!buffer || !mglBufferMtl(buffer)) return;
     (void)glm_ctx;
     MGLBufferBackend* backend = mglBufferBackendEnsure(buffer);
+    mgl::retireBufferCowStore(backend);
     mgl::releaseBridgedObject(&backend->mtl_data);
     backend->mtl_last_use_generation = 0;
 }

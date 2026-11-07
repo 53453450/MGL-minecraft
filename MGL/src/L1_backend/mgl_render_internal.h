@@ -317,7 +317,9 @@ struct BufferCowPool {
     std::vector<BufferCowSlot> slots;
 };
 
-inline std::atomic<uint64_t> gBufferFrameGeneration{0};
+/* Starts above the completed watermark: stamps taken before the first commit
+ * must not already read as completed. */
+inline std::atomic<uint64_t> gBufferFrameGeneration{1};
 inline std::atomic<uint64_t> gBufferCompletedGeneration{0};
 /* Set by every copy-on-write snapshot tag and consumed by the commit that
  * submits the command buffer carrying those tags.  Only a tagged command buffer
@@ -474,23 +476,16 @@ inline BufferCowSnapshot takeBufferCowSnapshot(MTL::Device* device,
     BufferCowPool* pool = bufferCowPool(owner, true);
     const uint64_t completed =
         gBufferCompletedGeneration.load(std::memory_order_acquire);
-    /* Never hand back an existing Shared MTLBuffer for CPU rewrite — that
-     * raced GPU vertex fetch on MC even when lastUse looked completed.
-     * Idle pool slots may be replaced with a *fresh* newBuffer (encoder may
-     * still retain the old one). */
-    if (pool && device) {
+    /* A slot is stamped when it is retired (installBufferCowSnapshot), which
+     * bounds every encode of it, so per-encode stamps that a skip-matched or
+     * fragment-only bind never writes cannot hand back an in-flight store. */
+    if (pool) {
         for (BufferCowSlot& slot : pool->slots) {
             if (!slot.buffer || slot.buffer == oldBuffer ||
                 static_cast<size_t>(slot.buffer->length()) < length ||
                 completed < slot.lastUseGeneration) {
                 continue;
             }
-            MTL::Buffer* fresh = device->newBuffer(
-                static_cast<NS::UInteger>(length), options);
-            if (!fresh) return {};
-            slot.buffer->release();
-            slot.buffer = fresh;
-            slot.lastUseGeneration = 0;
             return {slot.buffer, true};
         }
     }
@@ -579,11 +574,28 @@ inline bool bufferDirtyShadowRange(const Buffer* buffer,
     return true;
 }
 
+/* Stamp the pool slot of the store being detached with the accumulating
+ * generation: nothing can encode it afterwards. */
+inline void retireBufferCowStore(MGLBufferBackend* backend) {
+    BufferCowPool* pool = static_cast<BufferCowPool*>(backend->cow_pool);
+    if (!pool || !backend->mtl_data) return;
+    const uint64_t retired =
+        gBufferFrameGeneration.load(std::memory_order_acquire);
+    for (BufferCowSlot& slot : pool->slots) {
+        if (slot.buffer == backend->mtl_data) {
+            slot.lastUseGeneration = std::max(slot.lastUseGeneration, retired);
+            return;
+        }
+    }
+}
+
 inline void installBufferCowSnapshot(Buffer* owner,
                               const BufferCowSnapshot& snapshot) {
     if (snapshot.poolOwnsReference) snapshot.buffer->retain();
-    releaseBridgedObject(&mglBufferBackendEnsure(owner)->mtl_data);
-    mglBufferBackendEnsure(owner)->mtl_data = snapshot.buffer;
+    MGLBufferBackend* backend = mglBufferBackendEnsure(owner);
+    retireBufferCowStore(backend);
+    releaseBridgedObject(&backend->mtl_data);
+    backend->mtl_data = snapshot.buffer;
 }
 
 struct SampledSamplerCacheEntry {

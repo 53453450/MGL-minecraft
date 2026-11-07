@@ -560,10 +560,10 @@ static int verifyBufferBinding(void) {
     mglRenderRecordBufferGenerationCompleted(generation1);
     cowValue = 73u;
     mglRenderBufferSubData(NULL, &buffer, 0, sizeof(cowValue), &cowValue);
-    if (mglBufferMtl(&buffer) == firstCowBacking ||
+    if (mglBufferMtl(&buffer) != firstCowBacking ||
         mglRenderCompletedBufferGeneration() < generation1 ||
         generation2 <= generation1) {
-        fprintf(stderr, "FAIL: completed COW slot reused its retired backing\n");
+        fprintf(stderr, "FAIL: completed COW slot was not reused\n");
         return 1;
     }
     mglRenderReleaseBufferMetalData(NULL, &buffer);

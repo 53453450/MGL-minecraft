@@ -62,7 +62,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 234
+#define MAX_TESTS 235
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14891,6 +14891,131 @@ cleanup:
     if (program) glDeleteProgram(program);
     if (fbo) glDeleteFramebuffers(1, &fbo);
     if (tex) glDeleteTextures(1, &tex);
+    return result;
+}
+
+/* Every glBufferSubData between draws snapshots the vertex buffer while
+ * earlier command buffers may still fetch the previous store.  A recycled
+ * snapshot that is still in flight makes an earlier point land on a later
+ * point's pixel, so each point must hit exactly its own pixel. */
+static int test_buffer_subdata_inflight_cow(unsigned char *pixels,
+                                            const char *out_path)
+{
+    (void)out_path;
+    static const char *point_vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_PointSize = 1.0;\n"
+        "  gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *point_fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(1.0, 0.0, 0.0, 1.0); }\n";
+    static const char *busy_vs =
+        "#version 450 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID << 1) & 2),\n"
+        "                float(gl_VertexID & 2));\n"
+        "  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n";
+    static const char *busy_fs =
+        "#version 450 core\n"
+        "uniform int iters;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { float v = gl_FragCoord.x;\n"
+        "  for (int i = 0; i < iters; i++) v = fract(v * 1.0001 + 0.37);\n"
+        "  frag = vec4(v); }\n";
+    enum { kRounds = 6, kPointsPerRound = 48, kFlushEvery = 6 };
+
+    GLuint fbo = 0u, tex = 0u, busy_fbo = 0u, busy_tex = 0u;
+    GLuint vao = 0u, busy_vao = 0u, vbo = 0u;
+    GLuint point_prog = 0u, busy_prog = 0u;
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &tex);
+    busy_fbo = make_fbo(64, 64, &busy_tex);
+    if (!fbo || !busy_fbo) goto cleanup;
+    point_prog = link_program(point_vs, point_fs);
+    busy_prog = link_program(busy_vs, busy_fs);
+    if (!point_prog || !busy_prog) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &busy_vao);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, 2 * sizeof(float), NULL, GL_STREAM_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glUseProgram(busy_prog);
+    glUniform1i(glGetUniformLocation(busy_prog, "iters"), 4000);
+
+    for (int r = 0; r < kRounds; r++) {
+        for (int i = 0; i < kPointsPerRound; i++) {
+            const int px = 4 + 2 * i;
+            const int py = 8 + 16 * r;
+            const float pos[2] = {
+                2.0f * ((float)px + 0.5f) / (float)REG_W - 1.0f,
+                2.0f * ((float)py + 0.5f) / (float)REG_H - 1.0f,
+            };
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glViewport(0, 0, REG_W, REG_H);
+            glBindVertexArray(vao);
+            glUseProgram(point_prog);
+            glBindBuffer(GL_ARRAY_BUFFER, vbo);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof pos, pos);
+            glDrawArrays(GL_POINTS, 0, 1);
+            if ((i + 1) % kFlushEvery == 0) {
+                glBindFramebuffer(GL_FRAMEBUFFER, busy_fbo);
+                glViewport(0, 0, 64, 64);
+                glBindVertexArray(busy_vao);
+                glUseProgram(busy_prog);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+                glFlush();
+            }
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    {
+        int red = 0, missing = 0;
+        for (int y = 0; y < REG_H; y++) {
+            for (int x = 0; x < REG_W; x++) {
+                const unsigned char *q = &pixels[(y * REG_W + x) * 4];
+                if (q[0] > 200 && q[1] < 50) red++;
+            }
+        }
+        for (int r = 0; r < kRounds; r++) {
+            for (int i = 0; i < kPointsPerRound; i++) {
+                const int px = 4 + 2 * i;
+                const int py = 8 + 16 * r;
+                const unsigned char *q = &pixels[(py * REG_W + px) * 4];
+                if (!(q[0] > 200 && q[1] < 50)) missing++;
+            }
+        }
+        if (red != kRounds * kPointsPerRound || missing != 0) {
+            fprintf(stderr,
+                    "buffer_subdata_inflight_cow: %d red pixels, %d missing, "
+                    "expected %d / 0\n",
+                    red, missing, kRounds * kPointsPerRound);
+            goto cleanup;
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (busy_vao) glDeleteVertexArrays(1, &busy_vao);
+    if (point_prog) glDeleteProgram(point_prog);
+    if (busy_prog) glDeleteProgram(busy_prog);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (tex) glDeleteTextures(1, &tex);
+    if (busy_fbo) glDeleteFramebuffers(1, &busy_fbo);
+    if (busy_tex) glDeleteTextures(1, &busy_tex);
     return result;
 }
 
@@ -31455,6 +31580,8 @@ static const TestCase TESTS[] = {
                     test_interpolate_at_offset_orientation),
     SELF_CHECK_TEST("draw_buffer_texture_attachment",
                     test_draw_buffer_texture_attachment),
+    SELF_CHECK_TEST("buffer_subdata_inflight_cow",
+                    test_buffer_subdata_inflight_cow),
     /* depth_test/stencil use probe-style fns (test_depth_probe /
      * test_stencil_probe): hardcoded per-program values.
      * uniform_alias gates the cross-stage uniform-location fix (program.c
