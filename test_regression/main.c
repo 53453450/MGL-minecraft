@@ -62,7 +62,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 235
+#define MAX_TESTS 236
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -30826,6 +30826,136 @@ static int test_rt_keeps_uploaded_data(unsigned char *pixels, const char *out_pa
     return fail ? 1 : 0;
 }
 
+/* CopyTexSubImage straight after the draw that wrote the read attachment,
+ * into an RGBA8 texture no draw has touched, at an offset.  Variants: 2D to
+ * 2D, 2D to slice 1 of a 3D texture, layer 1 of a 3D attachment to 2D, and a
+ * source rectangle that runs past the attachment, where only the texels read
+ * from inside it are defined (GL 4.6 §18.2.3). */
+static int test_copy_tex_sub_image_after_draw(unsigned char *pixels,
+                                              const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() { vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 330 core\nout vec4 c;\n"
+        "void main() { c = vec4(floor(gl_FragCoord.xy) / 255.0, 50.0 / 255.0, 1.0); }\n";
+    enum { W = 32, H = 16, D = 3 };
+    GLuint prog = link_program(vs, fs);
+    if (!prog) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    static unsigned char src_fill[W * H * D * 4];
+    static unsigned char dst_fill[W * H * D * 4];
+    static unsigned char img[W * H * D * 4];
+    for (int i = 0; i < W * H * D; i++) {
+        src_fill[i * 4 + 0] = 0;
+        src_fill[i * 4 + 1] = 0;
+        src_fill[i * 4 + 2] = 77;
+        src_fill[i * 4 + 3] = 255;
+        dst_fill[i * 4 + 0] = 200;
+        dst_fill[i * 4 + 1] = 201;
+        dst_fill[i * 4 + 2] = 202;
+        dst_fill[i * 4 + 3] = 203;
+    }
+    int fail = 0;
+    for (int variant = 0; variant < 4; variant++) {
+        const int src_3d = variant == 2;
+        const int dst_3d = variant == 1;
+        const int overhang = variant == 3;
+        const int xoff = overhang ? 0 : 5, yoff = overhang ? 0 : 3;
+        const int x = overhang ? 20 : 2, y = overhang ? 0 : 4;
+        const int w = 20, h = overhang ? H : 9;
+        const GLenum src_target = src_3d ? GL_TEXTURE_3D : GL_TEXTURE_2D;
+        const GLenum dst_target = dst_3d ? GL_TEXTURE_3D : GL_TEXTURE_2D;
+        GLuint src = 0, dst = 0, fbo = 0;
+
+        glGenTextures(1, &src);
+        glBindTexture(src_target, src);
+        if (src_3d)
+            glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, W, H, D, 0, GL_RGBA, GL_UNSIGNED_BYTE, src_fill);
+        else
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, src_fill);
+        glTexParameteri(src_target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        if (src_3d)
+            glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, src, 0, 1);
+        else
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, src, 0);
+        glGenTextures(1, &dst);
+        glBindTexture(dst_target, dst);
+        if (dst_3d)
+            glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, W, H, D, 0, GL_RGBA, GL_UNSIGNED_BYTE, dst_fill);
+        else
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, dst_fill);
+        glTexParameteri(dst_target, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            fprintf(stderr, "copy_tex_sub_image_after_draw: variant %d framebuffer incomplete\n",
+                    variant);
+            fail |= 1 << variant;
+        } else {
+            glViewport(0, 0, W, H);
+            glUseProgram(prog);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            if (dst_3d)
+                glCopyTexSubImage3D(GL_TEXTURE_3D, 0, xoff, yoff, 1, x, y, w, h);
+            else
+                glCopyTexSubImage2D(GL_TEXTURE_2D, 0, xoff, yoff, x, y, w, h);
+            const GLenum err = glGetError();
+            /* The copy is under test, not the readback's wait for the GPU. */
+            glFinish();
+            glGetTexImage(dst_target, 0, GL_RGBA, GL_UNSIGNED_BYTE, img);
+            int bad = 0;
+            for (int k = 0; k < (dst_3d ? D : 1); k++) {
+                for (int j = 0; j < H; j++) {
+                    for (int i = 0; i < W; i++) {
+                        const int in_rect = (!dst_3d || k == 1) &&
+                                            i >= xoff && i < xoff + w &&
+                                            j >= yoff && j < yoff + h;
+                        const int sx = x + i - xoff, sy = y + j - yoff;
+                        if (in_rect && sx >= W) continue;
+                        const unsigned char *q = &img[((k * H + j) * W + i) * 4];
+                        const unsigned char want[4] = {
+                            in_rect ? (unsigned char)sx : 200,
+                            in_rect ? (unsigned char)sy : 201,
+                            in_rect ? 50 : 202,
+                            in_rect ? 255 : 203,
+                        };
+                        if (memcmp(q, want, 4) != 0) {
+                            if (bad == 0) {
+                                fprintf(stderr,
+                                        "copy_tex_sub_image_after_draw: variant %d texel %d,%d,%d "
+                                        "= %u,%u,%u,%u (want %u,%u,%u,%u)\n",
+                                        variant, i, j, k, q[0], q[1], q[2], q[3],
+                                        want[0], want[1], want[2], want[3]);
+                            }
+                            bad++;
+                        }
+                    }
+                }
+            }
+            if (err != GL_NO_ERROR || bad != 0) {
+                fprintf(stderr, "copy_tex_sub_image_after_draw: variant %d error 0x%x, %d bad texels\n",
+                        variant, err, bad);
+                fail |= 1 << variant;
+            }
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &src);
+        glDeleteTextures(1, &dst);
+    }
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    return fail ? 1 : 0;
+}
+
 /* `T a = x, b = y;` at global scope initializes every declarator, in the
  * vertex and in the fragment stage.  Complementary's sky shader declares
  * `vec3 nmscRainM = vec3(0.0), ndscRainM = vec3(0.0);`; the second one was
@@ -31575,6 +31705,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("global_multi_declarator_init", test_global_multi_declarator_init),
     SELF_CHECK_TEST("rt_keeps_uploaded_data", test_rt_keeps_uploaded_data),
     SELF_CHECK_TEST("iris_like_frame", test_iris_like_frame),
+    SELF_CHECK_TEST("copy_tex_sub_image_after_draw",
+                    test_copy_tex_sub_image_after_draw),
     SELF_CHECK_TEST("generate_mipmap_render_target", test_generate_mipmap_render_target),
     SELF_CHECK_TEST("interpolate_at_offset_orientation",
                     test_interpolate_at_offset_orientation),

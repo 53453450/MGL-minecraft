@@ -267,7 +267,7 @@ void mglCopyTexImageCommon(GLMContext ctx, GLenum target, GLuint face, GLint lev
     }
 
     // Copy from framebuffer to texture
-    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+    mglFlushPendingDraws(ctx);
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
@@ -335,7 +335,7 @@ void mglCopyTexSubImage1D(GLMContext ctx, GLenum target, GLint level, GLint xoff
     if (!mglCopyTextureSubImageValidate(ctx, tex, level, xoffset, 0, 0, width, 1)) {
         return;
     }
-    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+    mglFlushPendingDraws(ctx);
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
@@ -393,8 +393,9 @@ void mglCopyTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoff
         return;
     }
 
-    // This copies from the current read framebuffer to the texture
-    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+    // This copies from the current read framebuffer to the texture; pending
+    // draws may still be writing the read attachment, not just the texture.
+    mglFlushPendingDraws(ctx);
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
@@ -428,7 +429,7 @@ void mglCopyTexSubImage3D(GLMContext ctx, GLenum target, GLint level, GLint xoff
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+    mglFlushPendingDraws(ctx);
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
@@ -460,7 +461,7 @@ void mglCopyTextureSubImage1D(GLMContext ctx, GLuint texture, GLint level, GLint
     if (!mglCopyTextureSubImageValidate(ctx, tex, level, xoffset, 0, 0, width, 1)) {
         return;
     }
-    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+    mglFlushPendingDraws(ctx);
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
@@ -507,7 +508,7 @@ void mglCopyTextureSubImage2D(GLMContext ctx, GLuint texture, GLint level, GLint
             ERROR_RETURN(GL_INVALID_VALUE);
             return;
         }
-        mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+        mglFlushPendingDraws(ctx);
 
         /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
         if (ctx->sync_strict) {
@@ -572,7 +573,7 @@ void mglCopyTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint
         }
         slice = (GLuint)zoffset;
     }
-    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+    mglFlushPendingDraws(ctx);
 
     /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
