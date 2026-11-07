@@ -943,6 +943,7 @@ typedef struct {
     size_t src_y;
     size_t xoffset;
     size_t yoffset;
+    size_t zoffset;
     size_t width;
     size_t height;
     int ended;
@@ -954,10 +955,11 @@ static int mglBdCopyTexBlitGuarded(void *renderer, void *ctx_raw)
     MglBdCopyTexBlitCtx *ctx = (MglBdCopyTexBlitCtx *)ctx_raw;
     mglBdCopyTexture(ctx->blit_encoder, ctx->src_texture,
                      ctx->src_subresource.slice, ctx->src_subresource.level,
-                     mglBlitOrigin(ctx->x, ctx->src_y, 0u),
+                     mglBlitOrigin(ctx->x, ctx->src_y,
+                                   ctx->src_subresource.depthPlane),
                      mglBlitSize(ctx->width, ctx->height, 1u),
                      ctx->dest_texture, ctx->slice, ctx->level,
-                     mglBlitOrigin(ctx->xoffset, ctx->yoffset, 0u));
+                     mglBlitOrigin(ctx->xoffset, ctx->yoffset, ctx->zoffset));
     mglBdEndBlitEncoder(ctx->blit_encoder);
     ctx->ended = 1;
     return 1;
@@ -1069,6 +1071,26 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
     MGLMetalAttachmentSubresource src_subresource =
         mglMetalAttachmentSubresourceForAttachment(src_attachment);
 
+    /* Pixels read from outside the attachment are undefined (GL 4.6
+     * §18.2.3), and a blit may not read them: copy only the part inside. */
+    const int64_t src_w = (int64_t)mglMetalTextureLevelDimension(
+        mglBdTextureInfo(src_texture).width, src_subresource.level);
+    const int64_t src_h = (int64_t)mglMetalTextureLevelDimension(
+        mglBdTextureInfo(src_texture).height, src_subresource.level);
+    const int64_t x0 = x < 0 ? 0 : x;
+    const int64_t y0 = y < 0 ? 0 : y;
+    const int64_t x1 = x + (int64_t)width < src_w ? x + (int64_t)width : src_w;
+    const int64_t y1 = y + (int64_t)height < src_h ? y + (int64_t)height : src_h;
+    if (x1 <= x0 || y1 <= y0) {
+        return true;
+    }
+    xoffset += x0 - x;
+    yoffset += y0 - y;
+    x = x0;
+    y = y0;
+    width = (size_t)(x1 - x0);
+    height = (size_t)(y1 - y0);
+
     /* End any active render encoder so the blit encoder can run. */
     mglRendererEndRenderEncodingLocked(renderer);
     if (!mglRenderPassEnsureWritableCommandBufferLocked(
@@ -1108,17 +1130,21 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
         return true;
     }
 
+    /* A 3D destination has a single slice; zoffset selects its depth plane. */
+    const int dest_is_3d =
+        mglBdTextureInfo(dest_texture).texture_type == MGLTextureType3D;
     MglBdCopyTexBlitCtx blit_ctx = {
         .blit_encoder = blit_encoder,
         .src_texture = src_texture,
         .src_subresource = src_subresource,
         .dest_texture = dest_texture,
-        .slice = slice,
+        .slice = dest_is_3d ? 0u : slice,
         .level = level,
         .x = (size_t)x,
         .src_y = (size_t)src_y,
         .xoffset = (size_t)xoffset,
         .yoffset = (size_t)dst_y,
+        .zoffset = dest_is_3d ? slice : 0u,
         .width = width,
         .height = height,
         .ended = 0,
@@ -3446,23 +3472,15 @@ void mglBlitCopyTexSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         return;
     }
 
-    /* Fast path: try a direct GPU texture-to-texture blit from the matching
-     * framebuffer attachment. This handles glCopyTexImage2D/glCopyTexSubImage
-     * for depth, integer, and packed internal formats where the source FBO
-     * attachment shares the same Metal pixel format as the destination
-     * texture. For BGRA8/RGBA8 destinations the CPU path below is sufficient,
-     * so we skip the blit attempt to avoid unnecessary encoder churn. */
-    int dest_is_plain_bgra8 =
-        mglRenderPixelFormatIsUnorm8Color(
-            (uint32_t)mglBdTextureInfo(dest_texture).pixel_format) != 0;
-    if (!dest_is_plain_bgra8) {
-        int blitted = mglBlitCopyTexSubImageViaTextureBlit(
-            renderer, glm_ctx, tex, dest_texture, slice, level, xoffset, yoffset,
-            x, y, width, height);
-        if (blitted) {
-            return;
-        }
-        /* Fall through to the BGRA8 path if the blit was not applicable. */
+    /* Fast path: a GPU texture-to-texture blit from the framebuffer attachment
+     * when it shares the destination's Metal pixel format.  The CPU path
+     * below waits for the GPU and re-uploads, so it only takes what the blit
+     * cannot: the default framebuffer and format conversion. */
+    if (mglBlitCopyTexSubImageViaTextureBlit(renderer, glm_ctx, tex,
+                                             dest_texture, slice, level,
+                                             xoffset, yoffset, x, y, width,
+                                             height)) {
+        return;
     }
 
     if (width > (size_t)(SIZE_MAX / 4u)) {
