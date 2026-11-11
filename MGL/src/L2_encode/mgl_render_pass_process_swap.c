@@ -71,6 +71,7 @@
 #include "mgl_render_api_buffer.h"
 #include "mgl_render_api_command.h"
 #include "mgl_ports_present.h"
+#include "mgl_ms_sample_loop.h"            /* post-depth coverage inputs */
 
 extern void mglLogRenderPassLifecycle(const char *tag, uint64_t call,
                                       GLMContext ctx, void *commandBufferOwner,
@@ -1091,6 +1092,11 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
     }
 
     if (!mglRenderBindFragmentSparseResidency(renderer, ctx, fragmentProgram)) {
+        return 0;
+    }
+    if (draw_command &&
+        !mglRendererBindPostDepthCoverageInputs(renderer, ctx,
+                                                fragmentProgram)) {
         return 0;
     }
 

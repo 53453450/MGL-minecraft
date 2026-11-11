@@ -125,5 +125,7 @@ int mglSamplerPlanBuild(const TextureParameter *params, uint32_t target,
     out->min_lod = params->min_lod;
     out->max_lod = params->max_lod;
     out->max_anisotropy = params->max_anisotropy;
+    out->reduction_mode = params->reduction_mode == GL_MIN ? 1u
+                          : params->reduction_mode == GL_MAX ? 2u : 0u;
     return 0;
 }

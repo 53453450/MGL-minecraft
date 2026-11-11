@@ -570,6 +570,153 @@ TEST(Metallib, InactiveSamplerArraysAreSkippedWhole) {
                   "void main() { o = texture(arr[2], uv) + texture(tail, uv); }\n"));
 }
 
+TEST(Metallib, TextureClamp1DArrayCompiles) {
+    static const char *src =
+        "#version 450 core\n"
+        "#extension GL_ARB_sparse_texture_clamp : enable\n"
+        "uniform sampler1DArray tex;\n"
+        "out vec4 color;\n"
+        "void main() { color = textureClampARB(tex, vec2(0.5, 0.0), 1.0); }\n";
+    CompileResult r = compile(src, MGL_STAGE_FRAGMENT);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
+}
+
+TEST(Metallib, TextureGradClamp1DArrayCompiles) {
+    static const char *src =
+        "#version 450 core\n"
+        "#extension GL_ARB_sparse_texture_clamp : enable\n"
+        "uniform sampler1DArray tex;\n"
+        "in vec2 texCoord;\n"
+        "out vec4 color;\n"
+        "void main() {\n"
+        "  color = textureGradClampARB(tex, texCoord, float(0), float(0), 0);\n"
+        "}\n";
+    CompileResult r = compile(src, MGL_STAGE_FRAGMENT);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
+}
+
+TEST(Metallib, TextureClampCubeCompiles) {
+    static const char *src =
+        "#version 450 core\n"
+        "#extension GL_ARB_sparse_texture_clamp : enable\n"
+        "uniform samplerCube tex;\n"
+        "in vec3 texCoord;\n"
+        "out vec4 color;\n"
+        "void main() { color = textureClampARB(tex, texCoord, 1.0); }\n";
+    CompileResult r = compile(src, MGL_STAGE_FRAGMENT);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
+}
+
+TEST(Metallib, TextureGradClampCubeArrayCompiles) {
+    static const char *src =
+        "#version 450 core\n"
+        "#extension GL_ARB_sparse_texture_clamp : enable\n"
+        "uniform samplerCubeArray tex;\n"
+        "in vec4 texCoord;\n"
+        "out vec4 color;\n"
+        "void main() {\n"
+        "  color = textureGradClampARB(tex, texCoord, vec3(0.001, 0, 0),\n"
+        "                              vec3(0, 0.001, 0), 1.0);\n"
+        "}\n";
+    CompileResult r = compile(src, MGL_STAGE_FRAGMENT);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
+}
+
+TEST(Metallib, ImplicitDoubleLogicalExpressionCompiles) {
+    static const char *src =
+        "#version 450 core\n"
+        "#extension GL_ARB_gpu_shader_fp64 : enable\n"
+        "out vec4 color;\n"
+        "void main() {\n"
+        "  double value = 1.0;\n"
+        "  bool truth = bool(value) && true;\n"
+        "  color = vec4(truth ? 1.0 : 0.0);\n"
+        "}\n";
+    CompileResult r = compile(src, MGL_STAGE_FRAGMENT);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
+}
+
+TEST(Metallib, ShaderBallotFragmentCompiles) {
+    static const char *src =
+        "#version 450 core\n"
+        "#extension GL_ARB_shader_ballot : enable\n"
+        "#extension GL_ARB_gpu_shader_int64 : enable\n"
+        "out vec4 color;\n"
+        "bool bitSet(uint64_t value, uint index) {\n"
+        "  return (value & (1ul << index)) != 0ul;\n"
+        "}\n"
+        "void main() {\n"
+        "  uint64_t activeMask = ballotARB(true);\n"
+        "  uint64_t masks = gl_SubGroupEqMaskARB ^ gl_SubGroupGeMaskARB ^\n"
+        "                   gl_SubGroupGtMaskARB ^ gl_SubGroupLeMaskARB ^\n"
+        "                   gl_SubGroupLtMaskARB;\n"
+        "  uint value = readInvocationARB(gl_SubGroupInvocationARB, 0u);\n"
+        "  vec4 broadcast = readInvocationARB(vec4(activeMask % 256ul), 0u);\n"
+        "  float first = readFirstInvocationARB(broadcast.x);\n"
+        "  color = vec4(float(bitSet(activeMask | masks, value)) + first);\n"
+        "}\n";
+    CompileResult r = compile(src, MGL_STAGE_FRAGMENT);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
+}
+
+TEST(Metallib, ShaderBallotVertexCompiles) {
+    static const char *src =
+        "#version 450 core\n"
+        "#extension GL_ARB_shader_ballot : enable\n"
+        "#extension GL_ARB_gpu_shader_int64 : enable\n"
+        "out vec4 color;\n"
+        "void main() {\n"
+        "  gl_Position = vec4(0.0);\n"
+        "  uint64_t own = 1ul << gl_SubGroupInvocationARB;\n"
+        "  color = vec4(float(ballotARB(true) & own) /\n"
+        "               float(gl_SubGroupSizeARB));\n"
+        "}\n";
+    CompileResult r = compile(src, MGL_STAGE_VERTEX);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
+}
+
+TEST(Metallib, SparseClampFragmentUsesDistinctHiddenArguments) {
+    static const char *src =
+        "#version 450 core\n"
+        "#extension GL_ARB_sparse_texture2 : enable\n"
+        "#extension GL_ARB_sparse_texture_clamp : enable\n"
+        "uniform sampler2D tex;\n"
+        "out vec4 color;\n"
+        "void main() {\n"
+        "  vec4 value = vec4(0);\n"
+        "  int code = sparseTextureGradClampARB(tex, vec2(0.5), vec2(0),\n"
+        "                                        vec2(0), 1.0, value);\n"
+        "  color = value + float(sparseTexelsResidentARB(code));\n"
+        "}\n";
+    unsigned char *bytes = nullptr;
+    size_t size = 0;
+    char err[512] = {0};
+    MGLAIRStageInfo info = {};
+    ASSERT_EQ(0, mglAirCompileGLSLWithReflectInfo(
+        src, MGL_STAGE_FRAGMENT, nullptr, &bytes, &size, nullptr,
+        &info, err, sizeof(err))) << err;
+    EXPECT_EQ(1u, info.needs_sparse_residency);
+    EXPECT_EQ(kMGLSparseResidencyDefaultBufferIndex,
+              info.sparse_residency_buffer_index);
+    ASSERT_NE(nullptr, bytes);
+    EXPECT_EQ(0, memcmp(bytes, "MTLB", 4));
+    mglShaderFree(bytes);
+}
+
 TEST(Metallib, RuntimeSSBOArrayLengthAcrossStages) {
     static const char *sources[] = {
         "#version 460 core\n"

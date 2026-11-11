@@ -117,8 +117,14 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         if (!d->name)
             continue;
         MType t;
-        if (d->type && d->type->base <= MGL_AST_TYPE_DOUBLE) {
-            t.scalar = (MGLIRScalar)d->type->base;
+        if (d->type && (d->type->base <= MGL_AST_TYPE_DOUBLE ||
+                        d->type->base == MGL_AST_TYPE_INT64 ||
+                        d->type->base == MGL_AST_TYPE_UINT64)) {
+            t.scalar = d->type->base == MGL_AST_TYPE_INT64
+                ? MGLIR_SCALAR_INT64
+                : d->type->base == MGL_AST_TYPE_UINT64
+                    ? MGLIR_SCALAR_UINT64
+                    : (MGLIRScalar)d->type->base;
             if (d->type->mat_cols > 0 && d->type->mat_rows > 0) {
                 t.cols = d->type->mat_cols;
                 t.rows = d->type->mat_rows;
@@ -164,7 +170,8 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         if (d->init) {
             llvm::Value *v = deps.emitExpr(cg, d->init, mod, *locals);
             if (!v) return;
-            v = coerceScalar(cg, v, t.scalar);
+            v = coerceScalar(cg, v, t.scalar,
+                             deps.exprType(cg, d->init, mod, *locals).scalar);
             if (needsArrayMem(cg, d->name ? d->name : "", t) && d->name) {
                 llvm::Value *slot = ensureArrayMem(cg, d->name, t);
                 cg.b->CreateAlignedStore(v, slot, llvm::Align(4));

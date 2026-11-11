@@ -23,6 +23,12 @@ extern "C" {
 int mglRendererRunEmulatedMSSampleDrawLoopIfNeeded(
     void *renderer, GLMContext ctx, void (*draw_once)(void *), void *draw_ctx);
 
+/* Binds the depth/stencil sample-plane copies and test state a
+ * post_depth_coverage fragment program reads (1 also when the program needs
+ * none); 0 when the active render encoder could not take them. */
+int mglRendererBindPostDepthCoverageInputs(void *renderer, GLMContext ctx,
+                                           Program *fragment_program);
+
 /* Copies plane 0 to every other plane when per-sample draws did not fill them. */
 void mglRendererBroadcastEmulatedMSSamplePlanesAfterDrawIfNeeded(void *renderer,
                                                                  GLMContext ctx);

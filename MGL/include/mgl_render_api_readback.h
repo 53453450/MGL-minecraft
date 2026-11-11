@@ -180,6 +180,14 @@ int mglRenderEncodeDepthClear(void *command_buffer,
 
 int mglRenderEncodeDepthClearForCommandBufferOwner(MGLCommandBufferOwner *command_buffer_owner, void *texture, uint64_t level, uint64_t slice, uint64_t depth_plane, double clear_depth);
 
+/* One pass over a depth and/or stencil attachment slice.  An aspect whose
+ * clear flag is 0 is loaded and stored, so a packed depth-stencil texture
+ * keeps the aspect that is not being cleared. */
+int mglRenderEncodeDepthStencilClearForCommandBufferOwner(
+    MGLCommandBufferOwner *command_buffer_owner, void *depth_texture,
+    void *stencil_texture, uint64_t level, uint64_t slice, int clear_depth,
+    double depth, int clear_stencil, uint32_t stencil);
+
 #ifdef __cplusplus
 }
 #endif

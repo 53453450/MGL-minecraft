@@ -1115,12 +1115,19 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
             GLdouble metalVy = vy;
             mglRasterPlanViewportY(&orientation, &metalVy, &vh,
                                    (uint32_t)passHeight);
-            /* Per-sample draw of a SAMPLE_SHADING FS: shift the window mapping
-             * so pixel-center interpolants land on that sample's position.
-             * Skip when the FS already consumes SampleID / interpolateAtSample. */
+            /* Per-sample draw: shift the window mapping so pixel-center
+             * coverage and interpolants land on that sample's position (see
+             * mglDrawShouldOffsetViewportForSampleShading). */
             if (mglPlatformShellMSSampleInLoop(renderer) &&
                 mglDrawShouldOffsetViewportForSampleShading(ctx)) {
                 Texture *msTex = mglDrawEmulatedMSColor0Texture(ctx);
+                Framebuffer *msFbo = state->framebuffer;
+                if (!msTex && msFbo) {
+                    msTex = mglDrawEmulatedMSAttachmentTexture(ctx, &msFbo->depth);
+                }
+                if (!msTex && msFbo) {
+                    msTex = mglDrawEmulatedMSAttachmentTexture(ctx, &msFbo->stencil);
+                }
                 uint32_t nSamples =
                     (msTex && msTex->samples > 1u) ? (uint32_t)msTex->samples : 1u;
                 uint32_t sIdx =
@@ -1128,13 +1135,15 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
                 float sx = 0.5f;
                 float sy = 0.5f;
                 mglRenderStandardSamplePosition(nSamples, sIdx, &sx, &sy);
-                vx += (GLdouble)sx - 0.5;
-                /* Sample positions are in GL window space (Y up); rows count
-                 * down in a Metal-order target and up in a GL-order one. */
+                /* Move the primitive so the point at the sample position
+                 * lands on the pixel center.  Sample positions are in GL
+                 * window space (Y up); rows count down in a Metal-order
+                 * target and up in a GL-order one. */
+                vx += 0.5 - (GLdouble)sx;
                 if (mglRasterTargetStoresGLOrder(state)) {
-                    metalVy += (GLdouble)sy - 0.5;
+                    metalVy += 0.5 - (GLdouble)sy;
                 } else {
-                    metalVy -= (GLdouble)sy - 0.5;
+                    metalVy -= 0.5 - (GLdouble)sy;
                 }
             }
 

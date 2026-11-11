@@ -317,7 +317,7 @@ static const char *const kGlslReservedWords[] = {
     "usampler2D", "usampler3D", "usamplerCube", "usampler1DArray", "usampler2DArray", "sampler2DRect",
     "sampler2DRectShadow", "isampler2DRect", "usampler2DRect", "samplerBuffer", "isamplerBuffer", "usamplerBuffer",
     "sampler2DMS", "isampler2DMS", "usampler2DMS", "sampler2DMSArray", "isampler2DMSArray", "usampler2DMSArray",
-    "patch", "sample", "subroutine", "double", "dmat2", "dmat3",
+    "patch", "sample", "subroutine", "double", "int64_t", "uint64_t", "dmat2", "dmat3",
     "dmat4", "dmat2x2", "dmat2x3", "dmat2x4", "dmat3x2", "dmat3x3",
     "dmat3x4", "dmat4x2", "dmat4x3", "dmat4x4", "dvec2", "dvec3",
     "dvec4", "samplerCubeArray", "samplerCubeArrayShadow", "isamplerCubeArray", "usamplerCubeArray", "coherent",
@@ -493,7 +493,8 @@ static int at_num(MGLParser *p)
 {
     MGLGLSLTokenKind k = (MGLGLSLTokenKind)tk(p, 0)->kind;
     return k == MGLGLSL_TOK_INT || k == MGLGLSL_TOK_UINT ||
-           k == MGLGLSL_TOK_FLOAT || k == MGLGLSL_TOK_DOUBLE;
+           k == MGLGLSL_TOK_FLOAT || k == MGLGLSL_TOK_DOUBLE ||
+           k == MGLGLSL_TOK_INT64 || k == MGLGLSL_TOK_UINT64;
 }
 
 static int at_int_num(MGLParser *p)
@@ -573,8 +574,15 @@ static double cur_double(MGLParser *p)
     return v;
 }
 
+static uint64_t cur_u64(MGLParser *p)
+{
+    const MGLGLSLToken *t = tk(p, 0);
+    return (uint64_t)strtoull(p->ts->src + t->start, NULL, 0);
+}
+
 /* ----------------------------------------------------------------- */
 /* Forward declarations                                               */
+/* ----------------------------------------------------------------- */
 /* ----------------------------------------------------------------- */
 
 static MGLExpr *parse_expression(MGLParser *p);
@@ -621,6 +629,10 @@ static MGLTypeSpec *parse_type_spec(MGLParser *p)
         ts->base = MGL_AST_TYPE_FLOAT;
     } else if (TY("double")) {
         ts->base = MGL_AST_TYPE_DOUBLE;
+    } else if (TY("int64_t")) {
+        ts->base = MGL_AST_TYPE_INT64;
+    } else if (TY("uint64_t")) {
+        ts->base = MGL_AST_TYPE_UINT64;
     } else if (TY("atomic_uint")) {
         ts->base = MGL_AST_TYPE_ATOMIC_UINT;
     } else if (n >= 7 && memcmp(s, "sampler", 7) == 0) {
@@ -1257,18 +1269,29 @@ static MGLExpr *parse_primary(MGLParser *p)
     const MGLGLSLToken *t = tk(p, 0);
 
     if (t->kind == MGLGLSL_TOK_INT || t->kind == MGLGLSL_TOK_UINT ||
-        t->kind == MGLGLSL_TOK_FLOAT || t->kind == MGLGLSL_TOK_DOUBLE) {
+        t->kind == MGLGLSL_TOK_FLOAT || t->kind == MGLGLSL_TOK_DOUBLE ||
+        t->kind == MGLGLSL_TOK_INT64 || t->kind == MGLGLSL_TOK_UINT64) {
         MGLExpr *e = expr_alloc(p, MGL_EXPR_LITERAL, line);
         if (e) {
             if (t->kind == MGLGLSL_TOK_DOUBLE)
                 e->u.literal.base = MGL_AST_TYPE_DOUBLE;
             else if (t->kind == MGLGLSL_TOK_FLOAT)
                 e->u.literal.base = MGL_AST_TYPE_FLOAT;
+            else if (t->kind == MGLGLSL_TOK_UINT64)
+                e->u.literal.base = MGL_AST_TYPE_UINT64;
+            else if (t->kind == MGLGLSL_TOK_INT64)
+                e->u.literal.base = MGL_AST_TYPE_INT64;
             else if (t->kind == MGLGLSL_TOK_UINT)
                 e->u.literal.base = MGL_AST_TYPE_UINT;
             else
                 e->u.literal.base = MGL_AST_TYPE_INT;
-            e->u.literal.value = cur_double(p);
+            if (t->kind == MGLGLSL_TOK_INT64 ||
+                t->kind == MGLGLSL_TOK_UINT64) {
+                e->u.literal.u64 = cur_u64(p);
+                e->u.literal.value = (double)e->u.literal.u64;
+            } else {
+                e->u.literal.value = cur_double(p);
+            }
         }
         advance(p);
         return e;
@@ -1307,9 +1330,9 @@ static MGLExpr *parse_primary(MGLParser *p)
                     uint32_t subs[8] = {};
                     uint32_t subCount = 0;
                     int ok = 1;
-                    MGLExpr *dynIndex = NULL;
+                    MGLExpr *dynIndices[8] = {};
                     while (ok && ops_at(p, "[")) {
-                        if (subCount == 8u || dynIndex) { ok = 0; break; }
+                        if (subCount == 8u) { ok = 0; break; }
                         advance(p);          /* [ */
                         /* A plain integer literal is by far the common case
                          * (`C[2]()`); read the token directly so the array
@@ -1335,19 +1358,19 @@ static MGLExpr *parse_primary(MGLParser *p)
                             advance(p);      /* ] */
                             free_expr(ext);
                             continue;
-                        } else if (subCount == 0u) {
-                            /* gl_WorkGroupID.x and friends select the element
-                             * at run time (GLSL 4.60 §6.1.2 allows any integer
-                             * expression that is dynamically uniform). */
-                            dynIndex = ext;
+                        } else {
+                            /* Dynamic integer expressions may appear in any
+                             * dimension, not only the first one. */
+                            dynIndices[subCount++] = ext;
                             advance(p);      /* ] */
                             continue;
-                        } else {
-                            ok = 0;
                         }
                         free_expr(ext);
                     }
-                    if (!ok && dynIndex) { free_expr(dynIndex); dynIndex = NULL; }
+                    if (!ok) {
+                        for (uint32_t di = 0; di < 8u; ++di)
+                            free_expr(dynIndices[di]);
+                    }
                     if (ok) ok = ops_at(p, "(");
                     if (ok) {
                         MGLExpr *e = expr_alloc(p, MGL_EXPR_CALL, line);
@@ -1357,7 +1380,24 @@ static MGLExpr *parse_primary(MGLParser *p)
                         e->u.call.subroutine_subscript_count = subCount;
                         memcpy(e->u.call.subroutine_subscripts, subs,
                                sizeof(uint32_t) * subCount);
-                        e->u.call.subroutine_index_expr = dynIndex;
+                        for (uint32_t di = 0; di < 8u; ++di)
+                            e->u.call.subroutine_index_exprs[di] = dynIndices[di];
+                        for (uint32_t sti = 0; sti < p->tu->subroutine_type_count;
+                             ++sti) {
+                            const MGLSubroutineType *st =
+                                &p->tu->subroutine_types[sti];
+                            for (uint32_t ui = 0; ui < st->uniform_count; ++ui) {
+                                if (strcmp(st->uniforms[ui], name) != 0 ||
+                                    !st->uniform_dims || !st->uniform_dims[ui])
+                                    continue;
+                                for (uint32_t di = 0;
+                                     di < st->uniform_dim_counts[ui] && di < 8u;
+                                     ++di) {
+                                    e->u.call.subroutine_dimensions[di] =
+                                        st->uniform_dims[ui][di];
+                                }
+                            }
+                        }
                         eat_punct(p, "(");
                         uint32_t argc = 0;
                         if (!ops_at(p, ")")) {
@@ -2456,7 +2496,8 @@ static void append_array_dim(MGLParser *p, MGLDecl *d, uint32_t sz)
 {
     if (d->array_count >= 1) {
         uint32_t ver = p->tu ? p->tu->version : 0;
-        if (ver > 0 && ver < 430) {
+        if (ver > 0 && ver < 430 &&
+            !(p->tu && p->tu->ext_arrays_of_arrays)) {
             parse_error(p,
                         "arrays of arrays require GLSL 430+ at line %u",
                         tk_line(p));
@@ -2750,7 +2791,7 @@ static MGLStmt *parse_statement(MGLParser *p)
 static int at_decl_start(MGLParser *p)
 {
     static const char *kw[] = {
-        "float", "int", "uint", "bool", "double", "void",
+        "float", "int", "uint", "bool", "double", "int64_t", "uint64_t", "void",
         "vec2", "vec3", "vec4", "mat2", "mat3", "mat4",
         "mat2x2", "mat2x3", "mat2x4", "mat3x2", "mat3x3", "mat3x4",
         "mat4x2", "mat4x3", "mat4x4",
@@ -2929,6 +2970,7 @@ more_qualifiers:
                 (n == 14 && memcmp(s, "triangle_strip", 14) == 0) ||
                 (n == 19 && memcmp(s, "triangles_adjacency", 19) == 0) ||
                 (n == 20 && memcmp(s, "early_fragment_tests", 20) == 0) ||
+                (n == 19 && memcmp(s, "post_depth_coverage", 19) == 0) ||
                 is_image_format_layout(s, n);
             int has_value = at_peek_punct(p, 1, "=");
 
@@ -2980,6 +3022,8 @@ more_qualifiers:
                 d->layout_point_mode = 1;
             } else if (n == 20 && memcmp(s, "early_fragment_tests", 20) == 0) {
                 d->layout_early_fragment_tests = 1;
+            } else if (n == 19 && memcmp(s, "post_depth_coverage", 19) == 0) {
+                d->layout_post_depth_coverage = 1;
             } else if (match_image_format_layout(s, n)) {
                 d->layout_image_format = match_image_format_layout(s, n);
             } else if (n == 6 && memcmp(s, "points", 6) == 0) {
@@ -3160,6 +3204,7 @@ more_qualifiers:
             tu->layout_winding = d->layout_winding;
         if (d->layout_point_mode)             tu->layout_point_mode = 1;
         if (d->layout_early_fragment_tests)   tu->layout_early_fragment_tests = 1;
+        if (d->layout_post_depth_coverage)    tu->layout_post_depth_coverage = 1;
         if (d->layout_local_size_x >= 0) {
             if (tu->layout_local_size_x >= 0 &&
                 tu->layout_local_size_x != d->layout_local_size_x) {
@@ -3918,6 +3963,8 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
                 size_t i = 10;
                 static const char kImgSize[] = "GL_ARB_shader_image_size";
                 static const char kIntMix[] = "GL_EXT_shader_integer_mix";
+                static const char kCompute[] = "GL_ARB_compute_shader";
+                static const char kArrays[] = "GL_ARB_arrays_of_arrays";
                 while (i < n && (d[i] == ' ' || d[i] == '\t')) {
                     i++;
                 }
@@ -3950,6 +3997,36 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
                     } else if (i + 7 <= n &&
                                memcmp(d + i, "disable", 7) == 0) {
                         tu->ext_shader_integer_mix = 0;
+                    }
+                } else if (i + sizeof(kCompute) - 1 <= n &&
+                           memcmp(d + i, kCompute, sizeof(kCompute) - 1) == 0) {
+                    i += sizeof(kCompute) - 1;
+                    while (i < n &&
+                           (d[i] == ' ' || d[i] == '\t' || d[i] == ':')) {
+                        i++;
+                    }
+                    if ((i + 7 <= n && memcmp(d + i, "require", 7) == 0) ||
+                        (i + 6 <= n && memcmp(d + i, "enable", 6) == 0) ||
+                        (i + 4 <= n && memcmp(d + i, "warn", 4) == 0)) {
+                        tu->ext_compute_shader = 1;
+                    } else if (i + 7 <= n &&
+                               memcmp(d + i, "disable", 7) == 0) {
+                        tu->ext_compute_shader = 0;
+                    }
+                } else if (i + sizeof(kArrays) - 1 <= n &&
+                           memcmp(d + i, kArrays, sizeof(kArrays) - 1) == 0) {
+                    i += sizeof(kArrays) - 1;
+                    while (i < n &&
+                           (d[i] == ' ' || d[i] == '\t' || d[i] == ':')) {
+                        i++;
+                    }
+                    if ((i + 7 <= n && memcmp(d + i, "require", 7) == 0) ||
+                        (i + 6 <= n && memcmp(d + i, "enable", 6) == 0) ||
+                        (i + 4 <= n && memcmp(d + i, "warn", 4) == 0)) {
+                        tu->ext_arrays_of_arrays = 1;
+                    } else if (i + 7 <= n &&
+                               memcmp(d + i, "disable", 7) == 0) {
+                        tu->ext_arrays_of_arrays = 0;
                     }
                 }
             }
@@ -4495,6 +4572,8 @@ static void free_expr(MGLExpr *e)
         free(e->u.call.name);
         free(e->u.call.array_ctor_dims);
         free_expr(e->u.call.subroutine_index_expr);
+        for (i = 0; i < 8u; ++i)
+            free_expr(e->u.call.subroutine_index_exprs[i]);
         break;
     }
     case MGL_EXPR_INIT_LIST: {

@@ -40,6 +40,8 @@
 #include "mgl_pso_format_class.h"
 #include "mgl_state_compat.h"     /* mglLogRenderStateRepair */
 #include "error.h"                /* mglDispatchError */
+#include "mgl_program_resource.h"  /* mglProgramStageUsesBuiltin */
+#include "mgl_shader_abi.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -303,22 +305,33 @@ static int mglDrawSampleShadingRequiresPerSampleMS(GLMContext ctx)
     return unique > 1;
 }
 
-/* Body of the former -[MGLRenderer fragmentNeedsPerSampleMSValuesForContext:]. */
+/* Body of the former -[MGLRenderer fragmentNeedsPerSampleMSValuesForContext:].
+ * post_depth_coverage needs every plane drawn as well: each plane's
+ * gl_SampleMaskIn depends on that plane's own depth/stencil results. */
 int mglDrawFragmentNeedsPerSampleMSValues(GLMContext ctx)
 {
     Program *fp = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
-    int shader_ps = (fp && mglRenderFragmentNeedsPerSampleMSValues(fp)) ? 1 : 0;
+    int shader_ps =
+        (fp && (mglRenderFragmentNeedsPerSampleMSValues(fp) ||
+                mglProgramStageUsesBuiltin(fp, _FRAGMENT_SHADER,
+                                           MGL_AIR_BUILTIN_POST_DEPTH_COVERAGE)))
+            ? 1 : 0;
     return shader_ps || mglDrawSampleShadingRequiresPerSampleMS(ctx);
 }
 
 int mglDrawShouldOffsetViewportForSampleShading(GLMContext ctx)
 {
-    Program *fp;
+    Program *fp = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
 
+    /* Each plane of a post_depth_coverage draw has to be covered, depth
+     * tested and stencil tested at its own sample position. */
+    if (fp && mglProgramStageUsesBuiltin(fp, _FRAGMENT_SHADER,
+                                         MGL_AIR_BUILTIN_POST_DEPTH_COVERAGE)) {
+        return 1;
+    }
     if (!mglDrawSampleShadingRequiresPerSampleMS(ctx)) {
         return 0;
     }
-    fp = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
     if (fp && mglRenderFragmentNeedsPerSampleMSValues(fp)) {
         return 0;
     }

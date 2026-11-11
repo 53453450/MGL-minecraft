@@ -54,6 +54,15 @@ static const char *kMglExtensions[] = {
     "GL_EXT_direct_state_access",
     "GL_ARB_sampler_objects",
     "GL_ARB_uniform_buffer_object",
+    "GL_ARB_compute_shader",
+    "GL_ARB_shader_texture_image_samples",
+    "GL_EXT_texture_filter_minmax",
+    "GL_ARB_texture_filter_minmax",
+    "GL_ARB_post_depth_coverage",
+    "GL_ARB_shader_subroutine",
+    "GL_ARB_arrays_of_arrays",
+    "GL_ARB_gpu_shader_int64",
+    "GL_ARB_shader_ballot",
     "GL_ARB_draw_buffers",
     "GL_ARB_debug_output",
     "GL_KHR_debug",
@@ -2902,6 +2911,11 @@ static GLsizei mglGetInternalformatValues(GLMContext ctx, GLenum target, GLenum 
             value = mglInternalFormatSupportValue(supported &&
                                                   !mglInternalFormatIsInteger(storage) &&
                                                   !mglInternalFormatHasStencil(storage));
+            break;
+        case GL_TEXTURE_REDUCTION_MODE_EXT:
+            value = mglInternalFormatSupportValue(
+                supported && target != GL_RENDERBUFFER &&
+                target != GL_TEXTURE_BUFFER && target != GL_TEXTURE_RECTANGLE);
             break;
         case GL_VERTEX_TEXTURE:
         case GL_TESS_CONTROL_TEXTURE:

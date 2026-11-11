@@ -926,6 +926,18 @@ bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, con
             }
             break;
 
+        case GL_TEXTURE_REDUCTION_MODE_EXT:
+            switch (*param) {
+                case GL_MIN:
+                case GL_MAX:
+                case GL_WEIGHTED_AVERAGE_EXT:
+                    tex_params->reduction_mode = *param;
+                    break;
+                default:
+                    return mglTexParameterError(ctx, GL_INVALID_ENUM);
+            }
+            break;
+
         case GL_TEXTURE_MIN_LOD:
             tex_params->min_lod = *param;
             break;
@@ -1193,6 +1205,11 @@ static bool getTexParmi(GLMContext ctx, TextureParameter *tex_params, const GLen
 
         case GL_TEXTURE_MAG_FILTER:
             *ret = tex_params->mag_filter;
+            break;
+
+        case GL_TEXTURE_REDUCTION_MODE_EXT:
+            *ret = tex_params->reduction_mode
+                ? tex_params->reduction_mode : GL_WEIGHTED_AVERAGE_EXT;
             break;
 
         case GL_TEXTURE_MAX_LEVEL:

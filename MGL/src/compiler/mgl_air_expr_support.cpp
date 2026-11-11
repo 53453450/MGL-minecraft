@@ -193,15 +193,10 @@ llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
         return op == MGL_OP_LAND ? cg.b->CreateLogicalAnd(l, r)
                                  : cg.b->CreateLogicalOr(l, r);
     }
-    /* AGX double is an i64 payload with no f64 ALU.  Soft-float any operand
-     * typed DOUBLE (or carrying i64) before arithmetic / ordered compares so
-     * we never integer-add IEEE bit patterns or ICmp mismatched widths. */
-    const bool l_double = lt.scalar == MGLIR_SCALAR_DOUBLE ||
-        (l->getType()->isIntOrIntVectorTy() &&
-         l->getType()->getScalarSizeInBits() == 64);
-    const bool r_double = rt.scalar == MGLIR_SCALAR_DOUBLE ||
-        (r->getType()->isIntOrIntVectorTy() &&
-         r->getType()->getScalarSizeInBits() == 64);
+    /* AGX double is an i64 payload with no f64 ALU.  Only the IR scalar kind
+     * selects soft-float: true int64/uint64 values must keep integer ALU. */
+    const bool l_double = lt.scalar == MGLIR_SCALAR_DOUBLE;
+    const bool r_double = rt.scalar == MGLIR_SCALAR_DOUBLE;
     const bool soft_double = l_double || r_double;
     if (soft_double) {
         l = coerceScalar(cg, l, MGLIR_SCALAR_FLOAT, lt.scalar);
@@ -219,6 +214,22 @@ llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
         else l = coerceScalar(cg, l, MGLIR_SCALAR_FLOAT, lt.scalar);
         rfp = r->getType()->isFPOrFPVectorTy();
     }
+    bool uns = lt.scalar == MGLIR_SCALAR_UINT || rt.scalar == MGLIR_SCALAR_UINT ||
+               lt.scalar == MGLIR_SCALAR_UINT64 || rt.scalar == MGLIR_SCALAR_UINT64;
+    if (!lfp && !rfp && l->getType() != r->getType()) {
+        if (op == MGL_OP_SHL || op == MGL_OP_SHR) {
+            r = cg.b->CreateZExtOrTrunc(r, l->getType());
+        } else if (l->getType()->isIntOrIntVectorTy() &&
+                   r->getType()->isIntOrIntVectorTy()) {
+            const bool to64 = l->getType()->getScalarSizeInBits() == 64 ||
+                              r->getType()->getScalarSizeInBits() == 64;
+            const MGLIRScalar target = to64
+                ? (uns ? MGLIR_SCALAR_UINT64 : MGLIR_SCALAR_INT64)
+                : (uns ? MGLIR_SCALAR_UINT : MGLIR_SCALAR_INT);
+            l = coerceScalar(cg, l, target, lt.scalar);
+            r = coerceScalar(cg, r, target, rt.scalar);
+        }
+    }
     bool lv = l->getType()->isVectorTy();
     bool rv = r->getType()->isVectorTy();
         if (lv != rv) {
@@ -226,7 +237,6 @@ llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
         else l = broadcastTo(cg, l, r->getType());
     }
     bool fp = l->getType()->isFPOrFPVectorTy();
-    bool uns = lt.scalar == MGLIR_SCALAR_UINT || rt.scalar == MGLIR_SCALAR_UINT;
     auto widen_double = [&](llvm::Value *v) -> llvm::Value * {
         return soft_double ? coerceScalar(cg, v, MGLIR_SCALAR_DOUBLE) : v;
     };

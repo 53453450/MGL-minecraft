@@ -139,6 +139,8 @@ typedef enum MGLGLSLBaseType {
     MGL_AST_TYPE_SAMPLER,     /* any sampler2D/.../samplerCubeShadow */
     MGL_AST_TYPE_IMAGE,
     MGL_AST_TYPE_ATOMIC_UINT,
+    MGL_AST_TYPE_INT64,
+    MGL_AST_TYPE_UINT64,
 } MGLGLSLBaseType;
 
 /* Expression node. */
@@ -177,8 +179,9 @@ struct MGLExpr {
     uint32_t line;
     union {
         struct {
-            uint32_t base;   /* MGLGLSLBaseType (bool/int/uint/float/double) */
-            double value;    /* numeric value */
+            uint32_t base;   /* MGLGLSLBaseType */
+            double value;    /* numeric value used by 32-bit/float paths */
+            uint64_t u64;    /* exact payload for int64_t/uint64_t literals */
         } literal;
         struct {
             char *name;      /* owned */
@@ -214,6 +217,11 @@ struct MGLExpr {
             /* Non-constant subscript (e.g. Compute[gl_WorkGroupID.x]()).
              * Owned by the call; only 1-D dynamic subscripts are modelled. */
             MGLExpr *subroutine_index_expr;
+            /* Multi-dimensional dynamic subscripts and the declared extent of
+             * each dimension.  Entries without a dynamic expression use the
+             * constant in subroutine_subscripts. */
+            MGLExpr *subroutine_index_exprs[8];
+            uint32_t subroutine_dimensions[8];
         } call;
         struct {
             uint32_t op;     /* MGLExprOp */
@@ -343,6 +351,7 @@ struct MGLDecl {
     uint32_t layout_winding;        /* TES: MGL_AST_WINDING_* */
     uint32_t layout_point_mode;     /* TES: point_mode flag */
     uint32_t layout_early_fragment_tests; /* FS: early_fragment_tests */
+    uint32_t layout_post_depth_coverage; /* FS: post_depth_coverage */
     /* Image format layout qualifier (e.g. "rgba32f"); NULL if absent.
      * Points at a static string from the parser format table. */
     const char *layout_image_format;
@@ -418,6 +427,10 @@ typedef struct MGLTranslationUnit {
     uint32_t ext_shader_image_size;
     /* 1 if #extension GL_EXT_shader_integer_mix : enable/require/warn. */
     uint32_t ext_shader_integer_mix;
+    /* 1 if #extension GL_ARB_compute_shader : enable/require/warn. */
+    uint32_t ext_compute_shader;
+    /* 1 if #extension GL_ARB_arrays_of_arrays : enable/require/warn. */
+    uint32_t ext_arrays_of_arrays;
     MGLDecl **decls;
     uint32_t decl_count;
     /* GLSL 4.0 subroutine metadata, filled by the parser (see above). */
@@ -441,6 +454,7 @@ typedef struct MGLTranslationUnit {
     uint32_t layout_winding;       /* TES: MGL_AST_WINDING_* */
     uint32_t layout_point_mode;    /* TES: point_mode flag */
     uint32_t layout_early_fragment_tests; /* FS: early_fragment_tests */
+    uint32_t layout_post_depth_coverage; /* FS: post_depth_coverage */
     /* Default block packing from `layout(std430) buffer;` /
      * `layout(std140) uniform;` — applied when a later block omits an
      * explicit packing qualifier (GL 4.6 §4.4.5). */

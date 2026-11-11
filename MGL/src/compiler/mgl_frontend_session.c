@@ -250,6 +250,9 @@ static void mglFrontendNoteBuiltinUse(const MGLExpr *e, const char *name,
          * subscript, which is not an argument. */
         mglFrontendNoteBuiltinUse(e->u.call.subroutine_index_expr, name, used,
                                   max_need);
+        for (uint32_t i = 0; i < 8u; ++i)
+            mglFrontendNoteBuiltinUse(e->u.call.subroutine_index_exprs[i],
+                                      name, used, max_need);
         break;
     case MGL_EXPR_UNARY:
         mglFrontendNoteBuiltinUse(e->u.unary.operand, name, used, max_need);

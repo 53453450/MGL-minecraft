@@ -560,15 +560,20 @@ static void test_f16_tess_texture_and_per_patch_plan(void)
     memset(&tes, 0, sizeof(tes));
     tes.tess_gen_mode = GL_ISOLINES;
 
-    uint8_t factors[2u * MGL_AIR_TESS_FACTOR_RECORD_BYTES];
+    uint8_t factors[4u * MGL_AIR_TESS_FACTOR_RECORD_BYTES];
     memset(factors, 0, sizeof(factors));
     /* Patch 0 stays discarded (outer 0). Patch 1 matches the isolines
-     * item-count fixture: edges {1,2,...} → 4 items. */
+     * item-count fixture: edges {1,2,...} → 4 items.  Each instance owns a
+     * complete two-patch factor slice. */
     const uint16_t live[6] = {0x3C00, 0x4000, 0x4200, 0x4400, 0x3800, 0x3800};
-    memcpy(factors + MGL_AIR_TESS_FACTOR_RECORD_BYTES, live, sizeof(live));
     const float exact[6] = {1, 2, 3, 4, 0.5f, 0.5f};
-    memcpy(factors + MGL_AIR_TESS_FACTOR_RECORD_BYTES +
-           MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET, exact, sizeof(exact));
+    for (uint32_t inst = 0; inst < 2u; ++inst) {
+        uint8_t *record = factors + (inst * 2u + 1u) *
+                          MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+        memcpy(record, live, sizeof(live));
+        memcpy(record + MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET,
+               exact, sizeof(exact));
+    }
 
     expect(mglTessEvalItemsPerPatch(&tes, factors) == 0u,
            "F16 discarded patch items == 0");

@@ -215,7 +215,9 @@ llvm::Type *llvmScalar(MGLIRScalar s, llvm::LLVMContext &ctx) {
     case MGLIR_SCALAR_UINT: return llvm::Type::getInt32Ty(ctx);
     /* Metal has no f64 ALU on AGX; GLSL double is an i64 bit payload so
      * SSBO/UBO load/store stay bit-preserving without emitting f64 ops. */
-    case MGLIR_SCALAR_DOUBLE: return llvm::Type::getInt64Ty(ctx);
+    case MGLIR_SCALAR_DOUBLE:
+    case MGLIR_SCALAR_INT64:
+    case MGLIR_SCALAR_UINT64: return llvm::Type::getInt64Ty(ctx);
     default:                return llvm::Type::getFloatTy(ctx);
     }
 }
@@ -354,8 +356,29 @@ llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want,
         return elt;
     };
     /* Doubles are i64 payloads — never emit f64 ALU (AGX rejects it).
-     * Soft-convert through f32 when crossing the float/double boundary so
-     * Uniform*d / LF literals (i64) and f32 carriers can compare/add. */
+     * True 64-bit integers instead use ordinary integer conversion rules. */
+    if (want == MGLIR_SCALAR_DOUBLE &&
+        (from == MGLIR_SCALAR_INT64 || from == MGLIR_SCALAR_UINT64)) {
+        v = coerceScalar(cg, v, MGLIR_SCALAR_FLOAT, from);
+        cur = v->getType();
+    }
+    if (want == MGLIR_SCALAR_INT64 || want == MGLIR_SCALAR_UINT64) {
+        llvm::Type *i64 = vt(llvm::Type::getInt64Ty(ctx));
+        if (from == MGLIR_SCALAR_DOUBLE) {
+            v = coerceScalar(cg, v, MGLIR_SCALAR_FLOAT, from);
+            cur = v->getType();
+        }
+        if (cur->isFPOrFPVectorTy()) {
+            return want == MGLIR_SCALAR_UINT64
+                ? cg.b->CreateFPToUI(v, i64)
+                : cg.b->CreateFPToSI(v, i64);
+        }
+        if (cur->getScalarSizeInBits() == 64) return v;
+        if (cur->getScalarSizeInBits() == 1 || from == MGLIR_SCALAR_UINT ||
+            from == MGLIR_SCALAR_BOOL)
+            return cg.b->CreateZExt(v, i64);
+        return cg.b->CreateSExt(v, i64);
+    }
     if (want == MGLIR_SCALAR_DOUBLE) {
         if (cur->isIntOrIntVectorTy() && cur->getScalarSizeInBits() == 64)
             return v;
@@ -415,6 +438,19 @@ llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want,
     bool wantFP = scalarIsFloat(want);
     bool curFP = cur->isFPOrFPVectorTy();
     if (cur->isIntOrIntVectorTy() && cur->getScalarSizeInBits() == 64) {
+        if (want == MGLIR_SCALAR_BOOL)
+            return cg.b->CreateICmpNE(v, llvm::Constant::getNullValue(cur));
+        if (from == MGLIR_SCALAR_INT64 || from == MGLIR_SCALAR_UINT64) {
+            if (wantFP) {
+                llvm::Type *f32 = vt(llvm::Type::getFloatTy(ctx));
+                return from == MGLIR_SCALAR_UINT64
+                    ? cg.b->CreateUIToFP(v, f32)
+                    : cg.b->CreateSIToFP(v, f32);
+            }
+            if (want == MGLIR_SCALAR_INT || want == MGLIR_SCALAR_UINT)
+                return cg.b->CreateTrunc(v, vt(llvm::Type::getInt32Ty(ctx)));
+            return v;
+        }
         if (wantFP)
             return encodeFloatCarrier(cg, v, MGLIR_SCALAR_DOUBLE);
         return v;

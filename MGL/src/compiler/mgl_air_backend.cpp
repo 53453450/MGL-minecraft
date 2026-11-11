@@ -233,33 +233,33 @@ static llvm::Value *emitIntegerGather2D(
             : (llvm::Value *)cg.b->getInt32(metalSlot);
         llvm::Value *base = cg.b->CreateBitCast(
             cg.resources.samplerWrapPtr, i32->getPointerTo(1));
-        llvm::Value *off8 = cg.b->CreateMul(idx, cg.b->getInt32(8));
+        llvm::Value *slotWords = cg.b->CreateMul(idx, cg.b->getInt32(13));
         wrapS = cg.b->CreateAlignedLoad(
-            i32, cg.b->CreateGEP(i32, base, off8), llvm::Align(4));
+            i32, cg.b->CreateGEP(i32, base, slotWords), llvm::Align(4));
         wrapT = cg.b->CreateAlignedLoad(
             i32,
             cg.b->CreateGEP(i32, base,
-                            cg.b->CreateAdd(off8, cg.b->getInt32(1))),
+                            cg.b->CreateAdd(slotWords, cg.b->getInt32(1))),
             llvm::Align(4));
         llvm::Value *b0 = cg.b->CreateAlignedLoad(
             i32,
             cg.b->CreateGEP(i32, base,
-                            cg.b->CreateAdd(off8, cg.b->getInt32(4))),
+                            cg.b->CreateAdd(slotWords, cg.b->getInt32(4))),
             llvm::Align(4));
         llvm::Value *b1 = cg.b->CreateAlignedLoad(
             i32,
             cg.b->CreateGEP(i32, base,
-                            cg.b->CreateAdd(off8, cg.b->getInt32(5))),
+                            cg.b->CreateAdd(slotWords, cg.b->getInt32(5))),
             llvm::Align(4));
         llvm::Value *b2 = cg.b->CreateAlignedLoad(
             i32,
             cg.b->CreateGEP(i32, base,
-                            cg.b->CreateAdd(off8, cg.b->getInt32(6))),
+                            cg.b->CreateAdd(slotWords, cg.b->getInt32(6))),
             llvm::Align(4));
         llvm::Value *b3 = cg.b->CreateAlignedLoad(
             i32,
             cg.b->CreateGEP(i32, base,
-                            cg.b->CreateAdd(off8, cg.b->getInt32(7))),
+                            cg.b->CreateAdd(slotWords, cg.b->getInt32(7))),
             llvm::Align(4));
         border = llvm::UndefValue::get(v4i32);
         border = cg.b->CreateInsertElement(border, b0, cg.b->getInt32(0));
@@ -366,18 +366,18 @@ static llvm::Value *emitIntegerSample2D(
         : (llvm::Value *)cg.b->getInt32(metalSlot);
     llvm::Value *base = cg.b->CreateBitCast(
         cg.resources.samplerWrapPtr, i32->getPointerTo(1));
-    llvm::Value *off8 = cg.b->CreateMul(idx, cg.b->getInt32(8));
+    llvm::Value *slotWords = cg.b->CreateMul(idx, cg.b->getInt32(13));
     llvm::Value *wrapS = cg.b->CreateAlignedLoad(
-        i32, cg.b->CreateGEP(i32, base, off8), llvm::Align(4));
+        i32, cg.b->CreateGEP(i32, base, slotWords), llvm::Align(4));
     llvm::Value *wrapT = cg.b->CreateAlignedLoad(
         i32,
         cg.b->CreateGEP(i32, base,
-                        cg.b->CreateAdd(off8, cg.b->getInt32(1))),
+                        cg.b->CreateAdd(slotWords, cg.b->getInt32(1))),
         llvm::Align(4));
     llvm::Value *wrapR = cg.b->CreateAlignedLoad(
         i32,
         cg.b->CreateGEP(i32, base,
-                        cg.b->CreateAdd(off8, cg.b->getInt32(2))),
+                        cg.b->CreateAdd(slotWords, cg.b->getInt32(2))),
         llvm::Align(4));
     llvm::Value *useBorder = cg.b->CreateOr(
         cg.b->CreateICmpEQ(wrapS, cg.b->getInt32(GL_CLAMP_TO_BORDER)),
@@ -428,22 +428,22 @@ static llvm::Value *emitIntegerSample2D(
     llvm::Value *b0 = cg.b->CreateAlignedLoad(
         i32,
         cg.b->CreateGEP(i32, base,
-                        cg.b->CreateAdd(off8, cg.b->getInt32(4))),
+                        cg.b->CreateAdd(slotWords, cg.b->getInt32(4))),
         llvm::Align(4));
     llvm::Value *b1 = cg.b->CreateAlignedLoad(
         i32,
         cg.b->CreateGEP(i32, base,
-                        cg.b->CreateAdd(off8, cg.b->getInt32(5))),
+                        cg.b->CreateAdd(slotWords, cg.b->getInt32(5))),
         llvm::Align(4));
     llvm::Value *b2 = cg.b->CreateAlignedLoad(
         i32,
         cg.b->CreateGEP(i32, base,
-                        cg.b->CreateAdd(off8, cg.b->getInt32(6))),
+                        cg.b->CreateAdd(slotWords, cg.b->getInt32(6))),
         llvm::Align(4));
     llvm::Value *b3 = cg.b->CreateAlignedLoad(
         i32,
         cg.b->CreateGEP(i32, base,
-                        cg.b->CreateAdd(off8, cg.b->getInt32(7))),
+                        cg.b->CreateAdd(slotWords, cg.b->getInt32(7))),
         llvm::Align(4));
     llvm::Value *border = llvm::UndefValue::get(v4i32);
     border = cg.b->CreateInsertElement(border, b0, cg.b->getInt32(0));
@@ -714,6 +714,8 @@ static std::string userFnKey(const char *name, uint32_t n,
         char s = 'f';
         if (t->scalar == MGLIR_SCALAR_INT) s = 'i';
         else if (t->scalar == MGLIR_SCALAR_UINT) s = 'u';
+        else if (t->scalar == MGLIR_SCALAR_INT64) s = 'q';
+        else if (t->scalar == MGLIR_SCALAR_UINT64) s = 'Q';
         else if (t->scalar == MGLIR_SCALAR_BOOL) s = 'b';
         k += s;
         if (t->kind == MGLIR_TYPE_VECTOR) {
@@ -747,6 +749,8 @@ static int astTypeMatchesIR(const MGLDecl *p, const MGLIRType *ir)
     case MGL_AST_TYPE_UINT: sc = MGLIR_SCALAR_UINT; break;
     case MGL_AST_TYPE_BOOL: sc = MGLIR_SCALAR_BOOL; break;
     case MGL_AST_TYPE_DOUBLE: sc = MGLIR_SCALAR_DOUBLE; break;
+    case MGL_AST_TYPE_INT64: sc = MGLIR_SCALAR_INT64; break;
+    case MGL_AST_TYPE_UINT64: sc = MGLIR_SCALAR_UINT64; break;
     case MGL_AST_TYPE_STRUCT:
         return ir->kind == MGLIR_TYPE_STRUCT &&
                (!t->name || !ir->name || strcmp(t->name, ir->name) == 0);
@@ -835,6 +839,8 @@ static MGLIRScalar astBaseToIRScalar(uint32_t base) {
     case MGL_AST_TYPE_INT: return MGLIR_SCALAR_INT;
     case MGL_AST_TYPE_UINT: return MGLIR_SCALAR_UINT;
     case MGL_AST_TYPE_DOUBLE: return MGLIR_SCALAR_DOUBLE;
+    case MGL_AST_TYPE_INT64: return MGLIR_SCALAR_INT64;
+    case MGL_AST_TYPE_UINT64: return MGLIR_SCALAR_UINT64;
     case MGL_AST_TYPE_FLOAT:
     default: return MGLIR_SCALAR_FLOAT;
     }
@@ -893,7 +899,9 @@ static MGLIRType *astDeclToIRType(Codegen &cg, const MGLDecl *d) {
     } else if (ts->vec_size > 1) {
         base = mglIRTypeVector(astBaseToIRScalar(ts->base),
                                (uint32_t)ts->vec_size);
-    } else if (ts->base <= MGL_AST_TYPE_DOUBLE) {
+    } else if (ts->base <= MGL_AST_TYPE_DOUBLE ||
+               ts->base == MGL_AST_TYPE_INT64 ||
+               ts->base == MGL_AST_TYPE_UINT64) {
         base = mglIRTypeScalar(astBaseToIRScalar(ts->base));
     }
     if (!base) return nullptr;
@@ -1439,7 +1447,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
  * splitting that into two statements would lift `return true` out of the
  * `if`.  Keep the comma form. */
 static bool emitCallTextureQuery(Codegen &cg, const MGLExpr *e,
-                                 const char *name, llvm::Value **out);
+                                 const char *name, const MGLIRModule *mod,
+                                 llvm::Value **out);
 static bool emitCallSparseTexture(
     Codegen &cg, const MGLExpr *e, const char *name,
     const MGLIRModule *mod, const std::map<std::string, MType> &locals,
@@ -1822,6 +1831,9 @@ static llvm::Value *emitIndexValue(Codegen &cg, llvm::Value *obj,
 static llvm::Value *insertIndexValue(Codegen &cg, llvm::Value *obj,
                                      const MType &bt, llvm::Value *idx,
                                      llvm::Value *val) {
+    /* Dynamic element writes still follow the aggregate's element type:
+     * `float a[N]; a[i] = 1` must not create an i32/float select. */
+    val = coerceScalar(cg, val, bt.scalar);
     /* Arrays-of-matrices: arr takes precedence (same as llvmType). */
     if (bt.isArray() || (!bt.isMatrix() && obj->getType()->isArrayTy())) {
         auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
@@ -5787,11 +5799,72 @@ static llvm::Value *emitBlockMemberChain(Codegen &cg, const MGLExpr *e,
 void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
               std::map<std::string, MType> *locals);
 
+static llvm::CallInst *callAirSIMDFn(Codegen &cg, const char *name,
+                                     llvm::Type *retTy,
+                                     llvm::ArrayRef<llvm::Value *> args) {
+    auto *call = llvm::cast<llvm::CallInst>(callAirFn(cg, name, retTy, args));
+    call->addFnAttr(llvm::Attribute::Convergent);
+    call->addFnAttr(llvm::Attribute::NoUnwind);
+    call->addFnAttr(llvm::Attribute::WillReturn);
+    if (llvm::Function *callee = call->getCalledFunction()) {
+        callee->addFnAttr(llvm::Attribute::Convergent);
+        callee->addFnAttr(llvm::Attribute::NoUnwind);
+        callee->addFnAttr(llvm::Attribute::WillReturn);
+        callee->addFnAttr(llvm::Attribute::MustProgress);
+    }
+    return call;
+}
+
+static llvm::Value *subgroupLane(Codegen &cg) {
+    if (cg.subgroupInvocation) return cg.subgroupInvocation;
+    llvm::BasicBlock *savedBB = cg.b->GetInsertBlock();
+    auto savedPt = cg.b->GetInsertPoint();
+    llvm::BasicBlock &entry = cg.fn->getEntryBlock();
+    cg.b->SetInsertPoint(&entry, entry.begin());
+    if (cg.isTessControl && cg.invocationPos) {
+        /* TCS dispatches one threadgroup per patch with one thread per output
+         * invocation, so its linear thread position is already the SIMD lane. */
+        cg.subgroupInvocation = cg.b->CreateExtractElement(
+            cg.invocationPos, cg.b->getInt32(0), "subgroup.lane");
+    } else {
+        cg.subgroupInvocation = callAirSIMDFn(
+            cg, "air.simd_prefix_exclusive_sum.u.i32", cg.b->getInt32Ty(),
+            {cg.b->getInt32(1)});
+        cg.subgroupInvocation->setName("subgroup.lane");
+    }
+    cg.b->SetInsertPoint(savedBB, savedPt);
+    return cg.subgroupInvocation;
+}
+
+static llvm::Value *subgroupMask(Codegen &cg, const char *name) {
+    llvm::Value *lane = subgroupLane(cg);
+    llvm::Value *lane64 = cg.b->CreateZExt(lane, cg.b->getInt64Ty());
+    llvm::Value *one = cg.b->getInt64(1);
+    if (strcmp(name, "gl_SubGroupEqMaskARB") == 0)
+        return cg.b->CreateShl(one, lane64);
+    if (strcmp(name, "gl_SubGroupLtMaskARB") == 0)
+        return cg.b->CreateSub(cg.b->CreateShl(one, lane64), one);
+    if (strcmp(name, "gl_SubGroupLeMaskARB") == 0) {
+        llvm::Value *next = cg.b->CreateAdd(lane64, one);
+        return cg.b->CreateSub(cg.b->CreateShl(one, next), one);
+    }
+    llvm::Value *valid = cg.b->getInt64(UINT64_C(0xffffffff));
+    if (strcmp(name, "gl_SubGroupGeMaskARB") == 0)
+        return cg.b->CreateAnd(cg.b->CreateShl(valid, lane64), valid);
+    if (strcmp(name, "gl_SubGroupGtMaskARB") == 0)
+        return cg.b->CreateAnd(
+            cg.b->CreateShl(valid, cg.b->CreateAdd(lane64, one)), valid);
+    return nullptr;
+}
+
 llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals) {
     switch (e->kind) {
     case MGL_EXPR_LITERAL: {
-        MGLIRScalar base = (MGLIRScalar)e->u.literal.base;
+        MGLIRScalar base = astBaseToIRScalar(e->u.literal.base);
+        if (base == MGLIR_SCALAR_INT64 || base == MGLIR_SCALAR_UINT64)
+            return llvm::ConstantInt::get(llvm::Type::getInt64Ty(*cg.ctx),
+                                          e->u.literal.u64);
         if (base == MGLIR_SCALAR_INT || base == MGLIR_SCALAR_UINT)
             return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx),
                                           (uint64_t)e->u.literal.value);
@@ -5810,6 +5883,16 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                      e->u.literal.value);
     }
     case MGL_EXPR_VAR_REF: {
+        if (strcmp(e->u.var_ref.name, "gl_SubGroupSizeARB") == 0)
+            return cg.b->getInt32(32);
+        if (strcmp(e->u.var_ref.name, "gl_SubGroupInvocationARB") == 0)
+            return subgroupLane(cg);
+        if (strcmp(e->u.var_ref.name, "gl_SubGroupEqMaskARB") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_SubGroupGeMaskARB") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_SubGroupGtMaskARB") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_SubGroupLeMaskARB") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_SubGroupLtMaskARB") == 0)
+            return subgroupMask(cg, e->u.var_ref.name);
         /* GLSL exposes geometry limits as compile-time constants.  These
          * values describe the capability contract advertised by MGL and the
          * fixed AIR geometry expansion budget. */
@@ -7165,6 +7248,71 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return cg.b->CreateOr(allT, allF);
             }
         }
+        if (strcmp(name, "ballotARB") == 0) {
+            if (e->u.call.arg_count != 1) {
+                cg.err = 1;
+                cg.errmsg = "codegen: ballotARB expects 1 argument";
+                return nullptr;
+            }
+            llvm::Value *predicate =
+                emitExpr(cg, e->u.call.args[0], mod, locals);
+            if (!predicate) return nullptr;
+            if (!predicate->getType()->isIntegerTy(1))
+                predicate = cg.b->CreateICmpNE(
+                    predicate, llvm::Constant::getNullValue(predicate->getType()));
+            return callAirSIMDFn(cg, "air.simd_ballot.i64",
+                                 cg.b->getInt64Ty(), {predicate});
+        }
+        if (strcmp(name, "readInvocationARB") == 0 ||
+            strcmp(name, "readFirstInvocationARB") == 0) {
+            const bool first = strcmp(name, "readFirstInvocationARB") == 0;
+            if (e->u.call.arg_count != (first ? 1u : 2u)) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: ") + name +
+                            " has invalid argument count";
+                return nullptr;
+            }
+            llvm::Value *value =
+                emitExpr(cg, e->u.call.args[0], mod, locals);
+            if (!value) return nullptr;
+            llvm::Value *lane = nullptr;
+            if (!first) {
+                lane = emitExpr(cg, e->u.call.args[1], mod, locals);
+                if (!lane) return nullptr;
+                lane = cg.b->CreateZExtOrTrunc(lane, cg.b->getInt16Ty());
+            }
+            auto readOne = [&](llvm::Value *component) -> llvm::Value * {
+                const char *suffix = nullptr;
+                if (component->getType()->isFloatTy()) suffix = ".f32";
+                else if (component->getType()->isIntegerTy(32)) suffix = ".u.i32";
+                if (!suffix) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: ") + name +
+                                " requires float/int/uint scalar or vector values";
+                    return nullptr;
+                }
+                std::string intrinsic = first
+                    ? std::string("air.simd_broadcast_first") + suffix
+                    : std::string("air.simd_shuffle") + suffix;
+                component = cg.b->CreateFreeze(component);
+                return first
+                    ? callAirSIMDFn(cg, intrinsic.c_str(), component->getType(),
+                                    {component})
+                    : callAirSIMDFn(cg, intrinsic.c_str(), component->getType(),
+                                    {component, lane});
+            };
+            if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(value->getType())) {
+                llvm::Value *result = llvm::UndefValue::get(value->getType());
+                for (unsigned i = 0; i < vt->getNumElements(); ++i) {
+                    llvm::Value *component = cg.b->CreateExtractElement(value, i);
+                    component = readOne(component);
+                    if (!component) return nullptr;
+                    result = cg.b->CreateInsertElement(result, component, i);
+                }
+                return result;
+            }
+            return readOne(value);
+        }
         if (strcmp(name, "memoryBarrier") == 0 ||
             strcmp(name, "memoryBarrierAtomicCounter") == 0 ||
             strcmp(name, "memoryBarrierBuffer") == 0 ||
@@ -7223,7 +7371,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
         {
             llvm::Value *handled = nullptr;
-            if (emitCallTextureQuery(cg, e, name, &handled))
+            if (emitCallTextureQuery(cg, e, name, mod, &handled))
                 return handled;
         }
         {
@@ -7398,7 +7546,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         llvm::Value *folded =
             tryFoldConst(cg, e->u.binary.op, l, r,
                          lt.scalar == MGLIR_SCALAR_UINT ||
-                         rt.scalar == MGLIR_SCALAR_UINT);
+                         rt.scalar == MGLIR_SCALAR_UINT ||
+                         lt.scalar == MGLIR_SCALAR_UINT64 ||
+                         rt.scalar == MGLIR_SCALAR_UINT64);
         if (folded) return folded;
         llvm::Value *res = emitNumericBinOp(cg, e->u.binary.op, l, r, lt, rt);
         if (!res) {
@@ -8208,7 +8358,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
         auto lit = locals.find(name);
         if (lit != locals.end()) {
-            v = coerceScalar(cg, v, lit->second.scalar);
+            v = coerceScalar(cg, v, lit->second.scalar,
+                             exprType(cg, e->u.assign.rhs, mod, locals).scalar);
             /* Memory-backed scalar arrays: whole-array assign must store
              * into the alloca; INDEX reads only from arrayMem. */
             auto amit = cg.arrayMem.find(name);
@@ -9522,6 +9673,7 @@ static bool emitCallConstructors(
      * `double` is an i64 IEEE754 payload (AGX has no f64 ALU). */
     if (strcmp(name, "float") == 0 || strcmp(name, "double") == 0 ||
         strcmp(name, "int") == 0 || strcmp(name, "uint") == 0 ||
+        strcmp(name, "int64_t") == 0 || strcmp(name, "uint64_t") == 0 ||
         strcmp(name, "bool") == 0) {
         if (e->u.call.arg_count != 1) {
             cg.err = 1;
@@ -9552,11 +9704,13 @@ static bool emitCallConstructors(
                 arg = col0;
             (void)arrTy;
         }
-        MGLIRScalar want = name[0] == 'f' ? MGLIR_SCALAR_FLOAT
-                         : name[0] == 'd' ? MGLIR_SCALAR_DOUBLE
-                         : name[0] == 'u' ? MGLIR_SCALAR_UINT
-                         : name[0] == 'b' ? MGLIR_SCALAR_BOOL
-                                          : MGLIR_SCALAR_INT;
+        MGLIRScalar want = MGLIR_SCALAR_FLOAT;
+        if (strcmp(name, "double") == 0) want = MGLIR_SCALAR_DOUBLE;
+        else if (strcmp(name, "uint") == 0) want = MGLIR_SCALAR_UINT;
+        else if (strcmp(name, "int") == 0) want = MGLIR_SCALAR_INT;
+        else if (strcmp(name, "uint64_t") == 0) want = MGLIR_SCALAR_UINT64;
+        else if (strcmp(name, "int64_t") == 0) want = MGLIR_SCALAR_INT64;
+        else if (strcmp(name, "bool") == 0) want = MGLIR_SCALAR_BOOL;
         /* Scalar conversions need the source's signedness too: `float(x)`
          * on an unsigned x must use UIToFP (SIToFP would yield a negative
          * float for x >= 2^31).  The argument expression's scalar still
@@ -10106,7 +10260,13 @@ static bool emitCallUserFunction(
             /* Element index of an arrayed uniform: either a constant
              * subscript list or a run-time expression (dynamic indexing). */
             std::string dynamicUniformKey;
-            if (e->u.call.subroutine_index_expr) {
+            bool hasDynamicSubscript = e->u.call.subroutine_index_expr != nullptr;
+            for (uint32_t d = 0; d < 8u; ++d) {
+                if (e->u.call.subroutine_index_exprs[d]) {
+                    hasDynamicSubscript = true;
+                }
+            }
+            if (hasDynamicSubscript) {
                 dynamicUniformKey = std::string(name) + "[0]";
             }
             if (!dynamicUniformKey.empty() &&
@@ -10155,10 +10315,33 @@ static bool emitCallUserFunction(
             }
             llvm::Value *idx = nullptr;
             if (!dynamicUniformKey.empty()) {
-                llvm::Value *elem = emitExpr(
-                    cg, e->u.call.subroutine_index_expr, mod, locals);
-                if (!elem) return true;
-                elem = coerceScalar(cg, elem, MGLIR_SCALAR_INT);
+                llvm::Value *flat = cg.b->getInt32(0);
+                for (uint32_t d = 0; d < e->u.call.subroutine_subscript_count;
+                     ++d) {
+                    llvm::Value *component = nullptr;
+                    if (e->u.call.subroutine_index_exprs[d]) {
+                        component = emitExpr(
+                            cg, e->u.call.subroutine_index_exprs[d], mod,
+                            locals);
+                    } else if (d == 0u && e->u.call.subroutine_index_expr) {
+                        component = emitExpr(cg, e->u.call.subroutine_index_expr,
+                                             mod, locals);
+                    } else {
+                        component = cg.b->getInt32(
+                            e->u.call.subroutine_subscripts[d]);
+                    }
+                    if (!component) return true;
+                    component = coerceScalar(cg, component, MGLIR_SCALAR_INT);
+                    if (d == 0u) {
+                        flat = component;
+                    } else {
+                        flat = cg.b->CreateAdd(
+                            cg.b->CreateMul(flat,
+                                cg.b->getInt32(e->u.call.subroutine_dimensions[d])),
+                            component);
+                    }
+                }
+                llvm::Value *elem = flat;
                 /* constantBase is element 0's storage; stride one uint. */
                 llvm::Value *addr = cg.b->CreateGEP(
                     cg.b->getInt8Ty(), cg.bufferPtr,
@@ -10455,8 +10638,8 @@ static bool emitCallUserFunction(
                     MGLDecl *pd = fd->params[a];
                     if (!pd || !pd->name) continue;
                     MType pt;
-                    pt.scalar = (MGLIRScalar)(pd->type ? pd->type->base
-                                                       : MGL_AST_TYPE_FLOAT);
+                    pt.scalar = astBaseToIRScalar(pd->type ? pd->type->base
+                                                            : MGL_AST_TYPE_FLOAT);
                     if (pd->type && pd->type->vec_size)
                         pt.vec = pd->type->vec_size;
                     if (pd->type && pd->type->mat_cols > 1) {
@@ -10814,8 +10997,8 @@ static bool emitCallUserFunction(
                 /* Helper return ends the inlined body, not the caller. */
                 if (cg.err == 2) cg.err = savedErr;
                 MType rt;
-                rt.scalar = (MGLIRScalar)(fd->type ? fd->type->base
-                                                   : MGL_AST_TYPE_FLOAT);
+                rt.scalar = astBaseToIRScalar(fd->type ? fd->type->base
+                                                        : MGL_AST_TYPE_FLOAT);
                 if (fd->type && fd->type->vec_size)
                     rt.vec = fd->type->vec_size;
                 if (fd->type && fd->type->mat_cols > 1) {
@@ -11070,6 +11253,7 @@ static int translationUnitNeedsFragmentSparseResidency(
         "sparseImageLoadARB", "sparseTextureClampARB",
         "sparseTextureOffsetClampARB", "sparseTextureGradClampARB",
         "sparseTextureGradOffsetClampARB",
+        "textureSamples", "imageSamples",
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
         if (mglFrontendBuiltinUsed(mod, tu, names[i])) return 1;
@@ -11095,6 +11279,7 @@ static int translationUnitNeedsSparseResidency(const MGLIRModule *mod,
         "imageAtomicAnd", "imageAtomicOr", "imageAtomicXor",
         "imageAtomicExchange", "imageAtomicCompSwap",
         "imageAtomicIncWrap", "imageAtomicDecWrap",
+        "textureSamples", "imageSamples",
     };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
         if (mglFrontendBuiltinUsed(mod, tu, names[i])) return 1;
@@ -11379,7 +11564,13 @@ static llvm::Value *sparseResidencyCode(Codegen &cg, llvm::Value *sampled,
 
     std::string path;
     const char *samplerName = nullptr;
-    if (resolveSamplerAccessName(e->u.call.args[0], &path)) {
+    const MGLExpr *arrayIndexExpr = nullptr;
+    if (e->u.call.args[0]->kind == MGL_EXPR_INDEX &&
+        e->u.call.args[0]->u.index.object &&
+        e->u.call.args[0]->u.index.object->kind == MGL_EXPR_VAR_REF) {
+        samplerName = e->u.call.args[0]->u.index.object->u.var_ref.name;
+        arrayIndexExpr = e->u.call.args[0]->u.index.index;
+    } else if (resolveSamplerAccessName(e->u.call.args[0], &path)) {
         samplerName = path.c_str();
     } else if (e->u.call.args[0]->kind == MGL_EXPR_VAR_REF) {
         samplerName = e->u.call.args[0]->u.var_ref.name;
@@ -11389,7 +11580,7 @@ static llvm::Value *sparseResidencyCode(Codegen &cg, llvm::Value *sampled,
         cg.errmsg = "sparse access has no sampler/image resource";
         return nullptr;
     }
-    if (cg.resources.texArrayValues.count(samplerName)) {
+    if (cg.resources.texArrayValues.count(samplerName) && isSample) {
         if (!sampled) return nullptr;
         return sparseResidencyFromSampledValue(cg, sampled);
     }
@@ -11398,6 +11589,14 @@ static llvm::Value *sparseResidencyCode(Codegen &cg, llvm::Value *sampled,
         cg.err = 1;
         cg.errmsg = "sparse access has no Metal texture slot";
         return nullptr;
+    }
+    llvm::Value *dynamicSlot = nullptr;
+    if (!isSample && arrayIndexExpr) {
+        llvm::Value *index = emitExpr(cg, arrayIndexExpr, mod, locals);
+        if (!index) return nullptr;
+        index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
+        dynamicSlot = cg.b->CreateAdd(
+            cg.b->getInt32(slotIt->second), index);
     }
     if (isSample) {
         return sparseSampledResidency(cg, sampled, e, name, mod, locals,
@@ -11436,7 +11635,9 @@ static llvm::Value *sparseResidencyCode(Codegen &cg, llvm::Value *sampled,
         if (!level) return nullptr;
         level = coerceScalar(cg, level, MGLIR_SCALAR_INT);
     }
-    return sparseCommitResidency(cg, slotIt->second, level, x, y, z);
+    return sparseCommitResidency(
+        cg, dynamicSlot ? dynamicSlot : cg.b->getInt32(slotIt->second),
+        level, x, y, z);
 }
 
 static bool emitCallSparseTexture(
@@ -11725,6 +11926,17 @@ static bool emitCallSparseTexture(
     return true;
 }
 
+#include "mgl_air_reduction.inl"
+
+static llvm::Type *postDepthTextureType(llvm::LLVMContext &ctx, bool stencil) {
+    const char *name =
+        stencil ? "struct._texture_2d_array_t" : "struct._depth_2d_array_t";
+    llvm::StructType *type = llvm::StructType::getTypeByName(ctx, name);
+    if (!type)
+        type = llvm::StructType::create(ctx, name);
+    return type->getPointerTo(1);
+}
+
 /* Lifted out of emitExpr's MGL_EXPR_CALL case. */
 static bool emitCallTextureSample(
     Codegen &cg, const MGLExpr *e, const char *name,
@@ -11888,11 +12100,13 @@ static bool emitCallTextureSample(
                     *out = cg.b->getInt32(1);
                     return true;
                 }
-                *out = callAirFn(
-                    cg, sampleKind == MGLIR_TEX_2D_MS_ARRAY
-                            ? "air.get_num_samples_texture_2d_ms_array"
-                            : "air.get_num_samples_texture_2d_ms",
-                    i32, {tex});
+                auto slot = cg.resources.texMetalIndex.find(samplerName);
+                if (slot == cg.resources.texMetalIndex.end()) {
+                    cg.err = 1;
+                    cg.errmsg = "textureSamples has no Metal texture slot";
+                    return true;
+                }
+                *out = sparseSampleCount(cg, slot->second);
                 return true;
             }
             /* textureQueryLevels.  Rect and multisample textures carry exactly
@@ -13132,6 +13346,12 @@ static bool emitCallTextureSample(
                     cg, t, sampleCoord, arrayLayer, texel, sampleKind,
                     slot, slotDyn, metal);
             };
+            auto maybeReduction = [&](llvm::Value *metal) -> llvm::Value * {
+                return emitSamplerReduction(
+                    cg, samplerName, dynamicSamplerArray ? arrayIndex : nullptr,
+                    t, sp, sampleCoord, arrayLayer, sampleKind, texel,
+                    explicitLod, lod, metal);
+            };
             /* Cube sample has no offset in AIR/MSL (texturecube.sample
              * takes coord + lod/bias only). Passing the 2D offset pair
              * makes Metal's PSO compiler abort. */
@@ -13200,7 +13420,7 @@ static bool emitCallTextureSample(
                 llvm::Value *r = callAirFn(
                     cg, sampledIntrinsic(gradName).c_str(), retTy,
                     gradArgs);
-                return maybeIntBorder(cg.b->CreateExtractValue(r, 0));
+                return maybeIntBorder(maybeReduction(cg.b->CreateExtractValue(r, 0)));
             }
             std::vector<llvm::Value *> sampleArgs;
             if (cubeSample) {
@@ -13225,7 +13445,7 @@ static bool emitCallTextureSample(
             llvm::Value *r = callAirFn(
                 cg, sampledIntrinsic(baseName).c_str(), retTy,
                 sampleArgs);
-            return maybeIntBorder(cg.b->CreateExtractValue(r, 0));
+            return maybeIntBorder(maybeReduction(cg.b->CreateExtractValue(r, 0)));
         };
         if (dynamicSamplerArray) {
             std::vector<llvm::Value *> smps =
@@ -13240,7 +13460,8 @@ static bool emitCallTextureSample(
 }
 
 static bool emitCallTextureQuery(Codegen &cg, const MGLExpr *e,
-                                const char *name, llvm::Value **out)
+                                const char *name, const MGLIRModule *mod,
+                                llvm::Value **out)
 {
     /* textureQuery*: compile-side stubs (CTS SPIR-V builtin probe only
      * needs linkage; results are unused). */
@@ -13255,9 +13476,6 @@ static bool emitCallTextureQuery(Codegen &cg, const MGLExpr *e,
             llvm::FixedVectorType::get(f32, 2));
         return true;
     }
-    /* imageSamples: images are never multisampled in GL, so the count is
-     * always 1.  textureSamples/textureQueryLevels are handled by
-     * emitCallTextureSample, which can see the bound texture kind. */
     if (strcmp(name, "imageSamples") == 0) {
         if (e->u.call.arg_count != 1) {
             cg.err = 1;
@@ -13265,7 +13483,44 @@ static bool emitCallTextureQuery(Codegen &cg, const MGLExpr *e,
                         "' expects 1 argument";
             return true;
         }
-        *out = cg.b->getInt32(1);
+        std::string path;
+        const char *imageName = nullptr;
+        if (resolveSamplerAccessName(e->u.call.args[0], &path)) {
+            imageName = path.c_str();
+        } else if (e->u.call.args[0]->kind == MGL_EXPR_VAR_REF) {
+            imageName = e->u.call.args[0]->u.var_ref.name;
+        }
+        const MGLIRType *type = nullptr;
+        if (imageName) {
+            auto it = cg.resources.samplerIRTypes.find(imageName);
+            if (it != cg.resources.samplerIRTypes.end()) {
+                type = it->second;
+            } else {
+                const MGLIRSymbol *symbol = findSymbol(mod, imageName);
+                type = symbol ? symbol->type : nullptr;
+            }
+        }
+        while (type && type->kind == MGLIR_TYPE_ARRAY) type = type->elem_type;
+        const bool multisample = type &&
+            (type->kind == MGLIR_TYPE_SAMPLER || type->kind == MGLIR_TYPE_IMAGE) &&
+            (type->tex_kind == MGLIR_TEX_2D_MS ||
+             type->tex_kind == MGLIR_TEX_2D_MS_ARRAY);
+        if (!multisample) {
+            *out = cg.b->getInt32(1);
+            return true;
+        }
+        if (!imageName) {
+            cg.err = 1;
+            cg.errmsg = "imageSamples has no image resource";
+            return true;
+        }
+        auto slot = cg.resources.texMetalIndex.find(imageName);
+        if (slot == cg.resources.texMetalIndex.end()) {
+            cg.err = 1;
+            cg.errmsg = "imageSamples has no Metal texture slot";
+            return true;
+        }
+        *out = sparseSampleCount(cg, slot->second);
         return true;
     }
     return false;
@@ -13800,7 +14055,7 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     MType t;
     switch (e->kind) {
     case MGL_EXPR_LITERAL: {
-        MGLIRScalar b = (MGLIRScalar)e->u.literal.base;
+        MGLIRScalar b = astBaseToIRScalar(e->u.literal.base);
         if (b == MGLIR_SCALAR_HALF)
             b = MGLIR_SCALAR_FLOAT;
         /* Keep DOUBLE as i64 payload typing (matches emitExpr literal). */
@@ -13812,6 +14067,17 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         break;
     }
     case MGL_EXPR_VAR_REF: {
+        if (strcmp(e->u.var_ref.name, "gl_SubGroupSizeARB") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_SubGroupInvocationARB") == 0) {
+            t.scalar = MGLIR_SCALAR_UINT; break;
+        }
+        if (strcmp(e->u.var_ref.name, "gl_SubGroupEqMaskARB") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_SubGroupGeMaskARB") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_SubGroupGtMaskARB") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_SubGroupLeMaskARB") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_SubGroupLtMaskARB") == 0) {
+            t.scalar = MGLIR_SCALAR_UINT64; break;
+        }
         if (strcmp(e->u.var_ref.name, "gl_Position") == 0) {
             t.scalar = MGLIR_SCALAR_FLOAT; t.vec = 4; break;
         }
@@ -13843,6 +14109,10 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
         if (strcmp(e->u.var_ref.name, "gl_SampleID") == 0) {
             t.scalar = MGLIR_SCALAR_INT; break;
+        }
+        if (strcmp(e->u.var_ref.name, "gl_SampleMask") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_SampleMaskIn") == 0) {
+            t.scalar = MGLIR_SCALAR_INT; t.arr = 1; break;
         }
         auto lit = locals.find(e->u.var_ref.name);
         if (lit != locals.end()) { t = lit->second; break; }
@@ -13906,12 +14176,15 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
         if (strcmp(name, "float") == 0 || strcmp(name, "double") == 0 ||
             strcmp(name, "int") == 0 || strcmp(name, "uint") == 0 ||
+            strcmp(name, "int64_t") == 0 || strcmp(name, "uint64_t") == 0 ||
             strcmp(name, "bool") == 0) {
-            t.scalar = name[0] == 'f' ? MGLIR_SCALAR_FLOAT
-                     : name[0] == 'd' ? MGLIR_SCALAR_DOUBLE
-                     : name[0] == 'u' ? MGLIR_SCALAR_UINT
-                     : name[0] == 'b' ? MGLIR_SCALAR_BOOL
-                                      : MGLIR_SCALAR_INT;
+            t.scalar = MGLIR_SCALAR_FLOAT;
+            if (strcmp(name, "double") == 0) t.scalar = MGLIR_SCALAR_DOUBLE;
+            else if (strcmp(name, "uint") == 0) t.scalar = MGLIR_SCALAR_UINT;
+            else if (strcmp(name, "int") == 0) t.scalar = MGLIR_SCALAR_INT;
+            else if (strcmp(name, "uint64_t") == 0) t.scalar = MGLIR_SCALAR_UINT64;
+            else if (strcmp(name, "int64_t") == 0) t.scalar = MGLIR_SCALAR_INT64;
+            else if (strcmp(name, "bool") == 0) t.scalar = MGLIR_SCALAR_BOOL;
             if (e->u.call.is_array_ctor)
                 t.arr = e->u.call.arg_count;
             break;
@@ -13963,7 +14236,13 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     t.arr = e->u.call.arg_count;
             }
         }
-        if (cg.structTypes.count(name)) {
+        if (strcmp(name, "ballotARB") == 0) {
+            t.scalar = MGLIR_SCALAR_UINT64;
+        } else if (strcmp(name, "readInvocationARB") == 0 ||
+                   strcmp(name, "readFirstInvocationARB") == 0) {
+            if (e->u.call.arg_count > 0)
+                t = exprType(cg, e->u.call.args[0], mod, locals);
+        } else if (cg.structTypes.count(name)) {
             if (e->u.call.is_array_ctor)
                 t.arr = e->u.call.arg_count;
         } else if (strcmp(name, "normalize") == 0 ||
@@ -14380,6 +14659,170 @@ static llvm::Value *applyCullDistanceFromPatchInputs(Codegen &cg,
         llvm::ConstantFP::get(f32, 2.0),
         llvm::ConstantFP::get(f32, 1.0)});
     return cg.b->CreateSelect(shouldCull, culled, pos);
+}
+
+static llvm::Value *emitPostDepthCompare(Codegen &cg, llvm::Value *function,
+                                         llvm::Value *a, llvm::Value *b,
+                                         bool floating) {
+    /* function is the GL compare enum minus GL_NEVER: NEVER, LESS, EQUAL,
+     * LEQUAL, GREATER, NOTEQUAL, GEQUAL, ALWAYS. */
+    static const llvm::CmpInst::Predicate kFloat[6] = {
+        llvm::CmpInst::FCMP_OLT, llvm::CmpInst::FCMP_OEQ,
+        llvm::CmpInst::FCMP_OLE, llvm::CmpInst::FCMP_OGT,
+        llvm::CmpInst::FCMP_UNE, llvm::CmpInst::FCMP_OGE};
+    static const llvm::CmpInst::Predicate kUnsigned[6] = {
+        llvm::CmpInst::ICMP_ULT, llvm::CmpInst::ICMP_EQ,
+        llvm::CmpInst::ICMP_ULE, llvm::CmpInst::ICMP_UGT,
+        llvm::CmpInst::ICMP_NE, llvm::CmpInst::ICMP_UGE};
+    llvm::Value *result =
+        cg.b->CreateICmpEQ(function, cg.b->getInt32(7));
+    for (uint32_t i = 0; i < 6u; ++i) {
+        llvm::Value *test = floating ? cg.b->CreateFCmp(kFloat[i], a, b)
+                                     : cg.b->CreateICmp(kUnsigned[i], a, b);
+        result = cg.b->CreateSelect(
+            cg.b->CreateICmpEQ(function, cg.b->getInt32(i + 1u)), test,
+            result);
+    }
+    return result;
+}
+
+static llvm::Value *emitSamplePositionFromId(Codegen &cg, llvm::Value *sampleId,
+                                             llvm::Value *numSamples);
+
+/* ARB_post_depth_coverage under the emulated per-sample loop: the invocation
+ * drawing sample plane s cannot see the depth/stencil results of the other
+ * planes, so the runtime copies every plane before the loop and this repeats
+ * the depth and stencil tests against that copy, one sample at a time.  The
+ * depth at sample j is extrapolated from the shaded sample with the screen
+ * derivatives of z.  Params (uint32 words): {samples, depth_on, stencil_on,
+ * depth_func, front func/ref/mask, back func/ref/mask, gl_row_order}; a
+ * sample count of 0 means no copy is bound, and the mask then keeps every
+ * sample. */
+static llvm::Value *emitPostDepthCoverageMask(Codegen &cg,
+                                              llvm::Value *shadedSample,
+                                              llvm::Value *numSamples) {
+    llvm::LLVMContext &ctx = *cg.ctx;
+    llvm::Type *i32 = cg.b->getInt32Ty();
+    llvm::Type *f32 = cg.b->getFloatTy();
+    llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
+    llvm::Value *words = cg.b->CreateBitCast(
+        cg.postDepthParams, i32->getPointerTo(1));
+    auto param = [&](uint32_t index) {
+        return cg.b->CreateAlignedLoad(
+            i32, cg.b->CreateGEP(i32, words, cg.b->getInt32(index)),
+            llvm::Align(4));
+    };
+    llvm::Value *samples = param(0);
+    llvm::Value *count = cg.b->CreateSelect(
+        cg.b->CreateICmpULT(samples, cg.b->getInt32(32)), samples,
+        cg.b->getInt32(32));
+    llvm::Value *depthOn = cg.b->CreateICmpNE(param(1), cg.b->getInt32(0));
+    llvm::Value *stencilOn = cg.b->CreateICmpNE(param(2), cg.b->getInt32(0));
+    llvm::Value *depthFunction = param(3);
+    llvm::Value *front = cg.postDepthFrontFacing;
+    llvm::Value *stencilFunction = cg.b->CreateSelect(front, param(4), param(7));
+    llvm::Value *stencilMask = cg.b->CreateAnd(
+        cg.b->CreateSelect(front, param(6), param(9)), cg.b->getInt32(0xff));
+    llvm::Value *reference = cg.b->CreateAnd(
+        cg.b->CreateSelect(front, param(5), param(8)), stencilMask);
+
+    llvm::Value *pos = cg.postDepthPosition;
+    llvm::Value *xy = llvm::Constant::getNullValue(v2i32);
+    xy = cg.b->CreateInsertElement(
+        xy, cg.b->CreateFPToUI(
+                cg.b->CreateExtractElement(pos, cg.b->getInt32(0)), i32),
+        (uint64_t)0);
+    xy = cg.b->CreateInsertElement(
+        xy, cg.b->CreateFPToUI(
+                cg.b->CreateExtractElement(pos, cg.b->getInt32(1)), i32),
+        (uint64_t)1);
+    llvm::Value *z = cg.b->CreateExtractElement(pos, cg.b->getInt32(2));
+    llvm::Value *dzdx = callAirFn(cg, "air.dfdx.f32", f32, {z});
+    llvm::Value *dzdy = callAirFn(cg, "air.dfdy.f32", f32, {z});
+    /* Sample positions are in GL window space (Y up); Metal rows run the
+     * same way only in a GL-row-order target. */
+    llvm::Value *glRowOrder = cg.b->CreateICmpNE(param(10), cg.b->getInt32(0));
+    llvm::Value *shadedPos =
+        emitSamplePositionFromId(cg, shadedSample, numSamples);
+    /* The 1x1 fallback bound when a test is off is read at the origin. */
+    llvm::Value *zero2 = llvm::Constant::getNullValue(v2i32);
+    llvm::Value *depthXY = cg.b->CreateSelect(depthOn, xy, zero2);
+    llvm::Value *stencilXY = cg.b->CreateSelect(stencilOn, xy, zero2);
+    llvm::StructType *samplerType =
+        llvm::StructType::getTypeByName(ctx, "struct._sampler_t");
+    if (!samplerType)
+        samplerType = llvm::StructType::create(ctx, "struct._sampler_t");
+    llvm::Value *readSampler = callAirFn(
+        cg, "air.get_read_sampler", samplerType->getPointerTo(2), {});
+
+    llvm::Function *fn = cg.b->GetInsertBlock()->getParent();
+    llvm::BasicBlock *preheader = cg.b->GetInsertBlock();
+    llvm::BasicBlock *header = llvm::BasicBlock::Create(ctx, "pdc.sample", fn);
+    llvm::BasicBlock *body = llvm::BasicBlock::Create(ctx, "pdc.test", fn);
+    llvm::BasicBlock *done = llvm::BasicBlock::Create(ctx, "pdc.done", fn);
+    cg.b->CreateBr(header);
+    cg.b->SetInsertPoint(header);
+    llvm::PHINode *sample = cg.b->CreatePHI(i32, 2, "pdc.s");
+    llvm::PHINode *mask = cg.b->CreatePHI(i32, 2, "pdc.mask");
+    sample->addIncoming(cg.b->getInt32(0), preheader);
+    mask->addIncoming(cg.b->getInt32(0), preheader);
+    cg.b->CreateCondBr(cg.b->CreateICmpULT(sample, count), body, done);
+
+    cg.b->SetInsertPoint(body);
+    llvm::Value *zero = cg.b->getInt32(0);
+    llvm::Value *storedDepth = cg.b->CreateExtractValue(
+        callAirFn(cg, "air.read_depth_2d_array.f32",
+                  llvm::StructType::get(ctx, {f32, cg.b->getInt8Ty()}),
+                  {cg.postDepthTexture, readSampler, cg.b->getInt32(1),
+                   depthXY, cg.b->CreateSelect(depthOn, sample, zero), zero2,
+                   zero, cg.b->getInt32(1)}),
+        0);
+    llvm::Value *storedStencil = cg.b->CreateExtractElement(
+        cg.b->CreateExtractValue(
+            callAirFn(cg, "air.read_texture_2d_array.u.v4i32",
+                      llvm::StructType::get(
+                          ctx, {llvm::FixedVectorType::get(i32, 4),
+                                cg.b->getInt8Ty()}),
+                      {cg.postStencilTexture, readSampler, stencilXY,
+                       cg.b->CreateSelect(stencilOn, sample, zero), zero2,
+                       zero, cg.b->getInt32(1)}),
+            0),
+        (uint64_t)0);
+    llvm::Value *offset = cg.b->CreateFSub(
+        emitSamplePositionFromId(cg, sample, numSamples), shadedPos);
+    llvm::Value *offsetX = cg.b->CreateExtractElement(offset, (uint64_t)0);
+    llvm::Value *offsetY = cg.b->CreateExtractElement(offset, (uint64_t)1);
+    llvm::Value *rows =
+        cg.b->CreateSelect(glRowOrder, offsetY, cg.b->CreateFNeg(offsetY));
+    llvm::Value *sampleZ = cg.b->CreateFAdd(
+        z, cg.b->CreateFAdd(cg.b->CreateFMul(dzdx, offsetX),
+                            cg.b->CreateFMul(dzdy, rows)));
+    llvm::Value *zeroF = llvm::ConstantFP::get(f32, 0.0);
+    llvm::Value *oneF = llvm::ConstantFP::get(f32, 1.0);
+    sampleZ = cg.b->CreateSelect(cg.b->CreateFCmpOLT(sampleZ, zeroF), zeroF,
+                                 sampleZ);
+    sampleZ = cg.b->CreateSelect(cg.b->CreateFCmpOGT(sampleZ, oneF), oneF,
+                                 sampleZ);
+    llvm::Value *depthPass = cg.b->CreateOr(
+        cg.b->CreateNot(depthOn),
+        emitPostDepthCompare(cg, depthFunction, sampleZ, storedDepth, true));
+    llvm::Value *stencilPass = cg.b->CreateOr(
+        cg.b->CreateNot(stencilOn),
+        emitPostDepthCompare(cg, stencilFunction, reference,
+                             cg.b->CreateAnd(storedStencil, stencilMask),
+                             false));
+    llvm::Value *bit = cg.b->CreateShl(cg.b->getInt32(1), sample);
+    llvm::Value *nextMask = cg.b->CreateOr(
+        mask, cg.b->CreateSelect(cg.b->CreateAnd(depthPass, stencilPass), bit,
+                                 zero));
+    llvm::Value *nextSample = cg.b->CreateAdd(sample, cg.b->getInt32(1));
+    cg.b->CreateBr(header);
+    sample->addIncoming(nextSample, cg.b->GetInsertBlock());
+    mask->addIncoming(nextMask, cg.b->GetInsertBlock());
+
+    cg.b->SetInsertPoint(done);
+    return cg.b->CreateSelect(cg.b->CreateICmpEQ(count, zero),
+                              cg.b->getInt32(~0u), mask);
 }
 
 /* GL ignores gl_SampleMask when SAMPLE_BUFFERS==0; Metal still honours
@@ -15554,6 +15997,11 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         }
         (void)texLocAssign;
     }
+    /* Min/max filtering is performed in AIR on targets where the native
+     * sampler reduction mode is inert.  The same per-slot table carries the
+     * sampler filters, wrap and border state needed for that footprint. */
+    if (!isKernel && texCount > 0u)
+        needsSamplerWrapBuf = true;
     /* TEXTURE_LOD_BIAS pack for ordinary VS / FS with sampled textures. */
     const bool needsLodBias =
         texCount > 0u && !isCapture && !isKernel &&
@@ -15674,9 +16122,13 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     const bool usesSamplePosition =
         !isVS && !isTES && !isKernel &&
         mglFrontendBuiltinUsed(&mod, tu, "gl_SamplePosition");
+    const bool postDepthCoverage =
+        stage == MGL_STAGE_FRAGMENT && tu->layout_post_depth_coverage;
     const bool usesSampleMaskIn =
         !isVS && !isTES && !isKernel &&
         mglFrontendBuiltinUsed(&mod, tu, "gl_SampleMaskIn");
+    /* post_depth_coverage only changes what gl_SampleMaskIn reports. */
+    const bool postDepthMaskIn = postDepthCoverage && usesSampleMaskIn;
     /* Also emit [[sample_mask]] when FS clip-distance emulation needs to
      * kill coverage without air.discard_fragment (see finishFragReturn). */
     const bool usesSampleMask =
@@ -15703,8 +16155,9 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     const bool needSampleID = usesSampleID || usesSamplePosition ||
                               usesInterpolateAtSample || hasSampleVarying;
     const bool needSampleParams =
-        usesNumSamples || usesSampleMask || usesSamplePosition ||
-        usesSampleID || usesInterpolateAtSample || hasSampleVarying;
+        usesNumSamples || usesSampleMask || usesSampleMaskIn ||
+        usesSamplePosition || usesSampleID || usesInterpolateAtSample ||
+        hasSampleVarying;
     /* Metal [[position]] is top-left; GL gl_FragCoord is bottom-left.  Slot 30
      * carries {height, lower_left, num_samples, sample_buffers,
      * point_coord_lower_left} so the FS can flip Y (see RenderPass
@@ -16182,10 +16635,10 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             hasBufferArgIdx = (uint32_t)paramTys.size();
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
         }
-        if (usesFragCoord)
+        if (usesFragCoord || postDepthMaskIn)
             paramTys.push_back(llvm::FixedVectorType::get(
                 llvm::Type::getFloatTy(ctx), 4));
-        if (usesFrontFacing)
+        if (usesFrontFacing || postDepthMaskIn)
             paramTys.push_back(llvm::Type::getInt1Ty(ctx));
         if (usesPointCoord)
             paramTys.push_back(llvm::FixedVectorType::get(
@@ -16205,6 +16658,11 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         /* Slot 30: FragCoord Y-fixup and/or sample params. */
         if (needParamsBuffer)
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+        if (postDepthMaskIn) {
+            paramTys.push_back(postDepthTextureType(ctx, false));
+            paramTys.push_back(postDepthTextureType(ctx, true));
+            paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+        }
     }
     if (isTESCompute)
         paramTys.push_back(llvm::FixedVectorType::get(
@@ -16347,6 +16805,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     cg.isGeometry = isGS;
     cg.isTESCompute = isTESCompute;
     cg.isTESVertex = isTESVertex;
+    cg.hasPostDepthCoverage = postDepthMaskIn;
     cg.isolinesTopology = tu->layout_primitive == MGL_AST_TES_ISOLINES;
     if (isCompute && tu) {
         cg.hasWorkGroupSize = true;
@@ -16867,10 +17326,22 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     } else {
         if (hasBuffer)
             cg.bufferPtr = fn->getArg(argSlot++);
-        if (usesFragCoord)
-            cg.fragPos = fn->getArg(argSlot++);
-        if (usesFrontFacing)
-            cg.lvalues["gl_FrontFacing"] = fn->getArg(argSlot++);
+        if (usesFragCoord || postDepthMaskIn) {
+            llvm::Value *position = fn->getArg(argSlot++);
+            /* The post-depth tests address the depth copy in Metal rows,
+             * before the gl_FragCoord Y fixup below. */
+            if (postDepthMaskIn)
+                cg.postDepthPosition = position;
+            if (usesFragCoord)
+                cg.fragPos = position;
+        }
+        if (usesFrontFacing || postDepthMaskIn) {
+            llvm::Value *frontFacing = fn->getArg(argSlot++);
+            if (postDepthMaskIn)
+                cg.postDepthFrontFacing = frontFacing;
+            if (usesFrontFacing)
+                cg.lvalues["gl_FrontFacing"] = frontFacing;
+        }
         if (usesPointCoord)
             cg.lvalues["gl_PointCoord"] = fn->getArg(argSlot++);
         if (usesPrimitiveId) {
@@ -16912,6 +17383,11 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         if (needParamsBuffer) {
             llvm::Value *buf = fn->getArg(argSlot++);
             cg.fragSampleParams = buf;
+            if (postDepthMaskIn) {
+                cg.postDepthTexture = fn->getArg(argSlot++);
+                cg.postStencilTexture = fn->getArg(argSlot++);
+                cg.postDepthParams = fn->getArg(argSlot++);
+            }
             /* float4 layout from RenderPass when FragCoord and/or sample
              * params are requested: {height, lower_left, ns_bits, sb_bits}.
              * When emulating MS sample planes, sb_bits may carry
@@ -17025,6 +17501,19 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                             cg.b->getInt32(1)));
                     llvm::Value *inMask =
                         cg.b->CreateSelect(force, full, hwIn);
+                    if (cg.hasPostDepthCoverage) {
+                        /* GL 4.6 §15.2.2: with post_depth_coverage a sample
+                         * is covered only if it passes the early depth and
+                         * stencil tests.  Outside the per-sample loop the
+                         * hardware early tests already decide the one
+                         * Metal sample. */
+                        inMask = cg.b->CreateSelect(
+                            force,
+                            cg.b->CreateAnd(inMask,
+                                            emitPostDepthCoverageMask(
+                                                cg, forcedSid, ns)),
+                            inMask);
+                    }
                     llvm::Value *arr =
                         llvm::UndefValue::get(llvm::ArrayType::get(i32t, 1));
                     cg.lvalues["gl_SampleMaskIn"] =
@@ -17457,8 +17946,8 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             MGLDecl *pd = d->params[p];
             if (!pd || !pd->name) continue;
             MType pt;
-            pt.scalar = (MGLIRScalar)(pd->type ? pd->type->base
-                                               : MGL_AST_TYPE_FLOAT);
+            pt.scalar = astBaseToIRScalar(pd->type ? pd->type->base
+                                                    : MGL_AST_TYPE_FLOAT);
             if (pd->type && pd->type->vec_size) pt.vec = pd->type->vec_size;
             /* Matrix parameters must carry their shape or m[i]/m[i][j]
              * inside the function body fail the index type check. */
@@ -19233,7 +19722,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
              * uniform buffer in the arg order; skip that slot once. */
             if (hasBuffer) mArgSlot++;
         }
-        if (usesFragCoord) {
+        if (usesFragCoord || postDepthMaskIn) {
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), mArgSlot++)),
@@ -19245,7 +19734,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "gl_FragCoord")}));
         }
-        if (usesFrontFacing) {
+        if (usesFrontFacing || postDepthMaskIn) {
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), mArgSlot++)),
@@ -19364,6 +19853,47 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                 llvm::MDString::get(ctx, needFragCoordParams
                                             ? "mgl_fragcoord_params"
                                             : "mgl_sample_params")}));
+        }
+        if (postDepthMaskIn) {
+            for (uint32_t textureIndex = 0; textureIndex < 2u; ++textureIndex) {
+                argNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                    llvm::MDString::get(ctx, "air.texture"),
+                    llvm::MDString::get(ctx, "air.location_index"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx),
+                        textureIndex == 0u ? kMGLPostDepthTextureIndex
+                                           : kMGLPostStencilTextureIndex)),
+                    llvm::ConstantAsMetadata::get(
+                        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 1)),
+                    llvm::MDString::get(ctx, "air.read"),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx,
+                        textureIndex == 0u ? "depth2d_array<float, read>"
+                                           : "texture2d_array<uint, read>"),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx,
+                        textureIndex == 0u ? "mgl_post_depth"
+                                           : "mgl_post_stencil")}));
+            }
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.buffer"),
+                llvm::MDString::get(ctx, "air.location_index"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), kMGLPostDepthParamsBufferIndex)),
+                llvm::ConstantAsMetadata::get(
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 1)),
+                llvm::MDString::get(ctx, "air.read"),
+                llvm::MDString::get(ctx, "air.address_space"),
+                llvm::ConstantAsMetadata::get(
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 1)),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "device uchar*"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "mgl_post_depth_params")}));
         }
     }
     if (isKernel) {
@@ -19957,7 +20487,9 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
      * Apple's AIR puts a bare MDString "early_fragment_tests" (no "air."
      * prefix) as the 4th !air.fragment operand — not a nested MDNode.
      * Confirmed via llvm-bcanalyzer on metalfe metallibs. */
-    if (!isKernel && !isVS && !isTES && tu->layout_early_fragment_tests) {
+    /* ARB_post_depth_coverage implicitly enables early fragment tests. */
+    if (!isKernel && !isVS && !isTES &&
+        (tu->layout_early_fragment_tests || tu->layout_post_depth_coverage)) {
         stageElems.push_back(
             llvm::MDString::get(ctx, "early_fragment_tests"));
     }
@@ -19970,6 +20502,17 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
      * tag carries the same numbers, so both sides read them from AirTarget. */
     mgl::mglAirTargetApplyModuleMetadata(module, mgl::mglAirTarget());
     addModuleFlags(&module);
+
+    /* AIR kernels using cross-lane operations must be convergent at the entry
+     * as well as at each intrinsic call.  Without the entry attribute AGX can
+     * reject otherwise valid loop/divergent-control-flow combinations while
+     * materializing the compute pipeline. */
+    for (const llvm::Function &decl : module) {
+        if (decl.getName().startswith("air.simd_") && !decl.use_empty()) {
+            fn->addFnAttr(llvm::Attribute::Convergent);
+            break;
+        }
+    }
 
     {
         llvm::LoopAnalysisManager LAM;
@@ -20387,6 +20930,9 @@ static int fillStageInfo(const MGLTranslationUnit *tu,
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_DERIV_Y;
     if (mglFrontendStageUsesSampleInterpolation(mod, tu))
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_SAMPLE_INTERPOLATION;
+    if (stage == MGL_STAGE_FRAGMENT && tu->layout_post_depth_coverage &&
+        mglFrontendBuiltinUsed(mod, tu, "gl_SampleMaskIn"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_POST_DEPTH_COVERAGE;
     if (stage_info->uses_tess_level)
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_TESS_LEVEL;
     if (stage == MGL_STAGE_TESS_CONTROL && tu->layout_vertices > 0)

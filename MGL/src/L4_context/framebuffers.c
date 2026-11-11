@@ -1223,6 +1223,7 @@ static GLboolean mglRenderbufferInternalFormatRenderable(GLint internalformat)
     case GL_RGBA2:
     case GL_RGBA12:
     case GL_RGB9_E5:
+    case GL_DEPTH_STENCIL:
         return GL_TRUE;
     default:
         break;

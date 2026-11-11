@@ -119,6 +119,7 @@ enum {
      * follows the target's row order, which the stage learns at draw time
      * from the fragment parameter buffer. */
     MGL_AIR_BUILTIN_DERIV_Y        = 1u << 20,
+    MGL_AIR_BUILTIN_POST_DEPTH_COVERAGE = 1u << 21,
 };
 
 typedef struct MGLAIRStageInfo {

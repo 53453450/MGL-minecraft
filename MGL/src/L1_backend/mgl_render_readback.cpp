@@ -276,6 +276,44 @@ int mglRenderEncodeDepthClearForCommandBufferOwner(MGLCommandBufferOwner * comma
         owner->current, texture, level, slice, depth_plane, clear_depth);
 }
 
+int mglRenderEncodeDepthStencilClearForCommandBufferOwner(
+    MGLCommandBufferOwner* command_buffer_owner, void* depth_texture,
+    void* stencil_texture, uint64_t level, uint64_t slice, int clear_depth,
+    double depth, int clear_stencil, uint32_t stencil) {
+    mgl::CommandBufferOwner* owner =
+        reinterpret_cast<mgl::CommandBufferOwner*>(static_cast<void*>(command_buffer_owner));
+    if (!owner || !owner->current || (!depth_texture && !stencil_texture)) {
+        return -1;
+    }
+    MGLRenderPassState state = mgl::defaultRenderPassState();
+    const auto load = [](int clear) {
+        return static_cast<uint32_t>(clear ? MTL::LoadActionClear
+                                           : MTL::LoadActionLoad);
+    };
+    if (depth_texture) {
+        state.depth.attachment.texture = depth_texture;
+        state.depth.attachment.level = level;
+        state.depth.attachment.slice = slice;
+        state.depth.attachment.load_action = load(clear_depth);
+        state.depth.clear_depth = depth;
+    }
+    if (stencil_texture) {
+        state.stencil.attachment.texture = stencil_texture;
+        state.stencil.attachment.level = level;
+        state.stencil.attachment.slice = slice;
+        state.stencil.attachment.load_action = load(clear_stencil);
+        state.stencil.clear_stencil = stencil;
+    }
+    void* encoder_handle = nullptr;
+    if (mglRenderCreateRenderEncoderFromState(
+            owner->current, &state, &encoder_handle) != 0 ||
+        !encoder_handle) {
+        return -1;
+    }
+    static_cast<MTL::RenderCommandEncoder*>(encoder_handle)->endEncoding();
+    return 0;
+}
+
 void mglRenderClearFboMatchCache(MGLRenderPassIdentityOwner * owner_handle) {
     mgl::RenderPassIdentityOwner* owner =
         reinterpret_cast<mgl::RenderPassIdentityOwner*>(static_cast<void*>(owner_handle));

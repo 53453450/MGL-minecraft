@@ -42,6 +42,7 @@
 #include "mgl_draw_gs.h"           /* mglDrawGsPassthroughDeclType */
 #include "mgl_render_pass_plan.h"    /* mglRenderProcessGLState*, plans */
 #include "mgl_buffer_slots.h"        /* kMGL*BufferIndex */
+#include "mgl_sampler_compat.h"      /* mglFindSamplerResourceForMetalBinding */
 #include "mgl_renderer_binding_ops.h"  /* mglRendererSyncResourceBindingsForContext */
 #include "mgl_swap_diagnostics.h"     /* swap colour copy + diagnostics */
 #include <dispatch/dispatch.h>       /* dispatch_async_f */
@@ -141,6 +142,32 @@ void mglFillLodBiasPack(GLMContext ctx, Program *prog, int stage,
     }
 }
 
+static int mglSamplerWrapTargetIndex(const MGLShaderResource *resource)
+{
+    if (!resource) return -1;
+    switch ((MGLImageDimension)resource->image_dim) {
+        case MGL_IMAGE_DIM_1D:
+            return resource->image_arrayed ? _TEXTURE_1D_ARRAY : _TEXTURE_1D;
+        case MGL_IMAGE_DIM_2D:
+            if (resource->image_multisampled) {
+                return resource->image_arrayed
+                    ? _TEXTURE_2D_MULTISAMPLE_ARRAY : _TEXTURE_2D_MULTISAMPLE;
+            }
+            return resource->image_arrayed ? _TEXTURE_2D_ARRAY : _TEXTURE_2D;
+        case MGL_IMAGE_DIM_3D:
+            return _TEXTURE_3D;
+        case MGL_IMAGE_DIM_CUBE:
+            return resource->image_arrayed
+                ? _TEXTURE_CUBE_MAP_ARRAY : _TEXTURE_CUBE_MAP;
+        case MGL_IMAGE_DIM_RECT:
+            return _TEXTURE_RECTANGLE;
+        case MGL_IMAGE_DIM_BUFFER:
+            return _TEXTURE_BUFFER_TARGET;
+        default:
+            return -1;
+    }
+}
+
 void mglFillSamplerWrapTable(GLMContext ctx, Program *prog, int stage,
                                     MGLSamplerWrapSlot *slots)
 {
@@ -163,20 +190,35 @@ void mglFillSamplerWrapTable(GLMContext ctx, Program *prog, int stage,
         if (unit >= TEXTURE_UNITS)
             continue;
         smp = ctx->active_state->texture_samplers[unit];
-        tex = ctx->active_state->texture_units[unit].textures[_TEXTURE_2D];
-        if (!tex)
-            tex = ctx->active_state->texture_units[unit]
-                      .textures[_TEXTURE_2D_ARRAY];
-        if (!tex)
-            tex = ctx->active_state->texture_units[unit].textures[_TEXTURE_3D];
-        if (!tex)
-            tex = ctx->active_state->active_textures[unit];
+        MGLShaderResource *resource =
+            mglFindSamplerResourceForMetalBinding(prog, stage, (GLuint)i);
+        int target_index = mglSamplerWrapTargetIndex(resource);
+        if (target_index >= 0 && target_index < _MAX_TEXTURE_TYPES) {
+            tex = ctx->active_state->texture_units[unit].textures[target_index];
+        } else {
+            tex = ctx->active_state->texture_units[unit].textures[_TEXTURE_2D];
+            if (!tex)
+                tex = ctx->active_state->texture_units[unit]
+                          .textures[_TEXTURE_2D_ARRAY];
+            if (!tex)
+                tex = ctx->active_state->texture_units[unit].textures[_TEXTURE_3D];
+            if (!tex)
+                tex = ctx->active_state->active_textures[unit];
+        }
         p = smp ? &smp->params : (tex ? &tex->params : NULL);
         if (!p)
             continue;
         slots[i].wrap_s = (int32_t)p->wrap_s;
         slots[i].wrap_t = (int32_t)p->wrap_t;
         slots[i].wrap_r = (int32_t)p->wrap_r;
+        slots[i].reduction_mode = p->reduction_mode == GL_MIN ? 1u
+                                  : p->reduction_mode == GL_MAX ? 2u : 0u;
+        slots[i].filters = ((uint32_t)p->min_filter & 0xffffu) |
+                           ((uint32_t)p->mag_filter << 16);
+        for (c = 0; c < 4; c++) {
+            memcpy(&slots[i].border_float[c], &p->border_color[c],
+                   sizeof(slots[i].border_float[c]));
+        }
         for (c = 0; c < 4; c++) {
             if (p->border_color_type == GL_INT)
                 slots[i].border[c] = p->border_color_i[c];

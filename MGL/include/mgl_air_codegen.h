@@ -106,6 +106,7 @@ struct Codegen {
     llvm::Value *bufferPtr = nullptr;    /* i8 addrspace(1)* */
     llvm::Value *bufferSizePtr = nullptr; /* constant uint*, buffer(25) */
     llvm::Value *threadPos = nullptr;    /* compute: <3 x i32> grid position */
+    llvm::Value *subgroupInvocation = nullptr; /* entry-fixed SIMD lane */
     llvm::Value *localInvocationPos = nullptr; /* compute: <3 x i32> local */
     llvm::Value *localInvocationIndex = nullptr; /* compute: i32 flat local */
     llvm::Value *workGroupPos = nullptr; /* compute: <3 x i32> group position */
@@ -172,6 +173,14 @@ struct Codegen {
     bool hasFragDepth = false;           /* fragment writes gl_FragDepth */
     bool fragDepthInit = false;          /* gl_FragDepth lvalue initialized */
     bool hasSampleMask = false;          /* fragment writes gl_SampleMask */
+    /* post_depth_coverage gl_SampleMaskIn under the emulated per-sample
+     * loop: copies of the depth/stencil sample planes and the test state. */
+    bool hasPostDepthCoverage = false;
+    llvm::Value *postDepthTexture = nullptr;  /* depth2d_array, read */
+    llvm::Value *postStencilTexture = nullptr; /* texture2d_array<uint> */
+    llvm::Value *postDepthParams = nullptr;
+    llvm::Value *postDepthPosition = nullptr; /* [[position]], Metal rows */
+    llvm::Value *postDepthFrontFacing = nullptr;
     /* Slot 30: {num_samples, sample_buffers}. sample_buffers==0 means
      * non-MSAA FB; GL ignores gl_SampleMask writes in that case. */
     llvm::Value *fragSampleParams = nullptr;

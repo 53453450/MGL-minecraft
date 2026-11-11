@@ -477,6 +477,8 @@ static MGLIRScalar ast_base_to_ir(uint32_t base)
     case MGL_AST_TYPE_UINT:   return MGLIR_SCALAR_UINT;
     case MGL_AST_TYPE_FLOAT:  return MGLIR_SCALAR_FLOAT;
     case MGL_AST_TYPE_DOUBLE: return MGLIR_SCALAR_DOUBLE;
+    case MGL_AST_TYPE_INT64:  return MGLIR_SCALAR_INT64;
+    case MGL_AST_TYPE_UINT64: return MGLIR_SCALAR_UINT64;
     case MGL_AST_TYPE_VOID:   return MGLIR_SCALAR_VOID;
     default:                  return MGLIR_SCALAR_VOID;
     }
@@ -964,7 +966,9 @@ static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts)
     case MGL_AST_TYPE_INT:
     case MGL_AST_TYPE_UINT:
     case MGL_AST_TYPE_FLOAT:
-    case MGL_AST_TYPE_DOUBLE: {
+    case MGL_AST_TYPE_DOUBLE:
+    case MGL_AST_TYPE_INT64:
+    case MGL_AST_TYPE_UINT64: {
         MGLIRType *t = mglIRTypeScalar(sc);
         if (!t) {
             return NULL;
@@ -1490,6 +1494,15 @@ static int implicit_convert(const MGLIRType *from, const MGLIRType *to)
     if (from->scalar == to->scalar) {
         return 1; /* identical types (incl. bool/void) always convert */
     }
+    if (to->scalar == MGLIR_SCALAR_UINT64) {
+        return from->scalar == MGLIR_SCALAR_INT ||
+               from->scalar == MGLIR_SCALAR_UINT ||
+               from->scalar == MGLIR_SCALAR_INT64;
+    }
+    if (to->scalar == MGLIR_SCALAR_INT64) {
+        return from->scalar == MGLIR_SCALAR_INT ||
+               from->scalar == MGLIR_SCALAR_INT64;
+    }
     static const MGLIRScalar rank[5] = {
         MGLIR_SCALAR_INT, MGLIR_SCALAR_UINT, MGLIR_SCALAR_FLOAT, MGLIR_SCALAR_DOUBLE,
         MGLIR_SCALAR_HALF,
@@ -1554,8 +1567,9 @@ static const char *ir_type_str(const MGLIRType *t, char *buf, size_t cap)
         return buf;
     }
     static const char *const scal[] = { "void", "bool", "int", "uint",
-                                        "float", "double", "half" };
-    const char *sc = (t->scalar < 7) ? scal[t->scalar] : "?";
+                                        "float", "double", "half",
+                                        "int64_t", "uint64_t" };
+    const char *sc = (t->scalar < 9) ? scal[t->scalar] : "?";
     switch (t->kind) {
     case MGLIR_TYPE_SCALAR:
         snprintf(buf, cap, "%s", sc);
@@ -1615,6 +1629,8 @@ static int is_numeric(const MGLIRType *t)
     case MGLIR_TYPE_MATRIX:
         return t->scalar == MGLIR_SCALAR_INT ||
                t->scalar == MGLIR_SCALAR_UINT ||
+               t->scalar == MGLIR_SCALAR_INT64 ||
+               t->scalar == MGLIR_SCALAR_UINT64 ||
                t->scalar == MGLIR_SCALAR_FLOAT ||
                t->scalar == MGLIR_SCALAR_DOUBLE;
     default:
@@ -1628,6 +1644,12 @@ static MGLIRType *result_numeric(Sema *s, MGLIRType *a, MGLIRType *b)
     MGLIRScalar sc = a->scalar;
     if (b->scalar == MGLIR_SCALAR_DOUBLE ||
         (b->scalar == MGLIR_SCALAR_FLOAT && sc != MGLIR_SCALAR_DOUBLE) ||
+        (b->scalar == MGLIR_SCALAR_UINT64 &&
+         sc != MGLIR_SCALAR_FLOAT && sc != MGLIR_SCALAR_DOUBLE &&
+         sc != MGLIR_SCALAR_HALF) ||
+        (b->scalar == MGLIR_SCALAR_INT64 && sc != MGLIR_SCALAR_UINT64 &&
+         sc != MGLIR_SCALAR_FLOAT && sc != MGLIR_SCALAR_DOUBLE &&
+         sc != MGLIR_SCALAR_HALF) ||
         (b->scalar == MGLIR_SCALAR_UINT && sc == MGLIR_SCALAR_INT) ||
         (b->scalar == MGLIR_SCALAR_HALF && sc != MGLIR_SCALAR_HALF &&
          sc != MGLIR_SCALAR_DOUBLE && sc != MGLIR_SCALAR_FLOAT)) {
@@ -2611,6 +2633,34 @@ static MGLIRType *builtin_call_type(const char *name,
                                     uint32_t argc, int stage, int *known)
 {
     *known = 0;
+    if (name && strcmp(name, "ballotARB") == 0) {
+        *known = 1;
+        if (argc == 1 && arg_types[0] &&
+            arg_types[0]->kind == MGLIR_TYPE_SCALAR &&
+            arg_types[0]->scalar == MGLIR_SCALAR_BOOL)
+            return mglIRTypeScalar(MGLIR_SCALAR_UINT64);
+        return NULL;
+    }
+    if (name && (strcmp(name, "readInvocationARB") == 0 ||
+                 strcmp(name, "readFirstInvocationARB") == 0)) {
+        *known = 1;
+        const uint32_t expected = strcmp(name, "readInvocationARB") == 0 ? 2u : 1u;
+        if (argc != expected || !arg_types[0])
+            return NULL;
+        const MGLIRType *value = arg_types[0];
+        const int valid_value =
+            (value->kind == MGLIR_TYPE_SCALAR || value->kind == MGLIR_TYPE_VECTOR) &&
+            (value->scalar == MGLIR_SCALAR_FLOAT ||
+             value->scalar == MGLIR_SCALAR_INT ||
+             value->scalar == MGLIR_SCALAR_UINT);
+        if (!valid_value)
+            return NULL;
+        if (expected == 2u && (!arg_types[1] ||
+            arg_types[1]->kind != MGLIR_TYPE_SCALAR ||
+            arg_types[1]->scalar != MGLIR_SCALAR_UINT))
+            return NULL;
+        return ir_type_clone(value);
+    }
     /* ARB_sparse_texture2 / ARB_sparse_texture_clamp: accept the sparse*
      * and *ClampARB families without enumerating every sampler overload.
      * Codegen lowers them to the non-sparse twin plus a residency code. */
@@ -3483,6 +3533,17 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 return scratch_type(s,
                                     mglIRTypeVector(MGLIR_SCALAR_FLOAT, 4));
             }
+            if (strcmp(e->u.var_ref.name, "gl_SubGroupSizeARB") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_SubGroupInvocationARB") == 0) {
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_UINT));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_SubGroupEqMaskARB") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_SubGroupGeMaskARB") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_SubGroupGtMaskARB") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_SubGroupLeMaskARB") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_SubGroupLtMaskARB") == 0) {
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_UINT64));
+            }
             if (strcmp(e->u.var_ref.name, "gl_GlobalInvocationID") == 0 ||
                 strcmp(e->u.var_ref.name, "gl_LocalInvocationID") == 0 ||
                 strcmp(e->u.var_ref.name, "gl_LocalInvocationIndex") == 0 ||
@@ -3496,7 +3557,9 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 const uint32_t ver = s->tu ? s->tu->version : 0u;
                 const int version_ok =
                     ver == 0u ||
-                    (es_profile ? ver >= 310u : ver >= 430u);
+                    (es_profile ? ver >= 310u
+                                : (ver >= 430u ||
+                                   (s->tu && s->tu->ext_compute_shader)));
                 if (s->stage != MGL_STAGE_COMPUTE || !version_ok) {
                     sema_error(s, e->line,
                                "'%s' requires a compute shader with "
@@ -6616,6 +6679,12 @@ static int builtin_type_spec(const char *name, MGLTypeSpec *ts)
         return 0;
     } else if (strcmp(name, "double") == 0) {
         ts->base = MGL_AST_TYPE_DOUBLE;
+        return 0;
+    } else if (strcmp(name, "int64_t") == 0) {
+        ts->base = MGL_AST_TYPE_INT64;
+        return 0;
+    } else if (strcmp(name, "uint64_t") == 0) {
+        ts->base = MGL_AST_TYPE_UINT64;
         return 0;
     } else if (strcmp(name, "atomic_uint") == 0) {
         ts->base = MGL_AST_TYPE_ATOMIC_UINT;

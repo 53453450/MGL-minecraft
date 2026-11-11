@@ -56,6 +56,8 @@ typedef enum MGLIRScalar {
     MGLIR_SCALAR_FLOAT,
     MGLIR_SCALAR_DOUBLE,
     MGLIR_SCALAR_HALF,     /* GLSL ES mediump float / fp16 */
+    MGLIR_SCALAR_INT64,
+    MGLIR_SCALAR_UINT64,
 } MGLIRScalar;
 
 typedef enum MGLIRTypeKind {

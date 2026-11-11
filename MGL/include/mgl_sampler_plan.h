@@ -74,6 +74,7 @@ typedef struct MGLSamplerPlan {
     float min_lod;
     float max_lod;
     float max_anisotropy;
+    uint8_t reduction_mode; /* MTL::SamplerReductionMode */
 } MGLSamplerPlan;
 
 /* Resolve GL sampler parameters into the plan.  Returns 0 on success, -1 when

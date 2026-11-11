@@ -114,6 +114,7 @@ static uint64_t mglSsSamplerParamsSig(const TextureParameter *params,
     sig ^= (uint64_t)(uint32_t)params->min_lod;
     sig ^= (uint64_t)(uint32_t)params->max_lod << 32;
     sig ^= (uint64_t)params->max_anisotropy << 16;
+    sig ^= (uint64_t)params->reduction_mode * 0x9e3779b97f4a7c15ULL;
     if (tex) {
         sig ^= ((uint64_t)tex->params.base_level << 8) |
                ((uint64_t)tex->params.max_level << 24);

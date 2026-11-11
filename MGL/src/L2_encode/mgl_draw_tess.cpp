@@ -3615,8 +3615,15 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
     }
 
     if (path.need_default_factors) {
-        void *tessFactorBuffer =
-            ops->cached_default_factors(ops->renderer, ctx, patchCount);
+        uint64_t factorPatchCount = 0u;
+        if (__builtin_mul_overflow((uint64_t)patchCount,
+                                   (uint64_t)instanceCount,
+                                   &factorPatchCount) ||
+            factorPatchCount > UINT32_MAX) {
+            return 1;
+        }
+        void *tessFactorBuffer = ops->cached_default_factors(
+            ops->renderer, ctx, (uint32_t)factorPatchCount);
         ops->set_current_factors(ops->renderer, tessFactorBuffer);
     }
 

@@ -43,6 +43,8 @@ static uint32_t scalar_bytes(MGLIRScalar s)
     case MGLIR_SCALAR_FLOAT:
         return 4;
     case MGLIR_SCALAR_DOUBLE:
+    case MGLIR_SCALAR_INT64:
+    case MGLIR_SCALAR_UINT64:
         return 8;
     case MGLIR_SCALAR_HALF:
         return 2;

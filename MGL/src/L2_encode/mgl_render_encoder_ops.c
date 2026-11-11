@@ -44,6 +44,8 @@
 #include "mgl_render_api_buffer.h"
 
 #include "mgl_render_api_readback.h"
+#include "mgl_render_api_query.h"     /* emulated-MS plane targets */
+#include "mgl_renderer_attachment.h" /* mglRendererAttachmentTextureFor */
 
 #include <stdio.h>
 #include <string.h>
@@ -677,6 +679,52 @@ static void mglCountLoadAction(uint32_t load_action)
     }
 }
 
+/* A load-action clear reaches only the sample plane the pass attaches.
+ * Clear the other planes of an emulated-MS depth/stencil attachment too, so
+ * per-sample draws and resolves see the cleared value.  An aspect whose clear
+ * flag is 0 is loaded (packed depth-stencil keeps it). */
+static void mglPdClearOtherDepthStencilPlanes(const MGLCommandState *commandState,
+                                              uint32_t attachment_kind,
+                                              FBOAttachment *att,
+                                              Texture *tex, int clear_depth,
+                                              double depth, int clear_stencil,
+                                              uint32_t stencil)
+{
+    void *metal = tex ? mglTextureMtl(tex) : NULL;
+    if (!metal || !mglRenderIsEmulatedMSPlaneTarget((uint32_t)tex->target,
+                                                    (int32_t)tex->samples)) {
+        return;
+    }
+    uint64_t level = 0u, attached = 0u, plane = 0u;
+    MGLRenderTextureInfo info = {0};
+    if (mglRenderGetRenderPassAttachmentSubresourceOwner(
+            commandState->renderPassStateOwner, attachment_kind, 0u, &level,
+            &attached, &plane) != 0 ||
+        mglRenderGetTextureInfo(metal, &info) != 0 ||
+        info.texture_type != MGLTextureType2DArray) {
+        return;
+    }
+    const uint64_t samples = (uint64_t)tex->samples;
+    const uint64_t base = mglMetalAttachmentSubresourceForAttachment(att).slice;
+    if (base + samples > info.array_length) {
+        return;
+    }
+    const int packed =
+        mglRenderPixelFormatIsPackedDepthStencil(info.pixel_format) != 0;
+    const int hasDepth = attachment_kind == MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH || packed;
+    const int hasStencil = attachment_kind == MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL || packed;
+    for (uint64_t s = 0u; s < samples; s++) {
+        if (base + s == attached) {
+            continue;
+        }
+        (void)mglRenderEncodeDepthStencilClearForCommandBufferOwner(
+            commandState->currentCommandBufferOwner, hasDepth ? metal : NULL,
+            hasStencil ? metal : NULL, level, base + s,
+            hasDepth && clear_depth, depth, hasStencil && clear_stencil,
+            stencil);
+    }
+}
+
 /* -configureUserFBOLoadStoreActionsLocked:fboColorClearMask:
  *  fboColorAttachment0ClearMask: */
 void mglRenderPassConfigureUserFBOLoadStoreActions(
@@ -854,10 +902,22 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
     depthLoadStore.texture_present =
         mglPdDepthTextureFor(commandState) ? 1 : 0;
     MGLRenderPassLoadStorePlan depthPlan = {0};
+    Texture *depthTex = mglRendererAttachmentTextureFor(ctx, &fbo->depth);
+    Texture *stencilTex = mglRendererAttachmentTextureFor(ctx, &fbo->stencil);
+    /* One pass per plane clears both aspects of a shared texture. */
+    const int sharedClear =
+        depthTex && depthTex == stencilTex &&
+        mglRenderClearMaskHasStencil((uint32_t)fbo->stencil.clear_bitmask) &&
+        mglPdStencilTextureFor(commandState);
     if (mglRenderPassPlanLoadStore(&depthLoadStore, &depthPlan) == 0 &&
         depthPlan.load_action == MGLLoadActionClear) {
         (void)mglRenderSetRenderPassStateDepthClear(
             commandState->renderPassStateOwner, fbo->depth.clear_color[0]);
+        mglPdClearOtherDepthStencilPlanes(
+            commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, &fbo->depth,
+            depthTex, 1,
+            fbo->depth.clear_color[0], sharedClear,
+            (uint32_t)fbo->stencil.clear_color[0]);
         mglPdSetPersistentActions(commandState,
                                   MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
                                   depthPlan.load_action, depthPlan.store_action);
@@ -892,6 +952,12 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
         (void)mglRenderSetRenderPassStateStencilClear(
             commandState->renderPassStateOwner,
             (uint32_t)fbo->stencil.clear_color[0]);
+        if (!(sharedClear && depthPlan.load_action == MGLLoadActionClear)) {
+            mglPdClearOtherDepthStencilPlanes(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL,
+                &fbo->stencil, stencilTex, 0, 0.0, 1,
+                (uint32_t)fbo->stencil.clear_color[0]);
+        }
         mglPdSetPersistentActions(
             commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
             stencilPlan.load_action, stencilPlan.store_action);

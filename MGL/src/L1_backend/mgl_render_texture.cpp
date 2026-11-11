@@ -1910,6 +1910,8 @@ int mglRenderCreateSamplerForGL(const TextureParameter* params,
             : 1u);
     descriptor->setLodMinClamp(plan.min_lod < 0.0f ? 0.0f : plan.min_lod);
     descriptor->setLodMaxClamp(plan.max_lod >= 1000.0f ? 1e9f : plan.max_lod);
+    descriptor->setReductionMode(
+        static_cast<MTL::SamplerReductionMode>(plan.reduction_mode));
     if (!plan.normalized_coordinates) {
         descriptor->setNormalizedCoordinates(false);
         if (!plan.all_wrap_clamp_to_edge) {

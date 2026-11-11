@@ -168,13 +168,24 @@ typedef enum {
 #define kMGLMaxBufferSlots 31
 enum { kMGLMinimumStageBindingSize = 256 };
 
+enum {
+    /* Private post-depth coverage attachments, outside the sampled image's
+     * ordinary low slots and below the upper end of the 128-slot range. */
+    kMGLPostDepthTextureIndex = 120,
+    kMGLPostStencilTextureIndex = 121,
+    kMGLPostDepthSamplerIndex = 15,
+    kMGLPostDepthParamsBufferIndex = 24,
+};
+
 #define MGL_SAMPLER_WRAP_SLOT_COUNT 16
 typedef struct MGLSamplerWrapSlot {
     int32_t wrap_s;
     int32_t wrap_t;
     int32_t wrap_r;
-    int32_t _pad;
+    uint32_t reduction_mode; /* 0=average, 1=min, 2=max */
     int32_t border[4];
+    uint32_t filters;        /* min_filter | (mag_filter << 16) */
+    uint32_t border_float[4]; /* IEEE754 float border, independent of int view */
 } MGLSamplerWrapSlot;
 
 /* What the reserved-slot policy needs to know about one stage of a linked

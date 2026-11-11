@@ -95,6 +95,8 @@ typedef struct TextureParameter_t {
     GLboolean sparse;
     GLint virtual_page_size_index;
     GLint num_sparse_levels;
+    /* GL_EXT_texture_filter_minmax; zero also means WEIGHTED_AVERAGE. */
+    GLenum reduction_mode;
 } TextureParameter;
 
 /* GL_EXT_texture_filter_anisotropic: advertised upper bound for

@@ -58,8 +58,9 @@ int mglDrawModeIsFullyCulled(void *renderer, uint32_t mode);
 /* True when the current fragment program needs per-sample MS values. */
 int mglDrawFragmentNeedsPerSampleMSValues(GLMContext ctx);
 
-/* SAMPLE_SHADING with min>0: shift viewport by the current sample position so
- * varyings evaluate at that location (FS has no SampleID). */
+/* Shift the viewport by the current sample position so coverage, depth and
+ * varyings evaluate at that location: SAMPLE_SHADING with min>0 when the FS
+ * has no SampleID, and every post_depth_coverage draw. */
 int mglDrawShouldOffsetViewportForSampleShading(GLMContext ctx);
 
 /* The color attachment 0 of the bound FBO when it is an emulated-MS texture

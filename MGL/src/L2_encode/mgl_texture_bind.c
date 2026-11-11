@@ -664,6 +664,11 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
         }
     }
 
+    if ((mglTextureDirtyBits(tex) & DIRTY_TEXTURE_PARAM) &&
+        mglTextureSamplerState(tex)) {
+        mglSafeReleaseMetalObj(
+            (void **)&mglTextureBackendEnsure(tex)->sampler_state);
+    }
     if (mglTextureSamplerState(tex) == NULL)
     {
         mglTextureBackendEnsure(tex)->sampler_state =

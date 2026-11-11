@@ -132,14 +132,16 @@ static int is_hex_digit(char c)
  * Handles: 123, 123u/U, 0x1F, 0x1Fu, 1.5, 1., .5, 1e-3, 1.5E+2, 1f/F,
  * 1.0lf/1.0LF (GLSL 4.60 §4.1.4 floating-suffix).
  * Returns 1 if the token is floating-point, 0 for integer (set *is_uint).
- * *is_double is set when the lf/LF suffix was consumed. */
+ * *is_double is set when the lf/LF suffix was consumed.  Integer l/L and
+ * ul/UL/lu/LU suffixes select 64-bit signed and unsigned token kinds. */
 static int scan_number(MGLGLSLexer *lx, MGLGLSLToken *tok, int *is_uint,
-                       int *is_double)
+                       int *is_double, int *is_int64)
 {
     tok->start = (uint32_t)lx->pos;
     int is_float = 0;
     *is_uint = 0;
     *is_double = 0;
+    *is_int64 = 0;
 
     /* 0x/0X prefix. */
     if (lx->src[lx->pos] == '0' && lx->pos + 1 < lx->src_len &&
@@ -182,18 +184,27 @@ static int scan_number(MGLGLSLexer *lx, MGLGLSLToken *tok, int *is_uint,
         }
     }
 
-    /* Suffixes: u/U, f/F, or lf/LF (double).  Check lf/LF before bare f/F. */
+    /* Check the double suffix before integer l/L, and the two-character
+     * 64-bit unsigned suffixes before their single-letter prefixes. */
     if (lx->pos < lx->src_len) {
         char c = lx->src[lx->pos];
-        if (c == 'u' || c == 'U') {
-            *is_uint = 1;
-            lx->pos++;
-        } else if (lx->pos + 1 < lx->src_len &&
-                   ((c == 'l' && lx->src[lx->pos + 1] == 'f') ||
-                    (c == 'L' && lx->src[lx->pos + 1] == 'F'))) {
+        char next = lx->pos + 1 < lx->src_len ? lx->src[lx->pos + 1] : '\0';
+        if ((c == 'l' && next == 'f') || (c == 'L' && next == 'F')) {
             is_float = 1;
             *is_double = 1;
             lx->pos += 2;
+        } else if (!is_float &&
+                   (((c == 'u' || c == 'U') && (next == 'l' || next == 'L')) ||
+                    ((c == 'l' || c == 'L') && (next == 'u' || next == 'U')))) {
+            *is_uint = 1;
+            *is_int64 = 1;
+            lx->pos += 2;
+        } else if (!is_float && (c == 'u' || c == 'U')) {
+            *is_uint = 1;
+            lx->pos++;
+        } else if (!is_float && (c == 'l' || c == 'L')) {
+            *is_int64 = 1;
+            lx->pos++;
         } else if (c == 'f' || c == 'F') {
             is_float = 1;
             lx->pos++;
@@ -206,6 +217,8 @@ static int scan_number(MGLGLSLexer *lx, MGLGLSLToken *tok, int *is_uint,
         tok->kind = MGLGLSL_TOK_DOUBLE;
     } else if (is_float) {
         tok->kind = MGLGLSL_TOK_FLOAT;
+    } else if (*is_int64) {
+        tok->kind = *is_uint ? MGLGLSL_TOK_UINT64 : MGLGLSL_TOK_INT64;
     } else if (*is_uint) {
         tok->kind = MGLGLSL_TOK_UINT;
     } else {
@@ -273,7 +286,8 @@ int mglGLSLexerNext(MGLGLSLexer *lx, MGLGLSLToken *out)
          isdigit((unsigned char)lx->src[lx->pos + 1]))) {
         int is_uint = 0;
         int is_double = 0;
-        scan_number(lx, out, &is_uint, &is_double);
+        int is_int64 = 0;
+        scan_number(lx, out, &is_uint, &is_double, &is_int64);
         return 0;
     }
     if (scan_punct(lx, out) == 0) {
@@ -295,7 +309,9 @@ int mglGLSLexerLiteral(const MGLGLSLexer *lx, const MGLGLSLToken *tok,
     if (!lx || !tok || !out || (tok->kind != MGLGLSL_TOK_INT &&
                                 tok->kind != MGLGLSL_TOK_UINT &&
                                 tok->kind != MGLGLSL_TOK_FLOAT &&
-                                tok->kind != MGLGLSL_TOK_DOUBLE)) {
+                                tok->kind != MGLGLSL_TOK_DOUBLE &&
+                                tok->kind != MGLGLSL_TOK_INT64 &&
+                                tok->kind != MGLGLSL_TOK_UINT64)) {
         return -1;
     }
     size_t n = tok->end - tok->start;
@@ -339,11 +355,12 @@ int mglGLSLexerLiteral(const MGLGLSLexer *lx, const MGLGLSLToken *tok,
     }
 
     /* GLSL 4.60 §4.1.3: a leading 0 (and no 0x) is octal. */
-    if ((tok->kind == MGLGLSL_TOK_INT || tok->kind == MGLGLSL_TOK_UINT) &&
+    if ((tok->kind == MGLGLSL_TOK_INT || tok->kind == MGLGLSL_TOK_UINT ||
+         tok->kind == MGLGLSL_TOK_INT64 || tok->kind == MGLGLSL_TOK_UINT64) &&
         buf[0] == '0') {
         unsigned long v = 0;
         char *p = buf + 1;
-        while (*p && *p != 'u' && *p != 'U') {
+        while (*p && *p != 'u' && *p != 'U' && *p != 'l' && *p != 'L') {
             if (*p < '0' || *p > '7') {
                 free(buf);
                 return -1;
