@@ -55,6 +55,9 @@ void mglRenderProgramSetModulePrimitiveIdVaryingMetallib(
     Program *program, int stage, unsigned char *bytes, size_t size);
 void mglRenderProgramSetModuleNeedsRuntimeArraySizeBuffer(Program *program,
                                                           int stage, int needs);
+void mglRenderProgramSetModuleNeedsSparseResidency(Program *program,
+                                                   int stage, int needs,
+                                                   uint32_t buffer_index);
 
 #ifdef __cplusplus
 }

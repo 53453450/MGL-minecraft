@@ -310,6 +310,7 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
      * cannot take ShaderAtomic, so promote the Metal store to R32* while
      * leaving GL internalformat alone for GetTexImage bit-cast reads. */
     if (ptr->target != GL_TEXTURE_BUFFER &&
+        ptr->internalformat != internalformat &&
         (internalformat == GL_R32I || internalformat == GL_R32UI ||
          internalformat == GL_R32F)) {
         int known_tex = 0, known_bind = 0;

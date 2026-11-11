@@ -52,6 +52,7 @@
 #include "mgl_program_backend.h"
 #include "mgl_texture_backend.h"
 #include "mgl_buffer_backend.h"
+#include "mgl_sparse_residency.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
 static GLMState *mglComputeBindState(const MGLRendererStateView *areas)
@@ -486,9 +487,10 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
         .temporaries = temporaries,
         .snapshot_ok = true,
     };
-    /* The Objective-C macro created a local NSMutableArray when none was
-     * passed and the function dropped it again on return; that set therefore
-     * never reached a caller.  Created and released the same way here. */
+    MGLSparseResidencySlot residency_slots[TEXTURE_UNITS];
+    MGLSparseResidencyRect *residency_rects = NULL;
+    size_t residency_rect_count = 0u, residency_rect_cap = 0u;
+    mglSparseResidencyResetSlots(residency_slots, TEXTURE_UNITS);
     bool owns_temporaries = false;
 
     Program *computeProgram = mglResolveProgramForStageFromState(ctx, stage);
@@ -607,6 +609,17 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
 
                 if (ptr)
                 {
+                    const ImageUnit *image =
+                        mglRenderComputeTextureBindIsStorage((uint32_t)gl_texture_type)
+                            ? &state->image_units[glUnit] : NULL;
+                    if (mglSparseResidencyBuildSlot(
+                            ptr, image, &residency_slots[metalBinding],
+                            &residency_rects, &residency_rect_count,
+                            &residency_rect_cap) != 0) {
+                        free(residency_rects);
+                        if (owns_temporaries) mglRendererTemporariesRelease(temporaries);
+                        return false;
+                    }
                     RETURN_FALSE_ON_FAILURE(mglRendererBindMTLTexture(renderer, ptr));
                     if (!mglTextureMtl(ptr)) {
                         continue;
@@ -681,6 +694,7 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                 if (owns_temporaries) {
                     mglRendererTemporariesRelease(temporaries);
                 }
+                free(residency_rects);
                 return false;
             }
         }
@@ -716,6 +730,14 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                     !mglTextureMtl(ptr)) {
                     continue;
                 }
+                if (mglSparseResidencyBuildSlot(
+                        ptr, NULL, &residency_slots[metalSlot],
+                        &residency_rects, &residency_rect_count,
+                        &residency_rect_cap) != 0) {
+                    free(residency_rects);
+                    if (owns_temporaries) mglRendererTemporariesRelease(temporaries);
+                    return false;
+                }
 
                 void *texture = mglSampledTextureViewForBaseLevel(
                     ptr, mglTextureMtl(ptr));
@@ -750,6 +772,44 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
             }
         }
     }
+
+    if (computeProgram &&
+        mglProgramModuleView(computeProgram, stage)->needs_sparse_residency) {
+    const size_t residency_header_bytes = sizeof(residency_slots);
+    if (residency_rect_count >
+        (SIZE_MAX - residency_header_bytes) / sizeof(*residency_rects)) {
+        free(residency_rects);
+        if (owns_temporaries) mglRendererTemporariesRelease(temporaries);
+        return false;
+    }
+    const size_t residency_bytes = residency_header_bytes +
+        residency_rect_count * sizeof(*residency_rects);
+    uint8_t *residency_pack = malloc(residency_bytes);
+    if (!residency_pack) {
+        free(residency_rects);
+        if (owns_temporaries) mglRendererTemporariesRelease(temporaries);
+        return false;
+    }
+    memcpy(residency_pack, residency_slots, residency_header_bytes);
+    if (residency_rect_count > 0u) {
+        memcpy(residency_pack + residency_header_bytes, residency_rects,
+               residency_rect_count * sizeof(*residency_rects));
+    }
+    void *residency_buffer = mglComputeBindCreateBufferWithBytes(
+        residency_pack, residency_bytes, 0u);
+    free(residency_pack);
+    if (!residency_buffer) {
+        if (owns_temporaries) mglRendererTemporariesRelease(temporaries);
+        return false;
+    }
+    mglComputeBindEmitBuffer(
+        &bind,
+        mglProgramModuleView(computeProgram, stage)->sparse_residency_buffer_index,
+        residency_buffer, 0u);
+    mglComputeBindFlushSnapshot(&bind);
+    mglComputeBindHandOffCreated(&bind, residency_buffer);
+    }
+    free(residency_rects);
 
     mglComputeBindFlushSnapshot(&bind);
     if (owns_temporaries) {

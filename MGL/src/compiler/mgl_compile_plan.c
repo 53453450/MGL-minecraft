@@ -2,6 +2,8 @@
 
 #include "mgl_compile_plan.h"
 
+#include "mgl_buffer_slots.h"
+
 #include <string.h>
 
 void mglCompilePlanInit(MGLCompilePlan *plan, const char *source, int stage,
@@ -14,6 +16,8 @@ void mglCompilePlanInit(MGLCompilePlan *plan, const char *source, int stage,
     plan->source = source;
     plan->stage = stage;
     plan->attrib_names = attrib_names;
+    plan->sparse_residency_buffer_index =
+        kMGLSparseResidencyDefaultBufferIndex;
 }
 
 void mglCompilePlanApplyRasterVariant(

@@ -120,6 +120,10 @@ typedef enum {
      * location is 1 (GLSL layout(binding=N) is not the Metal slot). */
     kMGLEmulatedMSPlaneBufferIndex = 1,
 
+    /* Default sparse texture commit-rectangle table slot.  Link relocates the
+     * table when this or any other candidate is occupied by the stage. */
+    kMGLSparseResidencyDefaultBufferIndex = 12,
+
     /* ARB_shader_draw_parameters host stamp for VS: {draw_id, base_vertex}
      * as two int32 words.  Bound only when the linked VS uses gl_DrawID /
      * gl_BaseVertex; Metal has no portable [[draw_id]], and [[base_vertex]]
@@ -190,6 +194,8 @@ typedef struct MGLBufferSlotFacts {
     int tess_eval_compute;             /* TES */
     int gs_compute_route;              /* GS */
     int uses_frag_coord_params;        /* FS */
+    uint32_t sparse_residency_slot;    /* selected commit-table buffer slot */
+    int uses_sparse_residency;
 } MGLBufferSlotFacts;
 
 enum {
@@ -212,6 +218,12 @@ GLboolean mglBufferSlotConflicts(const MGLBufferSlotFacts *facts, GLuint slot);
 int mglBufferSlotCheckResource(const MGLBufferSlotFacts *facts,
                                uint32_t binding, uint32_t element_count,
                                uint32_t *bad_slot);
+
+/* Pick a slot for the stage's sparse commit table without displacing user
+ * resources.  The preferred slot is retained whenever it is available. */
+GLboolean mglBufferSlotFindSparseResidency(const struct Program_t *program,
+                                           int stage, GLuint preferred,
+                                           GLuint *out_slot);
 
 /* Returns GL_TRUE if `slot` is reserved by MGL for the given shader `stage`
  * and therefore MUST NOT be assigned to a GL user buffer (UBO/SSBO/atomic).

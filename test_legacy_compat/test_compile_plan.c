@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-3.0-only */
 
 #include "mgl_compile_plan.h"
+#include "mgl_buffer_slots.h"
 
 #include <stdio.h>
 
@@ -24,6 +25,9 @@ int main(void)
     CHECK(plan.attrib_names == attribs, "plan borrows attribute snapshot");
     CHECK(plan.air_flags == 0u && plan.iface_peers == NULL,
           "plan starts without variants");
+    CHECK(plan.sparse_residency_buffer_index ==
+              kMGLSparseResidencyDefaultBufferIndex,
+          "plan starts with the default sparse residency slot");
 
     mglCompilePlanApplyRasterVariant(&plan, _VERTEX_SHADER, true, false,
                                      false, false, true, 0u);

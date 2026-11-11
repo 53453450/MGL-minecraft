@@ -895,7 +895,9 @@ int mglCompileCaptureVariant(const char *src,
     MGLCompileArtifact art;
     mglCompileArtifactInit(&art);
     int rc = mglCompileArtifactFromGLSLEx(src, MGL_STAGE_VERTEX, attrib_names,
-                                          flags, NULL, 0u, &art, err, err_cap);
+                                          flags, NULL, 0u,
+                                          kMGLSparseResidencyDefaultBufferIndex,
+                                          &art, err, err_cap);
     if (rc == 0 && art.complete && art.metallib_bytes && art.metallib_size) {
         *bytes = art.metallib_bytes;
         *size = art.metallib_size;

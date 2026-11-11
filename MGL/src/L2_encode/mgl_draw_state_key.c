@@ -24,7 +24,6 @@
 
 extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
-extern void mglSparseScrubBoundImages(GLMContext ctx);
 
 static uint64_t mglTexturePointerNameBits(const Texture *tex)
 {

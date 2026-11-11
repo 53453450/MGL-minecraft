@@ -1488,6 +1488,23 @@ static int mglSparseWaitCommandBuffer(MTL::CommandBuffer* cb) {
     return 0;
 }
 
+extern "C" int mglRenderSparseTextureGetTileSize(void* texture,
+                                                  uint32_t* width,
+                                                  uint32_t* height) {
+    MTL::Texture* target = static_cast<MTL::Texture*>(texture);
+    if (!target || !width || !height) return -1;
+    mgl::Renderer& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.mutex);
+    if (!renderer.device) return -1;
+    MTL::Size size = renderer.device->sparseTileSize(
+        target->textureType(), target->pixelFormat(), target->sampleCount());
+    if (size.width == 0 || size.height == 0 ||
+        size.width > UINT32_MAX || size.height > UINT32_MAX) return -1;
+    *width = static_cast<uint32_t>(size.width);
+    *height = static_cast<uint32_t>(size.height);
+    return 0;
+}
+
 /* Commit or decommit a texel-space region.  heap_offset is the starting
  * placement-heap tile index for Map (ignored on Unmap). */
 extern "C" int mglRenderSparseTextureCommit(void* heap, void* texture,

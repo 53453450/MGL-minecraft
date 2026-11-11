@@ -216,6 +216,13 @@ void mglGenVertexArrays(GLMContext ctx, GLsizei n, GLuint *arrays)
     }
 }
 
+GLboolean mglVertexArrayNameMayBind(GLMContext ctx, GLuint array)
+{
+    return ctx && array != 0u && array <= STATE(vao_table).current_name
+               ? GL_TRUE
+               : GL_FALSE;
+}
+
 void mglBindVertexArray(GLMContext ctx, GLuint array)
 {
     VertexArray *ptr;

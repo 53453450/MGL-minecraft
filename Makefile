@@ -179,9 +179,9 @@ help:
 		'  make test             Run the interactive GLFW test application.' \
 		'  make clean            Remove local build outputs.'
 
-# Sources are grouped by physical layer. gl_core/gl_es stay out of the shared
-# lib object list (linked as profile-specific TUs).
-mgl_srcs_c := $(filter-out %/gl_core.c %/gl_es.c %/mgl_fake_draw_executor.c, \
+# Sources are grouped by physical layer. Profile-specific API TUs stay out of
+# the shared lib object list.
+mgl_srcs_c := $(filter-out %/gl_core.c %/gl_es.c %/gl_ext_direct_state_access.c %/mgl_fake_draw_executor.c, \
 	$(wildcard MGL/src/compiler/*.c) \
 	$(wildcard MGL/src/L0_platform/*.c) \
 	$(wildcard MGL/src/L1_backend/*.c) \
@@ -231,7 +231,7 @@ mgl_srcs_cpp := \
 	$(wildcard MGL/src/L4_context/*.cpp) \
 	$(wildcard MGL/src/L5_api/*.cpp)
 
-mgl_core_c := MGL/src/L5_api/gl_core.c
+mgl_core_c := MGL/src/L5_api/gl_core.c MGL/src/L5_api/gl_ext_direct_state_access.c
 mgl_es_c := MGL/src/L5_api/gl_es.c
 
 mgl_core_obj := $(mgl_core_c:.c=.o)
@@ -991,6 +991,7 @@ $(build_dir)/test_buffer_slots: test_legacy_compat/test_buffer_slots.c \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_buffer_slots.c \
 		MGL/src/L4_context/mgl_buffer_slots.c \
+		MGL/src/L3_validate/mgl_binding_policy.c \
 		-o $@
 
 test-buffer-slots: $(build_dir)/test_buffer_slots
@@ -1342,7 +1343,7 @@ test-mglsema: $(build_dir)/test_mglsema
 
 $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 	MGL/include/mgl_air_codegen.h MGL/include/mgl_air_control_flow.h MGL/include/mgl_air_resource_binding.h MGL/include/mgl_air_expr_support.h \
-	MGL/src/compiler/mgl_air_backend.cpp MGL/src/compiler/mgl_air_expr_support.cpp MGL/src/compiler/mgl_air_type.cpp MGL/src/compiler/mgl_air_resource.cpp MGL/src/compiler/mgl_air_math.cpp MGL/src/compiler/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/compiler/mgl_air_matrix.cpp MGL/src/compiler/mgl_air_stmt.cpp MGL/src/compiler/mgl_metallib_writer.cpp MGL/src/compiler/mgl_air_target.cpp \
+	MGL/src/compiler/mgl_air_backend.cpp MGL/src/compiler/mgl_air_sparse_residency.cpp MGL/src/compiler/mgl_air_expr_support.cpp MGL/src/compiler/mgl_air_type.cpp MGL/src/compiler/mgl_air_resource.cpp MGL/src/compiler/mgl_air_math.cpp MGL/src/compiler/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/compiler/mgl_air_matrix.cpp MGL/src/compiler/mgl_air_stmt.cpp MGL/src/compiler/mgl_metallib_writer.cpp MGL/src/compiler/mgl_air_target.cpp \
 	MGL/src/L4_context/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
 	MGL/src/compiler/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
 	MGL/src/compiler/mgl_air_reflect.c MGL/src/compiler/mgl_buffer_layout.c MGL/src/compiler/mgl_glsl_sema.c \
@@ -1351,7 +1352,7 @@ $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -gfull -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Cocoa -framework Foundation -framework Metal \
 		test_legacy_compat/test_mglair.mm \
-		MGL/src/compiler/mgl_air_backend.cpp MGL/src/compiler/mgl_air_expr_support.cpp MGL/src/compiler/mgl_air_type.cpp MGL/src/compiler/mgl_air_resource.cpp MGL/src/compiler/mgl_air_math.cpp MGL/src/compiler/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/compiler/mgl_air_matrix.cpp MGL/src/compiler/mgl_air_stmt.cpp MGL/src/compiler/mgl_metallib_writer.cpp MGL/src/compiler/mgl_air_target.cpp \
+		MGL/src/compiler/mgl_air_backend.cpp MGL/src/compiler/mgl_air_sparse_residency.cpp MGL/src/compiler/mgl_air_expr_support.cpp MGL/src/compiler/mgl_air_type.cpp MGL/src/compiler/mgl_air_resource.cpp MGL/src/compiler/mgl_air_math.cpp MGL/src/compiler/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/compiler/mgl_air_matrix.cpp MGL/src/compiler/mgl_air_stmt.cpp MGL/src/compiler/mgl_metallib_writer.cpp MGL/src/compiler/mgl_air_target.cpp \
 		MGL/src/L4_context/mgl_legacy_compat.c \
 		MGL/src/compiler/mgl_frontend_session.c \
 		MGL/src/compiler/mgl_air_reflect.c MGL/src/compiler/mgl_buffer_layout.c MGL/src/compiler/mgl_glsl_sema.c \
@@ -1377,12 +1378,12 @@ $(build_dir)/mcrepro_%.o: MGL/src/%.c
 
 $(build_dir)/test_mcrepro: test_legacy_compat/test_mcrepro.mm \
 	MGL/include/mgl_air_codegen.h MGL/include/mgl_air_control_flow.h MGL/include/mgl_air_resource_binding.h MGL/include/mgl_air_expr_support.h \
-	MGL/src/compiler/mgl_air_backend.cpp MGL/src/compiler/mgl_air_expr_support.cpp MGL/src/compiler/mgl_air_type.cpp MGL/src/compiler/mgl_air_resource.cpp MGL/src/compiler/mgl_air_math.cpp MGL/src/compiler/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/compiler/mgl_air_matrix.cpp MGL/src/compiler/mgl_air_stmt.cpp MGL/src/compiler/mgl_metallib_writer.cpp MGL/src/compiler/mgl_air_target.cpp \
+	MGL/src/compiler/mgl_air_backend.cpp MGL/src/compiler/mgl_air_sparse_residency.cpp MGL/src/compiler/mgl_air_expr_support.cpp MGL/src/compiler/mgl_air_type.cpp MGL/src/compiler/mgl_air_resource.cpp MGL/src/compiler/mgl_air_math.cpp MGL/src/compiler/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/compiler/mgl_air_matrix.cpp MGL/src/compiler/mgl_air_stmt.cpp MGL/src/compiler/mgl_metallib_writer.cpp MGL/src/compiler/mgl_air_target.cpp \
 	$(MCREPRO_COBJ)
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Foundation \
 		test_legacy_compat/test_mcrepro.mm \
-		MGL/src/compiler/mgl_air_backend.cpp MGL/src/compiler/mgl_air_expr_support.cpp MGL/src/compiler/mgl_air_type.cpp MGL/src/compiler/mgl_air_resource.cpp MGL/src/compiler/mgl_air_math.cpp MGL/src/compiler/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/compiler/mgl_air_matrix.cpp MGL/src/compiler/mgl_air_stmt.cpp MGL/src/compiler/mgl_metallib_writer.cpp MGL/src/compiler/mgl_air_target.cpp \
+		MGL/src/compiler/mgl_air_backend.cpp MGL/src/compiler/mgl_air_sparse_residency.cpp MGL/src/compiler/mgl_air_expr_support.cpp MGL/src/compiler/mgl_air_type.cpp MGL/src/compiler/mgl_air_resource.cpp MGL/src/compiler/mgl_air_math.cpp MGL/src/compiler/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/compiler/mgl_air_matrix.cpp MGL/src/compiler/mgl_air_stmt.cpp MGL/src/compiler/mgl_metallib_writer.cpp MGL/src/compiler/mgl_air_target.cpp \
 		-x none $(MCREPRO_COBJ) \
 		-o $@
 
@@ -1507,7 +1508,7 @@ $(GTEST_STAMP):
 
 $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 	MGL/include/mgl_air_codegen.h MGL/include/mgl_air_control_flow.h MGL/include/mgl_air_resource_binding.h MGL/include/mgl_air_expr_support.h \
-	MGL/src/compiler/mgl_air_backend.cpp MGL/src/compiler/mgl_air_expr_support.cpp MGL/src/compiler/mgl_air_type.cpp MGL/src/compiler/mgl_air_resource.cpp MGL/src/compiler/mgl_air_math.cpp MGL/src/compiler/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/compiler/mgl_air_matrix.cpp MGL/src/compiler/mgl_air_stmt.cpp MGL/src/compiler/mgl_metallib_writer.cpp MGL/src/compiler/mgl_air_target.cpp \
+	MGL/src/compiler/mgl_air_backend.cpp MGL/src/compiler/mgl_air_sparse_residency.cpp MGL/src/compiler/mgl_air_expr_support.cpp MGL/src/compiler/mgl_air_type.cpp MGL/src/compiler/mgl_air_resource.cpp MGL/src/compiler/mgl_air_math.cpp MGL/src/compiler/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/compiler/mgl_air_matrix.cpp MGL/src/compiler/mgl_air_stmt.cpp MGL/src/compiler/mgl_metallib_writer.cpp MGL/src/compiler/mgl_air_target.cpp \
 	MGL/src/L4_context/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
 	MGL/src/compiler/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
 	MGL/src/compiler/mgl_air_reflect.c MGL/src/compiler/mgl_buffer_layout.c MGL/src/compiler/mgl_glsl_sema.c \
@@ -1516,7 +1517,7 @@ $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 	$(GTEST_STAMP)
 	$(LLVM_CXX) -x c++ $(LLVM_CXXFLAGS) $(GTEST_CXXFLAGS) $(LLVM_LDFLAGS) \
 		test_legacy_compat/test_mglair_gtest.cpp \
-		MGL/src/compiler/mgl_air_backend.cpp MGL/src/compiler/mgl_air_expr_support.cpp MGL/src/compiler/mgl_air_type.cpp MGL/src/compiler/mgl_air_resource.cpp MGL/src/compiler/mgl_air_math.cpp MGL/src/compiler/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/compiler/mgl_air_matrix.cpp MGL/src/compiler/mgl_air_stmt.cpp MGL/src/compiler/mgl_metallib_writer.cpp MGL/src/compiler/mgl_air_target.cpp \
+		MGL/src/compiler/mgl_air_backend.cpp MGL/src/compiler/mgl_air_sparse_residency.cpp MGL/src/compiler/mgl_air_expr_support.cpp MGL/src/compiler/mgl_air_type.cpp MGL/src/compiler/mgl_air_resource.cpp MGL/src/compiler/mgl_air_math.cpp MGL/src/compiler/mgl_air_varsym.cpp MGL/src/L3_validate/mgl_raster_orientation_plan.c MGL/src/compiler/mgl_air_matrix.cpp MGL/src/compiler/mgl_air_stmt.cpp MGL/src/compiler/mgl_metallib_writer.cpp MGL/src/compiler/mgl_air_target.cpp \
 		MGL/src/L4_context/mgl_legacy_compat.c MGL/src/compiler/mgl_frontend_session.c \
 		MGL/src/compiler/mgl_air_reflect.c MGL/src/compiler/mgl_buffer_layout.c MGL/src/compiler/mgl_glsl_sema.c \
 		MGL/src/compiler/mgl_glsl_cpp.c MGL/src/compiler/mgl_glsl_parser.c MGL/src/compiler/mgl_glsl_lexer.c \

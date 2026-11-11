@@ -47,13 +47,11 @@ static const char *kMglExtensions[] = {
     "GL_ARB_texture_storage",
     "GL_ARB_sparse_texture",
     /* texture2: Table 8.X page sizes + host commit tracking for uncommitted
-     * zero reads.  sparse_buffer: page commitment API.  Not advertised:
-     * GL_ARB_sparse_texture_clamp — lodClamp must clamp automatic LOD
-     * (ARB_sparse_texture_clamp), not substitute texelFetch / hardcode
-     * shadow=1; GL_EXT_direct_state_access — only TexturePageCommitmentEXT
-     * exists, not the rest of EXT_dsa. */
+     * zero reads.  sparse_buffer: page commitment API. */
     "GL_ARB_sparse_texture2",
+    "GL_ARB_sparse_texture_clamp",
     "GL_ARB_sparse_buffer",
+    "GL_EXT_direct_state_access",
     "GL_ARB_sampler_objects",
     "GL_ARB_uniform_buffer_object",
     "GL_ARB_draw_buffers",

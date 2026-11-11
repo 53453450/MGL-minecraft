@@ -406,6 +406,8 @@ int mglRenderCreateSparseTextureFromState(
  * page aligned; the page is GL_VIRTUAL_PAGE_SIZE_{X,Y,Z} = 64.
  * heap_offset is the starting placement-heap tile index for Map (ignored on
  * Unmap).  Callers must give each Map a non-overlapping range. */
+int mglRenderSparseTextureGetTileSize(void *texture,
+                                      uint32_t *width, uint32_t *height);
 int mglRenderSparseTextureCommit(void *heap, void *texture,
                                  uint32_t x, uint32_t y, uint32_t z,
                                  uint32_t width, uint32_t height, uint32_t depth,

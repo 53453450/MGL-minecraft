@@ -2628,7 +2628,12 @@ static MGLIRType *builtin_call_type(const char *name,
          * and sparseTextureOffset* is fragment-shader only (same rule as
          * texture* bias).  Detect by trailing float beyond the out-texel
          * arity: Texture=3, TextureOffset=4. */
-        if (stage != MGL_STAGE_FRAGMENT && arg_types && arg_types[argc - 1u] &&
+        const int cube_array_shadow = arg_types && arg_types[0] &&
+            arg_types[0]->kind == MGLIR_TYPE_SAMPLER &&
+            arg_types[0]->tex_kind == MGLIR_TEX_CUBE_ARRAY &&
+            arg_types[0]->tex_depth;
+        if (stage != MGL_STAGE_FRAGMENT && !cube_array_shadow &&
+            arg_types && arg_types[argc - 1u] &&
             arg_types[argc - 1u]->kind == MGLIR_TYPE_SCALAR &&
             arg_types[argc - 1u]->scalar == MGLIR_SCALAR_FLOAT) {
             int base = 0;

@@ -17,6 +17,7 @@ extern "C" {
 #include "mgl_air_reflect.h"
 #include "mgl_glsl_parser.h"
 #include "mgl_shader_abi.h"
+#include "mgl_buffer_slots.h"
 }
 
 /* The gtest target intentionally links only the AIR/reflection frontend.

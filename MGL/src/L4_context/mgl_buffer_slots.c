@@ -22,6 +22,7 @@
 #include <stddef.h>  /* NULL */
 #include <string.h>
 #include "mgl_program_backend.h"
+#include "mgl_binding_policy.h"
 
 /* Shader stage indices — must match the enum order in glm_context.h
  * (_MAX_SHADER_TYPES: VERTEX=0, TESS_CONTROL=1, TESS_EVALUATION=2,
@@ -218,6 +219,10 @@ void mglBufferSlotFactsFromProgram(const Program *program, int stage,
     out->tess_eval_compute = program->tess_eval_compute ? 1 : 0;
     out->gs_compute_route = program->gs_route == MGL_GS_ROUTE_COMPUTE ? 1 : 0;
     out->uses_frag_coord_params = program->usesFragCoordParams ? 1 : 0;
+    out->uses_sparse_residency =
+        mglProgramModuleView(program, stage)->needs_sparse_residency ? 1 : 0;
+    out->sparse_residency_slot =
+        mglProgramModuleView(program, stage)->sparse_residency_buffer_index;
 }
 
 GLboolean mglBufferSlotConflicts(const MGLBufferSlotFacts *facts, GLuint slot)
@@ -233,6 +238,11 @@ GLboolean mglBufferSlotConflicts(const MGLBufferSlotFacts *facts, GLuint slot)
      * time rather than allowing a draw/dispatch-time data corruption. */
     if (slot == facts->runtime_array_size_slot &&
         facts->needs_runtime_array_size_buffer) {
+        return GL_TRUE;
+    }
+
+    if (slot == facts->sparse_residency_slot &&
+        facts->uses_sparse_residency) {
         return GL_TRUE;
     }
 
@@ -368,6 +378,67 @@ int mglBufferSlotCheckResource(const MGLBufferSlotFacts *facts,
     return MGL_BUFFER_SLOT_OK;
 }
 
+static GLboolean mglSparseResidencySlotAvailable(
+    const Program *program, int stage, const MGLBufferSlotFacts *facts,
+    GLuint slot)
+{
+    static const int resource_types[] = {
+        _UNIFORM_BUFFER_RES,
+        _UNIFORM_CONSTANT_RES,
+        _STORAGE_BUFFER_RES,
+        _ATOMIC_COUNTER_RES
+    };
+    if (mglBufferSlotConflicts(facts, slot)) {
+        return GL_FALSE;
+    }
+    for (size_t type_index = 0;
+         type_index < sizeof(resource_types) / sizeof(resource_types[0]);
+         type_index++) {
+        const int resource_type = resource_types[type_index];
+        const MGLShaderResourceList *resources =
+            &program->shader_resources_list[stage][resource_type];
+        for (GLuint i = 0; resources->list && i < resources->count; i++) {
+            const MGLShaderResource *resource = &resources->list[i];
+            const GLuint count = mglRenderStageBufferResourceElementCount(
+                (uint32_t)resource_type, 1, resource->ubo_array_size,
+                resource->ubo_members != NULL, resource->gl_array_size);
+            if (slot >= resource->binding && slot - resource->binding < count) {
+                return GL_FALSE;
+            }
+        }
+    }
+    return GL_TRUE;
+}
+
+GLboolean mglBufferSlotFindSparseResidency(const Program *program, int stage,
+                                           GLuint preferred, GLuint *out_slot)
+{
+    MGLBufferSlotFacts facts;
+    if (out_slot) {
+        *out_slot = 0u;
+    }
+    if (!program || !out_slot || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        return GL_FALSE;
+    }
+    mglBufferSlotFactsFromProgram(program, stage, &facts);
+    /* The current module slot is being selected, not an additional user
+     * resource that the new table must avoid. */
+    facts.uses_sparse_residency = 0;
+    if (preferred < (GLuint)kMGLMaxMetalUserBufferCount &&
+        mglSparseResidencySlotAvailable(program, stage, &facts, preferred)) {
+        *out_slot = preferred;
+        return GL_TRUE;
+    }
+    for (GLuint slot = 0u; slot < (GLuint)kMGLMaxMetalUserBufferCount; slot++) {
+        if (slot != preferred &&
+            mglSparseResidencySlotAvailable(program, stage, &facts, slot)) {
+            *out_slot = slot;
+            return GL_TRUE;
+        }
+    }
+    return GL_FALSE;
+}
+
 const char *mglBufferSlotReservedName(GLuint slot)
 {
     switch (slot) {
@@ -379,6 +450,8 @@ const char *mglBufferSlotReservedName(GLuint slot)
         case 23:
             return "kMGLSamplerWrapBufferIndex (VS/FS integer textureGather wrap table, every draw) / "
                    "MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX (GS/compute-TES runtime-sized SSBO sizing)";
+        case 12:
+            return "kMGLSparseResidencyDefaultBufferIndex (sparse commit rect table)";
         case 14:
             return "kMGLLodBiasMaxBufferIndex (VS/FS packed LOD_BIAS table)";
         case 15:

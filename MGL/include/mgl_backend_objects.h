@@ -61,6 +61,8 @@ struct MGLShaderModuleBackend {
     /* Cached Metal function for metallib_bytes_tes_compute (TES kernel). */
     void *mtl_function_compute;
     uint8_t needs_runtime_array_size_buffer;
+    uint8_t needs_sparse_residency;
+    uint8_t sparse_residency_buffer_index;
 };
 
 /* One slot per shader stage (_MAX_SHADER_TYPES; checked in

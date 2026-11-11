@@ -44,6 +44,10 @@ static GLboolean reference_conflicts(const Program *program, GLuint slot,
         mglProgramModuleView(program, stage)->needs_runtime_array_size_buffer) {
         return GL_TRUE;
     }
+    if (slot == mglProgramModuleView(program, stage)->sparse_residency_buffer_index &&
+        mglProgramModuleView(program, stage)->needs_sparse_residency) {
+        return GL_TRUE;
+    }
     if (stage == _VERTEX_SHADER || stage == _FRAGMENT_SHADER) {
         if (slot == kMGLSamplerWrapBufferIndex) {
             return GL_TRUE;
@@ -115,6 +119,9 @@ static void configure(unsigned flags, int stage)
 {
     memset(&g_program, 0, sizeof(g_program));
     mglProgramModuleBackend(&g_program, stage)->needs_runtime_array_size_buffer = (flags & 1u) != 0;
+    mglProgramModuleBackend(&g_program, stage)->needs_sparse_residency = (flags & 1024u) != 0;
+    mglProgramModuleBackend(&g_program, stage)->sparse_residency_buffer_index =
+        kMGLSparseResidencyDefaultBufferIndex;
     g_program.uses_point_size_params = (flags & 2u) != 0;
     g_program.uses_shader_draw_params = (flags & 4u) != 0;
     g_program.uses_cull_distance = (flags & 8u) != 0;
@@ -134,7 +141,7 @@ static void test_sweep(void)
     int agree = 1;
     long cases = 0;
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-        for (unsigned flags = 0; flags < 1024u; flags++) {
+        for (unsigned flags = 0; flags < 2048u; flags++) {
             configure(flags, stage);
             MGLBufferSlotFacts facts;
             mglBufferSlotFactsFromProgram(&g_program, stage, &facts);
@@ -207,6 +214,66 @@ static void test_check_resource(void)
     CHECK(mglBufferSlotCheckResource(&facts, 23u, 1u, &bad) ==
               MGL_BUFFER_SLOT_RESERVED,
           "the sampler wrap table slot is reserved in a fragment stage");
+
+    configure(1024u, _COMPUTE_SHADER);
+    mglBufferSlotFactsFromProgram(&g_program, _COMPUTE_SHADER, &facts);
+    CHECK(mglBufferSlotCheckResource(&facts, kMGLSparseResidencyDefaultBufferIndex,
+                                     1u, &bad) == MGL_BUFFER_SLOT_RESERVED,
+          "a sparse-aware compute stage reserves the commit-table slot");
+    CHECK(mglBufferSlotCheckResource(&facts, 11u, 1u, &bad) == MGL_BUFFER_SLOT_OK,
+          "the slot below the commit table stays available");
+}
+
+static void test_sparse_relocation(void)
+{
+    configure(1024u, _COMPUTE_SHADER);
+    MGLShaderResource resource;
+    memset(&resource, 0, sizeof(resource));
+    resource.binding = kMGLSparseResidencyDefaultBufferIndex;
+    g_program.shader_resources_list[_COMPUTE_SHADER][_UNIFORM_BUFFER_RES].list =
+        &resource;
+    g_program.shader_resources_list[_COMPUTE_SHADER][_UNIFORM_BUFFER_RES].count =
+        1u;
+    GLuint selected = 99u;
+    CHECK(mglBufferSlotFindSparseResidency(
+              &g_program, _COMPUTE_SHADER,
+              kMGLSparseResidencyDefaultBufferIndex, &selected) &&
+              selected == 0u,
+          "a user buffer at the default slot relocates the sparse table");
+    mglProgramModuleBackend(&g_program, _COMPUTE_SHADER)
+        ->sparse_residency_buffer_index = (uint8_t)selected;
+    MGLBufferSlotFacts facts;
+    mglBufferSlotFactsFromProgram(&g_program, _COMPUTE_SHADER, &facts);
+    uint32_t bad = 0u;
+    CHECK(mglBufferSlotCheckResource(
+              &facts, kMGLSparseResidencyDefaultBufferIndex, 1u, &bad) ==
+              MGL_BUFFER_SLOT_OK,
+          "the vacated default slot remains legal for the user buffer");
+    CHECK(mglBufferSlotCheckResource(&facts, selected, 1u, &bad) ==
+              MGL_BUFFER_SLOT_RESERVED,
+          "the relocated commit-table slot is reserved instead");
+
+    configure(1025u, _COMPUTE_SHADER);
+    CHECK(mglBufferSlotFindSparseResidency(
+              &g_program, _COMPUTE_SHADER, MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX,
+              &selected) &&
+              selected == 0u,
+          "sparse placement also avoids the runtime-array size table");
+
+    configure(0u, _COMPUTE_SHADER);
+    MGLShaderResource resources[kMGLMaxMetalUserBufferCount];
+    memset(resources, 0, sizeof(resources));
+    for (GLuint i = 0; i < kMGLMaxMetalUserBufferCount; i++) {
+        resources[i].binding = i;
+    }
+    g_program.shader_resources_list[_COMPUTE_SHADER][_UNIFORM_BUFFER_RES].list =
+        resources;
+    g_program.shader_resources_list[_COMPUTE_SHADER][_UNIFORM_BUFFER_RES].count =
+        kMGLMaxMetalUserBufferCount;
+    CHECK(!mglBufferSlotFindSparseResidency(
+              &g_program, _COMPUTE_SHADER,
+              kMGLSparseResidencyDefaultBufferIndex, &selected),
+          "a fully occupied stage reports that no commit-table slot exists");
 }
 
 int main(void)
@@ -214,6 +281,7 @@ int main(void)
     printf("reserved buffer slot policy harness (audit P4)\n");
     test_sweep();
     test_check_resource();
+    test_sparse_relocation();
     printf("test_buffer_slots: %d/%d passed\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;
 }

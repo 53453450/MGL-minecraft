@@ -1069,19 +1069,6 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
     }
     mglTextureViewFamilyWritten(tex);
 
-    /* SubImage onto a sparse texture may Map uncommitted tiles.  Zero the
-     * CPU shadow above; scrub Metal so later imageLoad sees zeros too
-     * (ARB_sparse_texture2 / UncommittedRegionsAccess, esp. r11f). */
-    if (tex->params.sparse) {
-        if (uploaded_direct) {
-            mglFlushCommandBuffer(ctx);
-            mglRendererFlush(ctx, true);
-        }
-        mglSparseScrubTextureLevel(tex, level, 1);
-        mglFlushCommandBuffer(ctx);
-        mglRendererFlush(ctx, true);
-    }
-
     if (trace_upload) {
         fprintf(stderr,
                 "MGL TRACE texSubImage.end call=%" PRIu64 " tex=%u face=%u level=%d upload=%s ok=1 elapsed=%.3fms\n",

@@ -149,7 +149,8 @@ int main(void)
             size_t size = 0;
             if (mglAirCompileGLSLWithReflectInfoEx(source, MGL_STAGE_TESS_EVALUATION,
                 nullptr, &bytes, &size, nullptr, nullptr, MGL_AIR_COMPILE_FORCE_TES_COMPUTE,
-                nullptr, error, sizeof error, nullptr) != 0) {
+                nullptr, error, sizeof error, nullptr,
+                kMGLSparseResidencyDefaultBufferIndex) != 0) {
                 fprintf(stderr, "TES compile failed: %s\n", error); return 1;
             }
             dispatch_data_t data = dispatch_data_create(bytes, size, nullptr, DISPATCH_DATA_DESTRUCTOR_DEFAULT);

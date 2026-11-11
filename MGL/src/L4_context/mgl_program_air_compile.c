@@ -53,6 +53,7 @@
 #include "mgl_shader_resource.h"
 #include "mgl_compile_artifact.h"
 #include "mgl_compile_plan.h"
+#include "mgl_air_reflect.h"
 #include "mgl_render_api_binding.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_api_program.h"
@@ -302,6 +303,50 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             air_rc = -1;
         }
     }
+    if (air_rc == 0 && stage_info.needs_sparse_residency) {
+        mglRenderProgramSetModuleNeedsRuntimeArraySizeBuffer(
+            pptr, stage, stage_info.needs_runtime_array_size_buffer ? 1 : 0);
+        GLuint sparse_slot = 0u;
+        if (!mglBufferSlotFindSparseResidency(
+                pptr, stage, plan.sparse_residency_buffer_index,
+                &sparse_slot)) {
+            snprintf(err, sizeof err,
+                     "no free Metal buffer slot for sparse residency table");
+            air_rc = -1;
+        } else if (sparse_slot != plan.sparse_residency_buffer_index) {
+            MGLCompileArtifact *relocated = mglCompileArtifactCreate();
+            plan.sparse_residency_buffer_index = sparse_slot;
+            if (!relocated ||
+                mglCompileArtifactFromPlan(&plan, relocated, err,
+                                           sizeof err) != 0 ||
+                !relocated->complete) {
+                mglCompileArtifactFree(relocated);
+                if (err[0] == '\0') {
+                    snprintf(err, sizeof err,
+                             "failed to relocate sparse residency table");
+                }
+                air_rc = -1;
+            } else {
+                mglShaderFree(bytes);
+                bytes = relocated->metallib_bytes;
+                size = relocated->metallib_size;
+                relocated->metallib_bytes = NULL;
+                relocated->metallib_size = 0;
+                mglAirReflectDestroy(pptr->shader_resources_list[stage]);
+                memset(pptr->shader_resources_list[stage], 0,
+                       sizeof(pptr->shader_resources_list[stage]));
+                memcpy(pptr->shader_resources_list[stage], relocated->resources,
+                       sizeof(relocated->resources));
+                memset(relocated->resources, 0, sizeof(relocated->resources));
+                stage_info = relocated->stage_info;
+                if (relocated->tu) {
+                    mglShaderReplaceFrontendTU(shader, relocated->tu);
+                    relocated->tu = NULL;
+                }
+                mglCompileArtifactFree(relocated);
+            }
+        }
+    }
     if (getenv("MGL_DUMP_SRC") && compile_src) {
         char path[256];
         snprintf(path, sizeof(path), "/tmp/mgl_src_p%u_s%d.glsl",
@@ -310,6 +355,8 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         if (fp) { fwrite(compile_src, 1, strlen(compile_src), fp); fclose(fp); }
     }
     if (air_rc != 0) {
+        mglShaderFree(bytes);
+        bytes = NULL;
         for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
             free((void *)attrib_snapshot[ai]);
         }
@@ -565,6 +612,9 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     mglRenderProgramSetModuleNeedsRuntimeArraySizeBuffer(
         pptr, stage,
         stage_info.needs_runtime_array_size_buffer ? 1 : 0);
+    mglRenderProgramSetModuleNeedsSparseResidency(
+        pptr, stage, stage_info.needs_sparse_residency ? 1 : 0,
+        stage_info.sparse_residency_buffer_index);
     if (pptr->modules[stage].entry_point) {
         free(pptr->modules[stage].entry_point);
     }

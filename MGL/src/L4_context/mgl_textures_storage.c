@@ -279,25 +279,52 @@ void mglCommitSparsePages(GLMContext ctx, Texture *tex, GLint level,
         }
     }
 
-    if (commit) {
-        if (!mglSparseCommitAppend(tex, level, xoffset, yoffset, zoffset,
-                                   width, height, depth)) {
+    uint32_t sparse_tile_x = 0u, sparse_tile_y = 0u;
+    if (mglRenderSparseTextureGetTileSize(mglRenderTextureHandle(tex),
+                                          &sparse_tile_x,
+                                          &sparse_tile_y) != 0) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+    }
+
+    MGLSparseCommit *saved_commits = NULL;
+    const GLuint saved_commit_count = tex->sparse_commit_count;
+    const GLuint saved_commit_cap = tex->sparse_commit_cap;
+    if (saved_commit_count > 0u) {
+        const size_t bytes = (size_t)saved_commit_count * sizeof(*saved_commits);
+        saved_commits = malloc(bytes);
+        if (!saved_commits) {
             ERROR_RETURN(GL_OUT_OF_MEMORY);
         }
-    } else if (!mglSparseCommitSubtract(tex, level, xoffset, yoffset, zoffset,
-                                        width, height, depth)) {
-        ERROR_RETURN(GL_OUT_OF_MEMORY);
+        memcpy(saved_commits, tex->sparse_commits, bytes);
     }
 
     {
-        /* Match mglRenderSparseTextureCommit tile walk: ceil(w/64)*ceil(h/64)
-         * per slice (2D/array/cube) or *depth (3D).  MS is emulated as a
-         * 2D array of sample planes (stride 8); GL commitment applies to
-         * every sample, so expand depth to cover those Metal slices. */
-        const uint32_t tile = 64u;
+        int host_ok;
+        if (commit) {
+            host_ok = mglSparseCommitAppend(tex, level, xoffset, yoffset, zoffset,
+                                            width, height, depth);
+        } else {
+            host_ok = mglSparseCommitSubtract(tex, level, xoffset, yoffset, zoffset,
+                                              width, height, depth);
+        }
+        if (!host_ok) {
+            free(tex->sparse_commits);
+            tex->sparse_commits = saved_commits;
+            tex->sparse_commit_count = saved_commit_count;
+            tex->sparse_commit_cap = saved_commit_cap;
+            ERROR_RETURN(GL_OUT_OF_MEMORY);
+        }
+    }
+
+    {
+        /* Match the backend tile walk with the device's actual tile size:
+         * ceil(w/tile_x)*ceil(h/tile_y) per slice (2D/array/cube) or *depth
+         * (3D).  MS is emulated as a 2D array of sample planes (stride 8);
+         * GL commitment applies to every sample, so expand depth to cover
+         * those Metal slices. */
         const uint32_t ms_stride = 8u; /* MGL_TEXTURE_MS_PLANE_STRIDE */
-        uint64_t tiles_x = ((uint64_t)width + tile - 1u) / tile;
-        uint64_t tiles_y = ((uint64_t)height + tile - 1u) / tile;
+        uint64_t tiles_x = ((uint64_t)width + sparse_tile_x - 1u) / sparse_tile_x;
+        uint64_t tiles_y = ((uint64_t)height + sparse_tile_y - 1u) / sparse_tile_y;
         uint64_t slices;
         uint64_t heap_off = 0;
         uint32_t commit_z = (uint32_t)zoffset;
@@ -316,13 +343,27 @@ void mglCommitSparsePages(GLMContext ctx, Texture *tex, GLint level,
             slices = commit_d;
         if (commit) {
             heap_off = tex->sparse_heap_next_tile;
-            tex->sparse_heap_next_tile += tiles_x * tiles_y * slices;
         }
-        (void)mglRenderSparseTextureCommit(
+        const int map_result = mglRenderSparseTextureCommit(
             tex->sparse_heap, mglRenderTextureHandle(tex),
             (uint32_t)xoffset, (uint32_t)yoffset, commit_z,
             (uint32_t)width, (uint32_t)height, commit_d,
             (uint32_t)level, commit ? 1 : 0, heap_off);
+        if (map_result != 0) {
+            fprintf(stderr,
+                    "MGL ERROR: sparse texture mapping failed tex=%u level=%d commit=%d result=%d heap=%p\n",
+                    (unsigned)tex->name, (int)level, commit ? 1 : 0,
+                    map_result, tex->sparse_heap);
+            free(tex->sparse_commits);
+            tex->sparse_commits = saved_commits;
+            tex->sparse_commit_count = saved_commit_count;
+            tex->sparse_commit_cap = saved_commit_cap;
+            ERROR_RETURN(GL_INVALID_OPERATION);
+        }
+        free(saved_commits);
+        if (commit) {
+            tex->sparse_heap_next_tile += tiles_x * tiles_y * slices;
+        }
         /* Drain the renderer's CB so later compute imageStore / sample on
          * this texture cannot race the mapping update. */
         mglFlushCommandBuffer(ctx);
@@ -330,6 +371,55 @@ void mglCommitSparsePages(GLMContext ctx, Texture *tex, GLint level,
         /* Unmap only — nothing written yet.  Clear+Unmap after stores. */
         mglSparseScrubTextureLevel(tex, level, 0);
     }
+}
+
+int mglSparseReplayCommitments(Texture *tex, void *texture)
+{
+    if (!tex || !tex->params.sparse) return 0;
+    if (!tex->sparse_heap || !texture) return -1;
+    uint32_t tile_x = 0u, tile_y = 0u;
+    if (mglRenderSparseTextureGetTileSize(texture, &tile_x, &tile_y) != 0 ||
+        tile_x == 0u || tile_y == 0u) {
+        return -1;
+    }
+
+    tex->sparse_heap_next_tile = 0u;
+    for (GLuint i = 0u; i < tex->sparse_commit_count; i++) {
+        const MGLSparseCommit *commit = &tex->sparse_commits[i];
+        const uint32_t width = (uint32_t)commit->w;
+        const uint32_t height = (uint32_t)commit->h;
+        const uint32_t depth = (uint32_t)(commit->d > 0 ? commit->d : 1);
+        const uint64_t tiles_x =
+            ((uint64_t)width + tile_x - 1u) / tile_x;
+        const uint64_t tiles_y =
+            ((uint64_t)height + tile_y - 1u) / tile_y;
+        const uint32_t ms_stride = 8u;
+        uint64_t slices = depth;
+        uint32_t commit_z = (uint32_t)commit->z;
+        uint32_t commit_d = depth;
+        if (tex->target == GL_TEXTURE_2D_MULTISAMPLE) {
+            commit_z = 0u;
+            commit_d = ms_stride;
+            slices = commit_d;
+        } else if (tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+            commit_z *= ms_stride;
+            commit_d *= ms_stride;
+            slices = commit_d;
+        }
+        const uint64_t heap_offset = tex->sparse_heap_next_tile;
+        if (mglRenderSparseTextureCommit(
+                tex->sparse_heap, texture,
+                (uint32_t)commit->x, (uint32_t)commit->y, commit_z,
+                width, height, commit_d, (uint32_t)commit->level, 1,
+                heap_offset) != 0) {
+            fprintf(stderr,
+                    "MGL ERROR: sparse commitment replay failed tex=%u level=%d index=%u\n",
+                    (unsigned)tex->name, commit->level, (unsigned)i);
+            return -1;
+        }
+        tex->sparse_heap_next_tile += tiles_x * tiles_y * slices;
+    }
+    return 0;
 }
 
 /* Drop stray mappings on pages that are not in the CPU commit list.  Metal
@@ -452,24 +542,6 @@ void mglSparseScrubTextureLevel(Texture *tex, GLint level, int clear)
     free(regions);
 }
 
-void mglSparseScrubBoundImages(GLMContext ctx)
-{
-    GLuint i, n;
-
-    if (!ctx)
-        return;
-    n = STATE(var).max_image_units;
-    if (n > (GLuint)TEXTURE_UNITS)
-        n = (GLuint)TEXTURE_UNITS;
-    for (i = 0; i < n; i++) {
-        ImageUnit *iu = &STATE(image_units)[i];
-        Texture *tex = iu->tex;
-        if (!tex || !tex->params.sparse)
-            continue;
-        mglSparseScrubTextureLevel(tex, (GLint)iu->level, 1);
-    }
-}
-
 void mglTexPageCommitmentARB(GLMContext ctx, GLenum target, GLint level,
                              GLint xoffset, GLint yoffset, GLint zoffset,
                              GLsizei width, GLsizei height, GLsizei depth,
@@ -559,11 +631,12 @@ void mglTextureStorage2DMultisample(GLMContext ctx, GLuint texture, GLsizei samp
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    /* GL 4.6 §8.19 / AUDIT-034: samples > MAX_SAMPLES → INVALID_VALUE. */
+    /* DSA TextureStorage*Multisample: samples > MAX_SAMPLES is an
+     * INVALID_OPERATION error; the shared helper serves the legacy entries. */
     {
         GLenum sample_err = mglMultisampleCountValidationError(ctx, samples);
         if (sample_err != GL_NO_ERROR) {
-            ERROR_RETURN(sample_err);
+            ERROR_RETURN(GL_INVALID_OPERATION);
             return;
         }
     }
@@ -721,7 +794,7 @@ void mglTextureStorage3DMultisample(GLMContext ctx, GLuint texture, GLsizei samp
     {
         GLenum sample_err = mglMultisampleCountValidationError(ctx, samples);
         if (sample_err != GL_NO_ERROR) {
-            ERROR_RETURN(sample_err);
+            ERROR_RETURN(GL_INVALID_OPERATION);
             return;
         }
     }

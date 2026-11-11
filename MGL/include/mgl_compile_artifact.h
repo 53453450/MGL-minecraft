@@ -103,6 +103,7 @@ int mglCompileArtifactFromGLSLEx(const char *src, int stage,
                                  uint32_t air_flags,
                                  const void *iface_peers,
                                  uint32_t tess_patch_vertices,
+                                 uint32_t sparse_residency_buffer_index,
                                  MGLCompileArtifact *art_out,
                                  char *err_buf, size_t err_cap);
 int mglCompileArtifactFromGLSL(const char *src, int stage,

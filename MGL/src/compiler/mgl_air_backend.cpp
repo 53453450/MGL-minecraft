@@ -88,6 +88,7 @@
 #include "mgl_env_flag.h"
 #include "mgl_air_type.h"
 #include "mgl_air_codegen.h"
+#include "mgl_air_sparse_residency.h"
 #include "mgl_air_expr_support.h"
 #include "mgl_air_resource.h"
 #include "mgl_air_math.h"
@@ -1463,6 +1464,9 @@ static bool emitCallTexelFetch(
     Codegen &cg, const MGLExpr *e, const char *name,
     const MGLIRModule *mod, const std::map<std::string, MType> &locals,
     llvm::Value **out);
+static llvm::Value *sparseResidencyCode(
+    Codegen &cg, llvm::Value *sampled, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals);
 static bool emitCallImageLoadStore(
     Codegen &cg, const MGLExpr *e, const char *name,
     const MGLIRModule *mod, const std::map<std::string, MType> &locals,
@@ -8432,6 +8436,21 @@ static bool emitCallImageAtomic(
             {cg.b->getInt32(0), cg.b->getInt32(0)});
         llvm::Value *zero3 = llvm::ConstantVector::get(
             {cg.b->getInt32(0), cg.b->getInt32(0), cg.b->getInt32(0)});
+        llvm::Value *resident = sparseResidencyCode(
+            cg, nullptr, e, name, mod, locals);
+        llvm::BasicBlock *atomicDo = nullptr;
+        llvm::BasicBlock *atomicSkip = nullptr;
+        llvm::BasicBlock *atomicMerge = nullptr;
+        if (resident) {
+            llvm::Function *fn = cg.b->GetInsertBlock()->getParent();
+            atomicDo = llvm::BasicBlock::Create(*cg.ctx, "sparse.atomic.do", fn);
+            atomicSkip = llvm::BasicBlock::Create(*cg.ctx, "sparse.atomic.skip", fn);
+            atomicMerge = llvm::BasicBlock::Create(*cg.ctx, "sparse.atomic.merge", fn);
+            cg.b->CreateCondBr(
+                cg.b->CreateICmpNE(resident, cg.b->getInt32(0)),
+                atomicDo, atomicSkip);
+            cg.b->SetInsertPoint(atomicDo);
+        }
         /* Hardware texture atomics (R32* + ShaderAtomic).  RGBA8→R32 cast
          * is handled at BindImageTexture by recreating the Metal store as
          * R32*, so codegen stays on the HW path for all stages. */
@@ -8495,6 +8514,16 @@ static bool emitCallImageAtomic(
             }
             oldScalar =
                 cg.b->CreateExtractElement(oldV4, cg.b->getInt32(0));
+        }
+        if (resident) {
+            cg.b->CreateBr(atomicMerge);
+            cg.b->SetInsertPoint(atomicSkip);
+            cg.b->CreateBr(atomicMerge);
+            cg.b->SetInsertPoint(atomicMerge);
+            llvm::PHINode *result = cg.b->CreatePHI(i32, 2, "sparse.atomic.ret");
+            result->addIncoming(oldScalar, atomicDo);
+            result->addIncoming(cg.b->getInt32(0), atomicSkip);
+            return (*out = result, true);
         }
         return (*out = oldScalar, true);
     }
@@ -8862,7 +8891,30 @@ static bool emitCallImageLoadStore(
                     }
                 }
             }
-            return (*out = emitLoad(tex, nullptr), true);
+            llvm::Value *loaded = emitLoad(tex, nullptr);
+            llvm::Value *resident = sparseResidencyCode(
+                cg, nullptr, e, name, mod, locals);
+            if (resident) {
+                llvm::Value *isResident = cg.b->CreateICmpNE(
+                    resident, cg.b->getInt32(0));
+                llvm::Value *cleared =
+                    llvm::Constant::getNullValue(loaded->getType());
+                if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(
+                        loaded->getType())) {
+                    if (vt->getNumElements() == 4u) {
+                        /* Clear the stored texel without erasing the alpha
+                         * synthesized by GLSL missing-component expansion. */
+                        llvm::Value *alpha = cg.b->CreateExtractElement(
+                            loaded, cg.b->getInt32(3));
+                        cleared = cg.b->CreateInsertElement(
+                            cleared, alpha, cg.b->getInt32(3));
+                    }
+                }
+                *out = cg.b->CreateSelect(isResident, loaded, cleared);
+            } else {
+                *out = loaded;
+            }
+            return true;
         }
         const MGLExpr *valueArg = isMsImage ? e->u.call.args[3]
                                             : e->u.call.args[2];
@@ -8983,7 +9035,24 @@ static bool emitCallImageLoadStore(
                 }
             }
         }
-        emitWrite(tex);
+        llvm::Value *resident = sparseResidencyCode(
+            cg, nullptr, e, name, mod, locals);
+        if (resident) {
+            llvm::Function *fn = cg.b->GetInsertBlock()->getParent();
+            llvm::BasicBlock *writeBB = llvm::BasicBlock::Create(
+                *cg.ctx, "sparse.imageStore.write", fn);
+            llvm::BasicBlock *skipBB = llvm::BasicBlock::Create(
+                *cg.ctx, "sparse.imageStore.skip", fn);
+            cg.b->CreateCondBr(
+                cg.b->CreateICmpNE(resident, cg.b->getInt32(0)),
+                writeBB, skipBB);
+            cg.b->SetInsertPoint(writeBB);
+            emitWrite(tex);
+            cg.b->CreateBr(skipBB);
+            cg.b->SetInsertPoint(skipBB);
+        } else {
+            emitWrite(tex);
+        }
         return (*out = cg.b->getInt32(0), true);
     }
 
@@ -10869,12 +10938,9 @@ static bool emitCallUserFunction(
 }
 
 /* ARB_sparse_texture2 / ARB_sparse_texture_clamp: map sparse* / *ClampARB
- * onto the non-sparse twin and write the out texel.  Residency codes use
- * nonzero-sample as a stand-in until a commit-mask buffer is wired (Metal
- * placement-sparse returns zero for unmapped tiles).  Clamp* maps to
- * textureLod* with lodClamp as the explicit LOD — that matches the common
- * case max(autoLod, lodClamp)==lodClamp; a full auto-LOD clamp needs
- * derivative LOD which AIR does not yet feed into these builtins. */
+ * onto the non-sparse twin and write the out texel.  Sparse accesses consult
+ * the host commit-rectangle table for residency.  Clamp computes the true
+ * automatic/gradient LOD and applies max(autoLod, lodClamp) before sampling. */
 enum {
     MGL_SPARSE_F_OUT = 1,
     MGL_SPARSE_F_DROP_LOD = 2,
@@ -10909,8 +10975,8 @@ static bool sparseOrClampBase(const char *name, const char **base_out,
         {"sparseTexelFetchARB", "texelFetch", MGL_SPARSE_F_OUT},
         {"sparseTexelFetchOffsetARB", "texelFetchOffset", MGL_SPARSE_F_OUT},
         {"sparseImageLoadARB", "imageLoad", MGL_SPARSE_F_OUT},
-        /* Clamp: lodClamp is a minimum on automatic LOD (ARB_sparse_texture_clamp).
-         * Lower to textureLod* with lod = lodClamp (exact when autoLod ≤ lodClamp). */
+        /* Clamp variants reuse textureLod*; emitCallSparseTexture supplies
+         * max(automaticLod, lodClamp) as the explicit LOD override. */
         {"sparseTextureClampARB", "textureLod", MGL_SPARSE_F_OUT},
         {"sparseTextureOffsetClampARB", "textureLodOffset",
          MGL_SPARSE_F_OUT | MGL_SPARSE_F_SWAP_LOD_OFFSET},
@@ -10984,7 +11050,51 @@ static void sparseStoreOutParam(Codegen &cg, const MGLExpr *outArg,
     }
 }
 
-static llvm::Value *sparseResidencyCode(Codegen &cg, llvm::Value *sampled)
+static int translationUnitNeedsFragmentSparseResidency(
+    const MGLIRModule *mod, const MGLTranslationUnit *tu)
+{
+    static const char *const names[] = {
+        "sparseTextureARB", "sparseTextureLodARB", "sparseTextureOffsetARB",
+        "sparseTextureLodOffsetARB", "sparseTextureGradARB",
+        "sparseTextureGradOffsetARB", "sparseTextureGatherARB",
+        "sparseTextureGatherOffsetARB", "sparseTextureGatherOffsetsARB",
+        "sparseTexelFetchARB", "sparseTexelFetchOffsetARB",
+        "sparseImageLoadARB", "sparseTextureClampARB",
+        "sparseTextureOffsetClampARB", "sparseTextureGradClampARB",
+        "sparseTextureGradOffsetClampARB",
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        if (mglFrontendBuiltinUsed(mod, tu, names[i])) return 1;
+    }
+    return 0;
+}
+
+static int translationUnitNeedsSparseResidency(const MGLIRModule *mod,
+                                               const MGLTranslationUnit *tu)
+{
+    static const char *const names[] = {
+        "sparseTextureARB", "sparseTextureLodARB", "sparseTextureOffsetARB",
+        "sparseTextureLodOffsetARB", "sparseTextureGradARB",
+        "sparseTextureGradOffsetARB", "sparseTextureGatherARB",
+        "sparseTextureGatherOffsetARB", "sparseTextureGatherOffsetsARB",
+        "sparseTexelFetchARB", "sparseTexelFetchOffsetARB",
+        "sparseImageLoadARB", "sparseTextureClampARB",
+        "sparseTextureOffsetClampARB", "sparseTextureGradClampARB",
+        "sparseTextureGradOffsetClampARB", "textureClampARB",
+        "textureOffsetClampARB", "textureGradClampARB",
+        "textureGradOffsetClampARB", "imageLoad", "imageStore",
+        "imageAtomicAdd", "imageAtomicMin", "imageAtomicMax",
+        "imageAtomicAnd", "imageAtomicOr", "imageAtomicXor",
+        "imageAtomicExchange", "imageAtomicCompSwap",
+        "imageAtomicIncWrap", "imageAtomicDecWrap",
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        if (mglFrontendBuiltinUsed(mod, tu, names[i])) return 1;
+    }
+    return 0;
+}
+
+static llvm::Value *sparseResidencyFromSampledValue(Codegen &cg, llvm::Value *sampled)
 {
     /* Fallback when no coordinate is available: unmapped tiles read as
      * zero.  Only .r — texture()/texelFetch on R8UI fills .a with 1. */
@@ -11003,6 +11113,322 @@ static llvm::Value *sparseResidencyCode(Codegen &cg, llvm::Value *sampled)
         return llvm::ConstantInt::get(i32, 1);
     return cg.b->CreateSelect(nz, llvm::ConstantInt::get(i32, 1),
                               llvm::ConstantInt::get(i32, 0));
+}
+
+static llvm::Value *sparseCoordinateComponent(Codegen &cg, llvm::Value *coord,
+                                              unsigned index)
+{
+    llvm::Value *component = coord;
+    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(coord->getType())) {
+        if (index < vt->getNumElements()) {
+            component = cg.b->CreateExtractElement(coord, cg.b->getInt32(index));
+        } else {
+            component = llvm::ConstantInt::get(vt->getElementType(), 0);
+        }
+    } else if (index > 0) {
+        component = llvm::ConstantInt::get(coord->getType(), 0);
+    }
+    return coerceScalar(cg, component, MGLIR_SCALAR_INT);
+}
+
+static llvm::Value *sparseSampledResidency(
+    Codegen &cg, llvm::Value *sampled, const MGLExpr *e, const char *name,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals,
+    const char *samplerName, uint32_t slot)
+{
+    const MGLIRType *sampleType = nullptr;
+    auto sampleIt = cg.resources.samplerIRTypes.find(samplerName);
+    if (sampleIt != cg.resources.samplerIRTypes.end()) {
+        sampleType = sampleIt->second;
+    } else {
+        const MGLIRSymbol *symbol = findSymbol(mod, samplerName);
+        sampleType = symbol ? symbol->type : nullptr;
+    }
+    while (sampleType && sampleType->kind == MGLIR_TYPE_ARRAY)
+        sampleType = sampleType->elem_type;
+    if (!sampleType || sampleType->kind != MGLIR_TYPE_SAMPLER) {
+        return sparseResidencyFromSampledValue(cg, sampled);
+    }
+    const MGLIRTexKind kind = sampleType->tex_kind;
+    const bool supported =
+        kind == MGLIR_TEX_1D || kind == MGLIR_TEX_1D_ARRAY ||
+        kind == MGLIR_TEX_2D || kind == MGLIR_TEX_2D_RECT ||
+        kind == MGLIR_TEX_2D_ARRAY || kind == MGLIR_TEX_3D ||
+        kind == MGLIR_TEX_CUBE || kind == MGLIR_TEX_CUBE_ARRAY;
+    if (!supported) return sparseResidencyFromSampledValue(cg, sampled);
+
+    llvm::Type *f32 = cg.b->getFloatTy();
+    llvm::Type *i32 = cg.b->getInt32Ty();
+    llvm::Value *level = cg.b->getInt32(0);
+    if (cg.explicitLodOverride && strstr(name, "ClampARB")) {
+        level = cg.b->CreateFPToSI(
+            cg.b->CreateUnaryIntrinsic(llvm::Intrinsic::floor,
+                cg.b->CreateFAdd(cg.explicitLodOverride,
+                                 llvm::ConstantFP::get(f32, 0.5))), i32);
+    } else if (strcmp(name, "sparseTextureLodARB") == 0 ||
+        strcmp(name, "sparseTextureLodOffsetARB") == 0) {
+        if (e->u.call.arg_count < 3) return nullptr;
+        level = emitExpr(cg, e->u.call.args[2], mod, locals);
+        if (!level) return nullptr;
+        level = coerceScalar(cg, level, MGLIR_SCALAR_FLOAT);
+        level = cg.b->CreateFPToSI(
+            cg.b->CreateUnaryIntrinsic(llvm::Intrinsic::floor,
+                cg.b->CreateFAdd(level, llvm::ConstantFP::get(f32, 0.5))), i32);
+    }
+    llvm::Value *tex = samplerTexValue(cg, samplerName);
+    if (!tex) return nullptr;
+    const bool is3d = kind == MGLIR_TEX_3D;
+    const bool arrayBacked = kind == MGLIR_TEX_2D_ARRAY ||
+        kind == MGLIR_TEX_1D_ARRAY || kind == MGLIR_TEX_CUBE ||
+        kind == MGLIR_TEX_CUBE_ARRAY;
+    const char *dimSuffix = is3d ? "texture_3d" :
+        arrayBacked ? "texture_2d_array" : "texture_2d";
+    llvm::Value *width = callAirFn(
+        cg, (std::string("air.get_width_") + dimSuffix).c_str(), i32,
+        {tex, level});
+    llvm::Value *height = callAirFn(
+        cg, (std::string("air.get_height_") + dimSuffix).c_str(), i32,
+        {tex, level});
+    llvm::Value *depth = is3d
+        ? callAirFn(cg, "air.get_depth_texture_3d", i32, {tex, level})
+        : cg.b->getInt32(1);
+    if (!width || !height || !depth) return nullptr;
+
+    llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod, locals);
+    if (!coord) return nullptr;
+    auto coordComponent = [&](unsigned index) -> llvm::Value * {
+        if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(coord->getType())) {
+            if (index < vt->getNumElements()) {
+                return cg.b->CreateExtractElement(coord, cg.b->getInt32(index));
+            }
+            return llvm::ConstantFP::get(f32, 0.0);
+        }
+        return index == 0 ? coerceScalar(cg, coord, MGLIR_SCALAR_FLOAT)
+                          : llvm::ConstantFP::get(f32, 0.0);
+    };
+    auto texel = [&](llvm::Value *component, llvm::Value *extent,
+                     bool normalize) -> llvm::Value * {
+        llvm::Value *v = coerceScalar(cg, component, MGLIR_SCALAR_FLOAT);
+        if (normalize) {
+            v = cg.b->CreateFMul(v, cg.b->CreateSIToFP(extent, f32));
+        }
+        return cg.b->CreateFPToSI(v, i32);
+    };
+    const bool rectangular = kind == MGLIR_TEX_2D_RECT;
+    llvm::Value *x = texel(coordComponent(0), width, !rectangular);
+    llvm::Value *y = (kind == MGLIR_TEX_1D || kind == MGLIR_TEX_1D_ARRAY)
+        ? cg.b->getInt32(0) : texel(coordComponent(1), height, !rectangular);
+    llvm::Value *z = cg.b->getInt32(0);
+    if (is3d) {
+        z = texel(coordComponent(2), depth, true);
+    } else if (kind == MGLIR_TEX_2D_ARRAY) {
+        z = emitGlArrayLayerIndex(cg, tex, coordComponent(2), kind,
+                                  sampleType->tex_depth != 0);
+    } else if (kind == MGLIR_TEX_1D_ARRAY) {
+        z = emitGlArrayLayerIndex(cg, tex, coordComponent(1), kind,
+                                  sampleType->tex_depth != 0);
+    }
+
+    if (kind == MGLIR_TEX_CUBE || kind == MGLIR_TEX_CUBE_ARRAY) {
+        llvm::Value *cx = coordComponent(0);
+        llvm::Value *cy = coordComponent(1);
+        llvm::Value *cz = coordComponent(2);
+        llvm::Value *ax = cg.b->CreateUnaryIntrinsic(llvm::Intrinsic::fabs, cx);
+        llvm::Value *ay = cg.b->CreateUnaryIntrinsic(llvm::Intrinsic::fabs, cy);
+        llvm::Value *az = cg.b->CreateUnaryIntrinsic(llvm::Intrinsic::fabs, cz);
+        llvm::Value *xMajor = cg.b->CreateAnd(
+            cg.b->CreateFCmpOGE(ax, ay), cg.b->CreateFCmpOGE(ax, az));
+        llvm::Value *yMajor = cg.b->CreateFCmpOGE(ay, az);
+        llvm::Value *xPositive = cg.b->CreateFCmpOGE(cx, llvm::ConstantFP::get(f32, 0.0));
+        llvm::Value *yPositive = cg.b->CreateFCmpOGE(cy, llvm::ConstantFP::get(f32, 0.0));
+        llvm::Value *zPositive = cg.b->CreateFCmpOGE(cz, llvm::ConstantFP::get(f32, 0.0));
+        llvm::Value *xFace = cg.b->CreateSelect(
+            xPositive, cg.b->getInt32(0), cg.b->getInt32(1));
+        llvm::Value *yFace = cg.b->CreateSelect(
+            yPositive, cg.b->getInt32(2), cg.b->getInt32(3));
+        llvm::Value *zFace = cg.b->CreateSelect(
+            zPositive, cg.b->getInt32(4), cg.b->getInt32(5));
+        llvm::Value *face = cg.b->CreateSelect(
+            xMajor, xFace, cg.b->CreateSelect(yMajor, yFace, zFace));
+        llvm::Value *major = cg.b->CreateSelect(
+            xMajor, ax, cg.b->CreateSelect(yMajor, ay, az));
+        llvm::Value *u = cg.b->CreateSelect(
+            xMajor,
+            cg.b->CreateSelect(xPositive, cg.b->CreateFNeg(cz), cz),
+            cg.b->CreateSelect(
+                yMajor, cx,
+                cg.b->CreateSelect(zPositive, cx, cg.b->CreateFNeg(cx))));
+        llvm::Value *v = cg.b->CreateSelect(
+            xMajor, cg.b->CreateFNeg(cy),
+            cg.b->CreateSelect(
+                yMajor,
+                cg.b->CreateSelect(yPositive, cz, cg.b->CreateFNeg(cz)),
+                cg.b->CreateFNeg(cy)));
+        llvm::Value *half = llvm::ConstantFP::get(f32, 0.5);
+        llvm::Value *one = llvm::ConstantFP::get(f32, 1.0);
+        llvm::Value *uNorm = cg.b->CreateFMul(
+            cg.b->CreateFAdd(cg.b->CreateFDiv(u, major), one), half);
+        llvm::Value *vNorm = cg.b->CreateFMul(
+            cg.b->CreateFAdd(cg.b->CreateFDiv(v, major), one), half);
+        x = texel(uNorm, width, true);
+        y = texel(vNorm, height, true);
+        z = face;
+        if (kind == MGLIR_TEX_CUBE_ARRAY) {
+            llvm::Value *layer = emitGlArrayLayerIndex(
+                cg, tex, coordComponent(3), kind, sampleType->tex_depth != 0);
+            z = cg.b->CreateAdd(cg.b->CreateMul(layer, cg.b->getInt32(6)), face);
+        }
+    }
+
+    auto applyOffset = [&](const MGLExpr *offsetExpr, llvm::Value **ioX,
+                           llvm::Value **ioY, llvm::Value **ioZ) -> bool {
+        llvm::Value *offset = emitExpr(cg, offsetExpr, mod, locals);
+        if (!offset) return false;
+        *ioX = cg.b->CreateAdd(*ioX, sparseCoordinateComponent(cg, offset, 0));
+        *ioY = cg.b->CreateAdd(*ioY, sparseCoordinateComponent(cg, offset, 1));
+        *ioZ = cg.b->CreateAdd(*ioZ, sparseCoordinateComponent(cg, offset, 2));
+        return true;
+    };
+    const bool isGatherOffsets =
+        strcmp(name, "sparseTextureGatherOffsetsARB") == 0;
+    if (isGatherOffsets) {
+        const uint32_t offsetsArg = sampleType->tex_depth ? 3u : 2u;
+        if (e->u.call.arg_count <= offsetsArg) return nullptr;
+        const MGLExpr *offsets = e->u.call.args[offsetsArg];
+        llvm::Value *allResident = nullptr;
+        for (uint32_t i = 0; i < 4u; i++) {
+            MGLExpr literal = {};
+            literal.kind = MGL_EXPR_LITERAL;
+            literal.u.literal.base = MGL_AST_TYPE_INT;
+            literal.u.literal.value = (double)i;
+            MGLExpr index = {};
+            index.kind = MGL_EXPR_INDEX;
+            index.u.index.object = (MGLExpr *)offsets;
+            index.u.index.index = &literal;
+            llvm::Value *tapX = x, *tapY = y, *tapZ = z;
+            if (!applyOffset(&index, &tapX, &tapY, &tapZ)) return nullptr;
+            llvm::Value *tap = sparseCommitResidency(cg, slot, level,
+                                                     tapX, tapY, tapZ);
+            if (!tap) return nullptr;
+            allResident = allResident
+                ? cg.b->CreateAnd(allResident, tap) : tap;
+        }
+        return allResident;
+    }
+
+    uint32_t offsetArg = UINT32_MAX;
+    if (strcmp(name, "sparseTextureGradOffsetARB") == 0 ||
+        strcmp(name, "sparseTextureGradOffsetClampARB") == 0) offsetArg = 4u;
+    else if (strcmp(name, "sparseTextureLodOffsetARB") == 0) offsetArg = 3u;
+    else if (strcmp(name, "sparseTextureOffsetARB") == 0 ||
+             strcmp(name, "sparseTextureOffsetClampARB") == 0) offsetArg = 2u;
+    else if (strcmp(name, "sparseTextureGatherOffsetARB") == 0)
+        offsetArg = sampleType->tex_depth ? 3u : 2u;
+    if (offsetArg != UINT32_MAX) {
+        if (e->u.call.arg_count <= offsetArg) return nullptr;
+        if (!applyOffset(e->u.call.args[offsetArg], &x, &y, &z)) return nullptr;
+    }
+    return sparseCommitResidency(cg, slot, level, x, y, z);
+}
+
+static llvm::Value *sparseResidencyCode(Codegen &cg, llvm::Value *sampled,
+                                        const MGLExpr *e, const char *name,
+                                        const MGLIRModule *mod,
+                                        const std::map<std::string, MType> &locals)
+{
+    const bool isFetch = name &&
+        (strcmp(name, "sparseTexelFetchARB") == 0 ||
+         strcmp(name, "sparseTexelFetchOffsetARB") == 0);
+    const bool isImage = name &&
+        (strcmp(name, "sparseImageLoadARB") == 0 ||
+         strcmp(name, "imageLoad") == 0 || strcmp(name, "imageStore") == 0 ||
+         strncmp(name, "imageAtomic", 11) == 0);
+    const bool isSample = name &&
+        (strcmp(name, "sparseTextureARB") == 0 ||
+         strcmp(name, "sparseTextureLodARB") == 0 ||
+         strcmp(name, "sparseTextureOffsetARB") == 0 ||
+         strcmp(name, "sparseTextureLodOffsetARB") == 0 ||
+         strcmp(name, "sparseTextureGradARB") == 0 ||
+         strcmp(name, "sparseTextureGradOffsetARB") == 0 ||
+         strcmp(name, "sparseTextureGatherARB") == 0 ||
+         strcmp(name, "sparseTextureGatherOffsetARB") == 0 ||
+         strcmp(name, "sparseTextureGatherOffsetsARB") == 0 ||
+         strcmp(name, "sparseTextureClampARB") == 0 ||
+         strcmp(name, "sparseTextureOffsetClampARB") == 0 ||
+         strcmp(name, "sparseTextureGradClampARB") == 0 ||
+         strcmp(name, "sparseTextureGradOffsetClampARB") == 0);
+    if (!isFetch && !isImage && !isSample) {
+        return sparseResidencyFromSampledValue(cg, sampled);
+    }
+    if (!cg.resources.sparseResidencyPtr) {
+        return sampled ? sparseResidencyFromSampledValue(cg, sampled) : nullptr;
+    }
+    if (e->u.call.arg_count < 2) {
+        cg.err = 1;
+        cg.errmsg = "sparse fetch/imageLoad missing coordinates";
+        return nullptr;
+    }
+
+    std::string path;
+    const char *samplerName = nullptr;
+    if (resolveSamplerAccessName(e->u.call.args[0], &path)) {
+        samplerName = path.c_str();
+    } else if (e->u.call.args[0]->kind == MGL_EXPR_VAR_REF) {
+        samplerName = e->u.call.args[0]->u.var_ref.name;
+    }
+    if (!samplerName) {
+        cg.err = 1;
+        cg.errmsg = "sparse access has no sampler/image resource";
+        return nullptr;
+    }
+    if (cg.resources.texArrayValues.count(samplerName)) {
+        if (!sampled) return nullptr;
+        return sparseResidencyFromSampledValue(cg, sampled);
+    }
+    auto slotIt = cg.resources.texMetalIndex.find(samplerName);
+    if (slotIt == cg.resources.texMetalIndex.end()) {
+        cg.err = 1;
+        cg.errmsg = "sparse access has no Metal texture slot";
+        return nullptr;
+    }
+    if (isSample) {
+        return sparseSampledResidency(cg, sampled, e, name, mod, locals,
+                                        samplerName, slotIt->second);
+    }
+
+    llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod, locals);
+    if (!coord) return nullptr;
+    llvm::Value *x = sparseCoordinateComponent(cg, coord, 0);
+    llvm::Value *y = sparseCoordinateComponent(cg, coord, 1);
+    llvm::Value *z = sparseCoordinateComponent(cg, coord, 2);
+    llvm::Value *level = cg.b->getInt32(0);
+    bool multisample = false;
+    bool rectangular = false;
+    auto typeIt = cg.resources.samplerIRTypes.find(samplerName);
+    if (typeIt != cg.resources.samplerIRTypes.end()) {
+        const MGLIRType *type = typeIt->second;
+        while (type && type->kind == MGLIR_TYPE_ARRAY) type = type->elem_type;
+        multisample = type && type->kind == MGLIR_TYPE_SAMPLER &&
+            (type->tex_kind == MGLIR_TEX_2D_MS ||
+             type->tex_kind == MGLIR_TEX_2D_MS_ARRAY);
+        rectangular = type && type->kind == MGLIR_TYPE_SAMPLER &&
+            type->tex_kind == MGLIR_TEX_2D_RECT;
+    }
+    if (strcmp(name, "sparseTexelFetchOffsetARB") == 0) {
+        const uint32_t offset_arg = rectangular ? 2u : 3u;
+        if (e->u.call.arg_count <= offset_arg) return nullptr;
+        llvm::Value *offset = emitExpr(cg, e->u.call.args[offset_arg], mod, locals);
+        if (!offset) return nullptr;
+        x = cg.b->CreateAdd(x, sparseCoordinateComponent(cg, offset, 0));
+        y = cg.b->CreateAdd(y, sparseCoordinateComponent(cg, offset, 1));
+        z = cg.b->CreateAdd(z, sparseCoordinateComponent(cg, offset, 2));
+    }
+    if (isFetch && !multisample && !rectangular && e->u.call.arg_count > 3) {
+        level = emitExpr(cg, e->u.call.args[2], mod, locals);
+        if (!level) return nullptr;
+        level = coerceScalar(cg, level, MGLIR_SCALAR_INT);
+    }
+    return sparseCommitResidency(cg, slotIt->second, level, x, y, z);
 }
 
 static bool emitCallSparseTexture(
@@ -11033,6 +11459,8 @@ static bool emitCallSparseTexture(
     }
 
     MGLExpr tmp = *e;
+    MGLExpr shadowCoordConstructor = {};
+    MGLExpr *shadowCoordArgs[2] = {nullptr, nullptr};
     MGLExpr *args_buf[16];
     uint32_t argc = e->u.call.arg_count;
     const MGLExpr *outArg = nullptr;
@@ -11127,6 +11555,7 @@ static bool emitCallSparseTexture(
      * broadcast .r so the CTS gather expected vec4(r,r,r,r) still matches. */
     const bool gatherAsSample = isTextureGatherBuiltin(base);
     int isShadowGather = 0;
+    const MGLIRType *st = nullptr;
     if (gatherAsSample) {
         if (argc >= 1 && args_buf[0]) {
             std::string spath;
@@ -11135,7 +11564,6 @@ static bool emitCallSparseTexture(
                 sname = spath.c_str();
             else if (args_buf[0]->kind == MGL_EXPR_VAR_REF)
                 sname = args_buf[0]->u.var_ref.name;
-            const MGLIRType *st = nullptr;
             if (sname) {
                 auto sti = cg.resources.samplerIRTypes.find(sname);
                 if (sti != cg.resources.samplerIRTypes.end())
@@ -11150,12 +11578,43 @@ static bool emitCallSparseTexture(
             if (st && st->kind == MGLIR_TYPE_SAMPLER && st->tex_depth)
                 isShadowGather = 1;
         }
-        /* Shadow gather with a separate ref arg: fold to a depth compare
-         * sample at the center; gatherAsSample broadcasts .r below.  Do not
-         * hardcode 1.0 (that assumed CTS GL_ALWAYS). */
-        if (isShadowGather && argc > 2)
-            argc = 2; /* drop trailing ref/comp until ref is folded into P */
-        base = "texture";
+        /* Shadow gather carries a separate compare reference.  Fold it into
+         * the coordinate for every kind except cube-array, whose AIR compare
+         * call already takes a standalone ref after P. */
+        if (isShadowGather && argc > 2 &&
+            st && st->kind == MGLIR_TYPE_SAMPLER &&
+            st->tex_kind != MGLIR_TEX_CUBE_ARRAY) {
+            shadowCoordArgs[0] = args_buf[1];
+            shadowCoordArgs[1] = args_buf[2];
+            shadowCoordConstructor.kind = MGL_EXPR_CALL;
+            shadowCoordConstructor.u.call.name =
+                (st->tex_kind == MGLIR_TEX_2D_ARRAY ||
+                 st->tex_kind == MGLIR_TEX_CUBE)
+                    ? (char *)"vec4" : (char *)"vec3";
+            shadowCoordConstructor.u.call.args = shadowCoordArgs;
+            shadowCoordConstructor.u.call.arg_count = 2u;
+            args_buf[1] = &shadowCoordConstructor;
+            for (uint32_t i = 2u; i + 1u < argc; i++) {
+                args_buf[i] = args_buf[i + 1u];
+            }
+            argc--;
+        }
+        const bool singleGatherOffset =
+            strcmp(base, "textureGatherOffset") == 0;
+        const bool multiGatherOffsets =
+            strcmp(base, "textureGatherOffsets") == 0;
+        const bool cubeArrayShadow = isShadowGather && st &&
+            st->kind == MGLIR_TYPE_SAMPLER &&
+            st->tex_kind == MGLIR_TEX_CUBE_ARRAY;
+        if (singleGatherOffset && !cubeArrayShadow) {
+            base = "textureOffset";
+        } else {
+            base = "texture";
+            if (multiGatherOffsets ||
+                (singleGatherOffset && cubeArrayShadow)) {
+                argc = cubeArrayShadow ? 3u : 2u;
+            }
+        }
     }
 
     tmp.u.call.name = const_cast<char *>(base);
@@ -11163,6 +11622,38 @@ static bool emitCallSparseTexture(
     tmp.u.call.arg_count = argc;
 
     llvm::Value *sampled = nullptr;
+    const bool clampLod = strstr(name, "ClampARB") != nullptr;
+    const MGLExpr *savedDerivX = cg.derivXExpr;
+    const MGLExpr *savedDerivY = cg.derivYExpr;
+    llvm::Value *savedLodOverride = cg.explicitLodOverride;
+    if (clampLod) {
+        MGLExpr query = *e;
+        query.u.call.name = (char *)"textureQueryLod";
+        query.u.call.arg_count = 2u;
+        const bool hasGrad = strstr(name, "Grad") != nullptr;
+        if (hasGrad && e->u.call.arg_count >= 4u) {
+            cg.derivXExpr = e->u.call.args[2];
+            cg.derivYExpr = e->u.call.args[3];
+        }
+        llvm::Value *queryOut = nullptr;
+        if (emitCallTextureSample(cg, &query, "textureQueryLod", mod, locals,
+                                  &queryOut) && queryOut) {
+            llvm::Value *automaticLod = cg.b->CreateExtractElement(
+                queryOut, cg.b->getInt32(1));
+            const uint32_t clampIndex = e->u.call.arg_count -
+                ((flags & MGL_SPARSE_F_OUT) ? 2u : 1u);
+            llvm::Value *clamp = emitExpr(cg, e->u.call.args[clampIndex],
+                                          mod, locals);
+            if (clamp) {
+                clamp = coerceScalar(cg, clamp, MGLIR_SCALAR_FLOAT);
+                cg.explicitLodOverride = cg.b->CreateIntrinsic(
+                    llvm::Intrinsic::maxnum, {cg.b->getFloatTy()},
+                    {automaticLod, clamp});
+            }
+        }
+        cg.derivXExpr = savedDerivX;
+        cg.derivYExpr = savedDerivY;
+    }
     if (strcmp(base, "texelFetch") == 0 ||
         strcmp(base, "texelFetchOffset") == 0) {
         if (!emitCallTexelFetch(cg, &tmp, base, mod, locals, &sampled)) {
@@ -11186,8 +11677,10 @@ static bool emitCallSparseTexture(
             return true;
         }
     }
-    if (cg.err)
+    if (cg.err) {
+        cg.explicitLodOverride = savedLodOverride;
         return true;
+    }
     if (!sampled) {
         cg.err = 1;
         cg.errmsg = std::string("codegen: '") + name + "' produced no value";
@@ -11204,15 +11697,23 @@ static bool emitCallSparseTexture(
             for (unsigned i = 0; i < vt->getNumElements(); i++)
                 g = cg.b->CreateInsertElement(g, r, cg.b->getInt32(i));
             sampled = g;
+        } else {
+            llvm::Type *v4 = llvm::FixedVectorType::get(sampled->getType(), 4u);
+            llvm::Value *g = llvm::UndefValue::get(v4);
+            for (unsigned i = 0; i < 4u; i++) {
+                g = cg.b->CreateInsertElement(g, sampled, cg.b->getInt32(i));
+            }
+            sampled = g;
         }
     }
 
     if (flags & MGL_SPARSE_F_OUT) {
         sparseStoreOutParam(cg, outArg, sampled);
-        *out = sparseResidencyCode(cg, sampled);
+        *out = sparseResidencyCode(cg, sampled, e, name, mod, locals);
     } else {
         *out = sampled;
     }
+    cg.explicitLodOverride = savedLodOverride;
     return true;
 }
 
@@ -11460,6 +11961,72 @@ static bool emitCallTextureSample(
                 sizeComps = {w, h};
             }
 
+            auto cubeFaceUv = [&](llvm::Value *direction) -> llvm::Value * {
+                auto *directionType =
+                    llvm::dyn_cast<llvm::FixedVectorType>(direction->getType());
+                if (!directionType || directionType->getNumElements() < 3u) {
+                    return nullptr;
+                }
+                auto component = [&](unsigned index) {
+                    return cg.b->CreateExtractElement(direction,
+                                                      cg.b->getInt32(index));
+                };
+                llvm::Value *cx = component(0);
+                llvm::Value *cy = component(1);
+                llvm::Value *cz = component(2);
+                llvm::Value *ax = cg.b->CreateUnaryIntrinsic(
+                    llvm::Intrinsic::fabs, cx);
+                llvm::Value *ay = cg.b->CreateUnaryIntrinsic(
+                    llvm::Intrinsic::fabs, cy);
+                llvm::Value *az = cg.b->CreateUnaryIntrinsic(
+                    llvm::Intrinsic::fabs, cz);
+                llvm::Value *xMajor = cg.b->CreateAnd(
+                    cg.b->CreateFCmpOGE(ax, ay),
+                    cg.b->CreateFCmpOGE(ax, az));
+                llvm::Value *yMajor = cg.b->CreateFCmpOGE(ay, az);
+                llvm::Value *xPositive = cg.b->CreateFCmpOGE(
+                    cx, llvm::ConstantFP::get(f32, 0.0));
+                llvm::Value *yPositive = cg.b->CreateFCmpOGE(
+                    cy, llvm::ConstantFP::get(f32, 0.0));
+                llvm::Value *zPositive = cg.b->CreateFCmpOGE(
+                    cz, llvm::ConstantFP::get(f32, 0.0));
+                llvm::Value *major = cg.b->CreateSelect(
+                    xMajor, ax, cg.b->CreateSelect(yMajor, ay, az));
+                llvm::Value *majorNonzero = cg.b->CreateFCmpONE(
+                    major, llvm::ConstantFP::get(f32, 0.0));
+                major = cg.b->CreateSelect(
+                    majorNonzero, major, llvm::ConstantFP::get(f32, 1.0));
+                llvm::Value *u = cg.b->CreateSelect(
+                    xMajor,
+                    cg.b->CreateSelect(xPositive, cg.b->CreateFNeg(cz), cz),
+                    cg.b->CreateSelect(
+                        yMajor, cx,
+                        cg.b->CreateSelect(zPositive, cx,
+                                           cg.b->CreateFNeg(cx))));
+                llvm::Value *v = cg.b->CreateSelect(
+                    xMajor, cg.b->CreateFNeg(cy),
+                    cg.b->CreateSelect(
+                        yMajor,
+                        cg.b->CreateSelect(yPositive, cz,
+                                           cg.b->CreateFNeg(cz)),
+                        cg.b->CreateFNeg(cy)));
+                llvm::Value *half = llvm::ConstantFP::get(f32, 0.5);
+                llvm::Value *one = llvm::ConstantFP::get(f32, 1.0);
+                llvm::Value *uNorm = cg.b->CreateFMul(
+                    cg.b->CreateFAdd(cg.b->CreateFDiv(u, major), one), half);
+                llvm::Value *vNorm = cg.b->CreateFMul(
+                    cg.b->CreateFAdd(cg.b->CreateFDiv(v, major), one), half);
+                llvm::Value *uv = llvm::UndefValue::get(
+                    llvm::FixedVectorType::get(f32, 2u));
+                uv = cg.b->CreateInsertElement(uv, uNorm, cg.b->getInt32(0));
+                return cg.b->CreateInsertElement(uv, vNorm, cg.b->getInt32(1));
+            };
+            llvm::Value *originalCoord = coord;
+            if (cubeLike) {
+                coord = cubeFaceUv(coord);
+                if (!coord) return true;
+            }
+
             auto *coordVecTy =
                 llvm::dyn_cast<llvm::FixedVectorType>(coord->getType());
             const uint32_t n =
@@ -11476,8 +12043,44 @@ static bool emitCallTextureSample(
                                std::to_string(n) + "f32";
                     fn = slot.c_str();
                 }
-                llvm::Value *d = callAirFn(cg, fn, coord->getType(), {coord});
-                return (d && y) ? applyDerivYSign(cg, d) : d;
+                llvm::Value *d = nullptr;
+                const MGLExpr *overrideExpr = y ? cg.derivYExpr : cg.derivXExpr;
+                if (overrideExpr) {
+                    d = emitExpr(cg, overrideExpr, mod, locals);
+                } else {
+                    d = callAirFn(cg, fn, coord->getType(), {coord});
+                }
+                if (d && overrideExpr && d->getType() != originalCoord->getType()) {
+                    auto *originalType =
+                        llvm::dyn_cast<llvm::FixedVectorType>(originalCoord->getType());
+                    if (originalType) {
+                        llvm::Value *expanded =
+                            llvm::Constant::getNullValue(originalType);
+                        const uint32_t count = originalType->getNumElements();
+                        if (auto *dType = llvm::dyn_cast<llvm::FixedVectorType>(
+                                d->getType())) {
+                            const uint32_t used = std::min(
+                                count, dType->getNumElements());
+                            for (uint32_t i = 0; i < used; i++) {
+                                llvm::Value *component = cg.b->CreateExtractElement(
+                                    d, cg.b->getInt32(i));
+                                expanded = cg.b->CreateInsertElement(
+                                    expanded, component, cg.b->getInt32(i));
+                            }
+                        } else {
+                            expanded = cg.b->CreateInsertElement(
+                                expanded, d, cg.b->getInt32(0));
+                        }
+                        d = expanded;
+                    }
+                }
+                if (d && overrideExpr && cubeLike) {
+                    llvm::Value *neighbor = cg.b->CreateFAdd(originalCoord, d);
+                    llvm::Value *neighborUv = cubeFaceUv(neighbor);
+                    if (!neighborUv) return nullptr;
+                    return cg.b->CreateFSub(neighborUv, coord);
+                }
+                return (d && y && !overrideExpr) ? applyDerivYSign(cg, d) : d;
             };
             llvm::Value *dx = axisDeriv(false);
             llvm::Value *dy = axisDeriv(true);
@@ -12063,6 +12666,11 @@ static bool emitCallTextureSample(
                 lodOrBias = llvm::ConstantFP::get(f32, 0.0);
             }
 
+            if (isLod && cg.explicitLodOverride) {
+                lodFlag = cg.b->getInt1(true);
+                lodOrBias = cg.explicitLodOverride;
+            }
+
             llvm::Type *cmpRet = llvm::StructType::get(
                 *cg.ctx, {f32, cg.b->getInt8Ty()});
             auto extractCmp = [&](llvm::Value *cmp) {
@@ -12352,7 +12960,9 @@ static bool emitCallTextureSample(
             llvm::FixedVectorType::get(i32, 2));
         uint32_t argIdx = 2;
         if (isLod) {
-            lod = emitExpr(cg, e->u.call.args[argIdx++], mod, locals);
+            lod = cg.explicitLodOverride
+                ? cg.explicitLodOverride
+                : emitExpr(cg, e->u.call.args[argIdx++], mod, locals);
             if (!lod) return true;
             lod = coerceScalar(cg, lod, MGLIR_SCALAR_FLOAT);
             /* textureLod: λ = lod + clamp(TEXTURE_LOD_BIAS, ±max). */
@@ -14590,6 +15200,8 @@ struct CompileOptions {
     bool fs_clip_emulate = false;
     const char *const *attrib_names = nullptr;
     uint32_t tessPatchVertices = 0;
+    uint32_t sparseResidencyBufferIndex =
+        kMGLSparseResidencyDefaultBufferIndex;
     const MGLShaderResourceList *iface_location_peers = nullptr;
     MGLFrontendSession *session_in = nullptr;
 };
@@ -14609,6 +15221,8 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     const bool fs_clip_emulate = opt.fs_clip_emulate;
     const char *const *attrib_names = opt.attrib_names;
     const uint32_t tessPatchVertices = opt.tessPatchVertices;
+    const uint32_t sparseResidencyBufferIndex =
+        opt.sparseResidencyBufferIndex;
     const MGLShaderResourceList *iface_location_peers =
         opt.iface_location_peers;
     MGLFrontendSession *const session_in = opt.session_in;
@@ -14936,6 +15550,11 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     const bool needsLodBias =
         texCount > 0u && !isCapture && !isKernel &&
         ((isVS && !isTESVertex) || stage == MGL_STAGE_FRAGMENT);
+    const bool needsSparseResidency =
+        (stage == MGL_STAGE_COMPUTE &&
+         translationUnitNeedsSparseResidency(&mod, tu)) ||
+        (stage == MGL_STAGE_FRAGMENT &&
+         translationUnitNeedsFragmentSparseResidency(&mod, tu));
     const uint32_t stageInputStride = (isTCS || isGS)
         ? stageRecordStride(syms, VarSym::VARYING, false,
                             MGL_AIR_PER_VERTEX_STRIDE)
@@ -15586,6 +16205,8 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     if (needsLodBias)
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+    if (needsSparseResidency)
+        paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     if (!retTy && mgl_env_flag_enabled("MGL_GS_TRACE")) {
         fprintf(stderr, "MGLGSTRACE site1 NULL retTy isGS=%d isTCS=%d isCompute=%d isTES=%d\n",
                 (int)isGS, (int)isTCS, (int)isCompute, (int)isTES);
@@ -15910,8 +16531,11 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         if (v.kind != VarSym::IMAGE) continue;
         uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         if (v.type.arr == 0) {
+            cg.resources.texMetalIndex[v.name] = texLocRun++;
             cg.resources.texValues[v.name] = fn->getArg(argSlot++);
         } else {
+            cg.resources.texMetalIndex[v.name] = texLocRun;
+            texLocRun += elements;
             std::vector<llvm::Value *> texes;
             for (uint32_t k = 0; k < elements; k++)
                 texes.push_back(fn->getArg(argSlot++));
@@ -16453,6 +17077,8 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         cg.resources.samplerWrapPtr = fn->getArg(argSlot++);
     if (needsLodBias)
         cg.resources.lodBiasPtr = fn->getArg(argSlot++);
+    if (needsSparseResidency)
+        cg.resources.sparseResidencyPtr = fn->getArg(argSlot++);
     if (isGS) {
         cg.geometryWorkItemId = cg.threadPos
             ? cg.b->CreateExtractElement(cg.threadPos, cg.b->getInt32(0))
@@ -19093,9 +19719,10 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     if (needsSamplerWrapBuf) {
         llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
         const unsigned lodBiasTail = needsLodBias ? 1u : 0u;
+        const unsigned sparseTail = needsSparseResidency ? 1u : 0u;
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                i32, (unsigned)paramTys.size() - 1u - lodBiasTail)),
+                i32, (unsigned)paramTys.size() - 1u - lodBiasTail - sparseTail)),
             llvm::MDString::get(ctx, "air.buffer"),
             llvm::MDString::get(ctx, "air.location_index"),
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
@@ -19116,7 +19743,8 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                        sizeof(float));
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                i32, (unsigned)paramTys.size() - 1u)),
+                i32, (unsigned)paramTys.size() - 1u -
+                         (needsSparseResidency ? 1u : 0u))),
             llvm::MDString::get(ctx, "air.buffer"),
             llvm::MDString::get(ctx, "air.location_index"),
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
@@ -19134,6 +19762,24 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             llvm::MDString::get(ctx, "float"),
             llvm::MDString::get(ctx, "air.arg_name"),
             llvm::MDString::get(ctx, "mgl_lod_bias")}));
+    }
+    if (needsSparseResidency) {
+        llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
+        argNodes.push_back(llvm::MDNode::get(ctx, {
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                i32, (unsigned)paramTys.size() - 1u)),
+            llvm::MDString::get(ctx, "air.buffer"),
+            llvm::MDString::get(ctx, "air.location_index"),
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                i32, sparseResidencyBufferIndex)),
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 1)),
+            llvm::MDString::get(ctx, "air.read"),
+            llvm::MDString::get(ctx, "air.address_space"),
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 1)),
+            llvm::MDString::get(ctx, "air.arg_type_name"),
+            llvm::MDString::get(ctx, "device uchar*"),
+            llvm::MDString::get(ctx, "air.arg_name"),
+            llvm::MDString::get(ctx, "mgl_sparse_residency")}));
     }
     /* Metal expects the argument list ordered by parameter index; the
      * emission order above mixes buffers and value args (e.g. a fragment
@@ -19651,6 +20297,11 @@ static int fillStageInfo(const MGLTranslationUnit *tu,
     if (fillSubroutineTable(tu, &stage_info->subroutines) != 0) return -1;
     stage_info->needs_runtime_array_size_buffer =
         translationUnitUsesRuntimeArrayLength(tu, mod) ? 1u : 0u;
+    stage_info->needs_sparse_residency =
+        (stage == MGL_STAGE_COMPUTE &&
+         translationUnitNeedsSparseResidency(mod, tu)) ||
+        (stage == MGL_STAGE_FRAGMENT &&
+         translationUnitNeedsFragmentSparseResidency(mod, tu));
     if (stage != MGL_STAGE_FRAGMENT && stage != MGL_STAGE_COMPUTE && mod) {
         stage_info->cull_distance_count =
             mglFrontendBuiltinArrayCount(mod, tu, "gl_CullDistance");
@@ -19872,7 +20523,8 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     unsigned char **metallib_out, size_t *size_out,
     MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
     uint32_t flags, const MGLShaderResourceList *iface_location_peers,
-    char *err_buf, size_t err_cap, MGLTranslationUnit **tu_out) {
+    char *err_buf, size_t err_cap, MGLTranslationUnit **tu_out,
+    uint32_t sparse_residency_buffer_index) {
     bool has_gs = (flags & MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER) != 0;
     bool direct_primitive_id =
         (flags & MGL_AIR_COMPILE_DIRECT_PRIMITIVE_ID) != 0;
@@ -19957,12 +20609,19 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     opt.clip_depth_zero_to_one = clip_depth_zero_to_one;
     opt.attrib_names = attrib_names;
     opt.tessPatchVertices = tessPatchVertices;
+    opt.sparseResidencyBufferIndex = sparse_residency_buffer_index;
     opt.iface_location_peers = iface_location_peers;
     opt.session_in = &sess;
     opt.fs_clip_emulate = (flags & MGL_AIR_COMPILE_FS_CLIP_INTERP) != 0;
 
     int rc = compileGLSLImpl(sess.src, opt, metallib_out, size_out, err_buf,
                              err_cap);
+    if (rc == 0 && stage_info) {
+        stage_info->sparse_residency_buffer_index =
+            stage_info->needs_sparse_residency
+                ? sparse_residency_buffer_index
+                : 0u;
+    }
     if (rc == 0 && tu_out)
         *tu_out = mglFrontendSessionStealTU(&sess);
     else if (tu_out)
@@ -19979,7 +20638,7 @@ extern "C" int mglAirCompileGLSLWithReflectInfo(
     return mglAirCompileGLSLWithReflectInfoEx(
         src, stage, attrib_names, metallib_out, size_out, lists,
         stage_info, 0u, /*iface_location_peers=*/nullptr, err_buf, err_cap,
-        /*tu_out=*/nullptr);
+        /*tu_out=*/nullptr, kMGLSparseResidencyDefaultBufferIndex);
 }
 
 extern "C" int mglAirCompileGLSLWithReflect(

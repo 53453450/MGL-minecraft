@@ -178,6 +178,9 @@ struct Codegen {
     /* +1 / -1 applied to dFdy: -1 on a window-system target whose rows count
      * downward (see MGL_AIR_BUILTIN_DERIV_Y). Null outside fragment stages. */
     llvm::Value *derivYSign = nullptr;
+    const MGLExpr *derivXExpr = nullptr; /* GradClamp: explicit dPdx */
+    const MGLExpr *derivYExpr = nullptr; /* GradClamp: explicit dPdy */
+    llvm::Value *explicitLodOverride = nullptr; /* Clamp: max(auto, clamp) */
     bool usesClipDistance = false;       /* vertex writes gl_ClipDistance */
     bool emulateClipDiscard = false;     /* FS discards interpolated clip < 0 */
     uint32_t cullDistancePassthroughCount = 0; /* VS flat outs / FS ins */

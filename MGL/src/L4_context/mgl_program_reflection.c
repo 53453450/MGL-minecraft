@@ -430,6 +430,15 @@ void mglRenderProgramSetModuleNeedsRuntimeArraySizeBuffer(Program *program,
         needs ? 1u : 0u;
 }
 
+void mglRenderProgramSetModuleNeedsSparseResidency(Program *program,
+                                                   int stage, int needs,
+                                                   uint32_t buffer_index)
+{
+    struct MGLShaderModuleBackend *mod = mglProgramModuleBackend(program, stage);
+    mod->needs_sparse_residency = needs ? 1u : 0u;
+    mod->sparse_residency_buffer_index = needs ? (uint8_t)buffer_index : 0u;
+}
+
 /* Evaluate a GLSL constant initializer into up to 16 x 32-bit words.
  * Covers scalar / small-vector literals and constructors used as uniform
  * defaults (CTS `uniform uint id = 2;`). Returns word count, or 0. */

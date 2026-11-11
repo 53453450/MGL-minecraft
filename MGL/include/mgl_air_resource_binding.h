@@ -42,6 +42,7 @@ struct ResourceBindingState {
      *   float _pad;
      *   float bias[TEXTURE_UNITS];  // TEXTURE_LOD_BIAS per Metal tex slot */
     llvm::Value *lodBiasPtr = nullptr;
+    llvm::Value *sparseResidencyPtr = nullptr; /* dynamic commit rect table */
     std::map<std::string, std::vector<llvm::Value *>> texArrayValues;
     std::map<std::string, std::vector<llvm::Value *>> smpArrayValues;
     std::map<std::string, const MGLIRType *> samplerIRTypes;

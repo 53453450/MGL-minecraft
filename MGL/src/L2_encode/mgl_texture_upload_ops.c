@@ -56,6 +56,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "mgl_texture_backend.h"
+#include "mgl_textures_internal.h"
 #include "mgl_buffer_backend.h"
 
 enum { MGL_UPLOAD_SCRATCH_SLOTS = 2 };
@@ -3261,6 +3262,15 @@ void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex)
     if (texture && createCtx.out_heap) {
         tex->sparse_heap = createCtx.out_heap;
         tex->sparse_heap_next_tile = 0;
+        if (tex->sparse_commit_count > 0u &&
+            mglSparseReplayCommitments(tex, texture) != 0) {
+            fprintf(stderr,
+                    "MGL ERROR: sparse backing recreation could not restore commitments tex=%u\n",
+                    (unsigned)tex->name);
+            mglSafeReleaseMetalObj(&texture);
+            mglSafeReleaseMetalObj(&tex->sparse_heap);
+            return NULL;
+        }
     }
 
     // CRITICAL FIX: Validate texture creation result instead of asserting

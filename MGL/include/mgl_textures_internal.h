@@ -164,7 +164,7 @@ int mglSparsePageIntersectsCommit(const Texture *tex, GLint level,
                                          GLint x, GLint y, GLint z,
                                          GLint w, GLint h, GLint d);
 void mglSparseScrubTextureLevel(Texture *tex, GLint level, int clear);
-void mglSparseScrubBoundImages(GLMContext ctx);
+int mglSparseReplayCommitments(Texture *tex, void *texture);
 void mglTexPageCommitmentARB(GLMContext ctx, GLenum target, GLint level,
                              GLint xoffset, GLint yoffset, GLint zoffset,
                              GLsizei width, GLsizei height, GLsizei depth,

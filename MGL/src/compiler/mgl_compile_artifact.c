@@ -12,6 +12,7 @@
 
 #include "mgl_air_reflect.h"
 #include "mgl_shader_abi.h"
+#include "mgl_buffer_slots.h"
 #include "mgl_glsl_parser.h"
 #include "mgl_glsl_ast.h"
 #include "mgl_frontend_session.h"
@@ -92,7 +93,8 @@ int mglCompileArtifactFromPlan(const MGLCompilePlan *plan,
     }
     return mglCompileArtifactFromGLSLEx(
         plan->source, plan->stage, plan->attrib_names, plan->air_flags,
-        plan->iface_peers, plan->tess_patch_vertices, art_out, err_buf, err_cap);
+        plan->iface_peers, plan->tess_patch_vertices,
+        plan->sparse_residency_buffer_index, art_out, err_buf, err_cap);
 }
 
 int mglCompileArtifactFromGLSLEx(const char *src, int stage,
@@ -100,6 +102,7 @@ int mglCompileArtifactFromGLSLEx(const char *src, int stage,
                                  uint32_t air_flags,
                                  const void *iface_peers,
                                  uint32_t tess_patch_vertices,
+                                 uint32_t sparse_residency_buffer_index,
                                  MGLCompileArtifact *art_out,
                                  char *err_buf, size_t err_cap)
 {
@@ -146,7 +149,7 @@ int mglCompileArtifactFromGLSLEx(const char *src, int stage,
             src, stage, attrib_names, &bytes, &size, art_out->resources,
             &art_out->stage_info, air_flags,
             (const MGLShaderResourceList *)iface_peers, err, cap,
-            &art_out->tu) != 0) {
+            &art_out->tu, sparse_residency_buffer_index) != 0) {
         free(bytes);
         mglCompileArtifactDestroy(art_out);
         if (err[0] && !art_out->frontend.diagnostics) {
@@ -167,7 +170,8 @@ int mglCompileArtifactFromGLSL(const char *src, int stage,
                                char *err_buf, size_t err_cap)
 {
     return mglCompileArtifactFromGLSLEx(src, stage, attrib_names, 0u, NULL,
-                                        0u, art_out, err_buf, err_cap);
+                                        0u, kMGLSparseResidencyDefaultBufferIndex,
+                                        art_out, err_buf, err_cap);
 }
 
 int mglCompileArtifactParseGLSL(const char *src, int stage,

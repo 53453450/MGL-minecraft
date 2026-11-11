@@ -146,6 +146,8 @@ typedef struct MGLAIRStageInfo {
     uint32_t cull_distance_count;
     uint32_t clip_distance_count;
     uint32_t needs_runtime_array_size_buffer;
+    uint32_t needs_sparse_residency;
+    uint32_t sparse_residency_buffer_index;
     /* GS multi-stream (GL 4.6 §11.1.3.4): stream 0 is rasterized; streams
      * 1..3 feed transform feedback only and require points output.  The
      * per-stream XFB capture record is position (16B) + that stream's
@@ -452,7 +454,8 @@ int mglAirCompileGLSLWithReflectInfoEx(
     unsigned char **metallib_out, size_t *size_out,
     MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
     uint32_t flags, const MGLShaderResourceList *iface_location_peers,
-    char *err_buf, size_t err_cap, struct MGLTranslationUnit **tu_out);
+    char *err_buf, size_t err_cap, struct MGLTranslationUnit **tu_out,
+    uint32_t sparse_residency_buffer_index);
 
 /* Free bytes returned by mglShaderCompileGLSL. */
 void mglShaderFree(void *bytes);

@@ -21,6 +21,7 @@ typedef struct MGLCompilePlan {
     const void *iface_peers;            /* borrowed MGLShaderResourceList */
     uint32_t air_flags;
     uint32_t tess_patch_vertices;
+    uint32_t sparse_residency_buffer_index;
 } MGLCompilePlan;
 
 void mglCompilePlanInit(MGLCompilePlan *plan, const char *source, int stage,

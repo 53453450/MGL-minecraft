@@ -49,7 +49,6 @@
 
 extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
-extern void mglSparseScrubBoundImages(GLMContext ctx);
 
 
 /* Transient pool implemented in mgl_draw_stream_merge.c */
@@ -1212,9 +1211,6 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
  */
 void mglFlushCommandBuffer(GLMContext ctx)
 {
-    GLuint i, n;
-    int sparse_images = 0;
-
     if (!ctx) return;
 
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
@@ -1222,24 +1218,6 @@ void mglFlushCommandBuffer(GLMContext ctx)
 
     MGL_PERF_INC(g_mglFlushTotalSinceSwap);
     mglRendererFlushDrawBuffer(ctx);
-
-    /* Draw-path sparse imageStore can remap uncommitted tiles the same way
-     * compute does; scrub after the batch so later samples see zeros
-     * (ARB_sparse_texture2).  Only pay the wait when a sparse image is bound. */
-    n = STATE(var).max_image_units;
-    if (n > (GLuint)TEXTURE_UNITS)
-        n = (GLuint)TEXTURE_UNITS;
-    for (i = 0; i < n; i++) {
-        Texture *tex = STATE(image_units)[i].tex;
-        if (tex && tex->params.sparse) {
-            sparse_images = 1;
-            break;
-        }
-    }
-    if (sparse_images) {
-        mglRendererFlush(ctx, true);
-        mglSparseScrubBoundImages(ctx);
-    }
 }
 
 /*

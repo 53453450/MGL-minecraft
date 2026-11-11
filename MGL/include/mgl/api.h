@@ -25,6 +25,9 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 void MGLsetCurrentContext(GLMContext ctx);
 GLMContext MGLgetCurrentContext(void);
 
+/* First-bind validation for DSA scopes; implemented by the L4 VAO owner. */
+GLboolean mglVertexArrayNameMayBind(GLMContext ctx, GLuint array);
+
 #ifdef __cplusplus
 }
 #endif

@@ -24,7 +24,6 @@
 
 extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
-extern void mglSparseScrubBoundImages(GLMContext ctx);
 
 static uint32_t mglEnvUInt32Clamped(const char *name,
                                     uint32_t defaultValue,

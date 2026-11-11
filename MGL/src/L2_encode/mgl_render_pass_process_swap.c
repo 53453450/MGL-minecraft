@@ -56,6 +56,7 @@
 #include "mgl_renderer_binding_ops.h"      /* mglRendererBindingInvalidateLastBoundState */
 #include "mgl_trace_strategy.h"         /* mglClearFragmentTraceBindingsForRenderer */
 
+#include <CoreFoundation/CoreFoundation.h>
 #include <stdio.h>
 #include <stdarg.h>   /* va_list for the GLSL source builder */
 #include <stdlib.h>   /* malloc / realloc / free */
@@ -65,6 +66,11 @@
 #include "mgl_program_backend.h"
 #include "mgl_texture_backend.h"
 #include "mgl_raster_orientation_state.h"
+#include "mgl_sparse_residency.h"
+#include "mgl_texture_binding_resolve.h"
+#include "mgl_render_api_buffer.h"
+#include "mgl_render_api_command.h"
+#include "mgl_ports_present.h"
 
 extern void mglLogRenderPassLifecycle(const char *tag, uint64_t call,
                                       GLMContext ctx, void *commandBufferOwner,
@@ -468,6 +474,94 @@ static int mglPdSetPipelineTryBody(void *renderer, void *rawCtx)
     } else {
         MGL_PERF_INC(g_mglSetRenderPipelineStateSkipsSinceSwap);
     }
+    return 1;
+}
+
+static int mglRenderBindFragmentSparseResidency(void *renderer,
+                                                 GLMContext ctx,
+                                                 Program *program)
+{
+    MGLRendererStateView areas;
+    mglRendererFillStateView(renderer, &areas);
+    MGLRenderEncoderOwner *encoderOwner =
+        areas.command ? areas.command->currentRenderEncoderOwner : NULL;
+    if (!program ||
+        !mglProgramModuleView(program, _FRAGMENT_SHADER)->needs_sparse_residency) {
+        return 1;
+    }
+    if (!encoderOwner) return 0;
+
+    MGLSparseResidencySlot slots[TEXTURE_UNITS];
+    MGLSparseResidencyRect *rects = NULL;
+    size_t rectCount = 0u, rectCap = 0u;
+    mglSparseResidencyResetSlots(slots, TEXTURE_UNITS);
+    MGLShaderResourceList *resources =
+        &program->shader_resources_list[_FRAGMENT_SHADER][_SAMPLED_IMAGE_RES];
+    for (GLuint ri = 0u; resources->list && ri < resources->count; ri++) {
+        MGLShaderResource *resource = &resources->list[ri];
+        const uint32_t declaredType = mglDeclaredTextureTypeFromResource(resource);
+        const GLint elements = resource->gl_array_size > 0
+            ? resource->gl_array_size : 1;
+        for (GLint element = 0; element < elements; element++) {
+            const GLuint metalSlot = resource->binding + (GLuint)element;
+            if (metalSlot >= TEXTURE_UNITS) break;
+            const uint32_t base = resource->sampler_unit >= 0
+                ? (uint32_t)resource->sampler_unit : resource->gl_binding;
+            Texture *texture = mglTextureForSampledResource(
+                ctx, resource, metalSlot, _FRAGMENT_SHADER, declaredType,
+                base + (uint32_t)element);
+            if (!texture) continue;
+            if (mglSparseResidencyBuildSlot(texture, NULL, &slots[metalSlot],
+                                            &rects, &rectCount, &rectCap) != 0) {
+                free(rects);
+                return 0;
+            }
+        }
+    }
+
+    const size_t headerBytes = sizeof(slots);
+    if (rectCount > (SIZE_MAX - headerBytes) / sizeof(*rects)) {
+        free(rects);
+        return 0;
+    }
+    const size_t packBytes = headerBytes + rectCount * sizeof(*rects);
+    uint8_t *pack = malloc(packBytes);
+    if (!pack) {
+        free(rects);
+        return 0;
+    }
+    memcpy(pack, slots, headerBytes);
+    if (rectCount) {
+        memcpy(pack + headerBytes, rects, rectCount * sizeof(*rects));
+    }
+    free(rects);
+
+    void *buffer = NULL;
+    if (mglRenderCreateBufferWithBytes(pack, packBytes, 0u, NULL, &buffer) != 0 ||
+        !buffer) {
+        free(pack);
+        return 0;
+    }
+    free(pack);
+    const uint32_t slot = mglProgramModuleView(program, _FRAGMENT_SHADER)
+        ->sparse_residency_buffer_index;
+    const int rc = mglRenderSetRenderBufferForOwner(
+        encoderOwner, buffer, 0u, MGL_RENDER_BINDING_STAGE_FRAGMENT, slot);
+    if (rc != 0) {
+        CFRelease((CFTypeRef)buffer);
+        return 0;
+    }
+
+    void *temporaries = mglRendererTemporariesCreate();
+    if (!temporaries) {
+        CFRelease((CFTypeRef)buffer);
+        return 0;
+    }
+    mglRendererTemporariesAdd(temporaries, buffer);
+    CFRelease((CFTypeRef)buffer);
+    void *commandBuffer = mglRenderCommandBufferOwnerGetCurrent(
+        areas.command ? areas.command->currentCommandBufferOwner : NULL);
+    mglRendererTemporariesReleaseOnCommandBuffer(temporaries, commandBuffer);
     return 1;
 }
 
@@ -994,6 +1088,10 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
                     renderer, kMGLLodBiasMaxBufferIndex);
             }
         }
+    }
+
+    if (!mglRenderBindFragmentSparseResidency(renderer, ctx, fragmentProgram)) {
+        return 0;
     }
 
     if (after.bind_sampler_wrap_slot) {
