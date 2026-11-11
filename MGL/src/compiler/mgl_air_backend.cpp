@@ -2548,6 +2548,9 @@ static llvm::Value *emitSSBOAggregateLoad(Codegen &cg, llvm::Value *base,
                                           const MGLIRType *ty);
 static void emitSSBOAggregateStore(Codegen &cg, llvm::Value *base,
                                    const MGLIRType *ty, llvm::Value *v);
+static void emitUBOLeafStore(Codegen &cg, llvm::Value *base,
+                             const MGLIRType *ct, const MType &vt,
+                             llvm::Value *v);
 
 llvm::Value *emitSSBORead(Codegen &cg, const MGLExpr *e,
                           const MGLIRSymbol *sb, const MGLIRModule *mod,
@@ -2566,10 +2569,7 @@ llvm::Value *emitSSBORead(Codegen &cg, const MGLExpr *e,
      * plus coerceScalar(VOID) yields `store i32, float*` — illegal AIR. */
     if (ty && (ty->kind == MGLIR_TYPE_STRUCT || ty->kind == MGLIR_TYPE_ARRAY))
         return emitSSBOAggregateLoad(cg, p, ty);
-    llvm::Type *lt = llvmType(typeFromIR(ty), *cg.ctx);
-    llvm::Align align = bufferLeafAlign(lt);
-    p = cg.b->CreateBitCast(p, lt->getPointerTo(1));
-    return cg.b->CreateAlignedLoad(lt, p, align);
+    return emitUBOLeafLoad(cg, p, 0u, ty, typeFromIR(ty));
 }
 
 void emitSSBOWrite(Codegen &cg, const MGLExpr *e, const MGLIRSymbol *sb,
@@ -2601,11 +2601,7 @@ void emitSSBOWrite(Codegen &cg, const MGLExpr *e, const MGLIRSymbol *sb,
         emitSSBOAggregateStore(cg, p, ty, v);
         return;
     }
-    v = coerceScalar(cg, v, typeFromIR(ty).scalar);
-    llvm::Type *lt = llvmType(typeFromIR(ty), *cg.ctx);
-    llvm::Align align = bufferLeafAlign(lt);
-    p = cg.b->CreateBitCast(p, lt->getPointerTo(1));
-    cg.b->CreateAlignedStore(v, p, align);
+    emitUBOLeafStore(cg, p, ty, typeFromIR(ty), v);
 }
 
 /* Soft-truncate one IEEE754 binary64 (i64 bits) to binary32 without f64 ALU. */
@@ -2844,6 +2840,21 @@ static void emitUBOLeafStore(Codegen &cg, llvm::Value *base,
         llvm::Value *word = cg.b->CreateZExt(v, i32);
         llvm::Value *p = cg.b->CreateBitCast(base, i32->getPointerTo(1));
         cg.b->CreateAlignedStore(word, p, llvm::Align(4));
+        return;
+    }
+    if (vt.scalar == MGLIR_SCALAR_DOUBLE && vt.vec && !vt.isMatrix()) {
+        /* Double vectors use a float SSA carrier on AGX, but their buffer
+         * representation is tightly packed binary64.  Convert and store one
+         * component at a time; a vector store would use the carrier's type. */
+        llvm::Type *i64 = llvm::Type::getInt64Ty(*cg.ctx);
+        for (uint32_t i = 0; i < vt.vec; ++i) {
+            llvm::Value *component = cg.b->CreateExtractElement(v, i);
+            component = coerceScalar(cg, component, MGLIR_SCALAR_DOUBLE);
+            llvm::Value *p = cg.b->CreateGEP(
+                cg.b->getInt8Ty(), base, cg.b->getInt64((uint64_t)i * 8u));
+            p = cg.b->CreateBitCast(p, i64->getPointerTo(1));
+            cg.b->CreateAlignedStore(component, p, llvm::Align(8));
+        }
         return;
     }
     v = coerceScalar(cg, v, vt.scalar);
@@ -3200,10 +3211,7 @@ static void flushTCSTessLevels(Codegen &cg)
         return;
     llvm::IRBuilder<> &b = *cg.b;
     llvm::LLVMContext &ctx = *cg.ctx;
-    llvm::Value *patch =
-        cg.workGroupPos
-            ? b.CreateExtractElement(cg.workGroupPos, b.getInt32(0))
-            : b.CreateExtractElement(cg.patchPos, b.getInt32(0));
+    llvm::Value *patch = b.CreateExtractElement(cg.patchPos, b.getInt32(0));
     llvm::Value *factorBase = b.CreateGEP(
         b.getInt8Ty(), cg.tessFactorPtr,
         b.CreateMul(b.CreateZExt(patch, b.getInt64Ty()),
@@ -16822,8 +16830,24 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             cg.workGroupPos = fn->getArg(argSlot++);
         if (usesNumWorkGroups)
             cg.numWorkGroups = fn->getArg(argSlot++);
-        if (isTCS && cg.workGroupPos)
-            cg.patchPos = cg.workGroupPos;
+        if (isTCS && cg.workGroupPos) {
+            /* Dispatch is (patch, instance).  gl_PrimitiveID stays the local
+             * workgroup x, while stage records use a flattened global patch. */
+            llvm::Value *info = cg.b->CreateBitCast(
+                cg.indirectPtr, cg.b->getInt32Ty()->getPointerTo(1));
+            llvm::Value *patchCount = cg.b->CreateAlignedLoad(
+                cg.b->getInt32Ty(),
+                cg.b->CreateGEP(cg.b->getInt32Ty(), info, cg.b->getInt32(2)),
+                llvm::Align(4));
+            llvm::Value *x = cg.b->CreateExtractElement(
+                cg.workGroupPos, cg.b->getInt32(0));
+            llvm::Value *y = cg.b->CreateExtractElement(
+                cg.workGroupPos, cg.b->getInt32(1));
+            llvm::Value *globalPatch = cg.b->CreateAdd(
+                x, cg.b->CreateMul(y, patchCount));
+            cg.patchPos = cg.b->CreateInsertElement(
+                cg.workGroupPos, globalPatch, cg.b->getInt32(0));
+        }
     }
     else if (isTES && !isTESCompute) {
         cg.patchControlPtr = fn->getArg(argSlot++);

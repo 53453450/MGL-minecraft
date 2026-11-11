@@ -1481,53 +1481,71 @@ static GLboolean mglFramebufferAttachmentIsPopulated(FBOAttachment *att)
     return att && att->texture != 0u;
 }
 
+static GLenum mglFramebufferAttachmentLayerTargetClass(const FBOAttachment *att)
+{
+    if (!att || att->textarget == GL_RENDERBUFFER) {
+        return GL_NONE;
+    }
+    switch (att->textarget) {
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
+            return GL_TEXTURE_CUBE_MAP;
+        default:
+            return att->textarget;
+    }
+}
+
 static GLboolean mglFramebufferHasLayerTargetMismatch(Framebuffer *fbo)
 {
     GLboolean any_layered = GL_FALSE;
     GLboolean any_non_layered = GL_FALSE;
-    GLenum layered_color_target = GL_NONE;
+    GLboolean non_layered_3d = GL_FALSE;
+    GLboolean non_layered_other_texture = GL_FALSE;
+    GLenum layered_target = GL_NONE;
 
     if (!fbo) {
         return GL_FALSE;
     }
 
+    FBOAttachment *attachments[MAX_COLOR_ATTACHMENTS + 2];
     for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS; ++i) {
-        if (((fbo->color_attachment_bitfield >> i) & 1u) == 0u) {
-            continue;
-        }
+        attachments[i] = ((fbo->color_attachment_bitfield >> i) & 1u)
+            ? &fbo->color_attachments[i] : NULL;
+    }
+    attachments[MAX_COLOR_ATTACHMENTS] = &fbo->depth;
+    attachments[MAX_COLOR_ATTACHMENTS + 1] = &fbo->stencil;
 
-        FBOAttachment *att = &fbo->color_attachments[i];
+    for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS + 2u; ++i) {
+        FBOAttachment *att = attachments[i];
         if (!mglFramebufferAttachmentIsPopulated(att)) {
             continue;
         }
-
+        GLenum target = mglFramebufferAttachmentLayerTargetClass(att);
         if (att->layered) {
             any_layered = GL_TRUE;
-            if (layered_color_target == GL_NONE) {
-                layered_color_target = att->textarget;
-            } else if (att->textarget != layered_color_target) {
-                return GL_TRUE;
+            if (target != GL_NONE) {
+                if (layered_target == GL_NONE) {
+                    layered_target = target;
+                } else if (target != layered_target) {
+                    return GL_TRUE;
+                }
             }
         } else {
             any_non_layered = GL_TRUE;
+            if (target == GL_TEXTURE_3D) {
+                non_layered_3d = GL_TRUE;
+            } else if (target != GL_NONE) {
+                non_layered_other_texture = GL_TRUE;
+            }
         }
     }
 
-    FBOAttachment *depth_stencil[] = { &fbo->depth, &fbo->stencil };
-    for (GLuint i = 0u; i < 2u; ++i) {
-        FBOAttachment *att = depth_stencil[i];
-        if (!mglFramebufferAttachmentIsPopulated(att)) {
-            continue;
-        }
-
-        if (att->layered) {
-            any_layered = GL_TRUE;
-        } else {
-            any_non_layered = GL_TRUE;
-        }
-    }
-
-    return any_layered && any_non_layered;
+    return (any_layered && any_non_layered) ||
+           (non_layered_3d && non_layered_other_texture);
 }
 #else
 /* Returns the (width, height) of the backing texture for an attachment, or

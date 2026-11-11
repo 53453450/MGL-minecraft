@@ -422,6 +422,9 @@ extern "C" bool mglTessComputeTCSCoreLayout(
         patchCount = 1u;
     }
     const uint32_t instanceCount = MAX(1u, contract->instance_count);
+    if (patchCount > UINT32_MAX / instanceCount) {
+        return false;
+    }
     uint32_t tcsOutVertices = tcs->tess_control_output_vertices;
     if (tcsOutVertices == 0u) {
         tcsOutVertices = patchVertices;
@@ -487,7 +490,7 @@ extern "C" bool mglTessAppendTCSCoreBindings(
     MGLRenderComputePlan dispatch = {};
     dispatch.dispatch_kind = MGL_RENDER_COMPUTE_DISPATCH_DIRECT;
     dispatch.groups_x = layout->patch_count;
-    dispatch.groups_y = 1u;
+    dispatch.groups_y = layout->instance_count;
     dispatch.groups_z = 1u;
     dispatch.local_x = layout->tcs_out_vertices;
     dispatch.local_y = 1u;
@@ -532,13 +535,28 @@ extern "C" bool mglTessPlanEvalCompute(Program *tes, const void *factor_bytes,
         return false;
     }
     memset(out, 0, sizeof(*out));
-    const uint64_t need =
-        (uint64_t)patch_count * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
-    if (factor_byte_count < need) {
+    uint64_t need = 0u;
+    if (__builtin_mul_overflow((uint64_t)patch_count,
+                               (uint64_t)instance_count, &need) ||
+        __builtin_mul_overflow(need,
+                               (uint64_t)MGL_AIR_TESS_FACTOR_RECORD_BYTES,
+                               &need) ||
+        factor_byte_count < need) {
         return false;
     }
-    const uint64_t items =
-        mglTessEvalItemsPerInstance(tes, factor_bytes, patch_count);
+    uint64_t items = 0u;
+    uint64_t total_items = 0u;
+    const uint8_t *factors = (const uint8_t *)factor_bytes;
+    for (uint32_t inst = 0u; inst < instance_count; ++inst) {
+        const uint64_t inst_items = mglTessEvalItemsPerInstance(
+            tes, factors + (uint64_t)inst * patch_count *
+                           MGL_AIR_TESS_FACTOR_RECORD_BYTES,
+            patch_count);
+        if (inst_items > items) {
+            items = inst_items;
+        }
+        total_items += inst_items;
+    }
     if (items == 0u) {
         out->empty = 1u;
         out->instance_count = instance_count;
@@ -565,6 +583,7 @@ extern "C" bool mglTessPlanEvalCompute(Program *tes, const void *factor_bytes,
     out->out_stride = stride;
     out->instance_bytes = instance_bytes;
     out->out_size = out_size;
+    out->total_items = total_items;
     return true;
 }
 
@@ -943,8 +962,17 @@ extern "C" uint32_t mglTessSeedEvalOutputRecords(
         instance_count == 0u || stride < MGL_AIR_PER_VERTEX_STRIDE) {
         return 0u;
     }
-    const uint64_t items =
-        mglTessEvalItemsPerInstance(tes, factor_bytes, patch_count);
+    const uint8_t *factors = (const uint8_t *)factor_bytes;
+    uint64_t items = 0u;
+    for (uint32_t inst = 0u; inst < instance_count; ++inst) {
+        const uint64_t inst_items = mglTessEvalItemsPerInstance(
+            tes, factors + (uint64_t)inst * patch_count *
+                           MGL_AIR_TESS_FACTOR_RECORD_BYTES,
+            patch_count);
+        if (inst_items > items) {
+            items = inst_items;
+        }
+    }
     if (items == 0u || items > UINT32_MAX) {
         return 0u;
     }
@@ -958,25 +986,27 @@ extern "C" uint32_t mglTessSeedEvalOutputRecords(
     }
     uint8_t *base = (uint8_t *)records;
     memset(base, 0, (size_t)total_bytes);
-    const uint8_t *factors = (const uint8_t *)factor_bytes;
-    uint64_t item_base = 0u;
-    for (uint32_t p = 0u; p < patch_count; p++) {
-        const void *record =
-            factors + (uint64_t)p * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
-        const uint32_t patch_items = mglTessEvalItemsPerPatch(tes, record);
-        if (mglRenderSeedTessDomain(
-                record, (uint32_t)tes->tess_gen_mode,
-                (uint32_t)tes->tess_gen_spacing,
-                (uint32_t)tes->tess_gen_point_mode,
-                (uint32_t)tes->tess_gen_vertex_order,
-                base + item_base * stride, patch_items, stride) != patch_items) {
-            return 0u;
+    for (uint32_t inst = 0u; inst < instance_count; ++inst) {
+        const uint8_t *inst_factors =
+            factors + (uint64_t)inst * patch_count *
+                          MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+        uint8_t *inst_base = base + (uint64_t)inst * instance_bytes;
+        uint64_t item_base = 0u;
+        for (uint32_t p = 0u; p < patch_count; p++) {
+            const void *record =
+                inst_factors + (uint64_t)p * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+            const uint32_t patch_items = mglTessEvalItemsPerPatch(tes, record);
+            if (mglRenderSeedTessDomain(
+                    record, (uint32_t)tes->tess_gen_mode,
+                    (uint32_t)tes->tess_gen_spacing,
+                    (uint32_t)tes->tess_gen_point_mode,
+                    (uint32_t)tes->tess_gen_vertex_order,
+                    inst_base + item_base * stride, patch_items,
+                    stride) != patch_items) {
+                return 0u;
+            }
+            item_base += patch_items;
         }
-        item_base += patch_items;
-    }
-    for (uint32_t inst = 1u; inst < instance_count; inst++) {
-        memcpy(base + (uint64_t)inst * instance_bytes, base,
-               (size_t)instance_bytes);
     }
     return (uint32_t)items;
 }
@@ -1453,16 +1483,6 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
     static thread_local std::vector<uint32_t> s_tessPatchBasesScratch;
     s_tessPatchBasesScratch.resize((size_t)spec->patch_count + 1u);
     uint32_t *patchBases = s_tessPatchBasesScratch.data();
-    if (!mglTessFillEvalPatchItemBases(tes, factor_bytes, spec->patch_count,
-                                       patchBases)) {
-        return false;
-    }
-    if (patchBases[spec->patch_count] > spec->items_per_instance) {
-        /* The per-patch ranges would spill into the next instance's slice, so
-         * consecutive dispatches could touch the same memory.  Fence the
-         * dispatch boundaries rather than race. */
-        plan->dispatch_barrier_scope |= MGL_RENDER_COMPUTE_BARRIER_BUFFERS;
-    }
 
     const uint64_t cap64 =
         (uint64_t)spec->instance_count *
@@ -1478,6 +1498,33 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
 
     const uint8_t *factors = (const uint8_t *)factor_bytes;
     for (uint32_t inst = 0u; inst < spec->instance_count; inst++) {
+        const uint8_t *instFactors =
+            factors + (uint64_t)inst * spec->patch_count *
+                          MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+        if (!mglTessFillEvalPatchItemBases(tes, instFactors,
+                                           spec->patch_count, patchBases)) {
+            free(keep);
+            return false;
+        }
+        if (patchBases[spec->patch_count] > spec->items_per_instance) {
+            plan->dispatch_barrier_scope |= MGL_RENDER_COMPUTE_BARRIER_BUFFERS;
+        }
+        if (spec->factor_buffer &&
+            !mglTessPlanAppendBuffer(
+                plan, spec->factor_buffer,
+                (uint64_t)inst * spec->factor_instance_stride,
+                MGL_AIR_TESS_SLOT_TESS_FACTOR)) {
+            free(keep);
+            return false;
+        }
+        if (spec->patch_in_buffer &&
+            !mglTessPlanAppendBuffer(
+                plan, spec->patch_in_buffer,
+                (uint64_t)inst * spec->patch_in_instance_stride,
+                MGL_AIR_TESS_SLOT_PATCH_OUT)) {
+            free(keep);
+            return false;
+        }
         const uint64_t instGlInOffset =
             spec->indexed
                 ? 0u
@@ -1508,7 +1555,7 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
         }
         for (uint32_t p = 0u; p < spec->patch_count; p++) {
             const void *record =
-                factors + (uint64_t)p * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+                instFactors + (uint64_t)p * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
             const uint32_t items = mglTessEvalItemsPerPatch(tes, record);
             if (items == 0u) {
                 continue;
@@ -2015,7 +2062,11 @@ extern "C" bool mglTessResolveEvalGlIn(
         out->gl_in_vertices =
             contract->patch_vertices > 0u ? contract->patch_vertices : 1u;
     }
-    if (!out->from_tcs && !indexed_draw) {
+    if (out->from_tcs) {
+        out->gl_in_instance_stride =
+            (uint64_t)contract->patch_count * out->gl_in_vertices *
+            out->gl_in_stride;
+    } else if (!indexed_draw) {
         out->gl_in_instance_stride =
             (uint64_t)instance_records * out->gl_in_stride;
     }
@@ -2276,27 +2327,6 @@ extern "C" uint32_t mglTessNativePatchOutStride(int has_tcs,
     return 16u;
 }
 
-extern "C" int mglTessMultiInstanceTCSReuseWarn(int from_tcs,
-                                                int32_t instance_count)
-{
-    return from_tcs && instance_count > 1 ? 1 : 0;
-}
-
-extern "C" int mglTessMultiInstanceTCSReuseIsError(int from_tcs,
-                                                   int32_t instance_count)
-{
-    /* AUDIT-050: default hard-fail. Opt out with MGL_TESS_MULTI_INSTANCE_ERROR=0
-     * only for experiments that intentionally reuse instance-0 TCS outs. */
-    if (!mglTessMultiInstanceTCSReuseWarn(from_tcs, instance_count)) {
-        return 0;
-    }
-    const char *v = getenv("MGL_TESS_MULTI_INSTANCE_ERROR");
-    if (v && v[0] == '0' && v[1] == '\0') {
-        return 0;
-    }
-    return 1;
-}
-
 extern "C" int mglTessEvalIndexedGatherReady(int indexed, int has_gather,
                                              uint32_t instance_records)
 {
@@ -2333,13 +2363,16 @@ extern "C" int mglTessPlanTCSStageInSource(int has_capture, Program *tcs,
 
 extern "C" void mglTessFillTCSIndirectParams(uint32_t patch_vertices,
                                              uint32_t instance_count,
-                                             uint32_t out[2])
+                                             uint32_t patch_count,
+                                             uint32_t out[4])
 {
     if (!out) {
         return;
     }
     out[0] = patch_vertices;
     out[1] = instance_count;
+    out[2] = patch_count;
+    out[3] = 0u;
 }
 
 extern "C" void mglTessFillDefaultFactorLevels(const float outer[4],

@@ -632,8 +632,8 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
     memset(tcs_patch_out_contents, 0, (size_t)tcs_layout.patch_out_bytes);
     mglTessDispatchAdopt(temporaries, tcs_patch_out_buffer);
 
-    GLuint indirect_params[2] = {0u, 0u};
-    mglTessFillTCSIndirectParams(patch_vertices, instance_count,
+    GLuint indirect_params[4] = {0u, 0u, 0u, 0u};
+    mglTessFillTCSIndirectParams(patch_vertices, instance_count, patch_count,
                                  indirect_params);
     void *indirect_contents = NULL;
     void *indirect_buffer = mglTessDispatchReuseSlotBuffer(
@@ -655,7 +655,7 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
             tess_factor_contents, tcs_layout.factor_bytes,
             mglTessDispatchState(&areas)->var.patch_default_outer_level,
             mglTessDispatchState(&areas)->var.patch_default_inner_level,
-            tcs_layout.patch_count) != 0) {
+            tcs_layout.patch_count * tcs_layout.instance_count) != 0) {
         goto done;
     }
     mglTessDispatchAdopt(temporaries, tess_factor_buffer);
@@ -746,9 +746,6 @@ done:
  * compute dispatch and the compute→render encoder switch of the compute
  * expansion path. */
 
-/* The method's function-static "logged once" flag. */
-static int s_tes_vertex_multi_instance_logged = 0;
-
 bool mglTessDispatchAIRTessEvalVertexRender(
     void *renderer, GLMContext glm_ctx, Program *tes_program,
     const MGLAIRTessDrawContract *contract, GLuint patch_count,
@@ -819,23 +816,6 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         ok = false;
         goto done;
     }
-    if (mglTessMultiInstanceTCSReuseWarn(gl_in_plan.from_tcs ? 1 : 0,
-                                         (int32_t)instance_count)) {
-        if (!s_tes_vertex_multi_instance_logged) {
-            fprintf(stderr,
-                    "MGL TESS ERROR: multi-instance TES-vertex with TCS reuses "
-                    "instance-0 control points (program=%u instances=%d); "
-                    "set MGL_TESS_MULTI_INSTANCE_ERROR=0 to allow (AUDIT-050)",
-                    (unsigned)tes_program->name, (int)instance_count);
-            s_tes_vertex_multi_instance_logged = 1;
-        }
-        if (mglTessMultiInstanceTCSReuseIsError(gl_in_plan.from_tcs ? 1 : 0,
-                                                (int32_t)instance_count)) {
-            ok = false;
-            goto done;
-        }
-    }
-
     const uint16_t *factor_bytes =
         (const uint16_t *)mglTessDispatchBufferContents(tess_factor_buffer);
     MGLTessEvalComputePlan eval_plan = {0};
@@ -907,8 +887,8 @@ bool mglTessDispatchAIRTessEvalVertexRender(
 
     const GLenum tess_raster_mode = mglTessRasterGLMode(tes_program);
     MGLTessRasterQueryPlan query = {0};
-    mglTessPlanRasterQuery(tes_program, (uint64_t)instance_count,
-                           (uint64_t)items_per_instance, 0, 0u, 0u, &query);
+    mglTessPlanRasterQuery(tes_program, 1u,
+                           eval_plan.total_items, 0, 0u, 0u, &query);
     if (mglTessDispatchState(&areas)->caps.rasterizer_discard) {
         mglRendererSetCommandBufferHasWork(renderer, 1);
         mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
@@ -943,17 +923,12 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         ok = false;
         goto done;
     }
-    const uint32_t live_patches = mglTessBuildEvalVertexPatches(
-        tes_program, factor_bytes, patch_count, patches, contracts);
-    for (uint32_t p = 0; p < live_patches; p++) {
-        contracts[p * 4u + 1u] = gl_in_vertices;
-    }
     if (mgl_env_flag_enabled("MGL_TES_VERTEX_TRACE")) {
         fprintf(stderr,
-                "MGL TESS-vertex draw program=%u patches=%u live=%u "
+                "MGL TESS-vertex draw program=%u patches=%u "
                 "itemsPerInstance=%u instances=%d point=%d",
                 (unsigned)tes_program->name, (unsigned)patch_count,
-                (unsigned)live_patches, (unsigned)items_per_instance,
+                (unsigned)items_per_instance,
                 (int)instance_count,
                 (int)(tes_program->tess_gen_point_mode != 0));
     }
@@ -1038,6 +1013,14 @@ bool mglTessDispatchAIRTessEvalVertexRender(
     const uint32_t prim_type = mglTessRasterPrimitiveType(tes_program);
 
     for (GLsizei i = 0; i < instance_count; i++) {
+        const uint8_t *inst_factors =
+            (const uint8_t *)factor_bytes +
+            (size_t)i * patch_count * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+        const uint32_t live_patches = mglTessBuildEvalVertexPatches(
+            tes_program, inst_factors, patch_count, patches, contracts);
+        for (uint32_t p = 0; p < live_patches; p++) {
+            contracts[p * 4u + 1u] = gl_in_vertices;
+        }
         const size_t seed_offset = (size_t)mglTessPassthroughInstanceOffset(
             (uint32_t)i, items_per_instance, (uint32_t)out_stride);
         mglTessDispatchSetRenderVertexBuffer(owner, out_buffer, seed_offset,
@@ -1054,14 +1037,14 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         for (uint32_t p = 0; p < live_patches; p++) {
             mglTessDispatchSetRenderVertexBuffer(
                 owner, tess_factor_buffer,
-                (size_t)contracts[p * 4u + 0u] *
+                (size_t)((size_t)i * patch_count + contracts[p * 4u + 0u]) *
                     MGL_AIR_TESS_FACTOR_RECORD_BYTES,
                 MGL_AIR_TESS_SLOT_TESS_FACTOR);
             if (patch_inputs) {
                 mglTessDispatchSetRenderVertexBuffer(
                     owner, patch_inputs,
-                    (size_t)(contracts[p * 4u + 0u]) *
-                        contract->patch_out_stride,
+                    (size_t)((size_t)i * patch_count +
+                             contracts[p * 4u + 0u]) * contract->patch_out_stride,
                     MGL_AIR_TESS_SLOT_PATCH_OUT);
             }
             mglTessDispatchSetRenderVertexBytes(owner, &contracts[p * 4u],
@@ -1100,9 +1083,6 @@ done:
  * passthrough vertex stage as lines / points.  Each patch owns a contiguous
  * item span; per-patch item counts differ, so the runtime dispatches per patch
  * with the patch id and output base in the contract buffer (slot 29). */
-
-/* The method's function-static "logged once" flag. */
-static int s_multi_instance_tcs_logged = 0;
 
 bool mglTessDispatchAIRTessEvalCompute(
     void *renderer, GLMContext glm_ctx, Program *tes_program,
@@ -1190,7 +1170,6 @@ bool mglTessDispatchAIRTessEvalCompute(
     }
     void *gl_in_buffer = gl_in_plan.from_tcs ? tcs_output_buffer : capture_buffer;
     size_t gl_in_offset = (size_t)gl_in_plan.gl_in_offset;
-    size_t gl_in_stride = (size_t)gl_in_plan.gl_in_stride;
     GLuint gl_in_vertices = gl_in_plan.gl_in_vertices;
     if (!mglTessEvalInputsReady(gl_in_buffer ? 1 : 0,
                                 tess_factor_buffer ? 1 : 0)) {
@@ -1210,26 +1189,6 @@ bool mglTessDispatchAIRTessEvalCompute(
                 "program=%u",
                 (unsigned)tes_program->name);
         goto done;
-    }
-    const int gl_in_from_tcs = gl_in_plan.from_tcs != 0u;
-    /* TCS currently expands one instance of control points / factors.
-     * TES still loops instances for XFB/output bases.  Reusing instance-0
-     * TCS outs is wrong when VS outputs vary by gl_InstanceID.  Until
-     * per-instance TCS re-dispatch exists: one-shot log, and hard-fail when
-     * MGL_TESS_MULTI_INSTANCE_ERROR is set. */
-    if (mglTessMultiInstanceTCSReuseWarn(gl_in_from_tcs, (int32_t)instance_count)) {
-        if (!s_multi_instance_tcs_logged) {
-            fprintf(stderr,
-                    "MGL TESS ERROR: multi-instance TES with TCS reuses "
-                    "instance-0 control points (program=%u instances=%d); "
-                    "set MGL_TESS_MULTI_INSTANCE_ERROR=0 to allow (AUDIT-050)",
-                    (unsigned)tes_program->name, (int)instance_count);
-            s_multi_instance_tcs_logged = 1;
-        }
-        if (mglTessMultiInstanceTCSReuseIsError(gl_in_from_tcs,
-                                                (int32_t)instance_count)) {
-            goto done;
-        }
     }
     const size_t gl_in_instance_stride =
         (size_t)gl_in_plan.gl_in_instance_stride;
@@ -1500,6 +1459,12 @@ bool mglTessDispatchAIRTessEvalCompute(
         indexed ? control_point_index_buffer : NULL, gather_verts, gather_prims,
         indexed, (uint32_t)gl_in_vertices, patch_count, eval_instance_count,
         items_per_instance, &patch_spec);
+    patch_spec.factor_buffer = tess_factor_buffer;
+    patch_spec.factor_instance_stride =
+        (uint64_t)patch_count * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+    patch_spec.patch_in_buffer = patch_inputs;
+    patch_spec.patch_in_instance_stride =
+        (uint64_t)patch_count * contract->patch_out_stride;
     void *patch_keep_alive = NULL;
     if (!mglTessAppendEvalPerPatchDispatches(&execution_plan, tes_program,
                                              factor_bytes, &patch_spec,
@@ -1698,8 +1663,8 @@ bool mglTessDispatchAIRTessEvalCompute(
      * records to a following geometry shader (coverage VS+TC+TE+GS path). */
     const GLenum tess_raster_mode = mglTessRasterGLMode(tes_program);
     MGLTessRasterQueryPlan query = {0};
-    mglTessPlanRasterQuery(tes_program, (uint64_t)instance_count,
-                           (uint64_t)items_per_instance, xfb_active ? 1 : 0,
+    mglTessPlanRasterQuery(tes_program, 1u,
+                           eval_plan.total_items, xfb_active ? 1 : 0,
                            (uint64_t)xfb_written_bytes,
                            (uint32_t)xfb_compact_stride, &query);
     MGLTessEvalAfterComputePlan after = {0};

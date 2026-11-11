@@ -123,24 +123,11 @@ static void generate_quads(const MGLTessFactorInput *in,
     uint32_t outer[4][65], lengths[4];
     uint32_t grid[63][63];
     const uint32_t nx = n->inner_eff[0], ny = n->inner_eff[1];
-    /* fractional_odd inner rectangle (CTS VertexSpacing): segment count is
-     * FO_round(raw_inner - 2) - 2, not simply inner_eff - 2.  That shrinks
-     * by 4 when round(inner) and round(inner-2) differ (e.g. 32→33 vs 30→31)
-     * and by 2 when they agree after the FO clamp (e.g. 64→63). */
+    /* The inner rectangle uses two fewer segments than the effective inner
+     * level.  Rounding the raw level a second time would shrink the grid again
+     * and drop an entire row/column of point-mode vertices. */
     uint32_t inner_segs_x = (nx > 2u) ? nx - 2u : 1u;
     uint32_t inner_segs_y = (ny > 2u) ? ny - 2u : 1u;
-    if (in->spacing == GL_FRACTIONAL_ODD) {
-        float raw_x = in->inner[0] - 2.f;
-        float raw_y = in->inner[1] - 2.f;
-        if (!(raw_x >= 1.f)) raw_x = 1.f;
-        if (!(raw_y >= 1.f)) raw_y = 1.f;
-        uint32_t rx = mglTessRoundLevelForSpacing(
-            GL_FRACTIONAL_ODD, (uint32_t)ceilf(raw_x));
-        uint32_t ry = mglTessRoundLevelForSpacing(
-            GL_FRACTIONAL_ODD, (uint32_t)ceilf(raw_y));
-        inner_segs_x = (rx > 2u) ? rx - 2u : 1u;
-        inner_segs_y = (ry > 2u) ? ry - 2u : 1u;
-    }
     const uint32_t inset_x = (nx > inner_segs_x) ? (nx - inner_segs_x) / 2u : 1u;
     const uint32_t inset_y = (ny > inner_segs_y) ? (ny - inner_segs_y) / 2u : 1u;
     const uint32_t ix = inset_x ? inset_x : 1u;

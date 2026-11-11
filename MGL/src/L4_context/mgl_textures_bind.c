@@ -352,6 +352,12 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
             ERROR_RETURN(GL_INVALID_VALUE);
             return;
         }
+        if (access != GL_READ_ONLY) {
+            /* TextureBuffer aliases the attached MTLBuffer, while GL readback
+             * uses the CPU shadow.  Writable image bindings therefore need the
+             * same Metal-to-shadow synchronization as SSBO/XFB targets. */
+            ptr->texture_buffer->gpu_write_target = GL_TRUE;
+        }
     } else {
         /* BindImageTexture records the requested level even if that mip is
          * not allocated.  Missing-level loads return 0 and stores are

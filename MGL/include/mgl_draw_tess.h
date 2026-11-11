@@ -95,6 +95,7 @@ typedef struct MGLTessEvalComputePlan {
     uint32_t out_stride;
     uint64_t instance_bytes;
     uint64_t out_size;
+    uint64_t total_items;
 } MGLTessEvalComputePlan;
 
 bool mglTessPlanEvalCompute(Program *tes, const void *factor_bytes,
@@ -303,8 +304,8 @@ int mglTessPlanNativeVertexDescriptor(const Program *tes,
                                       uint32_t tcs_output_stride,
                                       MGLTessNativeVertexPlan *out);
 
-/* Seed TES compute output with domain TessCoords for every live patch,
- * then replicate instance 0. Returns items per instance, or 0 on error. */
+/* Seed each instance's TES output with the domain TessCoords generated from
+ * that instance's factor records. Returns the largest per-instance item count. */
 uint32_t mglTessSeedEvalOutputRecords(Program *tes, const void *factor_bytes,
                                       uint32_t patch_count,
                                       uint32_t instance_count, void *records,
@@ -367,6 +368,10 @@ typedef struct MGLTessEvalPerPatchDispatchSpec {
     uint64_t gl_in_offset;
     uint64_t gl_in_instance_stride;
     void *gather_buffer;
+    void *factor_buffer;
+    uint64_t factor_instance_stride;
+    void *patch_in_buffer;
+    uint64_t patch_in_instance_stride;
     uint32_t gather_verts_per_instance;
     uint32_t gather_prims_per_instance;
     uint32_t gather_first_vertex;
@@ -557,8 +562,6 @@ enum {
 int mglTessPlanNativeFactor(uint32_t tess_gen_mode, uint64_t canonical_bytes,
                             uint32_t patch_count, uint32_t *out_bytes);
 uint32_t mglTessNativePatchOutStride(int has_tcs, uint32_t tcs_patch_stride);
-int mglTessMultiInstanceTCSReuseWarn(int from_tcs, int32_t instance_count);
-int mglTessMultiInstanceTCSReuseIsError(int from_tcs, int32_t instance_count);
 int mglTessEvalIndexedGatherReady(int indexed, int has_gather,
                                   uint32_t instance_records);
 uint32_t mglTessTCSCaptureStageInStride(Program *tcs);
@@ -576,7 +579,8 @@ typedef struct MGLTessTCSStageInSourcePlan {
 int mglTessPlanTCSStageInSource(int has_capture, Program *tcs,
                                 MGLTessTCSStageInSourcePlan *out);
 void mglTessFillTCSIndirectParams(uint32_t patch_vertices,
-                                  uint32_t instance_count, uint32_t out[2]);
+                                  uint32_t instance_count,
+                                  uint32_t patch_count, uint32_t out[4]);
 void mglTessFillDefaultFactorLevels(const float outer[4], const float inner[2],
                                     float out[6]);
 int mglTessPlanDefaultFactorBytes(uint32_t patch_count, uint64_t *out_bytes);

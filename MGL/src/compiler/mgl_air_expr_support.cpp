@@ -175,6 +175,24 @@ llvm::Value *tryFoldConst(Codegen &cg, uint32_t op, llvm::Value *l,
 llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
                               llvm::Value *r, const MType &lt,
                               const MType &rt) {
+    if (op == MGL_OP_LAND || op == MGL_OP_LOR) {
+        auto truth = [&](llvm::Value *v, MGLIRScalar scalar) -> llvm::Value * {
+            llvm::Type *ty = v->getType();
+            if (ty->isIntOrIntVectorTy() && ty->getScalarSizeInBits() == 1)
+                return v;
+            if (scalar == MGLIR_SCALAR_DOUBLE)
+                v = coerceScalar(cg, v, MGLIR_SCALAR_FLOAT, scalar);
+            ty = v->getType();
+            llvm::Value *zero = llvm::Constant::getNullValue(ty);
+            return ty->isFPOrFPVectorTy()
+                ? cg.b->CreateFCmpUNE(v, zero)
+                : cg.b->CreateICmpNE(v, zero);
+        };
+        l = truth(l, lt.scalar);
+        r = truth(r, rt.scalar);
+        return op == MGL_OP_LAND ? cg.b->CreateLogicalAnd(l, r)
+                                 : cg.b->CreateLogicalOr(l, r);
+    }
     /* AGX double is an i64 payload with no f64 ALU.  Soft-float any operand
      * typed DOUBLE (or carrying i64) before arithmetic / ordered compares so
      * we never integer-add IEEE bit patterns or ICmp mismatched widths. */
