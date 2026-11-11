@@ -152,11 +152,11 @@ bool mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
     if (mglRenderReadbackPixelFormatIsRGB10A2((uint32_t)pixelFormat) &&
         mglRenderReadbackTypeAllowsRGB10A2((uint32_t)type))
     {
-        /* Defense in depth for AUDIT-035: reject short pitches here too,
-         * even though CopyRGB10A2…ToGL also checks (AUDIT-001). */
+        const size_t dstPixelBytes = (size_t)sizeForFormatType(format, type);
         if (width > SIZE_MAX / 4u ||
             srcBytesPerRow < width * 4u ||
-            dstBytesPerRow < width * 4u) {
+            dstPixelBytes == 0u || width > SIZE_MAX / dstPixelBytes ||
+            dstBytesPerRow < width * dstPixelBytes) {
             return false;
         }
         return mglRenderCopyRGB10A2TextureBytesToGL(

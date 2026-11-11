@@ -1465,14 +1465,10 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
     /* Ensure any pending texture upload blit commands are committed before
      * reading back. Without this, getBytes may return stale/zero data because
      * the blit encoding the upload is still in the uncommitted command buffer. */
-    const int gpu_authoritative = mglRenderTargetHasGPUContent(
-        tex->is_render_target ? 1 : 0, mglTextureWriteVersion(tex));
-    const int wait_for_gpu =
-        gpu_authoritative || (tex->dirty_bits & DIRTY_TEXTURE_DATA);
-    /* PERF-037 (partial): skip waitUntilCompleted when CPU texels are still
-     * authoritative (no recorded RT write version). FBO glReadPixels color
-     * still waits via mglRendererReadDrawable (GPU attachment readback). */
-    mglPdCommitPendingForReadback(renderer, &areas, wait_for_gpu);
+    /* Non-BGRA8 FBO ReadPixels also reaches this path without passing through
+     * ReadDrawable. Pending draws and uploads must complete before a separate
+     * readback command buffer or getBytes observes the texture. */
+    mglPdCommitPendingForReadback(renderer, &areas, 1);
 
     MGLRegionValue readRegion = region;
     uint64_t readSlice = slice;

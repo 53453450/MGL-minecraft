@@ -701,7 +701,13 @@ int mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake(
     if (!swizzled || !mglDepthStencilModeIsDepth(depth_stencil_mode)) {
         return 0;
     }
-    return mglInternalFormatIsSizedPackedDepthStencil(internal_format) ? 1 : 0;
+    /* A native depth store consumes packed depth texels; only an RGBA
+     * substitution consumes the baked RGBA upload. */
+    return mglInternalFormatIsSizedPackedDepthStencil(internal_format) &&
+                   mglSingleChannelSwizzleStorageClass(internal_format) !=
+                       MGL_PIXEL_STORAGE_INVALID
+               ? 1
+               : 0;
 }
 
 extern "C"

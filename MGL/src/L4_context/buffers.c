@@ -3060,12 +3060,11 @@ GLboolean mglUnmapBuffer(GLMContext ctx, GLenum target)
     mglBufferMarkMapWrite(ptr);
     if (mglBufferMapAllowsWrite(ptr)) {
         ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
-        /* MapUnmap writes the shadow into Metal when not FLUSH_EXPLICIT.
-         * FLUSH_EXPLICIT leaves pending ranges that FlushMapped* must push. */
+        /* Non-explicit unmap lets the backend retain ownership of a separate
+         * CPU shadow until SnapshotSharedDirtyBuffer publishes it through CoW.
+         * FLUSH_EXPLICIT skipped that callback, so its ranges remain pending. */
         if (ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT) {
             ptr->cpu_shadow_pending = GL_TRUE;
-        } else {
-            ptr->cpu_shadow_pending = GL_FALSE;
         }
         mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
     }
@@ -3109,7 +3108,10 @@ GLboolean mglUnmapNamedBuffer(GLMContext ctx, GLuint buffer)
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, GL_FALSE);
     }
 
-    if (!(ptr->storage_flags & GL_MAP_PERSISTENT_BIT))
+    GLboolean persistent_map =
+        (ptr->storage_flags & GL_MAP_PERSISTENT_BIT) &&
+        (ptr->access_flags & GL_MAP_PERSISTENT_BIT);
+    if (!persistent_map)
     {
         /* GL_MAP_FLUSH_EXPLICIT_BIT: see the comment in mglUnmapBuffer above.
          * The app flushes via glFlushMappedBufferRange; unmap must not
@@ -3129,8 +3131,6 @@ GLboolean mglUnmapNamedBuffer(GLMContext ctx, GLuint buffer)
         ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
         if (ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT) {
             ptr->cpu_shadow_pending = GL_TRUE;
-        } else {
-            ptr->cpu_shadow_pending = GL_FALSE;
         }
         mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
     }
