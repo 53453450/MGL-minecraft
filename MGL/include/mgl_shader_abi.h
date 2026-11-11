@@ -434,10 +434,14 @@ enum {
      * writes clip distances — Metal [[clip_distance]] drops whole lines
      * instead of clipping them to the plane (GL 4.6 §13.5). */
     MGL_AIR_COMPILE_FS_CLIP_INTERP = 1u << 8,
+    /* Separable VS→FS uses location-tagged user varyings, but no expansion
+     * stage supplies the gl_PrimitiveID float carrier.  Keep that interface
+     * mode while sourcing the builtin from Metal [[primitive_id]]. */
+    MGL_AIR_COMPILE_DIRECT_PRIMITIVE_ID = 1u << 9,
 };
 
-/* Same as above plus stage-composition flags (bit0: a geometry shader is
- * attached, which changes fragment-stage gl_PrimitiveID lowering).
+/* Same as above plus stage-composition flags (bit0: location-tagged producer
+ * interface; bit9: direct FS takes gl_PrimitiveID from the rasterizer).
  * iface_location_peers: optional producer-stage outputs (typically GS
  * [_STAGE_OUTPUT_RES]); when has_gs, FS auto-assigned input locations are
  * remapped by name to these so mgl_loc_N tags match the passthrough VS. */

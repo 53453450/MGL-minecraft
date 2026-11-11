@@ -39,6 +39,8 @@ struct MGLSyncBackend {
 struct MGLShaderModuleBackend {
     unsigned char *metallib_bytes;
     size_t metallib_size;
+    /* VS: tessellation capture.  FS: GS/TES gl_PrimitiveID carrier alongside
+     * the direct primitive-id variant. */
     unsigned char *metallib_tess_capture_bytes;
     size_t metallib_tess_capture_size;
     unsigned char *metallib_cull_capture_bytes;

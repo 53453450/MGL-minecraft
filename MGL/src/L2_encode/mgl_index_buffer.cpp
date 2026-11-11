@@ -704,10 +704,11 @@ MGLIndexMetalHandle mglPreparedElementIndexBuffer(
     const bool eligible = gl_buffer && gl_buffer->data.buffer_data &&
         !(gl_buffer->storage_flags & GL_MAP_PERSISTENT_BIT);
     MGLBufferBackend *cache = gl_buffer ? gl_buffer->backend : nullptr;
-    const uint64_t expand_cache_key =
-        gl_buffer->last_write_src_hash != 0u
-            ? gl_buffer->last_write_src_hash
-            : gl_buffer->content_version;
+    const uint64_t expand_cache_key = gl_buffer
+        ? (gl_buffer->last_write_src_hash != 0u
+               ? gl_buffer->last_write_src_hash
+               : gl_buffer->content_version)
+        : 0u;
     if (eligible && cache && cache->uint16_expanded_data &&
         cache->uint16_expanded_src_hash == expand_cache_key &&
         cache->uint16_expanded_byte_count == source_count) {

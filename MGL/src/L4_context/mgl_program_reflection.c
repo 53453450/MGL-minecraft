@@ -415,6 +415,14 @@ void mglRenderProgramSetModuleTesComputeMetallib(Program *program, int stage,
     mod->metallib_size_tes_compute = size;
 }
 
+void mglRenderProgramSetModulePrimitiveIdVaryingMetallib(
+    Program *program, int stage, unsigned char *bytes, size_t size)
+{
+    struct MGLShaderModuleBackend *mod = mglProgramModuleBackend(program, stage);
+    mod->metallib_tess_capture_bytes = bytes;
+    mod->metallib_tess_capture_size = size;
+}
+
 void mglRenderProgramSetModuleNeedsRuntimeArraySizeBuffer(Program *program,
                                                           int stage, int needs)
 {

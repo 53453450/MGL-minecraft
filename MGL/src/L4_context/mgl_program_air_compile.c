@@ -438,6 +438,36 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         }
     }
 
+    if (stage == _FRAGMENT_SHADER &&
+        (plan.air_flags & MGL_AIR_COMPILE_DIRECT_PRIMITIVE_ID) != 0u &&
+        (stage_info.builtin_mask & MGL_AIR_BUILTIN_PRIMITIVE_ID) != 0u) {
+        /* A separable FS can later share a pipeline with a GS or a TES
+         * expansion.  Direct draws use the native primitive-id metallib above;
+         * expanded draws still need the location-32 float carrier. */
+        MGLCompilePlan varying_plan = plan;
+        varying_plan.air_flags &=
+            (uint32_t)(~MGL_AIR_COMPILE_DIRECT_PRIMITIVE_ID);
+        MGLCompileArtifact varying_art;
+        mglCompileArtifactInit(&varying_art);
+        char varying_err[512] = {0};
+        int varying_rc = mglCompileArtifactFromPlan(
+            &varying_plan, &varying_art, varying_err, sizeof varying_err);
+        if (varying_rc == 0 && varying_art.complete) {
+            mglRenderProgramSetModulePrimitiveIdVaryingMetallib(
+                pptr, stage, varying_art.metallib_bytes,
+                varying_art.metallib_size);
+            varying_art.metallib_bytes = NULL;
+            varying_art.metallib_size = 0;
+            mglCompileArtifactDestroy(&varying_art);
+        } else {
+            mglCompileArtifactDestroy(&varying_art);
+            fprintf(stderr,
+                    "MGL WARNING: FS primitive-id carrier emit failed "
+                    "program %u: %s\n",
+                    pptr->name, varying_err);
+        }
+    }
+
     for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
         free((void *)attrib_snapshot[ai]);
     }

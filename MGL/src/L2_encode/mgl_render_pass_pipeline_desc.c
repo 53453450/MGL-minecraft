@@ -211,10 +211,16 @@ int mglRenderPassGeneratePipelineDescriptorState(
         : mglProgramModuleView(vertexProgram, vertexStage)->mtl_function;
     void *vertexFunction = vertexFunctionPtr;
 
-    void *fragmentFunction =
-        fragmentProgram
-            ? mglProgramModuleView(fragmentProgram, _FRAGMENT_SHADER)->mtl_function
-            : NULL;
+    const struct MGLShaderModuleBackend *fragmentModule = fragmentProgram
+        ? mglProgramModuleView(fragmentProgram, _FRAGMENT_SHADER) : NULL;
+    void *fragmentFunction = fragmentModule ? fragmentModule->mtl_function : NULL;
+    if (fragmentModule &&
+        (geometryExpansion || tessCompute || tessVertexRender) &&
+        fragmentModule->mtl_tess_capture_function) {
+        /* FS stores its GS/TES primitive-id carrier in the per-stage
+         * alternate-function slot; direct VS/native-TES keeps mtl_function. */
+        fragmentFunction = fragmentModule->mtl_tess_capture_function;
+    }
     /* AGX drops vertex device-buffer stores when Metal rasterization is off
      * (RASTERIZER_DISCARD, tess/cull VS capture, and VS-only programs such as
      * sparse_buffer case_e). Always attach a stub FS so rasterization stays

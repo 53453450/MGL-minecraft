@@ -14583,6 +14583,7 @@ struct CompileOptions {
     int stage = 0;
     CaptureKind capture = CaptureKind::None;
     bool has_gs = false;
+    bool direct_primitive_id = false;
     bool force_tes_compute = false;
     bool tes_vertex_render = false;
     bool clip_depth_zero_to_one = false;
@@ -14601,6 +14602,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
      * signature plus the three capture tests. */
     const int stage = opt.stage;
     const bool has_gs = opt.has_gs;
+    const bool direct_primitive_id = opt.direct_primitive_id;
     const bool force_tes_compute = opt.force_tes_compute;
     const bool tes_vertex_render = opt.tes_vertex_render;
     const bool clip_depth_zero_to_one = opt.clip_depth_zero_to_one;
@@ -15031,6 +15033,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     const bool usesPrimitiveId =
         !isVS && !isTES && !isKernel &&
         mglFrontendBuiltinUsed(&mod, tu, "gl_PrimitiveID");
+    const bool primitiveIdFromVarying = has_gs && !direct_primitive_id;
     const bool tesUsesPrimitiveId =
         isTES && !isKernel && mglFrontendBuiltinUsed(&mod, tu, "gl_PrimitiveID");
     const bool usesLayer =
@@ -15561,7 +15564,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             paramTys.push_back(llvm::FixedVectorType::get(
                 llvm::Type::getFloatTy(ctx), 2));
         if (usesPrimitiveId)
-            paramTys.push_back((stage == MGL_STAGE_FRAGMENT && has_gs)
+            paramTys.push_back(primitiveIdFromVarying
                 ? llvm::Type::getFloatTy(ctx)
                 : llvm::Type::getInt32Ty(ctx));
         if (usesLayer)
@@ -16224,7 +16227,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             cg.lvalues["gl_PointCoord"] = fn->getArg(argSlot++);
         if (usesPrimitiveId) {
             llvm::Value *primitiveArg = fn->getArg(argSlot++);
-            if (stage == MGL_STAGE_FRAGMENT && has_gs) {
+            if (primitiveIdFromVarying) {
                 /* The id arrives as a float carrier (see
                  * storeGeometryPrimitiveId); convert back for shader math. */
                 primitiveArg = cg.b->CreateFPToSI(
@@ -18615,7 +18618,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                 llvm::MDString::get(ctx, "gl_PointCoord")}));
         }
         if (usesPrimitiveId) {
-            if (stage == MGL_STAGE_FRAGMENT && has_gs) {
+            if (primitiveIdFromVarying) {
                 /* GS expansion path: the id arrives as a flat float carrier
                  * from the passthrough VS, which declares
                  *   layout(location = MGL_AIR_PRIMITIVE_ID_LOCATION)
@@ -19871,6 +19874,8 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     uint32_t flags, const MGLShaderResourceList *iface_location_peers,
     char *err_buf, size_t err_cap, MGLTranslationUnit **tu_out) {
     bool has_gs = (flags & MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER) != 0;
+    bool direct_primitive_id =
+        (flags & MGL_AIR_COMPILE_DIRECT_PRIMITIVE_ID) != 0;
     bool force_tes_compute =
         (flags & MGL_AIR_COMPILE_FORCE_TES_COMPUTE) != 0;
     if (tu_out)
@@ -19946,6 +19951,7 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     opt.stage = stage;
     opt.capture = capture;
     opt.has_gs = has_gs;
+    opt.direct_primitive_id = direct_primitive_id;
     opt.force_tes_compute = force_tes_compute;
     opt.tes_vertex_render = tes_vertex_render;
     opt.clip_depth_zero_to_one = clip_depth_zero_to_one;

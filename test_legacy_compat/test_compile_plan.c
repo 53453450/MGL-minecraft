@@ -35,8 +35,9 @@ int main(void)
     mglCompilePlanApplyRasterVariant(&plan, _FRAGMENT_SHADER, false, true,
                                      false, false, false, 2u);
     CHECK(plan.air_flags == (MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER |
+                             MGL_AIR_COMPILE_DIRECT_PRIMITIVE_ID |
                              MGL_AIR_COMPILE_FS_CLIP_INTERP),
-          "separable FS uses location tags and interpolated clip");
+          "separable direct FS uses location tags, native primitive id and interpolated clip");
 
     mglCompilePlanInit(&plan, "fs", MGL_STAGE_FRAGMENT, NULL);
     mglCompilePlanApplyRasterVariant(&plan, _FRAGMENT_SHADER, false, false,

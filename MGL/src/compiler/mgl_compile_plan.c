@@ -37,6 +37,10 @@ void mglCompilePlanApplyRasterVariant(
         (tess_eval_compute || tess_eval_render_vertex || program_separable)) {
         plan->air_flags |= MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER;
     }
+    if (gl_stage == _FRAGMENT_SHADER && program_separable && !has_geometry &&
+        !tess_eval_compute && !tess_eval_render_vertex) {
+        plan->air_flags |= MGL_AIR_COMPILE_DIRECT_PRIMITIVE_ID;
+    }
     if (gl_stage == _VERTEX_SHADER && program_separable && !has_geometry) {
         plan->air_flags |= MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER;
     }
