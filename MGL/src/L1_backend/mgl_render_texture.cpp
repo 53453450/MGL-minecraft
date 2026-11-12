@@ -1588,6 +1588,9 @@ extern "C" int mglRenderSparseTextureCommit(void* heap, void* texture,
 
     MTL::CommandBuffer* cb = queue->commandBuffer();
     if (!cb) return -1;
+    /* commandBuffer() is +0 autoreleased; the release paths below (and
+     * mglSparseWaitCommandBuffer) must balance an explicit retain. */
+    cb->retain();
     MTL::ResourceStateCommandEncoder* enc = cb->resourceStateCommandEncoder();
     if (!enc) {
         cb->release();
@@ -1653,6 +1656,9 @@ extern "C" int mglRenderSparseTextureClearRegion(
     memset(zeros->contents(), 0, img_bytes);
 
     MTL::CommandBuffer* cb = queue->commandBuffer();
+    /* commandBuffer() is +0 autoreleased; balance the release below. */
+    if (cb)
+        cb->retain();
     MTL::BlitCommandEncoder* blit =
         cb ? cb->blitCommandEncoder() : nullptr;
     if (!cb || !blit) {
@@ -1707,6 +1713,8 @@ extern "C" int mglRenderSparseTextureUnmapRegions(
     MTL::CommandBuffer* cb = queue->commandBuffer();
     if (!cb)
         return -1;
+    /* commandBuffer() is +0 autoreleased; balance the release below. */
+    cb->retain();
     MTL::ResourceStateCommandEncoder* enc = cb->resourceStateCommandEncoder();
     if (!enc) {
         cb->release();

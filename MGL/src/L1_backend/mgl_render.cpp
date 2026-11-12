@@ -150,6 +150,11 @@ void mglRenderShutdown(void) {
          * in-flight path (sparse Map/Unmap). */
         if (renderer.sparseQueue) {
             if (MTL::CommandBuffer* cb = renderer.sparseQueue->commandBuffer()) {
+                /* commandBuffer() returns an autoreleased (+0) object.  Retain
+                 * it so the matching release below drops only our reference;
+                 * draining the enclosing autorelease pool then performs the
+                 * final release instead of a second release on a dead object. */
+                cb->retain();
                 cb->commit();
                 cb->waitUntilCompleted();
                 cb->release();
