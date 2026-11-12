@@ -142,7 +142,7 @@ MGL-minecraft/
 ├── tools/                       # 本地探测 / CTS 辅助工具
 ├── benchmark/                   # 性能测试
 ├── scripts/                     # 资产生成、回归、trace、benchmark
-├── docs/                        # 架构契约与历史审查
+├── docs/                        # 仅 ARCHITECTURE.md（分层契约）
 ├── MGL_Golden_Images/           # 图像回归基准
 ├── TestImages/                  # 测试纹理
 ├── config.mk.example            # 本地 SDK/toolchain 模板

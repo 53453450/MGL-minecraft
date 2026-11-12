@@ -152,7 +152,7 @@ MGL-minecraft/
 ├── tools/                       # local probes / CTS helpers
 ├── benchmark/                   # performance tools
 ├── scripts/                     # asset, regression, trace, benchmark scripts
-├── docs/                        # architecture contract + historical reviews
+├── docs/                        # ARCHITECTURE.md only (layering contract)
 ├── MGL_Golden_Images/           # image regression baselines
 ├── TestImages/                  # test textures
 ├── config.mk.example            # local SDK/toolchain template
