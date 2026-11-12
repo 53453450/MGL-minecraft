@@ -113,6 +113,21 @@ int mglRenderPassGeneratePipelineDescriptorState(
         : mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     Program *fragmentProgram = (tessVertexCapture || cullDistanceCapture)
         ? NULL : mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
+    {
+        const int need_reduction =
+            (fragmentProgram &&
+             mglProgramBoundSamplersNeedReduction(ctx, fragmentProgram,
+                                                _FRAGMENT_SHADER)) ||
+            (vertexProgram &&
+             mglProgramBoundSamplersNeedReduction(ctx, vertexProgram,
+                                                _VERTEX_SHADER));
+        if (vertexProgram)
+            vertexProgram->active_sampler_reduction =
+                need_reduction ? GL_TRUE : GL_FALSE;
+        if (fragmentProgram)
+            fragmentProgram->active_sampler_reduction =
+                need_reduction ? GL_TRUE : GL_FALSE;
+    }
     const GLuint renderProgramKey = mglCurrentRenderProgramKey(ctx);
     const GLuint vertexProgramName = vertexProgram ? vertexProgram->name : 0u;
     const GLuint fragmentProgramName =
@@ -210,6 +225,12 @@ int mglRenderPassGeneratePipelineDescriptorState(
         ? mglProgramModuleView(vertexProgram, _VERTEX_SHADER)->mtl_tess_capture_function
         : mglProgramModuleView(vertexProgram, vertexStage)->mtl_function;
     void *vertexFunction = vertexFunctionPtr;
+    if (vertexProgram && vertexProgram->active_sampler_reduction) {
+        const struct MGLShaderModuleBackend *vmod =
+            mglProgramModuleView(vertexProgram, vertexStage);
+        if (vmod->mtl_function_sampler_reduction)
+            vertexFunction = vmod->mtl_function_sampler_reduction;
+    }
 
     const struct MGLShaderModuleBackend *fragmentModule = fragmentProgram
         ? mglProgramModuleView(fragmentProgram, _FRAGMENT_SHADER) : NULL;
@@ -220,6 +241,22 @@ int mglRenderPassGeneratePipelineDescriptorState(
         /* FS stores its GS/TES primitive-id carrier in the per-stage
          * alternate-function slot; direct VS/native-TES keeps mtl_function. */
         fragmentFunction = fragmentModule->mtl_tess_capture_function;
+    } else if (fragmentProgram && fragmentProgram->active_sampler_reduction) {
+        if (fragmentModule &&
+            fragmentModule->mtl_function_sampler_reduction) {
+            fragmentFunction = fragmentModule->mtl_function_sampler_reduction;
+        } else {
+            fprintf(stderr,
+                    "MGL WARN: sampler reduction needed but FS reduction "
+                    "function missing program=%u lib=%p bytes=%zu\n",
+                    (unsigned)(fragmentProgram ? fragmentProgram->name : 0u),
+                    fragmentModule
+                        ? fragmentModule->mtl_library_sampler_reduction
+                        : NULL,
+                    fragmentModule
+                        ? fragmentModule->metallib_size_sampler_reduction
+                        : 0u);
+        }
     }
     /* AGX drops vertex device-buffer stores when Metal rasterization is off
      * (RASTERIZER_DISCARD, tess/cull VS capture, and VS-only programs such as

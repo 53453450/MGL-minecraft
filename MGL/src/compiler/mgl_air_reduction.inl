@@ -1,10 +1,15 @@
 /* Software sampler reduction for targets whose native reduction mode is inert. */
+/* Fast programs omit this body (cg.softwareSamplerReduction == false).
+ * Reduction-capable metallibs always run the select footprint; bind those
+ * only when a MIN/MAX sampler is active so ordinary draws stay cheap. */
 static llvm::Value *emitSamplerReduction(
     Codegen &cg, const char *samplerName, llvm::Value *arrayIndex,
     llvm::Value *tex, llvm::Value *smp, llvm::Value *coord,
     llvm::Value *arrayLayer, MGLIRTexKind kind, MGLIRScalar texel,
     bool explicitLod, llvm::Value *lodValue, llvm::Value *nativeResult)
 {
+    if (!cg.softwareSamplerReduction)
+        return nativeResult;
     if (!cg.resources.samplerWrapPtr || !tex || !smp || !coord || !nativeResult)
         return nativeResult;
     const bool supported =

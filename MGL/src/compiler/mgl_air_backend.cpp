@@ -1737,15 +1737,21 @@ static llvm::Value *sampleArrayElementBySwitch(
         cg.b->SetInsertPoint(caseBBs[i]);
         llvm::Value *val = emitSample(
             texValues[i], smpValues.empty() ? nullptr : smpValues[i]);
-        fillLanes(val, caseBBs[i]);
-        cg.b->CreateBr(mergeBB);
+        /* emitSample may split the block (e.g. sampler-reduction early-out).
+         * PHI predecessors and the break must use the insert block after it. */
+        llvm::BasicBlock *fromBB = cg.b->GetInsertBlock();
+        fillLanes(val, fromBB);
+        if (!fromBB->getTerminator())
+            cg.b->CreateBr(mergeBB);
     }
     cg.b->SetInsertPoint(defBB);
     llvm::Value *defVal = emitSample(
         texValues.back(),
         smpValues.empty() ? nullptr : smpValues.back());
-    fillLanes(defVal, defBB);
-    cg.b->CreateBr(mergeBB);
+    llvm::BasicBlock *defFromBB = cg.b->GetInsertBlock();
+    fillLanes(defVal, defFromBB);
+    if (!defFromBB->getTerminator())
+        cg.b->CreateBr(mergeBB);
     cg.b->SetInsertPoint(mergeBB);
     llvm::Value *out = llvm::UndefValue::get(vecTy);
     for (unsigned c = 0; c < lanes; ++c)
@@ -1781,12 +1787,16 @@ static void storeArrayElementBySwitch(
         cg.b->SetInsertPoint(caseBBs[i]);
         cg.err = 0;
         emitStore(texValues[i]);
-        cg.b->CreateBr(mergeBB);
+        llvm::BasicBlock *fromBB = cg.b->GetInsertBlock();
+        if (!fromBB->getTerminator())
+            cg.b->CreateBr(mergeBB);
     }
     cg.b->SetInsertPoint(defBB);
     cg.err = 0;
     emitStore(texValues.back());
-    cg.b->CreateBr(mergeBB);
+    llvm::BasicBlock *defFromBB = cg.b->GetInsertBlock();
+    if (!defFromBB->getTerminator())
+        cg.b->CreateBr(mergeBB);
     cg.b->SetInsertPoint(mergeBB);
 }
 
@@ -15649,6 +15659,7 @@ struct CompileOptions {
     bool tes_vertex_render = false;
     bool clip_depth_zero_to_one = false;
     bool fs_clip_emulate = false;
+    bool software_sampler_reduction = false;
     const char *const *attrib_names = nullptr;
     uint32_t tessPatchVertices = 0;
     uint32_t sparseResidencyBufferIndex =
@@ -15670,6 +15681,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     const bool tes_vertex_render = opt.tes_vertex_render;
     const bool clip_depth_zero_to_one = opt.clip_depth_zero_to_one;
     const bool fs_clip_emulate = opt.fs_clip_emulate;
+    const bool software_sampler_reduction = opt.software_sampler_reduction;
     const char *const *attrib_names = opt.attrib_names;
     const uint32_t tessPatchVertices = opt.tessPatchVertices;
     const uint32_t sparseResidencyBufferIndex =
@@ -15997,10 +16009,9 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         }
         (void)texLocAssign;
     }
-    /* Min/max filtering is performed in AIR on targets where the native
-     * sampler reduction mode is inert.  The same per-slot table carries the
-     * sampler filters, wrap and border state needed for that footprint. */
-    if (!isKernel && texCount > 0u)
+    /* Wrap/reduction table: required for software minmax metallibs and for
+     * integer border gather. Ordinary average-only metallibs skip it. */
+    if (!isKernel && texCount > 0u && software_sampler_reduction)
         needsSamplerWrapBuf = true;
     /* TEXTURE_LOD_BIAS pack for ordinary VS / FS with sampled textures. */
     const bool needsLodBias =
@@ -16825,6 +16836,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     cg.clipDistanceInputCount =
         usesFragmentClipDistance ? activeClipCount : 0u;
     cg.emulateClipDiscard = fs_clip_emulate && usesFragmentClipDistance;
+    cg.softwareSamplerReduction = software_sampler_reduction;
     cg.controlPointGetter = controlPointGetter;
     struct OwnedIRTypes {
         std::vector<MGLIRType *> v;
@@ -21183,6 +21195,8 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     opt.iface_location_peers = iface_location_peers;
     opt.session_in = &sess;
     opt.fs_clip_emulate = (flags & MGL_AIR_COMPILE_FS_CLIP_INTERP) != 0;
+    opt.software_sampler_reduction =
+        (flags & MGL_AIR_COMPILE_SOFTWARE_SAMPLER_REDUCTION) != 0;
 
     int rc = compileGLSLImpl(sess.src, opt, metallib_out, size_out, err_buf,
                              err_cap);

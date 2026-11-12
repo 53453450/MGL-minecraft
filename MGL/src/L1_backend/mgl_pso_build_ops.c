@@ -995,7 +995,13 @@ int mglRenderPassSyncPipelineState(void *renderer,
                                  | ((geometry && geometry->expansionActive) ? (1ull << 21) : 0ull)
                                  | ((tessellation && tessellation->cullDistanceCaptureActive) ? (1ull << 20) : 0ull)
                                  | ((tessellation && tessellation->tessComputeActive) ? (1ull << 19) : 0ull)
-                                 | ((tessellation && tessellation->tessVertexRenderActive) ? (1ull << 18) : 0ull));
+                                 | ((tessellation && tessellation->tessVertexRenderActive) ? (1ull << 18) : 0ull)
+                                 | (((currentVertexProgram &&
+                                      currentVertexProgram->active_sampler_reduction) ||
+                                     (currentFragmentProgram &&
+                                      currentFragmentProgram->active_sampler_reduction))
+                                        ? (1ull << 17)
+                                        : 0ull));
             uint64_t vertexInstance = currentVertexProgram
                 ? mglProgramBackendView(currentVertexProgram)->pipeline_cache_instance_id : 0u;
             if (geometry && geometry->expansionActive && geometry->program) {

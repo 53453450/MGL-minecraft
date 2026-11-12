@@ -17,6 +17,9 @@
 
 void mglFillLodBiasPack(GLMContext ctx, Program *prog, int stage,                               float *pack /* [4 + TEXTURE_UNITS] */);
 void mglFillSamplerWrapTable(GLMContext ctx, Program *prog, int stage,                                    MGLSamplerWrapSlot *slots);
+/* 1 if any sampler slot used by prog/stage has GL_MIN/GL_MAX reduction. */
+int mglProgramBoundSamplersNeedReduction(GLMContext ctx, Program *prog,
+                                        int stage);
 GLMState *mglPdState(const MGLRendererStateAreas *areas) /* C5-EXEMPT: read helper for the write side */;
 GLMState *mglPdStateView(const MGLRendererStateView *view);
 void *mglRenderPassDefaultDrawBufferAttachment(    MGLRendererBackendHandle *backend, GLuint drawBufferIndex,    MGLRendererBackendDefaultDrawBufferAttachmentKind kind);

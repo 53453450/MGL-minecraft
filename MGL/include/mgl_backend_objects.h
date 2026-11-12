@@ -60,6 +60,11 @@ struct MGLShaderModuleBackend {
     void *mtl_cull_capture_library;
     /* Cached Metal function for metallib_bytes_tes_compute (TES kernel). */
     void *mtl_function_compute;
+    /* VS/FS variant with ARB_texture_filter_minmax software reduction. */
+    unsigned char *metallib_bytes_sampler_reduction;
+    size_t metallib_size_sampler_reduction;
+    void *mtl_function_sampler_reduction;
+    void *mtl_library_sampler_reduction;
     uint8_t needs_runtime_array_size_buffer;
     uint8_t needs_sparse_residency;
     uint8_t sparse_residency_buffer_index;

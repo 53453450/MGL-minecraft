@@ -961,6 +961,24 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
         }
     }
 
+    {
+        Program *vertexProgram =
+            mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+        const int need_reduction =
+            (fragmentProgram &&
+             mglProgramBoundSamplersNeedReduction(ctx, fragmentProgram,
+                                                _FRAGMENT_SHADER)) ||
+            (vertexProgram &&
+             mglProgramBoundSamplersNeedReduction(ctx, vertexProgram,
+                                                _VERTEX_SHADER));
+        if (fragmentProgram)
+            fragmentProgram->active_sampler_reduction =
+                need_reduction ? GL_TRUE : GL_FALSE;
+        if (vertexProgram)
+            vertexProgram->active_sampler_reduction =
+                need_reduction ? GL_TRUE : GL_FALSE;
+    }
+
     if (after.set_pipeline) {
         MglPdSetPipelineCtx setCtx = {&areas};
         if (!mglPlatformShellGuardedCallCtx(renderer, "set render pipeline state",

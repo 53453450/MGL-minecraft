@@ -441,6 +441,10 @@ enum {
      * stage supplies the gl_PrimitiveID float carrier.  Keep that interface
      * mode while sourcing the builtin from Metal [[primitive_id]]. */
     MGL_AIR_COMPILE_DIRECT_PRIMITIVE_ID = 1u << 9,
+    /* Include ARB_texture_filter_minmax software reduction in this metallib.
+     * Ordinary programs omit it; bind the reduction variant only when a
+     * MIN/MAX sampler is active. */
+    MGL_AIR_COMPILE_SOFTWARE_SAMPLER_REDUCTION = 1u << 10,
 };
 
 /* Same as above plus stage-composition flags (bit0: location-tagged producer

@@ -410,6 +410,9 @@ typedef struct Program_t {
     GLboolean tess_uses_cull_distance;
     uint32_t tess_cull_distance_count;
     GLboolean uses_lod_bias;
+    /* Draw-time: bound samplers include MIN/MAX reduction — use the
+     * software-reduction metallib variant for VS/FS. */
+    GLboolean active_sampler_reduction;
     /* IR-level reflection cache for mglBufferSlotConflictsForProgram.
      * Computed lazily on first call during link-time resource binding, then
      * reused for all subsequent slot checks.  Invalidated at link start. */

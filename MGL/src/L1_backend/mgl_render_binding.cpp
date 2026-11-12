@@ -791,6 +791,22 @@ int mglRenderBindAIRProgram(Program* program,
                 return MGL_RENDER_AIR_PROGRAM_ERROR;
             }
         }
+        if (spirv->metallib_bytes_sampler_reduction &&
+            spirv->metallib_size_sampler_reduction > 0u &&
+            (!spirv->mtl_library_sampler_reduction ||
+             !spirv->mtl_function_sampler_reduction)) {
+            mgl::releaseBridgedObject(&spirv->mtl_function_sampler_reduction);
+            mgl::releaseBridgedObject(&spirv->mtl_library_sampler_reduction);
+            if (mgl::loadAIRMainFunction(
+                    device, spirv->metallib_bytes_sampler_reduction,
+                    spirv->metallib_size_sampler_reduction,
+                    &spirv->mtl_library_sampler_reduction,
+                    &spirv->mtl_function_sampler_reduction, err,
+                    errcap) != 0) {
+                if (failed_stage_out) *failed_stage_out = stage;
+                return MGL_RENDER_AIR_PROGRAM_ERROR;
+            }
+        }
 
         if (stage == _VERTEX_SHADER &&
             spirv->metallib_tess_capture_bytes &&

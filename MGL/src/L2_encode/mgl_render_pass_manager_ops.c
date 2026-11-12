@@ -168,6 +168,71 @@ static int mglSamplerWrapTargetIndex(const MGLShaderResource *resource)
     }
 }
 
+int mglProgramBoundSamplersNeedReduction(GLMContext ctx, Program *prog,
+                                        int stage)
+{
+    int i;
+    if (!ctx || !prog || stage < 0 || stage >= _MAX_SHADER_TYPES)
+        return 0;
+    if (!mglProgramStageHasSamplers(prog, stage))
+        return 0;
+    for (i = 0; i < MGL_SAMPLER_WRAP_SLOT_COUNT; i++) {
+        GLint unit = prog->sampler_units_by_stage[stage][i];
+        Sampler *smp;
+        Texture *tex;
+        TextureParameter *p;
+        MGLShaderResource *resource;
+        int target_index;
+        if (unit < 0)
+            unit = 0;
+        if (unit >= TEXTURE_UNITS)
+            continue;
+        smp = ctx->active_state->texture_samplers[unit];
+        resource =
+            mglFindSamplerResourceForMetalBinding(prog, stage, (GLuint)i);
+        target_index = mglSamplerWrapTargetIndex(resource);
+        if (target_index >= 0 && target_index < _MAX_TEXTURE_TYPES) {
+            tex = ctx->active_state->texture_units[unit].textures[target_index];
+        } else {
+            /* Prefer the unit's last BindTexture. Scanning 2D first is wrong
+             * when a leftover FBO color tex remains bound on TEXTURE_2D while
+             * the shader samples 1D/CUBE (CTS minmax renderToFBO pattern). */
+            tex = ctx->active_state->active_textures[unit];
+            if (!tex)
+                tex = ctx->active_state->texture_units[unit].textures[_TEXTURE_1D];
+            if (!tex)
+                tex = ctx->active_state->texture_units[unit]
+                          .textures[_TEXTURE_1D_ARRAY];
+            if (!tex)
+                tex = ctx->active_state->texture_units[unit].textures[_TEXTURE_2D];
+            if (!tex)
+                tex = ctx->active_state->texture_units[unit]
+                          .textures[_TEXTURE_2D_ARRAY];
+            if (!tex)
+                tex = ctx->active_state->texture_units[unit].textures[_TEXTURE_3D];
+            if (!tex)
+                tex = ctx->active_state->texture_units[unit]
+                          .textures[_TEXTURE_CUBE_MAP];
+        }
+        p = smp ? &smp->params : (tex ? &tex->params : NULL);
+        if (p && (p->reduction_mode == GL_MIN || p->reduction_mode == GL_MAX))
+            return 1;
+        /* Over-approx: any target on this unit with MIN/MAX needs the soft
+         * metallib. mode=0 slots still return native in the soft shader. */
+        if (!smp) {
+            int t;
+            for (t = 0; t < _MAX_TEXTURE_TYPES; t++) {
+                Texture *cand =
+                    ctx->active_state->texture_units[unit].textures[t];
+                if (cand && (cand->params.reduction_mode == GL_MIN ||
+                             cand->params.reduction_mode == GL_MAX))
+                    return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 void mglFillSamplerWrapTable(GLMContext ctx, Program *prog, int stage,
                                     MGLSamplerWrapSlot *slots)
 {
@@ -196,14 +261,22 @@ void mglFillSamplerWrapTable(GLMContext ctx, Program *prog, int stage,
         if (target_index >= 0 && target_index < _MAX_TEXTURE_TYPES) {
             tex = ctx->active_state->texture_units[unit].textures[target_index];
         } else {
-            tex = ctx->active_state->texture_units[unit].textures[_TEXTURE_2D];
+            tex = ctx->active_state->active_textures[unit];
+            if (!tex)
+                tex = ctx->active_state->texture_units[unit].textures[_TEXTURE_1D];
+            if (!tex)
+                tex = ctx->active_state->texture_units[unit]
+                          .textures[_TEXTURE_1D_ARRAY];
+            if (!tex)
+                tex = ctx->active_state->texture_units[unit].textures[_TEXTURE_2D];
             if (!tex)
                 tex = ctx->active_state->texture_units[unit]
                           .textures[_TEXTURE_2D_ARRAY];
             if (!tex)
                 tex = ctx->active_state->texture_units[unit].textures[_TEXTURE_3D];
             if (!tex)
-                tex = ctx->active_state->active_textures[unit];
+                tex = ctx->active_state->texture_units[unit]
+                          .textures[_TEXTURE_CUBE_MAP];
         }
         p = smp ? &smp->params : (tex ? &tex->params : NULL);
         if (!p)

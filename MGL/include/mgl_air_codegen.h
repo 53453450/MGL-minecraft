@@ -192,6 +192,8 @@ struct Codegen {
     llvm::Value *explicitLodOverride = nullptr; /* Clamp: max(auto, clamp) */
     bool usesClipDistance = false;       /* vertex writes gl_ClipDistance */
     bool emulateClipDiscard = false;     /* FS discards interpolated clip < 0 */
+    /* Emit ARB_texture_filter_minmax software footprint (select-based). */
+    bool softwareSamplerReduction = false;
     uint32_t cullDistancePassthroughCount = 0; /* VS flat outs / FS ins */
     uint32_t clipDistanceInputCount = 0; /* FS clip varyings (read or emulate) */
     bool pointSize = false;              /* vertex: writes gl_PointSize */

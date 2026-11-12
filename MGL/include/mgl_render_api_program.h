@@ -51,6 +51,10 @@ void mglRenderProgramSetModuleCullCaptureMetallib(Program *program, int stage,
 void mglRenderProgramSetModuleTesComputeMetallib(Program *program, int stage,
                                                  unsigned char *bytes,
                                                  size_t size);
+void mglRenderProgramSetModuleSamplerReductionMetallib(Program *program,
+                                                       int stage,
+                                                       unsigned char *bytes,
+                                                       size_t size);
 void mglRenderProgramSetModulePrimitiveIdVaryingMetallib(
     Program *program, int stage, unsigned char *bytes, size_t size);
 void mglRenderProgramSetModuleNeedsRuntimeArraySizeBuffer(Program *program,

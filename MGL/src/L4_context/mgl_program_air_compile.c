@@ -531,6 +531,34 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->shared_memory_bytes = stage_info.shared_memory_bytes;
     }
     mglRenderProgramSetModuleMetallib(pptr, stage, bytes, size);
+    /* Second metallib with software sampler reduction for VS/FS that
+     * actually sample. Bound only when a MIN/MAX reduction sampler is
+     * active this draw; skip emit when the stage has no samplers so
+     * ordinary links do not pay an extra frontend parse. */
+    if ((stage == _VERTEX_SHADER || stage == _FRAGMENT_SHADER) &&
+        mglProgramStageHasSamplers(pptr, stage)) {
+        MGLCompilePlan red_plan = plan;
+        red_plan.air_flags |= MGL_AIR_COMPILE_SOFTWARE_SAMPLER_REDUCTION;
+        MGLCompileArtifact red_art;
+        mglCompileArtifactInit(&red_art);
+        char red_err[512];
+        red_err[0] = '\0';
+        if (mglCompileArtifactFromPlan(&red_plan, &red_art, red_err,
+                                       sizeof red_err) == 0 &&
+            red_art.complete) {
+            mglRenderProgramSetModuleSamplerReductionMetallib(
+                pptr, stage, red_art.metallib_bytes, red_art.metallib_size);
+            red_art.metallib_bytes = NULL;
+            red_art.metallib_size = 0;
+            mglCompileArtifactDestroy(&red_art);
+        } else {
+            mglCompileArtifactDestroy(&red_art);
+            fprintf(stderr,
+                    "MGL WARNING: sampler-reduction metallib emit failed "
+                    "program %u stage %d: %s\n",
+                    pptr->name, (int)stage, red_err);
+        }
+    }
     {
         /* MGL_DUMP_SHADER_DIR=<dir>: keep every linked stage's source,
          * metallib and its LLVM IR as prog<name>_stage<N>.{glsl,metallib,ll},

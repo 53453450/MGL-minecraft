@@ -1649,6 +1649,41 @@ int mglRenderPassBindMTLProgramLocked(void *renderer, Program *ptr)
                     mglProgramModuleBackend(ptr, i)->mtl_library = library;
                     mglProgramModuleBackend(ptr, i)->mtl_function = function;
                 }
+                if (mglProgramModuleView(ptr, i)->metallib_bytes_sampler_reduction &&
+                    mglProgramModuleView(ptr, i)->metallib_size_sampler_reduction >
+                        0u &&
+                    (mglProgramModuleView(ptr, i)->mtl_library_sampler_reduction ==
+                         NULL ||
+                     mglProgramModuleView(ptr, i)
+                             ->mtl_function_sampler_reduction == NULL)) {
+                    mglSafeReleaseMetalObj(
+                        (void **)&mglProgramModuleBackend(ptr, i)
+                                      ->mtl_function_sampler_reduction);
+                    mglSafeReleaseMetalObj(
+                        (void **)&mglProgramModuleBackend(ptr, i)
+                                      ->mtl_library_sampler_reduction);
+                    void *library = NULL;
+                    void *function = NULL;
+                    char loadError[256] = {0};
+                    if (!mglRsLoadAIRMainFunction(
+                            mglProgramModuleView(ptr, i)
+                                ->metallib_bytes_sampler_reduction,
+                            mglProgramModuleView(ptr, i)
+                                ->metallib_size_sampler_reduction,
+                            &library, &function, loadError,
+                            sizeof loadError)) {
+                        fprintf(stderr,
+                                "MGL ERROR: Failed to load sampler-reduction "
+                                "AIR metallib program=%u stage=%d: %s\n",
+                                (unsigned)ptr->name, i,
+                                loadError[0] ? loadError : "?");
+                        return 0;
+                    }
+                    mglProgramModuleBackend(ptr, i)
+                        ->mtl_library_sampler_reduction = library;
+                    mglProgramModuleBackend(ptr, i)
+                        ->mtl_function_sampler_reduction = function;
+                }
                 if (mglRenderVertexCaptureNeedsLoad(
                         i, mglProgramModuleView(ptr, i)->metallib_tess_capture_bytes,
                         mglProgramModuleView(ptr, i)->mtl_tess_capture_library,

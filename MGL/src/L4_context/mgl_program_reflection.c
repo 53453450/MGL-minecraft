@@ -34,6 +34,7 @@ void mglShaderModuleBackendClear(struct MGLShaderModuleBackend *module)
     free(module->metallib_tess_capture_bytes);
     free(module->metallib_cull_capture_bytes);
     free(module->metallib_bytes_tes_compute);
+    free(module->metallib_bytes_sampler_reduction);
     mglSafeReleaseMetalObj(&module->mtl_function);
     mglSafeReleaseMetalObj(&module->mtl_function_compute);
     mglSafeReleaseMetalObj(&module->mtl_library);
@@ -41,6 +42,8 @@ void mglShaderModuleBackendClear(struct MGLShaderModuleBackend *module)
     mglSafeReleaseMetalObj(&module->mtl_tess_capture_library);
     mglSafeReleaseMetalObj(&module->mtl_cull_capture_function);
     mglSafeReleaseMetalObj(&module->mtl_cull_capture_library);
+    mglSafeReleaseMetalObj(&module->mtl_function_sampler_reduction);
+    mglSafeReleaseMetalObj(&module->mtl_library_sampler_reduction);
     memset(module, 0, sizeof(*module));
 }
 
@@ -413,6 +416,21 @@ void mglRenderProgramSetModuleTesComputeMetallib(Program *program, int stage,
     struct MGLShaderModuleBackend *mod = mglProgramModuleBackend(program, stage);
     mod->metallib_bytes_tes_compute = bytes;
     mod->metallib_size_tes_compute = size;
+}
+
+void mglRenderProgramSetModuleSamplerReductionMetallib(Program *program,
+                                                       int stage,
+                                                       unsigned char *bytes,
+                                                       size_t size)
+{
+    struct MGLShaderModuleBackend *mod = mglProgramModuleBackend(program, stage);
+    free(mod->metallib_bytes_sampler_reduction);
+    mglSafeReleaseMetalObj(&mod->mtl_function_sampler_reduction);
+    mglSafeReleaseMetalObj(&mod->mtl_library_sampler_reduction);
+    mod->metallib_bytes_sampler_reduction = bytes;
+    mod->metallib_size_sampler_reduction = size;
+    mod->mtl_function_sampler_reduction = NULL;
+    mod->mtl_library_sampler_reduction = NULL;
 }
 
 void mglRenderProgramSetModulePrimitiveIdVaryingMetallib(
