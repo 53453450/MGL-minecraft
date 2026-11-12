@@ -64,163 +64,152 @@ cd external
 ```
 
 `clone_external.sh` 会把 OpenGL-Registry 检出到 `MGL/generated/registry.lock`
-记录的 commit；ezxml（固定 commit）和 Apple 官方
-[metal-cpp](https://github.com/apple/metal-cpp) 只在目录缺失时拉取。`external/glfw` 是本仓库的
-本地修改版本，不会从远端克隆或更新，构建时始终使用该目录。
+记录的 commit；并在目录缺失时拉取 ezxml（固定 commit）、Apple 官方
+[metal-cpp](https://github.com/apple/metal-cpp)，以及链接GL 4.6 core 的SPIRV所需的修改版
+[SPIRV-Cross](https://github.com/53453450/SPIRV-Cross)（核心特性 ARB_gl_spirv的依赖）。`external/glfw` 是仓库的本地修改版本，不会从远端克隆或更新；`./build_external.sh` 只构建该 GLFW。
 
 ### 3. 编译 MGL
 
 ```bash
 #返回主目录
-cd .. 
-make
+cd ..
+make          # 等同 make lib / make core
+# make es     # 可选的单独 libmgl_es.dylib（默认上下文为 ES）
+```
+
+OpenGL ES 3.2 已合入 `libmgl.dylib`：同一库内用 `createGLMContextProfile(1, …)` 创建 ES 上下文（`ctx->is_es`），不必再编第二份 dylib。Minecraft / 桌面 GL 路径继续用默认的 Core 上下文。
+
+本地非交互门禁：
+
+```bash
+make test-all          # 架构门禁 + AIR/Metal smoke + headless 回归等
+make test-regression   # 仅跑 headless 图像/语义回归（golden 在 MGL_Golden_Images/）
+make test              # 交互式 GLFW 冒烟（test_mgl），不是 CI 门禁
 ```
 
 ## 构建产物
 
-编译完成后，将在 `build/` 目录生成：
+默认 `make` 完成后：
 
-| 文件 | 说明 |
+| 路径 | 说明 |
 |------|------|
-| `libmgl.dylib` | OpenGL Core 动态库 |
-| `libmgl_es.dylib` | OpenGL ES 动态库 |
-| `libglfw.dylib` | 修改版 GLFW 库 |
+| `build/libmgl.dylib` | OpenGL 4.6 Core（含可选 ES 3.2 上下文） |
+| `build/libglfw.dylib` | 修改版 GLFW 库 |
+| `libmgl.dylib` / `libglfw.dylib` | 指向 `build/` 的根目录符号链接（方便 `DYLD_LIBRARY_PATH=.`） |
+
+中间对象在 `build/core/`。可选 `make es` 才会额外生成 `libmgl_es.dylib`（`-DMGL_GL_ES`；新代码优先用上面的 profile API）。
 
 ## 使用方法
 
-编译完成后在启动器的java参数中添加：
+编译完成后在启动器的 Java 参数中添加：
 ```JVM
 -Dorg.lwjgl.opengl.libname="/yourpath/to/libmgl.dylib"
 -Dorg.lwjgl.glfw.libname="/yourpath/to/libglfw.dylib"
--Dorg.lwjgl.opengles.libname="/yourpath/to/libmgl_es.dylib"
 ```
-指向MGL-minecraft的产物，让它们接管渲染
+指向 MGL-minecraft 的产物，让它们接管渲染。仅当外部仍 `dlopen` ES 专用库名时，才需要先 `make es` 并设置 `-Dorg.lwjgl.opengles.libname=…/libmgl_es.dylib`。
 
 ## 现状
 
-- 当前优先目标是 GL46CTS 规范兼容性；Minecraft/Mod 运行仍可能随 CTS 修复出现回归。
+- Minecraft 1.20.1-1.21.11可正常运行，现在目标是补充CTS扩展与性能优化。
 
 ## 项目结构
 
 ```
 MGL-minecraft/
 ├── MGL/
-│   ├── include/                 # OpenGL API、GLMContext 与 MGL C ABI 头文件
-│   ├── src/                     # 引擎实现：C 状态机 + C++（无 .m / .mm）
-│   │   ├── gl_core.c / gl_es.c / glm_dispatch.c / glm_context.c
-│   │   ├── mgl_glsl_*.c / mgl_ir.c / mgl_air_*.cpp   # GLSL → MGLIR → AIR
-│   │   ├── mgl_renderer_entries.c / mgl_draw_entry.c # GL 语义入口
-│   │   ├── mgl_draw_issue.cpp / mgl_draw_encode.cpp  # tess / GS / draw 编排
-│   │   ├── mgl_render.cpp                            # 唯一 Metal-cpp implementation TU
-│   │   ├── mgl_renderer_backend.cpp                  # owner、cache、transaction
-│   │   ├── mgl_platform_shell.cpp                    # AppKit / CAMetalLayer 平台壳
-│   │   ├── mgl_objc_bridge.h                         # libobjc / objc_msgSend 的 C++ 封装
-│   │   └── mgl_aux_assets.*                          # 预编译辅助 metallib 字节表
-│   └── aux_shaders/             # 构建期编译并嵌入的辅助 Metal shader
+│   ├── include/                 # OpenGL API、GLMContext、MGL C ABI
+│   ├── generated/               # registry.lock、gl46 ABI 生成物
+│   ├── aux_shaders/             # 构建期编入的辅助 Metal shader
+│   ├── extensions/              # 可选扩展桩（如 xfb_stub）
+│   └── src/                     # 生产实现：C 状态机 + C++（无引擎 .m）
+│       ├── L5_api/              # GL 入口 / dispatch（gl_core.c、gl_es.c…）
+│       ├── L4_context/          # GL 对象、状态、program/link、renderer 入口
+│       ├── L3_validate/         # 校验、binding resolve、纯数据 plan
+│       ├── L2_encode/           # batch / pass / draw issue-encode
+│       ├── L1_backend/          # Metal 对象、PSO、cache、mgl_render*.cpp
+│       ├── L0_platform/         # AppKit / CAMetalLayer / trace / shell
+│       └── compiler/            # GLSL → MGLIR → AIR → metallib
 ├── external/
 │   ├── metal-cpp/               # Apple 官方 header-only Metal C++ bindings
-│   ├── glfw/                    # 本仓库维护的本地 GLFW 分支（仍含 Cocoa .m）
+│   ├── SPIRV-Cross/             # Core 链接依赖
+│   ├── glfw/                    # 本仓库维护的本地 GLFW（仍含 Cocoa .m）
 │   ├── OpenGL-Registry/         # Khronos OpenGL registry
 │   └── ezxml/                   # XML 解析依赖
-├── test_legacy_compat/          # GLSL 兼容、AIR、Metal-cpp smoke 和 gtest
-├── test_regression/             # headless OpenGL/Metal 回归套件
+├── test_legacy_compat/          # 架构门禁、AIR/Metal/gtest 等单测（make 目标驱动）
+├── test_regression/             # headless OpenGL/Metal 回归
 ├── test_dirty_hash/             # dirty-state 批处理回归
-├── test_mgl/                    # 本地功能测试
-├── benchmark/                   # 性能测试工具
-├── spec_parser/                 # 规范解析辅助（verify-codegen）
+├── test_mgl/                    # 交互式 GLFW 冒烟（make test）
+├── tools/                       # 本地探测 / CTS 辅助工具
+├── benchmark/                   # 性能测试
 ├── scripts/                     # 资产生成、回归、trace、benchmark
-├── docs/                        # 架构与规格审查
+├── docs/                        # 架构契约与历史审查
 ├── MGL_Golden_Images/           # 图像回归基准
-├── TestImages/                  # 测试纹理素材
-├── config.mk.example            # 本地 SDK/toolchain 配置模板
-├── build/                       # 本地构建输出（由 Makefile 生成）
-├── Makefile                     # 唯一构建入口
-├── README.md                    # 中文说明
-├── README_EN.md                 # English README
-├── LICENSE                      # 基线之后仓库修改的 LGPL 3.0 全文
-├── LICENSE-APACHE-2.0           # 原 MGL 代码的 Apache 2.0 全文
-├── LICENSE-GPL-3.0-only         # LGPL 3.0 引用的 GPL 3.0 全文
-└── LICENSING.md                 # 许可证范围与提交边界说明
+├── TestImages/                  # 测试纹理
+├── config.mk.example            # 本地 SDK/toolchain 模板
+├── build/                       # Makefile 输出（core 对象树 + dylib）
+└── Makefile                     # 唯一构建入口
 ```
 
-`MGL/src` 生产代码全部是 C 或 C++。与 AppKit / CAMetalLayer 的交互集中在 `mgl_platform_shell.cpp`：类在 load 时用 ObjC runtime 注册，消息发送走 `objc_msgSend`，不编译任何 `.m`。GLFW fork 的 Cocoa `.m` 属于窗口库，不是 MGL 引擎。
-
+分层职责与禁止捷径见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。`MGL/src` 根目录只保留跨层内部头，实现 TU 必须落在 L0–L5 或 `compiler/`。AppKit / CAMetalLayer 交互集中在 `L0_platform/mgl_platform_shell.cpp`（ObjC runtime + `objc_msgSend`）。
 ## 核心模块说明
 
 ### 着色器与 AIR 路径
 
-生产路径由自研 GLSL frontend、MGLIR、AIR backend 和预编译 metallib 组成：
-
-```c
-OpenGL glCompileShader / program link
-    │
-    ▼
-mgl_legacy_compat.c（旧 GLSL 语法兼容）
-    │
-    ▼
-mgl_glsl_lexer.c → mgl_glsl_parser.c → mgl_glsl_sema.c
-    │
-    ▼
-mgl_ir.c / mgl_air_reflect.c
-    │
-    ▼
-mgl_air_backend.cpp → AIR LLVM bitcode → metallib
-    │
-    ▼
-mgl_air_loader.cpp / mgl_render.cpp → Metal-cpp PSO 与 encoder
+```text
+glCompileShader / glLinkProgram
+        │
+        ▼
+L4  mgl_legacy_compat.c          # 旧 GLSL 语法兼容
+        │
+        ▼
+compiler/ mgl_glsl_{lexer,parser,sema}.c
+        │
+        ▼
+compiler/ mgl_ir.c · mgl_air_reflect.c
+        │
+        ▼
+compiler/ mgl_air_backend.cpp    # → AIR bitcode → metallib
+        │
+        ▼
+compiler/ mgl_air_loader.cpp
+L1     mgl_render*.cpp           # Metal-cpp PSO / encoder
 ```
 
-**关键特性：**
-- 旧版 GLSL 兼容转换在进入 frontend 前完成
-- AIR reflection 生成资源、varying、tessellation 和 geometry ABI
-- 辅助 shader 以 metallib 字节表形式嵌入，不在运行时读取 Metal 源码
+- 旧版 GLSL 兼容在进入 frontend 前完成
+- AIR reflection 产出资源、varying、tessellation、geometry ABI
+- 辅助 shader 以 metallib 字节表嵌入（`L1_backend/mgl_aux_assets.*`），运行时不读 Metal 源码
+- 带 sampler 的 VS/FS 在 link 时可多编一份 soft minmax 变体；仅当绑定采样器为 `GL_MIN`/`GL_MAX` 时启用
 
 ### 状态管理
 
-OpenGL 状态通过脏标记系统同步到 Metal：
+脏状态写在 `ctx->active_state` 上，draw 前由 L2 encode 路径刷到 Metal：
 
 ```c
-// 状态变更标记
-STATE(dirty_bits) |= DIRTY_RENDER_STATE;
-
-// 在绘制时处理脏状态
-processGLState(ctx, true);
+mglMarkRendererDirtyBits(ctx->active_state, DIRTY_RENDER_STATE);
+/* draw 路径内部会跑 processGLState / pass sync；不是对外公开的 C API */
 ```
 
 ### Metal backend 与平台壳
 
-- `mgl_render.cpp` 是唯一包含 Metal-cpp implementation macro 的 translation unit，
-  负责资源创建、pipeline/render-pass、binding、draw/blit/compute 和 command-buffer
-  transaction。
-- `mgl_renderer_backend.cpp` 持有 renderer backend handle、owner、cache、completion
-  和 temporary-resource 生命周期。
-- `mgl_platform_shell.cpp` 是平台壳：持有 `NSView`、`CAMetalLayer`、drawable 和
-  device 初始化，经 libobjc 调用 AppKit，而不是 Objective-C 源文件。
-- OpenGL 状态与语义编排在 C 层（`mgl_renderer_entries.c`、`mgl_draw_entry.c` 等），
-  通过 value-state / opaque handle 进入 backend，不直接实现 Metal 路径。
-
-核心调用关系：
+- `L1_backend/mgl_render.cpp` 是**唯一定义** Metal-cpp private implementation 宏的 TU；具体 draw/texture/binding 等拆在同目录 `mgl_render_*.cpp`。
+- `L1_backend/mgl_renderer_backend.cpp` 持有 owner、cache、completion 与临时资源生命周期。
+- `L0_platform/mgl_platform_shell.cpp` 持有 `NSView` / `CAMetalLayer` / drawable / device。
+- L4（`mgl_renderer_entries.c`、`mgl_draw_entry.c` 等）做 GL 语义编排，经 value-state / opaque handle 进入 backend。
 
 ```text
-OpenGL API（gl_core.c / glm_dispatch.c）
+L5  gl_core.c / glm_dispatch.c          # ABI shim → ctx->dispatch.*
         │
         ▼
-C 状态机（state / buffers / textures / program / …）
+L4  state / buffers / textures / program / renderer entries
         │
         ▼
-C renderer 入口（mgl_renderer_entries.c / mgl_draw_entry.c）
-        │
-        ▼
-C++ issue / encode（mgl_draw_issue.cpp / mgl_draw_encode.cpp）
+L2  mgl_draw_issue.cpp / mgl_draw_encode.cpp / pass sync
         │ value-state / opaque handle
         ▼
-mgl_renderer_backend.cpp（owner、cache、transaction）
-        │ C ABI
-        ▼
-mgl_render.cpp（Metal-cpp） ───> Metal command queue / encoder / resource
+L1  mgl_renderer_backend.cpp → mgl_render*.cpp → Metal
         ▲
-        │ device、layer、drawable
-mgl_platform_shell.cpp（C++ / libobjc → AppKit / CAMetalLayer）
+        │ device / layer / drawable
+L0  mgl_platform_shell.cpp
 ```
 
 ## 调试

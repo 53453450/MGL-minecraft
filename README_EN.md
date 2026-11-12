@@ -10,19 +10,13 @@ Language: [中文](README.md) | English
 
 **MGL (Metal-GL)** is a graphics translation layer that converts OpenGL 4.6 and OpenGL ES 3.x calls into Apple Metal. It allows existing OpenGL applications to run on macOS using a Metal backend without modification.
 
----
-
 ## Introduction
 
 ### Project Notes
 
-- <span style="color:red;">This is a purely AI-generated coding project. If you dislike or are against AI-generated code, you may leave this repository.</span>
-
+- This is a purely AI-generated coding project. If you dislike or are against AI-generated code, you may leave this repository.
 - This project is forked from: https://github.com/openglonmetal/MGL
-
-- Minecraft (MC) is one of the few games that run relatively well on macOS. However, its longevity largely comes from its massive modding community. Apple officially deprecated OpenGL and OpenCL at WWDC 2018 (June 2018), and macOS OpenGL support has been stuck at version 4.1 ever since. The vertex attribute limit (GL_MAX_VERTEX_ATTRIBS) is 16, which is far behind modern mod requirements. Many mods and most shader packs cannot run on macOS.  
-
-  This project upgrades OpenGL support to 4.6 and increases `GL_MAX_VERTEX_ATTRIBS` to 30.
+- Minecraft (MC) is one of the few games that run relatively well on macOS. However, its longevity largely comes from its massive modding community. Apple officially deprecated OpenGL and OpenCL at WWDC 2018 (June 2018), and macOS OpenGL support has been stuck at version 4.1 ever since. The vertex attribute limit (`GL_MAX_VERTEX_ATTRIBS`) is 16, which is far behind modern mod requirements. Many mods and most shader packs cannot run on macOS. This project upgrades OpenGL support to 4.6 and increases `GL_MAX_VERTEX_ATTRIBS` to 30.
 
 ## License
 
@@ -37,8 +31,6 @@ both kinds of material must comply with the license applicable to each portion.
 See [LICENSING.md](LICENSING.md) for the complete scope notice. Third-party
 components remain under their own licenses.
 
----
-
 ## Requirements
 
 **Prerequisites:**
@@ -50,9 +42,7 @@ components remain under their own licenses.
   - LLVM 15: `make lib` links `-lLLVM-15`
   - CMake: required by GLFW and `make gtest`
   - glm: convenience headers for optional host-side tools
-- GoogleTest for AIR unit tests (`make gtest`, clones into `~/googletest` by default) 
-
----
+- GoogleTest for AIR unit tests (`make gtest`, clones into `~/googletest` by default)
 
 ## Quick Start
 
@@ -66,44 +56,56 @@ cd MGL-minecraft
 ### 2. Build dependencies
 
 ```bash
-# Install dependencies
-
+# Install build dependencies
 make install-pkgdeps
-
 cd external
-
-# Clone external dependencies
-
+# Clone dependencies
 ./clone_external.sh
-
 # Build dependencies
-
 ./build_external.sh
 ```
 
 `clone_external.sh` checks out OpenGL-Registry at the commit in
-`MGL/generated/registry.lock`, and fetches ezxml (pinned commit) and Apple's official
-[metal-cpp](https://github.com/apple/metal-cpp) only when those directories are missing.
-`external/glfw` is the repository's locally modified checkout; it is never cloned
-or pulled from upstream and is always used for the build.
+`MGL/generated/registry.lock`, and fetches ezxml (pinned commit), Apple's official
+[metal-cpp](https://github.com/apple/metal-cpp), and the modified
+[SPIRV-Cross](https://github.com/53453450/SPIRV-Cross) needed for GL 4.6 core
+SPIR-V (`ARB_gl_spirv`) when those directories are missing. `external/glfw` is the
+repository's locally modified checkout (never cloned or pulled from upstream);
+`./build_external.sh` builds that GLFW only.
 
 ### 3. Build MGL
 
 ```bash
 # Return to the repository root
 cd ..
-make
+make          # same as make lib / make core
+# make es     # optional separate libmgl_es.dylib (ES-default context)
+```
+
+OpenGL ES 3.2 lives in `libmgl.dylib`: create an ES context with
+`createGLMContextProfile(1, …)` (`ctx->is_es`). A second dylib is not required.
+Minecraft / desktop GL keep using the default Core context.
+
+Local non-interactive gates:
+
+```bash
+make test-all          # architecture gates + AIR/Metal smoke + headless regression
+make test-regression   # headless image/semantics suite (goldens in MGL_Golden_Images/)
+make test              # interactive GLFW smoke (test_mgl); not the CI gate
 ```
 
 ## Build Outputs
 
-After compilation, the following files will be generated in the build/ directory:
+Default `make` produces:
 
-| File | Description |
+| Path | Description |
 |------|------|
-| `libmgl.dylib` | OpenGL Core dynamic library |
-| `libmgl_es.dylib` | OpenGL ES dynamic library |
-| `libglfw.dylib` | Modified GLFW library |
+| `build/libmgl.dylib` | OpenGL 4.6 Core (optional in-process ES 3.2 context) |
+| `build/libglfw.dylib` | Modified GLFW library |
+| `libmgl.dylib` / `libglfw.dylib` | Root symlinks into `build/` (for `DYLD_LIBRARY_PATH=.`) |
+
+Object files live under `build/core/`. Optional `make es` also builds
+`libmgl_es.dylib` (`-DMGL_GL_ES`). Prefer the profile API above for new code.
 
 ## Usage
 
@@ -111,141 +113,127 @@ After building, add the following JVM arguments in your launcher:
 ```JVM
 -Dorg.lwjgl.opengl.libname="/yourpath/to/libmgl.dylib"
 -Dorg.lwjgl.glfw.libname="/yourpath/to/libglfw.dylib"
--Dorg.lwjgl.opengles.libname="/yourpath/to/libmgl_es.dylib"
 ```
-Point them to the built libraries so they can take over rendering.
+Point them at the MGL-minecraft build products. Only if something still
+`dlopen`s an ES-specific library name: run `make es` and set
+`-Dorg.lwjgl.opengles.libname=…/libmgl_es.dylib`.
 
 ## Current Status
 
-- The current priority is GL46CTS conformance. Minecraft/mod runtime behavior may still regress while CTS fixes are landing.
+- Minecraft 1.20.1–1.21.11 runs. Current focus is filling out CTS coverage for remaining extensions and performance work.
 
 ## Project Structure
 
 ```
 MGL-minecraft/
 ├── MGL/
-│   ├── include/                 # OpenGL API, GLMContext, and MGL C ABI headers
-│   ├── src/                     # Engine: C state machine + C++ (no .m / .mm)
-│   │   ├── gl_core.c / gl_es.c / glm_dispatch.c / glm_context.c
-│   │   ├── mgl_glsl_*.c / mgl_ir.c / mgl_air_*.cpp   # GLSL → MGLIR → AIR
-│   │   ├── mgl_renderer_entries.c / mgl_draw_entry.c # GL semantic entry points
-│   │   ├── mgl_draw_issue.cpp / mgl_draw_encode.cpp  # tess / GS / draw orchestration
-│   │   ├── mgl_render.cpp                            # Sole Metal-cpp implementation TU
-│   │   ├── mgl_renderer_backend.cpp                  # Owner, cache, and transaction
-│   │   ├── mgl_platform_shell.cpp                    # AppKit / CAMetalLayer platform shell
-│   │   ├── mgl_objc_bridge.h                         # C++ wrappers around libobjc / objc_msgSend
-│   │   └── mgl_aux_assets.*                          # Precompiled auxiliary metallib table
-│   └── aux_shaders/             # Build-time compiled embedded helper shaders
+│   ├── include/                 # OpenGL API, GLMContext, MGL C ABI
+│   ├── generated/               # registry.lock, generated gl46 ABI
+│   ├── aux_shaders/             # build-time embedded helper Metal shaders
+│   ├── extensions/              # optional extension stubs (e.g. xfb_stub)
+│   └── src/                     # production: C state machine + C++ (no engine .m)
+│       ├── L5_api/              # GL entry / dispatch (gl_core.c, gl_es.c, …)
+│       ├── L4_context/          # GL objects, state, program/link, renderer entries
+│       ├── L3_validate/         # validation, binding resolve, pure-data plans
+│       ├── L2_encode/           # batch / pass / draw issue-encode
+│       ├── L1_backend/          # Metal objects, PSO, cache, mgl_render*.cpp
+│       ├── L0_platform/         # AppKit / CAMetalLayer / trace / shell
+│       └── compiler/            # GLSL → MGLIR → AIR → metallib
 ├── external/
 │   ├── metal-cpp/               # Apple's official header-only Metal C++ bindings
-│   ├── glfw/                    # Local modified GLFW checkout (still contains Cocoa .m)
+│   ├── SPIRV-Cross/             # Core link dependency
+│   ├── glfw/                    # local GLFW fork (still has Cocoa .m)
 │   ├── OpenGL-Registry/         # Khronos OpenGL registry
 │   └── ezxml/                   # XML parsing dependency
-├── test_legacy_compat/          # GLSL compatibility, AIR, smoke, and gtest tests
-├── test_regression/             # Headless OpenGL/Metal regression suite
-├── test_dirty_hash/             # Dirty-state batch regression
-├── test_mgl/                    # Local functional tests
-├── benchmark/                   # Performance test tools
-├── spec_parser/                 # Specification parsing helper (verify-codegen)
-├── scripts/                     # Asset, regression, trace, and benchmark scripts
-├── docs/                        # Architecture and spec reviews
-├── MGL_Golden_Images/           # Image regression baselines
-├── TestImages/                  # Test texture assets
-├── config.mk.example            # Local SDK/toolchain configuration template
-├── build/                       # Local build output generated by Makefile
-├── Makefile                     # Sole build entry point
-├── README.md                    # Chinese README
-├── README_EN.md                 # English README
-├── LICENSE                      # LGPL 3.0 text for repository changes after the baseline
-├── LICENSE-APACHE-2.0           # Apache 2.0 text for original MGL code
-├── LICENSE-GPL-3.0-only         # GPL 3.0 text incorporated by LGPL 3.0
-└── LICENSING.md                 # License scope and commit boundary notice
+├── test_legacy_compat/          # architecture gates, AIR/Metal/gtest (make-driven)
+├── test_regression/             # headless OpenGL/Metal regression
+├── test_dirty_hash/             # dirty-state batch regression
+├── test_mgl/                    # interactive GLFW smoke (make test)
+├── tools/                       # local probes / CTS helpers
+├── benchmark/                   # performance tools
+├── scripts/                     # asset, regression, trace, benchmark scripts
+├── docs/                        # architecture contract + historical reviews
+├── MGL_Golden_Images/           # image regression baselines
+├── TestImages/                  # test textures
+├── config.mk.example            # local SDK/toolchain template
+├── build/                       # Makefile output (core object tree + dylibs)
+└── Makefile                     # sole build entry point
 ```
 
-Production code under `MGL/src` is C or C++ only. AppKit / CAMetalLayer access lives in `mgl_platform_shell.cpp`: classes are registered with the ObjC runtime at load, and messages go through `objc_msgSend`. There is no `.m` in the MGL engine. The GLFW fork still has Cocoa `.m` files; that is the window library, not the engine.
+Layer duties and forbidden shortcuts: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Implementation TUs must live under L0–L5 or `compiler/`; the `MGL/src` root keeps
+cross-layer internal headers only. AppKit / CAMetalLayer access is concentrated in
+`L0_platform/mgl_platform_shell.cpp` (ObjC runtime + `objc_msgSend`).
 
 ## Core Modules
 
 ### Shader and AIR Path
 
-The production path is the project's GLSL frontend, MGLIR, AIR backend, and
-precompiled metallib:
-
-```c
-OpenGL glCompileShader / program link
-    │
-    ▼
-mgl_legacy_compat.c (legacy GLSL compatibility)
-    │
-    ▼
-mgl_glsl_lexer.c -> mgl_glsl_parser.c -> mgl_glsl_sema.c
-    │
-    ▼
-mgl_ir.c / mgl_air_reflect.c
-    │
-    ▼
-mgl_air_backend.cpp -> AIR LLVM bitcode -> metallib
-    │
-    ▼
-mgl_air_loader.cpp / mgl_render.cpp -> Metal-cpp PSOs and encoders
+```text
+glCompileShader / glLinkProgram
+        │
+        ▼
+L4  mgl_legacy_compat.c          # legacy GLSL compatibility
+        │
+        ▼
+compiler/ mgl_glsl_{lexer,parser,sema}.c
+        │
+        ▼
+compiler/ mgl_ir.c · mgl_air_reflect.c
+        │
+        ▼
+compiler/ mgl_air_backend.cpp    # → AIR bitcode → metallib
+        │
+        ▼
+compiler/ mgl_air_loader.cpp
+L1     mgl_render*.cpp           # Metal-cpp PSO / encoder
 ```
 
-Key properties:
-- Legacy GLSL compatibility is applied before the frontend.
-- AIR reflection produces resource, varying, tessellation, and geometry ABI metadata.
-- Auxiliary shaders are embedded as metallib bytes; runtime code does not read Metal sources.
+- Legacy GLSL compatibility runs before the frontend
+- AIR reflection produces resource, varying, tessellation, and geometry ABI
+- Helper shaders are embedded as metallib bytes (`L1_backend/mgl_aux_assets.*`);
+  runtime does not read Metal sources
+- VS/FS stages with samplers may emit a soft minmax metallib at link; it is bound
+  only when an active sampler uses `GL_MIN` / `GL_MAX`
 
 ### State Management
 
-OpenGL state is synchronized to Metal using a dirty-flag system:
+Dirty bits live on `ctx->active_state` and are flushed to Metal on the L2 encode path:
 
 ```c
-// Status change mark
-STATE(dirty_bits) |= DIRTY_RENDER_STATE;
-
-// Deal with the dirty state when drawing
-processGLState(ctx, true);
+mglMarkRendererDirtyBits(ctx->active_state, DIRTY_RENDER_STATE);
+/* Draw paths run processGLState / pass sync internally; not a public C API */
 ```
 
 ### Metal Backend and Platform Shell
 
-- `mgl_render.cpp` is the only translation unit that defines Metal-cpp implementation
-  macros. It owns resource creation, pipeline/render-pass, binding, draw/blit/compute,
-  and command-buffer transactions.
-- `mgl_renderer_backend.cpp` owns backend handles, caches, completion, and temporary
-  resource lifetime.
-- `mgl_platform_shell.cpp` is the platform shell. It owns `NSView`, `CAMetalLayer`,
-  drawables, and device initialization, talking to AppKit through libobjc rather than
-  an Objective-C source file.
-- OpenGL state and semantic orchestration live in C (`mgl_renderer_entries.c`,
-  `mgl_draw_entry.c`, and related files) and call the backend through value-state and
-  opaque handles.
-
-Core call path:
+- `L1_backend/mgl_render.cpp` is the **only** TU that defines Metal-cpp private
+  implementation macros; draw/texture/binding work is split across `mgl_render_*.cpp`
+  in the same directory.
+- `L1_backend/mgl_renderer_backend.cpp` owns handles, caches, completion, and
+  temporary-resource lifetime.
+- `L0_platform/mgl_platform_shell.cpp` owns `NSView` / `CAMetalLayer` / drawable /
+  device.
+- L4 (`mgl_renderer_entries.c`, `mgl_draw_entry.c`, …) owns GL semantic orchestration
+  and enters the backend through value-state / opaque handles.
 
 ```text
-OpenGL API (gl_core.c / glm_dispatch.c)
-        |
-        v
-C state machine (state / buffers / textures / program / ...)
-        |
-        v
-C renderer entries (mgl_renderer_entries.c / mgl_draw_entry.c)
-        |
-        v
-C++ issue / encode (mgl_draw_issue.cpp / mgl_draw_encode.cpp)
-        | value-state / opaque handle
-        v
-mgl_renderer_backend.cpp (owners, caches, transactions)
-        | C ABI
-        v
-mgl_render.cpp (Metal-cpp) ---> Metal queue / encoder / resource
-        ^
-        | device, layer, drawable
-mgl_platform_shell.cpp (C++ / libobjc -> AppKit / CAMetalLayer)
+L5  gl_core.c / glm_dispatch.c          # ABI shim → ctx->dispatch.*
+        │
+        ▼
+L4  state / buffers / textures / program / renderer entries
+        │
+        ▼
+L2  mgl_draw_issue.cpp / mgl_draw_encode.cpp / pass sync
+        │ value-state / opaque handle
+        ▼
+L1  mgl_renderer_backend.cpp → mgl_render*.cpp → Metal
+        ▲
+        │ device / layer / drawable
+L0  mgl_platform_shell.cpp
 ```
 
-## Debugging and Repro Cases
+## Debugging
 
 ### MGL_TRACE_LOG
 
@@ -309,6 +297,6 @@ MGL_MIP_DIAG=1
 - [LLVM](https://llvm.org/) - AIR backend code generation
 - [Apple metal-cpp](https://github.com/apple/metal-cpp) - Metal C++ bindings
 - [GLFW](https://www.glfw.org/) - Window management library
-- [openglonmetal](https://github.com/openglonmetal/MGL) - Original MGL framework
-- [Hexeption/MCP-Reborn](https://github.com/Hexeption/MCP-Reborn) 
+- [openglonmetal/MGL](https://github.com/openglonmetal/MGL) - Original MGL framework; MGL-minecraft would not exist without it
+- [Hexeption/MCP-Reborn](https://github.com/Hexeption/MCP-Reborn)
 - [apitrace](https://github.com/apitrace/apitrace)

@@ -165,10 +165,10 @@ default: lib
 help:
 	@printf '%s\n' \
 		'Build targets:' \
-		'  make                  Build libmgl.dylib, libmgl_es.dylib, and libglfw.dylib.' \
-		'  make lib              Build the runtime dylibs.' \
-		'  make core             Build only Core MGL and GLFW (Minecraft path).' \
-		'  make es               Build only the OpenGL ES MGL dylib.' \
+		'  make                  Build libmgl.dylib and libglfw.dylib (ES profile is in libmgl).' \
+		'  make lib              Same as make / make core.' \
+		'  make core             Build Core MGL and GLFW (Minecraft path).' \
+		'  make es               Optional: build legacy libmgl_es.dylib (-DMGL_GL_ES default).' \
 		'  make bench            Build the MGL benchmark.' \
 		'  make test-benchmark   Run the benchmark smoke gate.' \
 		'  make test-all         Run the complete non-interactive local test gate.' \
@@ -477,9 +477,12 @@ verify-toolchain:
 
 core: verify-toolchain $(mgl_lib) $(build_dir)/libglfw.dylib
 
+# Optional legacy dylib whose default context is ES. Prefer createGLMContextProfile
+# against libmgl; this target remains for out-of-tree consumers that still dlopen
+# libmgl_es.dylib.
 es: verify-toolchain $(mgl_es_lib)
 
-lib: core es
+lib: core
 
 test_exe := $(build_dir)/test_mgl
 
@@ -1620,7 +1623,8 @@ test-all:
 	$(MAKE) build_dir=$(build_dir) test-metalcpp
 	$(MAKE) build_dir=$(build_dir) test-air-loader-cache
 	$(MAKE) build_dir=$(build_dir) test-legacy-compat
-	$(MAKE) build_dir=$(build_dir) test-es-smoke
+	# test-es-smoke still links the optional libmgl_es.dylib; run it explicitly
+	# via `make test-es-smoke` (or `make es` first). ES contexts live in libmgl.
 	$(MAKE) build_dir=$(build_dir) test-regression
 
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
