@@ -4731,11 +4731,13 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                     return NULL;
                 }
                 Sym *ls = symtab_lookup(tab, ln);
-                /* inout params carry both IN and OUT; only pure `in`
-                 * (no OUT) is immutable. */
+                /* GLSL 4.60 §6.1.1: explicit `in` parameters are writable
+                 * local l-values.  Only a global `in` interface is immutable;
+                 * parameters have no module IR symbol (ls->ir == NULL). */
                 if (ls) {
                     int in_only = (ls->qualifiers & MGL_AST_Q_IN) &&
-                                  !(ls->qualifiers & MGL_AST_Q_OUT);
+                                  !(ls->qualifiers & MGL_AST_Q_OUT) &&
+                                  ls->ir != NULL;
                     if ((ls->qualifiers & (MGL_AST_Q_READONLY |
                                            MGL_AST_Q_CONST)) ||
                         in_only) {
