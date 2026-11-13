@@ -38,6 +38,16 @@
 namespace mgl {
 namespace air {
 
+/* cg.lvalues is keyed by name rather than scope, so a control-flow merge can
+ * see different LLVM types for the same source identifier.  Keep every PHI
+ * edge type-correct instead of letting LLVM assert while appending it. */
+static void addPhiIncoming(llvm::PHINode *phi, llvm::Value *value,
+                           llvm::BasicBlock *bb) {
+    if (value->getType() != phi->getType())
+        value = llvm::UndefValue::get(phi->getType());
+    phi->addIncoming(value, bb);
+}
+
 static void emitCompound(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                          std::map<std::string, MType> *locals,
                          const AirStmtDeps &deps) {
@@ -219,7 +229,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                     cg.inlining.inlineRetPhi = llvm::PHINode::Create(
                         v->getType(), 4u, "inline.rval", cg.inlining.inlineExitBB);
                 }
-                cg.inlining.inlineRetPhi->addIncoming(v, here);
+                addPhiIncoming(cg.inlining.inlineRetPhi, v, here);
                 cg.inlining.inlineRetVal = cg.inlining.inlineRetPhi;
             }
             /* Snapshot the live values on this return edge.  The inline exit
@@ -399,8 +409,8 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                         continue;
                     llvm::PHINode *phi =
                         cg.b->CreatePHI(kv.second->getType(), 2, kv.first);
-                    phi->addIncoming(kv.second, thenTail);
-                    phi->addIncoming(it->second, elseTail);
+                    addPhiIncoming(phi, kv.second, thenTail);
+                    addPhiIncoming(phi, it->second, elseTail);
                     cg.lvalues[kv.first] = phi;
                 }
                 for (auto &kv : elseL)
@@ -423,8 +433,8 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                         : llvm::UndefValue::get(kv.second->getType());
                 llvm::PHINode *phi =
                     cg.b->CreatePHI(kv.second->getType(), 2, kv.first);
-                phi->addIncoming(kv.second, thenTail);
-                phi->addIncoming(fall, condBB);
+                addPhiIncoming(phi, kv.second, thenTail);
+                addPhiIncoming(phi, fall, condBB);
                 cg.lvalues[kv.first] = phi;
             }
         }
@@ -550,7 +560,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             cg.b->SetInsertPoint(bbBody);
             for (auto &n : names) {
                 auto *p = cg.b->CreatePHI(cg.lvalues[n]->getType(), 2, n);
-                p->addIncoming(cg.lvalues[n], pre);
+                addPhiIncoming(p, cg.lvalues[n], pre);
                 lc.phis[n] = p;
                 cg.lvalues[n] = p;
             }
@@ -560,7 +570,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             cg.b->SetInsertPoint(bbCond);
             for (auto &n : names) {
                 auto *p = cg.b->CreatePHI(cg.lvalues[n]->getType(), 2, n);
-                p->addIncoming(cg.lvalues[n], pre);
+                addPhiIncoming(p, cg.lvalues[n], pre);
                 lc.phis[n] = p;
                 cg.lvalues[n] = p;
             }
@@ -580,10 +590,10 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                 bool isCont = false;
                 for (auto &cs : lc.contSnaps)
                     if (cs.first == tail) { isCont = true; break; }
-                if (!isCont) p->addIncoming(cg.lvalues[n], tail);
+                if (!isCont) addPhiIncoming(p, cg.lvalues[n], tail);
                 for (auto &cs : lc.contSnaps) {
                     auto it = cs.second.find(n);
-                    p->addIncoming(it != cs.second.end() ? it->second
+                    addPhiIncoming(p, it != cs.second.end() ? it->second
                                                          : cg.lvalues[n],
                                    cs.first);
                 }
@@ -603,7 +613,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             lc.condExitBB =
                 llvm::BasicBlock::Create(*cg.ctx, "loop.cond.exit", cg.fn);
             for (auto &kv : lc.phis)
-                kv.second->addIncoming(cg.lvalues[kv.first], bbCond);
+                addPhiIncoming(kv.second, cg.lvalues[kv.first], bbCond);
             cg.b->CreateCondBr(cond, bbBody, lc.condExitBB);
             cg.b->SetInsertPoint(lc.condExitBB);
             cg.b->CreateBr(bbEnd);
@@ -668,10 +678,10 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                 bool isCont = false;
                 for (auto &cs : lc.contSnaps)
                     if (cs.first == tail) { isCont = true; break; }
-                if (!isCont) p->addIncoming(cg.lvalues[n], tail);
+                if (!isCont) addPhiIncoming(p, cg.lvalues[n], tail);
                 for (auto &cs : lc.contSnaps) {
                     auto it = cs.second.find(n);
-                    p->addIncoming(it != cs.second.end() ? it->second
+                    addPhiIncoming(p, it != cs.second.end() ? it->second
                                                          : cg.lvalues[n],
                                    cs.first);
                 }
@@ -682,7 +692,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                 if (cg.err == 1) return;
             }
             for (auto &kv : lc.phis)
-                kv.second->addIncoming(cg.lvalues[kv.first], bbIncr);
+                addPhiIncoming(kv.second, cg.lvalues[kv.first], bbIncr);
             cg.b->CreateBr(bbCond);
             }
         }
@@ -699,12 +709,12 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                 cg.b->CreatePHI(v->getType(), nIn, n);
             if (lc.condExitBB) {
                 auto it = lc.condExitSnap.find(n);
-                e->addIncoming(it != lc.condExitSnap.end() ? it->second : v,
+                addPhiIncoming(e, it != lc.condExitSnap.end() ? it->second : v,
                                lc.condExitBB);
             }
             for (auto &bs : brk.snaps) {
                 auto it = bs.second.find(n);
-                e->addIncoming(it != bs.second.end() ? it->second : v,
+                addPhiIncoming(e, it != bs.second.end() ? it->second : v,
                                bs.first);
             }
             cg.lvalues[n] = e;
@@ -873,12 +883,12 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                                       (noMatch ? 1 : 0),
                     kv.first);
                 if (noMatch)
-                    e->addIncoming(v, noMatch);
+                    addPhiIncoming(e, v, noMatch);
                 if (lastTail)
-                    e->addIncoming(cg.lvalues[kv.first], lastTail);
+                    addPhiIncoming(e, cg.lvalues[kv.first], lastTail);
                 for (auto &bs : brk.snaps) {
                     auto it = bs.second.find(kv.first);
-                    e->addIncoming(it != bs.second.end() ? it->second : v,
+                    addPhiIncoming(e, it != bs.second.end() ? it->second : v,
                                    bs.first);
                 }
                 cg.lvalues[kv.first] = e;
@@ -939,7 +949,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                         disp->getType(), 2u, kv.first, segs[i].entry);
                     for (llvm::BasicBlock *pred :
                          llvm::predecessors(segs[i].entry)) {
-                        phi->addIncoming(
+                        addPhiIncoming(phi,
                             pred == fallFrom ? fall : disp, pred);
                     }
                     cg.lvalues[kv.first] = phi;
@@ -1018,12 +1028,12 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             /* No default label: the last check block falls through to
              * the exit carrying the entry values. */
             if (!defEntry)
-                e->addIncoming(v, check);
+                addPhiIncoming(e, v, check);
             if (lastTail)
-                e->addIncoming(cg.lvalues[name], lastTail);
+                addPhiIncoming(e, cg.lvalues[name], lastTail);
             for (auto &bs : brk.snaps) {
                 auto it = bs.second.find(name);
-                e->addIncoming(it != bs.second.end() ? it->second : v,
+                addPhiIncoming(e, it != bs.second.end() ? it->second : v,
                                bs.first);
             }
             cg.lvalues[name] = e;
@@ -1060,7 +1070,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                 cg.b->CreateBr(lc->incrBB);
             } else {
                 for (auto &kv : lc->phis)
-                    kv.second->addIncoming(cg.lvalues[kv.first],
+                    addPhiIncoming(kv.second, cg.lvalues[kv.first],
                                            cg.b->GetInsertBlock());
                 cg.b->CreateBr(lc->condBB);
             }
