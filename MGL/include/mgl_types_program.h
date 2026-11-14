@@ -321,6 +321,10 @@ typedef struct Program_t {
     GLuint attached_shader_counts[_MAX_SHADER_TYPES];
     GLbitfield attached_shader_mask;
     GLboolean link_success;
+    /* GL 4.6 §7.5: result of the last glValidateProgram on this program.
+     * Cleared at link start; a program that has never been validated reports
+     * GL_FALSE even when it linked. */
+    GLboolean validated;
     /* Linked from SPIR-V modules without OpName: ACTIVE_*_MAX_LENGTH is 1. */
     GLboolean spirv_nameless;
     MGLProgramLinkState link_state;

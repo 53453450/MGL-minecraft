@@ -7,8 +7,8 @@
  * See LICENSE and LICENSING.md.
  */
 
-/* mgl_gpu_recovery.c — bodies of -[MGLRenderer clearTextureCache] and
- * -getOptimalAlignmentForPixelFormat:, which never needed Objective-C. */
+/* mgl_gpu_recovery.c — body of -[MGLRenderer
+ * getOptimalAlignmentForPixelFormat:], which never needed Objective-C. */
 
 #include "mgl_gpu_recovery.h"
 #include "mgl_render_pass_manager_ops.h"
@@ -28,14 +28,6 @@ static const int kMGLDiagnosticStateLogsC = 0;
 #include <time.h>
 
 #include <stdio.h>
-
-void mglRendererClearTextureCache(void)
-{
-    /* PROPER FIX: Intelligent texture cache cleanup.  Texture binding cache
-     * cleanup would need the renderer's instance state; this is the hook that
-     * would take it. */
-    fprintf(stderr, "MGL INFO: Clearing texture cache to free memory\n");
-}
 
 uint64_t mglRendererOptimalAlignmentForPixelFormat(uint32_t format)
 {
@@ -188,8 +180,6 @@ void mglRendererResetMetalState(void *renderer)
     }
 
     mglRendererResetPipelineCaches(renderer);
-
-    mglRendererClearTextureCache();
 
     fprintf(stderr, "MGL INFO: AGX Metal state reset completed\n");
 }

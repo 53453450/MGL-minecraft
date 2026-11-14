@@ -951,6 +951,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     }
 
     pptr->link_success = GL_FALSE;
+    pptr->validated = GL_FALSE;
     pptr->spirv_nameless = GL_FALSE;
     pptr->link_state = MGL_PROGRAM_LINK_FAILED;
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
@@ -1253,7 +1254,6 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     }
 
     applyFragmentOutputLocationIndices(pptr);
-    applyMultiDimArrayUniformNames(pptr);
     mglProgramApplyBuiltinInterface(pptr);
     alignFragmentInputLocationsToVertexOutputs(pptr);
     mglBridgeSkippedGeometryShaderVaryings(pptr);

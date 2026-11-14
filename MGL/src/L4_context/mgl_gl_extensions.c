@@ -287,12 +287,6 @@ static GLboolean mgl_validate_viewport_range(GLMContext ctx, GLuint first, GLsiz
 	return GL_TRUE;
 }
 
-static void mgl_init_query_table_if_needed(GLMContext ctx)
-{
-	(void)ctx;
-	/* query_table is initialized in createGLMContext. */
-}
-
 static int mgl_query_target_slot(GLenum target)
 {
 	switch (target)
@@ -392,7 +386,6 @@ void mglRecordActiveSampleQueryDraw(GLMContext ctx)
 	if (!ctx)
 		return;
 
-	mgl_init_query_table_if_needed(ctx);
 	for (int slot = 0; slot < 3; slot++)
 	{
 		QueryObject *q = mgl_find_query(ctx, ctx->active_query_by_target[slot][0]);
@@ -423,7 +416,6 @@ void mglRecordActiveGeometryShaderQueryDraw(GLMContext ctx,
 {
 	if (!ctx)
 		return;
-	mgl_init_query_table_if_needed(ctx);
 	const int invocation_slot =
 		mgl_query_target_slot(GL_GEOMETRY_SHADER_INVOCATIONS);
 	const int primitive_slot =
@@ -504,7 +496,6 @@ void mglRecordActivePipelineStatisticsQueryDraw(GLMContext ctx, GLenum mode,
 {
 	if (!ctx || count <= 0)
 		return;
-	mgl_init_query_table_if_needed(ctx);
 	GLuint64 instances =
 		instanceCount > 0 ? (GLuint64)instanceCount : 1u;
 	GLuint64 verts_per = (GLuint64)count;
@@ -541,7 +532,6 @@ void mglRecordActiveComputeShaderQueryDispatch(GLMContext ctx,
 {
 	if (!ctx)
 		return;
-	mgl_init_query_table_if_needed(ctx);
 	mgl_add_pipeline_stat(ctx, GL_COMPUTE_SHADER_INVOCATIONS, invocations);
 }
 
@@ -549,7 +539,6 @@ GLboolean mglHasActiveGeometryShaderQuery(GLMContext ctx)
 {
 	if (!ctx)
 		return GL_FALSE;
-	mgl_init_query_table_if_needed(ctx);
 	const int slots[] = {
 		mgl_query_target_slot(GL_GEOMETRY_SHADER_INVOCATIONS),
 		mgl_query_target_slot(GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED),
@@ -571,8 +560,6 @@ void mglRecordActivePrimitiveQueryDrawIndexed(GLMContext ctx,
 		return;
 	if (index >= MGL_QUERY_MAX_INDEX)
 		return;
-
-	mgl_init_query_table_if_needed(ctx);
 
 	QueryObject *generated_query =
 		mgl_find_query(ctx, ctx->active_query_by_target[3][index]);
@@ -649,7 +636,6 @@ GLboolean mglHasActiveIndexedPrimitiveQuery(GLMContext ctx)
 {
 	if (!ctx)
 		return GL_FALSE;
-	mgl_init_query_table_if_needed(ctx);
 	for (GLuint index = 1u; index < MGL_QUERY_MAX_INDEX; index++) {
 		if (ctx->active_query_by_target[3][index] != 0u ||
 			ctx->active_query_by_target[4][index] != 0u)
@@ -663,7 +649,6 @@ GLboolean mglHasActivePrimitiveQuery(GLMContext ctx)
 {
 	if (!ctx)
 		return GL_FALSE;
-	mgl_init_query_table_if_needed(ctx);
 	return (ctx->active_query_by_target[3][0] != 0u ||
 	        ctx->active_query_by_target[4][0] != 0u)
 	       ? GL_TRUE : GL_FALSE;
@@ -2441,32 +2426,28 @@ void mglColorMaski(GLMContext ctx, GLuint index, GLboolean r, GLboolean g, GLboo
 
 void mglColorP3ui(GLMContext ctx, GLenum type, GLuint color)
 {
-	// Packed color - deprecated, no-op
-	(void)ctx;
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)type;
 	(void)color;
 }
 
 void mglColorP3uiv(GLMContext ctx, GLenum type, const GLuint *color)
 {
-	// Packed color - deprecated, no-op
-	(void)ctx;
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)type;
 	(void)color;
 }
 
 void mglColorP4ui(GLMContext ctx, GLenum type, GLuint color)
 {
-	// Packed color - deprecated, no-op
-	(void)ctx;
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)type;
 	(void)color;
 }
 
 void mglColorP4uiv(GLMContext ctx, GLenum type, const GLuint *color)
 {
-	// Packed color - deprecated, no-op
-	(void)ctx;
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)type;
 	(void)color;
 }
@@ -2984,7 +2965,6 @@ void mglCreateQueries(GLMContext ctx, GLenum target, GLsizei n, GLuint *ids)
 	if (!ids)
 		return;
 
-	mgl_init_query_table_if_needed(ctx);
 	for (GLsizei i = 0; i < n; i++)
 	{
 		QueryObject *q;
@@ -3583,7 +3563,6 @@ void mglGenQueries(GLMContext ctx, GLsizei n, GLuint *ids)
 	if (!ids)
 		return;
 
-	mgl_init_query_table_if_needed(ctx);
 	for (GLsizei i = 0; i < n; i++)
 	{
 		ids[i] = getNewName(&ctx->query_table);
@@ -8389,13 +8368,20 @@ void mglTransformFeedbackVaryings(GLMContext ctx, GLuint program, GLsizei count,
 
 void mglValidateProgram(GLMContext ctx, GLuint program)
 {
-	// Program validation - no-op for now, programs are validated during linking
 	Program *pptr = findProgram(ctx, program);
 	if (!pptr)
 	{
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
+	/* GL 4.6 §7.5 validation is state-based: the program must be executable
+	 * against the current GL state.  The subset decided here is the link
+	 * result; sampler-completeness (a sampler reading an incomplete texture
+	 * or two sampler types on one unit) is not checked, so GL_TRUE means
+	 * "this program could execute", not "every sampling operation is
+	 * well-defined".  Reporting the link result is still strictly stronger
+	 * than the previous unconditional GL_TRUE. */
+	pptr->validated = pptr->link_success ? GL_TRUE : GL_FALSE;
 }
 
 void mglValidateProgramPipeline(GLMContext ctx, GLuint pipeline)
@@ -8833,32 +8819,44 @@ void mglVertexAttribP4uiv(GLMContext ctx, GLuint index, GLenum type, GLboolean n
 
 void mglVertexP2ui(GLMContext ctx, GLenum type, GLuint value)
 {
-	(void)ctx;
+	mgl_unimplemented(ctx, __FUNCTION__);
+	(void)type;
+	(void)value;
 }
 
 void mglVertexP2uiv(GLMContext ctx, GLenum type, const GLuint *value)
 {
-	(void)ctx;
+	mgl_unimplemented(ctx, __FUNCTION__);
+	(void)type;
+	(void)value;
 }
 
 void mglVertexP3ui(GLMContext ctx, GLenum type, GLuint value)
 {
-	(void)ctx;
+	mgl_unimplemented(ctx, __FUNCTION__);
+	(void)type;
+	(void)value;
 }
 
 void mglVertexP3uiv(GLMContext ctx, GLenum type, const GLuint *value)
 {
-	(void)ctx;
+	mgl_unimplemented(ctx, __FUNCTION__);
+	(void)type;
+	(void)value;
 }
 
 void mglVertexP4ui(GLMContext ctx, GLenum type, GLuint value)
 {
-	(void)ctx;
+	mgl_unimplemented(ctx, __FUNCTION__);
+	(void)type;
+	(void)value;
 }
 
 void mglVertexP4uiv(GLMContext ctx, GLenum type, const GLuint *value)
 {
-	(void)ctx;
+	mgl_unimplemented(ctx, __FUNCTION__);
+	(void)type;
+	(void)value;
 }
 
 void mglViewportArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLfloat *v)
@@ -8937,6 +8935,13 @@ void  mglBlendBarrier(GLMContext ctx)
 
 void mglPrimitiveBoundingBox(GLMContext ctx, GLfloat minX, GLfloat minY, GLfloat minZ, GLfloat minW, GLfloat maxX, GLfloat maxY, GLfloat maxZ, GLfloat maxW)
 {
-    (void)ctx; (void)minX; (void)minY; (void)minZ; (void)minW;
-    (void)maxX; (void)maxY; (void)maxZ; (void)maxW;
+	mgl_unimplemented(ctx, __FUNCTION__);
+	(void)minX;
+	(void)minY;
+	(void)minZ;
+	(void)minW;
+	(void)maxX;
+	(void)maxY;
+	(void)maxZ;
+	(void)maxW;
 }

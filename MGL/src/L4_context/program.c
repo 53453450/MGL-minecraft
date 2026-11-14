@@ -1414,7 +1414,10 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
             *params = GL_FALSE;  /* Programs are not deleted by default */
             break;
         case GL_VALIDATE_STATUS:
-            *params = GL_TRUE;  /* Assume valid */
+            /* GL 4.6 §7.5: FALSE until glValidateProgram succeeds, and always
+             * FALSE for a program that failed to link. */
+            *params = (pptr->validated && pptr->link_success)
+                          ? GL_TRUE : GL_FALSE;
             break;
         case GL_INFO_LOG_LENGTH:
             *params = 0;  /* No info log for now */

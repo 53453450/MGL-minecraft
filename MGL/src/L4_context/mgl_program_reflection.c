@@ -202,11 +202,6 @@ GLboolean mglLinkedProgramPerVertexCompatible(Program *program)
     return mglProgramPipelinePerVertexCompatible(stages);
 }
 
-void applyMultiDimArrayUniformNames(Program *program)
-{
-    (void)program;
-}
-
 void applyFragmentOutputLocationIndices(Program *program)
 {
     if (!program || program->frag_data_location_count == 0) return;

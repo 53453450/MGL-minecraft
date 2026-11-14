@@ -20,10 +20,6 @@
 extern "C" {
 #endif
 
-/* Texture-cache cleanup hook (diagnostic today; kept as the single place the
- * renderer would hand its texture cache back). */
-void mglRendererClearTextureCache(void);
-
 /* Row alignment handed to aligned_alloc for texture uploads: a conservative
  * 64 bytes, which is valid on macOS/arm64. */
 uint64_t mglRendererOptimalAlignmentForPixelFormat(uint32_t format);
