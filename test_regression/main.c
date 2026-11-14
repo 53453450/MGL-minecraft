@@ -37,6 +37,7 @@
 #include "glm_context.h"
 #include "mgl_platform_shell_result.h"
 #include "mgl_env_flag.h"
+#include "mgl_pso_build_ops.h"   /* mglRenderPassForceSafeFallbackForTest */
 #include "mgl_render_api_texture.h"
 #include "mgl_buffer_backend.h"
 
@@ -28020,7 +28021,8 @@ cleanup:
  *
  * Phase A (flag unset): the AIR final pipeline renders the green triangle;
  * the safe assets must not leak into the normal path.
- * Phase B (MGL_FORCE_SAFE_FALLBACK_PIPELINE=1): pipeline creation throws a
+ * Phase B (safe-fallback test hook armed via
+ * mglRenderPassForceSafeFallbackForTest): pipeline creation throws a
  * synthetic exception before the real PSO build; the virtualized-AGX safe
  * branch must resolve functions from the embedded asset and create a usable
  * PSO.  Its shaders output a degenerate center triangle, so the probe keeps
@@ -28098,13 +28100,11 @@ static int test_air_pipeline_safe_fallback(unsigned char *pixels,
      * (degenerate) safe shaders must have replaced the green program. */
     clear_color(0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    setenv("MGL_FORCE_SAFE_FALLBACK_PIPELINE", "1", 1);
-    mgl_env_flag_cache_invalidate();
+    mglRenderPassForceSafeFallbackForTest(1);
     glUseProgram(programB);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glFinish();
-    unsetenv("MGL_FORCE_SAFE_FALLBACK_PIPELINE");
-    mgl_env_flag_cache_invalidate();
+    mglRenderPassForceSafeFallbackForTest(0);
     glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     {
         const unsigned char *c =

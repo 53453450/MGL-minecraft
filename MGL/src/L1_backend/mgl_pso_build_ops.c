@@ -59,6 +59,15 @@ extern GLuint mglRendererSafeFramebufferName(GLMContext ctx);
 /* The renderer's alpha-should-be-one guard for the ultimate fallback. */
 static const int kMglPdVerbosePipelineLogs = 0;
 
+/* See mgl_pso_build_ops.h: the safe-fallback test hook is process state, not
+ * an environment variable, so it cannot be armed by a stray export. */
+static int s_forceSafeFallbackForTest = 0;
+
+void mglRenderPassForceSafeFallbackForTest(int enabled)
+{
+    s_forceSafeFallbackForTest = enabled ? 1 : 0;
+}
+
 /* C-callable bridge for the stub factory (declared in the .m; log 172). */
 extern void *mglRenderPassDiscardStubFragmentFunction(uint32_t valueClass);
 
@@ -252,9 +261,10 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
         /* Test hook (air_pipeline_safe_fallback regression): force the
          * pipeline-creation exception so the safe-fallback branch below is
          * exercised deterministically.  The exception is synthetic, so the C
-         * path records the failure and runs the same catch logic. */
-        if (mgl_env_flag_enabled("MGL_FORCE_SAFE_FALLBACK_PIPELINE")) {
-            fprintf(stderr, "MGL TEST: forcing safe-fallback pipeline path\n");
+         * path records the failure and runs the same catch logic.  Armed only
+         * through mglRenderPassForceSafeFallbackForTest(), never an env var. */
+        if (s_forceSafeFallbackForTest) {
+            fprintf(stderr, "MGL TEST HOOK: forcing safe-fallback pipeline path\n");
             failed = 1;
             hookFailure = 1;
         } else {
@@ -557,8 +567,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
                 fprintf(stderr, "MGL CRITICAL: %s\n", cppError);
             }
         }
-        const int forceSafeFallback =
-            mgl_env_flag_enabled("MGL_FORCE_SAFE_FALLBACK_PIPELINE");
+        const int forceSafeFallback = s_forceSafeFallbackForTest;
         if (!MGLCapabilityHasBug(areas.core ? &areas.core->capability : NULL,
                                  MGL_BUG_MSL_PIPELINE_REJECTION) &&
             !forceSafeFallback) {

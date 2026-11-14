@@ -57,6 +57,17 @@ void mglRenderPassInsertPipelineStateIntoCache(
     uint64_t vertexSig, const struct MGLRenderPipelineDescriptorState *state,
     void *vertexFunction, void *fragmentFunction, int stateFromCache);
 
+/* Test hook: force the virtualized-AGX safe-fallback branch on the next
+ * pipeline build, so the emergency path is exercised deterministically.
+ *
+ * Deliberately a function rather than an environment variable.  The fallback
+ * replaces the program's pipeline with a degenerate stub, so anything that can
+ * set it by accident (a stray MGL_* variable exported in a shell profile, a
+ * launcher wrapper) would silently turn rendering into "clear color only".
+ * The only legitimate caller is the air_pipeline_safe_fallback regression,
+ * which links this library directly. */
+void mglRenderPassForceSafeFallbackForTest(int enabled);
+
 #ifdef __cplusplus
 }
 #endif
