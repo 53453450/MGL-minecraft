@@ -40,11 +40,34 @@ namespace air {
 
 /* cg.lvalues is keyed by name rather than scope, so a control-flow merge can
  * see different LLVM types for the same source identifier.  Keep every PHI
- * edge type-correct instead of letting LLVM assert while appending it. */
+ * edge type-correct instead of letting LLVM assert while appending it.
+ *
+ * The substitution is a silent-wrong-value hazard, so it is counted and
+ * reported: a mismatch here means an lvalue was rebound to another type
+ * inside a branch, and the merged value is undefined on that edge. */
 static void addPhiIncoming(llvm::PHINode *phi, llvm::Value *value,
                            llvm::BasicBlock *bb) {
-    if (value->getType() != phi->getType())
+    if (value->getType() != phi->getType()) {
+        static unsigned s_typeMismatchCount = 0u;
+        if (s_typeMismatchCount < 32u) {
+            const llvm::Type *want = phi->getType();
+            const llvm::Type *got = value->getType();
+            fprintf(stderr,
+                    "MGL WARNING: PHI incoming type mismatch in '%s' "
+                    "(want kind=%d bits=%llu, got kind=%d bits=%llu); "
+                    "substituting undef on this edge (hit=%u)\n",
+                    phi->getParent()->getParent()
+                        ? phi->getParent()->getParent()->getName().str().c_str()
+                        : "?",
+                    (int)want->getTypeID(),
+                    (unsigned long long)want->getPrimitiveSizeInBits(),
+                    (int)got->getTypeID(),
+                    (unsigned long long)got->getPrimitiveSizeInBits(),
+                    s_typeMismatchCount + 1u);
+            s_typeMismatchCount++;
+        }
         value = llvm::UndefValue::get(phi->getType());
+    }
     phi->addIncoming(value, bb);
 }
 
@@ -1083,6 +1106,8 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
     }
     default:
         cg.err = 1;
+        cg.errmsg = std::string("codegen: unhandled statement kind ") +
+                    std::to_string((int)st->kind);
         break;
     }
 }

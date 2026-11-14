@@ -1989,7 +1989,13 @@ static llvm::Value *readIndexChain(Codegen &cg, const MGLExpr *e,
         }
         return emitSwizzleValue(cg, obj, idx);
     }
-    if (e->kind != MGL_EXPR_INDEX) { cg.err = 1; return nullptr; }
+    if (e->kind != MGL_EXPR_INDEX) {
+        cg.err = 1;
+        cg.errmsg = std::string("codegen: index-path update on a non-index "
+                                "expression (kind ") +
+                    std::to_string((int)e->kind) + ")";
+        return nullptr;
+    }
     llvm::Value *obj = readIndexChain(cg, e->u.index.object, rootVal, mod,
                                       locals);
     if (!obj) return nullptr;
@@ -2065,7 +2071,12 @@ static llvm::Value *updateIndexPath(Codegen &cg, const MGLExpr *lhs,
         if (objE->kind == MGL_EXPR_VAR_REF) return newObj;
         return updateIndexPath(cg, objE, rootVal, newObj, mod, locals);
     }
-    if (lhs->kind != MGL_EXPR_INDEX) { cg.err = 1; return nullptr; }
+    if (lhs->kind != MGL_EXPR_INDEX) {
+        cg.err = 1;
+        cg.errmsg = "codegen: indexed compound assignment target is not an "
+                    "index expression";
+        return nullptr;
+    }
     const MGLExpr *objE = lhs->u.index.object;
     MType objT = exprType(cg, objE, mod, locals);
     llvm::Value *objVal;
@@ -2082,7 +2093,11 @@ static llvm::Value *updateIndexPath(Codegen &cg, const MGLExpr *lhs,
     llvm::Value *idx = emitExpr(cg, lhs->u.index.index, mod, locals);
     if (!idx) return nullptr;
     llvm::Value *newObj = insertIndexValue(cg, objVal, objT, idx, val);
-    if (!newObj) { cg.err = 1; return nullptr; }
+    if (!newObj) {
+        cg.err = 1;
+        cg.errmsg = "codegen: failed to insert a value into an indexed lvalue";
+        return nullptr;
+    }
     if (objE->kind == MGL_EXPR_VAR_REF) return newObj;
     return updateIndexPath(cg, objE, rootVal, newObj, mod, locals);
 }
@@ -6397,7 +6412,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             return varValue(cg, VarSym{e->u.var_ref.name, lit->second, VarSym::LOCAL},
                             mod);
         const MGLIRSymbol *s = findSymbol(mod, e->u.var_ref.name);
-        if (!s) { cg.err = 1; return nullptr; }
+        if (!s) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: unknown identifier '") +
+                        e->u.var_ref.name + "' (no local slot, no symbol)";
+            return nullptr;
+        }
         if ((s->qualifiers & MGL_AST_Q_CONST) &&
             cg.lvalues.count(e->u.var_ref.name)) {
             /* Const values folded from global initializers above.  Non-const
@@ -6759,7 +6779,13 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
         /* Swizzle only in M1. */
         std::vector<uint32_t> idx;
-        if (!swizzleIndices(e->u.member.field, &idx)) { cg.err = 1; return nullptr; }
+        if (!swizzleIndices(e->u.member.field, &idx)) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: '") +
+                        (e->u.member.field ? e->u.member.field : "?") +
+                        "' is not a valid swizzle";
+            return nullptr;
+        }
         llvm::Value *obj = emitExpr(cg, e->u.member.object, mod, locals);
         if (!obj) return nullptr;
         if (!obj->getType()->isVectorTy() &&
@@ -8237,7 +8263,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
 
         /* x op= y where x is a named lvalue. */
         if (lhs->kind != MGL_EXPR_VAR_REF) {
-            cg.err = 1; return nullptr;
+            cg.err = 1;
+            cg.errmsg = "codegen: compound assignment target is not a "
+                        "variable reference";
+            return nullptr;
         }
         const char *name = lhs->u.var_ref.name;
         VarSym *patchOutput = cg.isTessControl
@@ -8273,7 +8302,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 t.scalar = MGLIR_SCALAR_FLOAT;
             } else {
                 sym = findSymbol(mod, name);
-                if (!sym) { cg.err = 1; return nullptr; }
+                if (!sym) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: assignment target '") +
+                                name + "' is not a declared symbol";
+                    return nullptr;
+                }
                 t = typeFromIR(sym->type);
             }
             uint32_t binop = 0;
@@ -8345,6 +8379,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (strcmp(name, "gl_PrimitiveID") == 0) {
             if (!cg.isGeometry) {
                 cg.err = 1;
+                cg.errmsg = "codegen: gl_PrimitiveID written outside a "
+                            "geometry shader";
                 return nullptr;
             }
             cg.primitiveIdWritten = true;
@@ -8382,7 +8418,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             return v;
         }
         const MGLIRSymbol *sym = findSymbol(mod, name);
-        if (!sym) { cg.err = 1; return nullptr; }
+        if (!sym) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: assignment target '") + name +
+                        "' is not a declared symbol";
+            return nullptr;
+        }
         v = coerceScalar(cg, v, typeFromIR(sym->type).scalar);
         {
             auto amit = cg.arrayMem.find(name);
