@@ -394,8 +394,6 @@ static void *mglPdCreateTexture(const MGLRenderTextureDescriptorState *desc)
     return NULL;
 }
 
-static uint64_t mglPdMaxU64(uint64_t a, uint64_t b) { return a > b ? a : b; }
-
 /* -checkDrawBufferSize: */
 int mglRenderPassCheckDrawBufferSize(void *renderer, unsigned int index)
 {

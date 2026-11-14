@@ -548,30 +548,6 @@ static int mglRsActionsFor(const MGLCommandState *commandState,
     return 0;
 }
 
-static uint32_t mglRsLoadActionFor(const MGLCommandState *commandState,
-                                   uint32_t attachmentKind, uint64_t colorIndex,
-                                   uint32_t fallback)
-{
-    uint32_t action = 0u;
-    if (mglRsActionsFor(commandState, attachmentKind, colorIndex, &action, NULL,
-                        NULL)) {
-        return action;
-    }
-    return fallback;
-}
-
-static uint32_t mglRsStoreActionFor(const MGLCommandState *commandState,
-                                    uint32_t attachmentKind,
-                                    uint64_t colorIndex, uint32_t fallback)
-{
-    uint32_t action = 0u;
-    if (mglRsActionsFor(commandState, attachmentKind, colorIndex, NULL, &action,
-                        NULL)) {
-        return action;
-    }
-    return fallback;
-}
-
 /* mglRenderPassSetPersistentDimensions. */
 static void mglRsSetPersistentDimensions(const MGLCommandState *commandState,
                                          uint64_t width, uint64_t height)

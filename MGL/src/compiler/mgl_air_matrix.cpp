@@ -238,26 +238,6 @@ llvm::Value *emitMatrixBuiltin(Codegen &cg, const MGLExpr *e,
 }
 
 
-/* Resolve a sampler argument: a global sampler2D uniform (cg.resources.texValues)
- * or a user-function parameter bound in cg.lvalues. */
-static llvm::Value *samplerTexValue(Codegen &cg, const char *name) {
-    auto t = cg.resources.texValues.find(name);
-    if (t != cg.resources.texValues.end()) return t->second;
-    auto l = cg.lvalues.find(name);
-    if (l != cg.lvalues.end()) return l->second;
-    return nullptr;
-}
-
-/* Scalar base for an LLVM type, used to coerce call arguments. */
-static MGLIRScalar scalarFromType(llvm::Type *t) {
-    if (auto *fv = llvm::dyn_cast<llvm::FixedVectorType>(t))
-        t = fv->getElementType();
-    if (t->isFloatingPointTy()) return MGLIR_SCALAR_FLOAT;
-    if (t->isIntegerTy(1)) return MGLIR_SCALAR_BOOL;
-    if (t->isIntegerTy(32)) return MGLIR_SCALAR_INT;
-    return MGLIR_SCALAR_FLOAT;
-}
-
 /* Call a named AIR function (e.g. air.pack.unorm2x16.v2f32); the module
  * declaration is created on first use. */
 llvm::Value *callAirFn(Codegen &cg, const char *fn, llvm::Type *retTy,

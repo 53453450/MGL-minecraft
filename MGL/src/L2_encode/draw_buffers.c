@@ -758,22 +758,6 @@ static MGLShaderResource *mglCPUFeedbackFindVertexOutput(Program *program, const
     return NULL;
 }
 
-static MGLShaderResource *mglCPUFeedbackFindVertexInputAtLocation(Program *program, GLuint location)
-{
-    if (!program) {
-        return NULL;
-    }
-
-    MGLShaderResourceList *inputs =
-        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
-    for (GLuint i = 0; inputs->list && i < inputs->count; i++) {
-        if (inputs->list[i].location == location) {
-            return &inputs->list[i];
-        }
-    }
-    return NULL;
-}
-
 static MGLShaderResource *mglCPUFeedbackFindVertexInputByName(Program *program, const char *name)
 {
     if (!program || !name) {

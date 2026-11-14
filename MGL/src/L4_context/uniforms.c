@@ -192,25 +192,6 @@ static GLboolean mglSafeCStringEquals(const char *lhs, const char *rhs)
     return memcmp(lhs, rhs, lhsLength + 1u) == 0 ? GL_TRUE : GL_FALSE;
 }
 
-static GLboolean mglSafeCStringContains(const char *haystack, const char *needle)
-{
-    size_t hay_len = 0u;
-    size_t needle_len = 0u;
-
-    if (!mglSafeCStringLength(haystack, &hay_len) ||
-        !mglSafeCStringLength(needle, &needle_len)) {
-        return GL_FALSE;
-    }
-    if (needle_len == 0u) {
-        return GL_TRUE;
-    }
-    if (needle_len > hay_len) {
-        return GL_FALSE;
-    }
-
-    return strstr(haystack, needle) != NULL ? GL_TRUE : GL_FALSE;
-}
-
 static const char *mglSafeCStringForLog(const char *str)
 {
     return mglSafeCStringLength(str, NULL) ? str : "(invalid)";
