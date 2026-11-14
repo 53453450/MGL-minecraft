@@ -84,13 +84,6 @@ static GLMState *mglPdStateOf(const MGLRendererStateView *areas)
     return areas->ctx ? areas->ctx->active_state : NULL;
 }
 
-static MGLRenderTextureInfo mglPdTextureInfo(void *texture)
-{
-    MGLRenderTextureInfo info = {0};
-    if (texture) (void)mglRenderGetTextureInfo(texture, &info);
-    return info;
-}
-
 /* === render-pass state twins ========================================== */
 
 static const MGLRenderPassAttachmentState *mglPdAttachmentStateFromSnapshot(

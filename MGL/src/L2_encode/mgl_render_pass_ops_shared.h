@@ -47,7 +47,6 @@ int mglPdCreateRenderEncoderTryBody(void *renderer, void *rawCtx);
 int mglPdCommitCommandBufferTryBody(void *renderer, void *rawCtx);
 
 
-MGLRenderTextureInfo mglPdTextureInfo(void *texture);
 uint32_t mglPdStubFSValueClass(uint32_t fmt);
 uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 void *mglRenderPassDiscardStubFragmentFunction(uint32_t valueClass);

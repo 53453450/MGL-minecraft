@@ -529,25 +529,6 @@ static uint64_t mglRsRenderTargetHeightFor(const MGLCommandState *commandState)
     return 0;
 }
 
-/* mglRenderPassActionsFor (load/store action of one attachment). */
-static int mglRsActionsFor(const MGLCommandState *commandState,
-                           uint32_t attachmentKind, uint64_t colorIndex,
-                           uint32_t *loadActionOut, uint32_t *storeActionOut,
-                           uint64_t *storeActionOptionsOut)
-{
-    MGLRenderPassAttachmentState attachment = {0};
-    if (mglRsPersistentAttachment(commandState, attachmentKind, colorIndex,
-                                  &attachment)) {
-        if (loadActionOut) *loadActionOut = (uint32_t)attachment.load_action;
-        if (storeActionOut) *storeActionOut = (uint32_t)attachment.store_action;
-        if (storeActionOptionsOut) {
-            *storeActionOptionsOut = attachment.store_action_options;
-        }
-        return 1;
-    }
-    return 0;
-}
-
 /* mglRenderPassSetPersistentDimensions. */
 static void mglRsSetPersistentDimensions(const MGLCommandState *commandState,
                                          uint64_t width, uint64_t height)

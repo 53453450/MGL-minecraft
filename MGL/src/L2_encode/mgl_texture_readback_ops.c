@@ -74,17 +74,9 @@ extern void mglMetalCopyRows(const uint8_t *src, uint64_t src_bytes_per_row,
                              uint64_t copy_bytes_per_row, uint64_t row_count,
                              signed char flip_y);
 
-/* Twin of the .m's mglTextureInfo (and of the same helper in
- * mgl_render_pass_manager_ops.c). */
-static MGLRenderTextureInfo mglPdTextureInfo(void *texture)
-{
-    MGLRenderTextureInfo info = {0};
-    if (texture) (void)mglRenderGetTextureInfo(texture, &info);
-    return info;
-}
-
-static uint64_t mglPdMaxU64(uint64_t a, uint64_t b) { return a > b ? a : b; }
+/* Scalar min/max helpers for the readback size arithmetic. */
 static uint64_t mglPdMinU64(uint64_t a, uint64_t b) { return a < b ? a : b; }
+static uint64_t mglPdMaxU64(uint64_t a, uint64_t b) { return a > b ? a : b; }
 static int64_t mglPdMaxI64(int64_t a, int64_t b) { return a > b ? a : b; }
 static int64_t mglPdMinI64(int64_t a, int64_t b) { return a < b ? a : b; }
 

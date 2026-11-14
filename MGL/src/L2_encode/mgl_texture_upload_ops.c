@@ -182,14 +182,6 @@ static const int kMglPdSynchronizeTextureUploads = 0;
 static const double kMglPdTextureUploadWaitTimeoutSeconds = 0.25;
 static const int kMglPdUseDedicatedTextureUploadCommandBuffer = 0;
 
-/* Twin of the .m's mglTextureInfo. */
-static MGLRenderTextureInfo mglPdTextureInfo(void *texture)
-{
-    MGLRenderTextureInfo info = {0};
-    if (texture) (void)mglRenderGetTextureInfo(texture, &info);
-    return info;
-}
-
 /* The Objective-C header's mglMarkTextureLevelMetalFilled is a static inline
  * there; this is the C twin (same shape as mgl_blit_drivers.c's). */
 extern int mglRendererShouldSkipGPUOperations(void *renderer);

@@ -62,13 +62,6 @@ static const int kMglPdVerbosePipelineLogs = 0;
 /* C-callable bridge for the stub factory (declared in the .m; log 172). */
 extern void *mglRenderPassDiscardStubFragmentFunction(uint32_t valueClass);
 
-static MGLRenderTextureInfo mglPdTextureInfo(void *texture)
-{
-    MGLRenderTextureInfo info = {0};
-    if (texture) (void)mglRenderGetTextureInfo(texture, &info);
-    return info;
-}
-
 static void *mglPdAttachmentTextureFor(const MGLCommandState *commandState,
                                        uint32_t attachmentKind,
                                        size_t colorIndex)

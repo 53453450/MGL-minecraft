@@ -1,9 +1,8 @@
 # Function names already defined in more than one MGL/src file.
 # See scripts/check_c_duplicates.py; remove a name once it is deduplicated.
 
-# AIR backend: emitStmt facade overload; scalarFromType static copy
+# AIR backend: emitStmt facade overload
 emitStmt
-scalarFromType
 
 # GLSL lexer and legacy-compat rewriter
 is_ident_char
@@ -36,7 +35,6 @@ mglPdStencilTextureFor
 mglPdStoreActionFor
 mglPdStubFSValueClass
 mglPdTextureBufferContents
-mglPdTextureInfo
 
 # mgl_renderer_entries.c / mgl_renderer_host.c
 mglRendererMakeClearColor

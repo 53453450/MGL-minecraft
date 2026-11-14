@@ -99,13 +99,6 @@ static GLMState *mglPdState(const MGLRendererStateAreas *areas) /* C5-EXEMPT: re
 
 static uint64_t mglPdMaxU64(uint64_t a, uint64_t b) { return a > b ? a : b; }
 
-static MGLRenderTextureInfo mglPdTextureInfo(void *texture)
-{
-    MGLRenderTextureInfo info = {0};
-    if (texture) (void)mglRenderGetTextureInfo(texture, &info);
-    return info;
-}
-
 /* Twin of the .m's mglRendererCreateTextureFromState (returns the +1 handle). */
 static void *mglPdCreateTextureFromState(
     const MGLRenderTextureDescriptorState *state)

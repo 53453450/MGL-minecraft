@@ -377,6 +377,13 @@ int mglRenderDestroyTextureStagingOwnerAfterCommandBuffer(
 int mglRenderGetTextureInfo(const void *texture,
                                MGLRenderTextureInfo *info_out);
 
+/* Texture info fetched through the port above, zero-filled for a NULL handle.
+ * Defined once in the render-pass port (mgl_render_pass_fbo_desc.c) and
+ * declared here so the L1/L2 TUs that need it stop carrying private static
+ * copies — four had accumulated, and the NULL contract had to be kept in
+ * sync by hand in each of them. */
+MGLRenderTextureInfo mglPdTextureInfo(void *texture);
+
 int mglRenderTextureIsFramebufferOnly(const void *texture);
 
 /* C++ owns and releases the temporary MTL::TextureDescriptor. The C ABI
