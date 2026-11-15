@@ -57,23 +57,8 @@ void mglRegisterGeometryStage(GLMContext ctx,
     s_geom_stages[s_geom_stage_count++] = *st;
 }
 
-size_t mglGeometryStageCount(void)
-{
-    return s_geom_stage_count;
-}
 
-const MGLGeometryPipelineStage *mglGeometryStageAt(size_t index)
-{
-    if (index >= s_geom_stage_count) {
-        return NULL;
-    }
-    return &s_geom_stages[index];
-}
 
-int mglPendingDrawsReferenceBuffer(GLMContext ctx, struct Buffer *buf)
-{
-    return mglPendingDrawsReadBufferRange(ctx, buf, 0, -1) ? 1 : 0;
-}
 
 void *mglFrameArenaAlloc(GLMContext ctx, size_t n)
 {

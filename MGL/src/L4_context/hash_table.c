@@ -618,15 +618,6 @@ void initHashTable(HashTable *ptr, GLuint size)
     }
 }
 
-HashTable *createHashTable(GLuint size)
-{
-    HashTable *table = (HashTable *)calloc(1, sizeof(HashTable));
-    if (!table) {
-        return NULL;
-    }
-    initHashTable(table, size);
-    return table;
-}
 
 void destroyHashTable(HashTable *ptr)
 {

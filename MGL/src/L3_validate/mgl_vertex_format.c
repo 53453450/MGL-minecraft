@@ -50,15 +50,7 @@ double mglDecodeVertexAttribComponent(const uint8_t *src,
 
 /* === Pipeline signature === */
 
-uint64_t mglVertexDescriptorSignature(const void *vertexDescriptor)
-{
-    return mglRenderVertexDescriptorSignature(vertexDescriptor);
-}
 
-uint64_t mglPipelineDescriptorSignature(const void *pipelineStateDescriptor)
-{
-    return mglRenderPipelineDescriptorSignature(pipelineStateDescriptor);
-}
 
 uint32_t mglMaybeInvertMTLWinding(uint32_t winding, bool invert)
 {

@@ -118,10 +118,6 @@ void mgl_lazy_init(void) {
     }
 }
 
-GLMContext mglGetContext(void)
-{
-    return _ctx;
-}
 
 static GLuint mglLinearDefaultFramebufferFormat(GLuint pixel_format)
 {

@@ -376,12 +376,6 @@ double mglDecodeVertexAttribComponent(const uint8_t *src,
 
 /* === Pipeline signature === */
 
-/* FNV-1a hash of a MTLVertexDescriptor for pipeline cache keys. */
-uint64_t mglVertexDescriptorSignature(const void *vertexDescriptor);
-
-/* FNV-1a hash of a MTLRenderPipelineDescriptor for pipeline cache keys. */
-uint64_t mglPipelineDescriptorSignature(const void *pipelineStateDescriptor);
-
 /* Value-state signature. Field order must remain stable because it defines the
  * pipeline-cache key. The complete state is defined in mgl_render_api_query.h. */
 typedef struct MGLRenderPipelineDescriptorState

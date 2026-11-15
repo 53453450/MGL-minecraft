@@ -70,7 +70,6 @@ void *mglPassManagerDetachPendingEventWithSyncName(MGLRenderPassManager *manager
 void mglPassManagerInstallRenderEncoder(MGLRenderPassManager *manager,
                                         void *render_encoder);
 void *mglPassManagerCreateRenderEncoder(MGLRenderPassManager *manager);
-void mglPassManagerEndCurrentRenderEncoder(MGLRenderPassManager *manager);
 void mglPassManagerClearCurrentRenderEncoder(MGLRenderPassManager *manager);
 void mglPassManagerEndCommandBufferCommit(MGLRenderPassManager *manager);
 void mglPassManagerResetMDIScratch(MGLRenderPassManager *manager);

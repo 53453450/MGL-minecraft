@@ -68,7 +68,6 @@ int mglRenderPipelineFormatCompatible(uint32_t cached, uint32_t built);
 int mglRenderSkipInvalidColorAttachment(uint32_t format);
 int mglRenderPixelFormatIsInvalid(uint32_t format);
 uint32_t mglRenderInvalidPixelFormat(void);
-uint32_t mglRenderAttachmentFormatOrInvalid(int has_metal, uint32_t mapped);
 int mglRenderPassUnifyPackedDS(uint32_t depth_format, uint32_t stencil_format,
                                uint32_t *out_format);
 int mglRenderClearRectPipelineReady(int writes_color, uint32_t color_format,

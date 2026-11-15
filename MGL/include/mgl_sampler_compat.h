@@ -43,10 +43,6 @@ extern "C" {
 
 /* === Program shader resource queries === */
 
-/* Returns true if `program` has any sampled/separate/storage image resource
- * whose image_dim equals `imageDim` (cube = 3). */
-bool mglProgramHasImageDim(Program *program, GLuint imageDim);
-
 /* Returns true if `program` has a resource of the given stage/type whose
  * name matches.  Safe-guards against NULL program/name and out-of-range
  * stage/type. */

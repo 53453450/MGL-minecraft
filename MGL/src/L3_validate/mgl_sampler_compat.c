@@ -41,35 +41,6 @@
 
 /* === Program shader resource queries === */
 
-bool mglProgramHasImageDim(Program *program, GLuint imageDim)
-{
-    if (!program) {
-        return false;
-    }
-
-    const int resourceTypes[] = {
-        _SAMPLED_IMAGE_RES,
-        _SEPARATE_IMAGE_RES,
-        _STORAGE_IMAGE_RES
-    };
-
-    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-        for (size_t t = 0; t < sizeof(resourceTypes) / sizeof(resourceTypes[0]); t++) {
-            int type = resourceTypes[t];
-            if (type < 0 || type >= MGL_MAX_SHADER_RESOURCES) {
-                continue;
-            }
-            MGLShaderResourceList *resources = &program->shader_resources_list[stage][type];
-            for (GLuint i = 0; i < resources->count; i++) {
-                if (resources->list[i].image_dim == imageDim) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    return false;
-}
 
 bool mglProgramHasResourceName(Program *program,
                                int stage,

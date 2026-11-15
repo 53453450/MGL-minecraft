@@ -78,7 +78,6 @@ int mglRenderRasterizationIsEmpty(
 int mglRenderExpandQuadArrayIndices(
     uint32_t quad_count, uint32_t **out_indices, uint64_t *out_count);
 
-int mglRenderClipOriginIsLowerLeft(uint32_t origin);
 
 int mglRenderEmulateTriangleFan(uint32_t mode, int polygon_point);
 

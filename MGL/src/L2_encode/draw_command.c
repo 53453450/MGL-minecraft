@@ -75,16 +75,6 @@ void mglGetCommandBufferOccupancyPeaks(MGLCommandBufferOccupancyPeaks *out)
     out->pending_vao_names = s_peak_pending_vao_names;
 }
 
-void mglResetCommandBufferOccupancyPeaks(void)
-{
-    s_peak_buffer_read_ranges = 0;
-    s_peak_texture_writes = 0;
-    s_peak_texture_reads = 0;
-    s_peak_sampler_snapshot_keys = 0;
-    s_peak_sampler_snapshot_sets = 0;
-    s_peak_pending_vao_refs = 0;
-    s_peak_pending_vao_names = 0;
-}
 
 /* === Task 4: Snapshot Arena (bump allocator) === */
 
@@ -826,10 +816,6 @@ void mglResetCommandBufferForContext(GLMContext ctx, MGLCommandBuffer *cb)
     memset(cb, 0, sizeof(*cb));
 }
 
-void mglResetCommandBuffer(MGLCommandBuffer *cb)
-{
-    mglResetCommandBufferForContext(NULL, cb);
-}
 
 
 void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
@@ -1193,10 +1179,6 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     MGL_SIGNPOST_END(RecordDrawCommand);
 }
 
-void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
-{
-    mglRecordDrawCommand(ctx, cmd);
-}
 
 /*
  * mglFlushCommandBuffer — lowest-level flush, submitting the deferred draw

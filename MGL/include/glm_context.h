@@ -354,8 +354,6 @@ void mglInvalidateTextureBaseLevelView(GLMContext ctx, Texture *tex);
 
 Framebuffer *findFrameBuffer(GLMContext ctx, GLuint framebuffer);
 GLboolean mglFramebufferPrimaryColorSize(GLMContext ctx, Framebuffer *fbo, GLuint *outWidth, GLuint *outHeight);
-void mglSetViewportToFramebufferSize(GLMContext ctx, Framebuffer *fbo);
-void mglAssignDrawFramebuffer(GLMContext ctx, Framebuffer *fbo);
 Texture *mglAttachmentBackingTexture(const FBOAttachment *a);
 bool mglValidateReadFramebuffer(GLMContext ctx);
 /* GL 4.6 §9.4.4 / §10.4 / §17.4.3: draw/clear on an incomplete draw FBO. */

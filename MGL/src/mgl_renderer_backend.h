@@ -284,7 +284,6 @@ void mglContextDestroyRendererBackend(GLMContext context);
 
 /* Fixed renderer ABI. GL state calls these directly; capability is determined
  * once by mglRendererBackendIsReady rather than by nullable function slots. */
-void mglRendererBindBuffer(GLMContext context, Buffer *buffer);
 void mglRendererBindTexture(GLMContext context, Texture *texture);
 void mglRendererBindProgram(GLMContext context, Program *program);
 void mglRendererDeleteMetalObject(GLMContext context, void *object);

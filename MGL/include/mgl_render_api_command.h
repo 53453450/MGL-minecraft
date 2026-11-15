@@ -766,11 +766,6 @@ int mglRenderProcessCommandBufferCompletion(
     double now,
     MGLRenderCommandBufferCompletionResult *result_out);
 
-/* Register the standard command-recovery completion handler without capturing
- * an Objective-C renderer.  The C++ recovery owner records error/success
- * counters and latches a deferred-reset request for the GL thread. */
-int mglRenderAddCommandBufferRecoveryCompletion(void *command_buffer, MGLCommandBufferRecoveryOwner *recovery_owner);
-
 /* Consume a reset request latched by a completion worker. Returns 1 when a
  * request was consumed, 0 when none is pending, and -1 for invalid owner. */
 int mglRenderCommandRecoveryTakeResetRequest(MGLCommandBufferRecoveryOwner *recovery_owner);
@@ -920,9 +915,6 @@ int mglRenderSetRenderPassStateDimensions(MGLRenderPassStateOwner *owner, uint64
 int mglRenderCommandBufferSubmissionMatchesBuffer(void *submission_handle,
                                                      void *command_buffer);
 
-/* current-CB sync tracking list inside the C++ owner. */
-int mglRenderCommandBufferOwnerAppendSync(MGLCommandBufferOwner *owner_handle, Sync *sync);
-
 int mglRenderGetRenderPassStateOwner(MGLRenderPassStateOwner *owner, MGLRenderPassState *state_out);
 
 /* Returns a borrowed attachment snapshot. Object pointers remain owned by the
@@ -983,7 +975,6 @@ int mglRenderEncodeMultisampleResolveForCommandBufferOwner(MGLCommandBufferOwner
  * idempotent per owned encoder; destroy releases the retained reference. */
 int mglRenderCreateRenderEncoderOwnerFromState(void *command_buffer, const MGLRenderPassState *render_pass, MGLRenderEncoderOwner **owner_out, void **render_encoder_out);
 
-int mglRenderResetRenderEncoderOwnerFromState(MGLRenderEncoderOwner *owner, void *command_buffer, const MGLRenderPassState *render_pass, void **render_encoder_out);
 
 int mglRenderCreateRenderEncoderOwner(void *render_encoder, MGLRenderEncoderOwner **owner_out);
 

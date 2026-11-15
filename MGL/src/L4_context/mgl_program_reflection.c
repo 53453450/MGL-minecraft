@@ -373,10 +373,6 @@ const unsigned char *mglRenderProgramModuleMetallibBytes(const Program *program,
     return mglProgramModuleView(program, stage)->metallib_bytes;
 }
 
-size_t mglRenderProgramModuleMetallibSize(const Program *program, int stage)
-{
-    return mglProgramModuleView(program, stage)->metallib_size;
-}
 
 void mglRenderProgramSetModuleMetallib(Program *program, int stage,
                                        unsigned char *bytes, size_t size)

@@ -602,28 +602,6 @@ GLboolean mglFramebufferPrimaryColorSize(GLMContext ctx, Framebuffer *fbo, GLuin
     return GL_TRUE;
 }
 
-void mglSetViewportToFramebufferSize(GLMContext ctx, Framebuffer *fbo)
-{
-    GLuint width = 0u;
-    GLuint height = 0u;
-
-    if (!ctx) {
-        return;
-    }
-
-    if (fbo && mglFramebufferPrimaryColorSize(ctx, fbo, &width, &height)) {
-        STATE(viewport)[0] = 0;
-        STATE(viewport)[1] = 0;
-        STATE(viewport)[2] = (GLint)width;
-        STATE(viewport)[3] = (GLint)height;
-        STATE(viewport_array)[0][0] = 0.0f;
-        STATE(viewport_array)[0][1] = 0.0f;
-        STATE(viewport_array)[0][2] = (GLfloat)width;
-        STATE(viewport_array)[0][3] = (GLfloat)height;
-    }
-
-    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
-}
 
 static GLboolean mglFramebufferBufferIsColorAttachment(GLMContext ctx, GLenum buffer)
 {
@@ -793,20 +771,6 @@ static void mglFramebufferUseTemporaryReadDrawBinding(GLMContext ctx,
     mglFramebufferLoadDrawBuffer(ctx, drawFbo);
 }
 
-void mglAssignDrawFramebuffer(GLMContext ctx, Framebuffer *fbo)
-{
-    if (!ctx) {
-        return;
-    }
-
-    STATE(framebuffer) = fbo;
-    mglFramebufferSyncBindingNames(ctx);
-    mglFramebufferLoadDrawBuffer(ctx, fbo);
-    if (fbo) {
-        fbo->dirty_bits |= DIRTY_FBO_BINDING;
-    }
-    mglMarkStateDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE);
-}
 
 typedef struct MGLFramebufferBindingSnapshot_t {
     Framebuffer *draw_fbo;

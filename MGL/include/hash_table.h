@@ -52,7 +52,6 @@ typedef struct {
     size_t ptr_set_count;
 } HashTable;
 
-HashTable *createHashTable(GLuint size);
 void initHashTable(HashTable *ptr, GLuint size);
 void destroyHashTable(HashTable *ptr);
 GLuint getNewName(HashTable *table);

@@ -250,7 +250,6 @@ GLboolean mglBufferSlotIsReservedForStage(GLuint slot, int stage);
 
 /* Returns GL_TRUE if `slot` is reserved in ANY stage (conservative check
  * for callers that do not know the target stage). */
-GLboolean mglBufferSlotIsReserved(GLuint slot);
 
 /* Returns GL_TRUE for the legacy cross-route tessellation helper range 26..30
  * (factors, patch output/info, indirect params, TES gl_in).  It intentionally

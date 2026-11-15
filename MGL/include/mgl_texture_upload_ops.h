@@ -69,7 +69,6 @@ void mglTextureReUploadArrayLevel(void *renderer, Texture *tex, void *texture,
                                   uint32_t pixel_format, int face, int level,
                                   int texture1DArrayBackedBy2DArray,
                                   uint32_t tex_type);
-void mglTextureFillSmallGradient(void *renderer, void *texture, Texture *tex);
 void mglTextureFillSafeInitialContents(void *renderer, void *texture,
                                        Texture *tex, uint32_t pixel_format);
 

@@ -548,24 +548,6 @@ bool validate_program(GLMContext ctx, GLenum mode)
     return true;
 }
 
-GLsizei getTypeSize(GLenum type)
-{
-    switch(type)
-    {
-        case GL_UNSIGNED_BYTE:
-            return sizeof(unsigned char);
-
-        case GL_UNSIGNED_SHORT:
-            return sizeof(unsigned short);
-
-        case GL_UNSIGNED_INT:
-            return sizeof(unsigned int);
-    }
-
-    fprintf(stderr, "MGL WARNING: unsupported index type 0x%x\n", type);
-
-    return 0;
-}
 
 
 static bool mglResolveVertexAttribForCPUFeedback(VertexArray *vao,

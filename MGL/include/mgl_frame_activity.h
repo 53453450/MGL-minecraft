@@ -255,7 +255,6 @@ extern MGL_ATOMIC(uint64_t) g_mglClearEncoderFallbackSinceSwap;
 extern MGL_ATOMIC(uint64_t) g_mglClearFullCoverageDiscardSinceSwap;
 
 int mglPerfSummaryEnabled(void);
-int mglPerfLockTimingEnabled(void);
 uint64_t mglPerfSummaryInterval(void);
 void mglRecordBufferCowSnapshot(uint64_t bytes);
 

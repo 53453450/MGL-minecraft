@@ -894,13 +894,6 @@ void mglRenderPassUpdateCurrentRenderEncoder(void *renderer)
 }
 
 /* -updateViewportAndScissorLocked */
-void mglRenderPassUpdateViewportAndScissorLocked(void *renderer)
-{
-    if (!renderer) {
-        return;
-    }
-    mglRsUpdateViewportAndScissor(renderer);
-}
 
 static void mglRsUpdateViewportAndScissor(void *renderer)
 {

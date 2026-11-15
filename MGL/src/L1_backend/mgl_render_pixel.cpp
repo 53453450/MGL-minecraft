@@ -92,12 +92,6 @@ float mglRead16or32SourceFloat(const uint8_t* s, int idx,
     return fv;
 }
 
-uint8_t mglExpandUNormBitsTo8(uint32_t value, uint32_t bits) {
-    if (bits == 0u) return 0u;
-    if (bits >= 8u) return (uint8_t)(value >> (bits - 8u));
-    uint32_t maxv = (1u << bits) - 1u;
-    return (uint8_t)((value * 255u + (maxv / 2u)) / maxv);
-}
 
 uint32_t mglRenderDepth24Stencil8ToFloatBits(const uint8_t* src) {
     uint32_t packed = 0u;

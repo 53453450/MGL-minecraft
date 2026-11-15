@@ -1563,9 +1563,6 @@ int mglRenderMSSamplePlaneAdjust(int in_ms_loop, uint32_t target,
 }
 
 
-int mglRenderClipOriginIsLowerLeft(uint32_t origin) {
-    return origin == GL_LOWER_LEFT ? 1 : 0;
-}
 
 int mglRenderErrorIsNone(uint32_t error) {
     return error == GL_NO_ERROR ? 1 : 0;
@@ -3138,22 +3135,6 @@ void mglRenderFillFragCoordSlot(int use_fragcoord, int use_sample,
     out[3] = use_sample ? sb_as_float : 0.f;
 }
 
-void mglRenderClampLodBiasArray(float *bias, uint32_t count, float biasmax) {
-    if (!bias) {
-        return;
-    }
-    for (uint32_t i = 0u; i < count; i++) {
-        float v = bias[i];
-        if (biasmax > 0.f) {
-            if (v > biasmax) {
-                v = biasmax;
-            } else if (v < -biasmax) {
-                v = -biasmax;
-            }
-        }
-        bias[i] = v;
-    }
-}
 
 
 

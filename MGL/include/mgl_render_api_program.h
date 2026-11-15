@@ -39,7 +39,6 @@ void mglRenderProgramClearCapturedModuleBackend(void *blob, size_t blob_bytes,
 /* Stage metallib accessors — FE must not touch MGLShaderModuleBackend. */
 const unsigned char *mglRenderProgramModuleMetallibBytes(const Program *program,
                                                          int stage);
-size_t mglRenderProgramModuleMetallibSize(const Program *program, int stage);
 void mglRenderProgramSetModuleMetallib(Program *program, int stage,
                                        unsigned char *bytes, size_t size);
 void mglRenderProgramSetModuleTessCaptureMetallib(Program *program, int stage,

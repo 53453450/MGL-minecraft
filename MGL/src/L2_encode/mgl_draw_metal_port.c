@@ -114,14 +114,6 @@ uint64_t mglDrawSupportBufferLength(void * buffer)
         buffer, &info) == 0 ? info.length : 0u;
 }
 
-MGLRenderTextureInfo mglDrawSupportTextureInfo(void * texture)
-{
-    MGLRenderTextureInfo info = {0};
-    if (texture) {
-        (void)mglRenderGetTextureInfo(texture, &info);
-    }
-    return info;
-}
 
 bool mglDrawSupportEncodeContextIsActive(
     const MGLEncodeContext *encodeContext)
@@ -501,21 +493,7 @@ void mglDrawSupportCaptureMarkDirtyAll(void *ctx_ptr)
     }
 }
 
-int mglDrawSupportCaptureProcessGL(void *renderer)
-{
-    return mglRenderPassProcessGLStateLocked(renderer, 1);
-}
 
-int mglDrawSupportCaptureEncoderReady(void *renderer)
-{
-    if (!renderer) return 0;
-    MGLRendererStateView areas;
-    mglRendererFillStateView(renderer, &areas);
-    return mglRenderEncoderOwnerHasCurrent(
-               areas.command ? areas.command->currentRenderEncoderOwner : NULL) == 1
-               ? 1
-               : 0;
-}
 
 void mglDrawSupportCaptureBindSlots(void *renderer, void *capture,
                                            const uint32_t *params)

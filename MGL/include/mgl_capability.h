@@ -73,8 +73,6 @@ extern "C" {
 void MGLCapabilityInit(MGLCapability *cap, void *deviceRef);
 
 /* === Capability query API === */
-bool       MGLCapabilitySupportsSampleCount(MGLCapability *cap, uint64_t samples);
-uint64_t   MGLCapabilityClampSampleCount(MGLCapability *cap, uint64_t requested);
 uint64_t   MGLCapabilityTextureAlignment(MGLCapability *cap);
 bool       MGLCapabilityUseConservativeCPUCache(MGLCapability *cap);
 uint64_t   MGLCapabilityMaxConcurrentCommandBuffers(MGLCapability *cap);

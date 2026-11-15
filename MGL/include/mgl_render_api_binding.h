@@ -230,7 +230,6 @@ void mglRenderFillFragCoordSlot(int use_fragcoord, int use_sample,
                                 int ms_loop, uint32_t forced_sample_id,
                                 int point_coord_lower_left, float out[5]);
 
-void mglRenderClampLodBiasArray(float *bias, uint32_t count, float biasmax);
 
 /* Per-draw binding snapshot. GL-side deduplication and accounting determine
  * which bindings are emitted; the backend replays the resulting operation list. */
@@ -650,13 +649,9 @@ int mglRenderBindingGetPipelineState(MGLBindingState *binding_state, void **pipe
 
 int mglRenderBindingGetDepthStencilState(MGLBindingState *binding_state, void **depth_stencil_state_out);
 
-void mglRenderBindingSetCullMode(MGLBindingState *binding_state, uint32_t mode);
 
-void mglRenderBindingSetWinding(MGLBindingState *binding_state, uint32_t winding);
 
-void mglRenderBindingSetDepthBias(MGLBindingState *binding_state, float bias, float clamp, float slope_scale);
 
-void mglRenderBindingSetBlendColor(MGLBindingState *binding_state, float red, float green, float blue, float alpha);
 
 int mglRenderBindingSetPipelineIfNeeded(MGLBindingState *binding_state, void *render_encoder, void *pipeline_state);
 

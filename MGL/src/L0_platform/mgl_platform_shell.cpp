@@ -3184,12 +3184,6 @@ void *CppCreateMGLRendererHeadless(void *glm_ctx)
     return (void *)renderer;
 }
 
-void *CppCreateMGLRendererAndBindToContext(void *glm_ctx)
-{
-    /* Compatibility export used by reference libMGL.dylib.
-     * Falls back to headless binding when no Cocoa window is supplied. */
-    return CppCreateMGLRendererHeadless(glm_ctx);
-}
 
 /* === GLFW context-host ops (H2, docs/GLFW_MGL_INVOCATION_PLAN.md §3.3) ====
  * The GLFW fork used to drive MGLRenderer through objc_msgSend, so deleting

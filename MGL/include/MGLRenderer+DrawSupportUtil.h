@@ -25,7 +25,6 @@ void *mglDrawSupportBufferContents(void * buffer);
 
 uint64_t mglDrawSupportBufferLength(void * buffer);
 
-MGLRenderTextureInfo mglDrawSupportTextureInfo(void * texture);
 
 bool mglDrawSupportEncodeContextIsActive(
     const MGLEncodeContext *encodeContext);
@@ -152,9 +151,7 @@ GLuint64 mglNativeTessPrimitiveCount(void * canonical,
 
 void mglDrawSupportCaptureMarkDirtyAll(void *ctx_ptr);
 
-int mglDrawSupportCaptureProcessGL(void *renderer);
 
-int mglDrawSupportCaptureEncoderReady(void *renderer);
 
 void mglDrawSupportCaptureBindSlots(void *renderer, void *capture,
                                            const uint32_t *params);

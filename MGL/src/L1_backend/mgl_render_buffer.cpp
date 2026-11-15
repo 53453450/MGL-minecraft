@@ -542,13 +542,7 @@ int mglRenderResolveMappedBufferSlot(int has_metal_binding,
     return 1;
 }
 
-int mglRenderBufferMapOffsetValid(int64_t offset) {
-    return offset >= 0 ? 1 : 0;
-}
 
-int mglRenderBufferSizeValid(int64_t size) {
-    return size >= 0 ? 1 : 0;
-}
 
 uint64_t mglRenderBufferSizeOrZero(int64_t size) {
     return size >= 0 ? (uint64_t)size : 0u;
@@ -558,9 +552,6 @@ int mglRenderBufferPlanIsStructPacked(uint32_t flags) {
     return (flags & MGL_BP_FLAG_STRUCT_PACKED) != 0u ? 1 : 0;
 }
 
-int mglRenderIsUniformBufferResource(int spvc_type) {
-    return spvc_type == _UNIFORM_BUFFER_RES ? 1 : 0;
-}
 
 extern "C"
 int mglRenderBufferShadowUploadRange(

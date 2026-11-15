@@ -65,25 +65,11 @@ GLboolean mglBufferSlotIsReservedForStage(GLuint slot, int stage)
     /* No other slot is *always* reserved regardless of stage.  Slots 26-30
      * are reserved only within specific paths (TCS/TES compute vs VS/FS
      * draw), and whether a user buffer binding collides depends on whether
-     * that path is active for the program being linked.  The conservative
-     * `mglBufferSlotIsReserved` below covers the "any stage" case. */
+     * that path is active for the program being linked. */
     (void)stage;
     return GL_FALSE;
 }
 
-GLboolean mglBufferSlotIsReserved(GLuint slot)
-{
-    /* Slots 26-30 are reserved *when* the program uses tessellation or the
-     * VS/FS emulation paths, but a program that uses neither could legally
-     * bind user buffers there.  We do NOT mark them universally reserved
-     * to avoid false positives on simple programs.
-     *
-     * Callers that know whether tessellation/cull-distance/FragCoord-fixup
-     * is active should use the specific mglBufferSlotIsReservedFor* helpers
-     * below for accurate per-path detection.  The stage-specific point-size
-     * and TCS stage-in slots are handled by mglBufferSlotIsReservedForStage. */
-    return GL_FALSE;
-}
 
 GLboolean mglBufferSlotIsReservedForTessellation(GLuint slot)
 {

@@ -2250,35 +2250,6 @@ void printDirtyBit(unsigned dirty_bits, unsigned dirty_flag, const char *name)
         DEBUG_PRINT("%s", name);
 }
 
-void logDirtyBits(GLMContext ctx)
-{
-    if(ctx->active_state->dirty_bits)
-    {
-        if (ctx->active_state->dirty_bits & DIRTY_ALL_BIT)
-        {
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_ALL_BIT, "DIRTY_ALL_BIT set");
-        }
-        else
-        {
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_VAO, "DIRTY_VAO ");
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_STATE, "DIRTY_STATE ");
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_BUFFER, "DIRTY_BUFFER ");
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_TEX, "DIRTY_TEX ");
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_TEX_PARAM, "DIRTY_TEX_PARAM ");
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_TEX_BINDING, "DIRTY_TEX_BINDING ");
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_SAMPLER, "DIRTY_SAMPLER ");
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_SHADER, "DIRTY_SHADER ");
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_PROGRAM, "DIRTY_PROGRAM ");
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_FBO, "DIRTY_FBO ");
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_DRAWABLE, "DIRTY_DRAWABLE ");
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_RENDER_STATE, "DIRTY_RENDER_STATE ");
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_ALPHA_STATE, "DIRTY_ALPHA_STATE ");
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_IMAGE_UNIT_STATE, "DIRTY_IMAGE_UNIT_STATE ");
-            printDirtyBit(ctx->active_state->dirty_bits, DIRTY_BUFFER_BASE_STATE, "DIRTY_BUFFER_BASE_STATE ");
-        }
-        DEBUG_PRINT("\n");
-    }
-}
 
 
 #pragma mark textures
@@ -2780,15 +2751,7 @@ GLboolean mglGetCPUFormatTypeForInternalFormat(GLenum internalformat,
 
 
 #pragma mark utility functions for draw commands
-uint32_t mglPrimitiveTypeForGLMode(GLenum mode)
-{
-    return mglRenderMTLPrimitiveTypeForGLMode((uint32_t)mode);
-}
 
-uint64_t mglIndexTypeForGLType(GLenum type)
-{
-    return mglRenderMTLIndexTypeForGLType((uint32_t)type);
-}
 
 Buffer *getElementBuffer(GLMContext ctx)
 {

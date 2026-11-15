@@ -237,7 +237,6 @@ bool mglTextureInternalFormatNeedsRGBA8Expansion(GLenum internalformat,
 bool mglTextureNeedsChannelExpansion(GLenum internalformat,
                                      uint32_t pixelFormat);
 uint32_t mglReadPackedUploadLE(const uint8_t *src, size_t bytes);
-uint8_t mglExpandUNormBitsTo8(uint32_t value, uint32_t bits);
 uint8_t *mglCreateChannelExpandedUpload(Texture *tex,
                                         uint32_t pixelFormat,
                                         const uint8_t *srcData,
@@ -261,10 +260,6 @@ uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
 
 /* === Layer pixel format / compressed block helpers === */
 
-/* Returns YES if `pixelFormat` is one of the MGLPixelFormat values supported
- * by the MGL render-target layer (currently BGRA8 linear / sRGB). */
-bool mglMetalLayerPixelFormatIsSupported(uint32_t pixelFormat);
-
 /* Returns the sRGB variant of a color-renderable pixel format, or the
  * original format if no sRGB variant exists. */
 uint32_t mglSRGBPixelFormat(uint32_t fmt);
@@ -272,14 +267,6 @@ uint32_t mglSRGBPixelFormat(uint32_t fmt);
 /* Returns the linear variant of a color-renderable pixel format, or the
  * original format if no linear variant exists. */
 uint32_t mglLinearPixelFormat(uint32_t fmt);
-
-/* Returns the effective Metal pixel format for a texture, honoring
- * GL_EXT_texture_sRGB_decode.  When tex->params.srgb_decode_ext is
- * GL_SKIP_DECODE_EXT, an sRGB pixel format is downgraded to its linear
- * variant so the data is sampled without automatic sRGB decode; otherwise
- * the format is returned unchanged.  Call from the texture-creation path
- * when selecting the Metal pixel format for an sRGB internal format. */
-uint32_t mglEffectiveMTLPixelFormatForTexture(uint32_t fmt, Texture *tex);
 
 /* Returns the compressed-block height (in pixels) for a Metal compressed
  * pixel format.  BC1-BC7 and ASTC 4x4 return 4; ASTC variants return

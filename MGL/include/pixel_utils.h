@@ -39,7 +39,6 @@
 GLuint numComponentsForFormat(GLenum format);
 
 GLboolean validFormat(GLuint format);
-GLboolean validFormatType(GLuint format, GLuint type);
 GLboolean validInternalFormat(GLint internalformat);
 
 GLuint sizeForType(GLenum type);

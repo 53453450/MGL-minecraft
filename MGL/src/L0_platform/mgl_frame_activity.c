@@ -32,7 +32,6 @@
 
 /* Env-var caches can be queried from render and shader-compile paths. */
 static _Atomic int g_perf_summary_enabled = -1;
-static _Atomic int g_perf_lock_timing_enabled = -1;
 static _Atomic uint64_t g_perf_summary_interval = 0;
 static const uint64_t kMGLDefaultPerfSummaryInterval = 60ull;
 static const uint64_t kMGLMinSafePerfSummaryInterval = 30ull;
@@ -48,16 +47,6 @@ int mglPerfSummaryEnabled(void)
     return cached != 0;
 }
 
-int mglPerfLockTimingEnabled(void)
-{
-    int cached = atomic_load_explicit(&g_perf_lock_timing_enabled, memory_order_acquire);
-    if (cached < 0) {
-        const char *env = getenv("MGL_PERF_LOCK_TIMING");
-        cached = (env && atoi(env) > 0) ? 1 : 0;
-        atomic_store_explicit(&g_perf_lock_timing_enabled, cached, memory_order_release);
-    }
-    return cached != 0;
-}
 
 uint64_t mglPerfSummaryInterval(void)
 {

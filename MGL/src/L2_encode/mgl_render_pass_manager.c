@@ -379,18 +379,6 @@ void *mglPassManagerCreateRenderEncoder(MGLRenderPassManager *manager)
                                             &renderPassState);
 }
 
-void mglPassManagerEndCurrentRenderEncoder(MGLRenderPassManager *manager)
-{
-    if (!manager) {
-        return;
-    }
-    MGLCommandState *state = manager->state;
-    if (!state->currentRenderEncoderOwner ||
-        mglRenderEncoderOwnerHasCurrent(state->currentRenderEncoderOwner) != 1) {
-        return;
-    }
-    (void)mglRenderEndRenderEncoderOwner(state->currentRenderEncoderOwner);
-}
 
 void mglPassManagerClearCurrentRenderEncoder(MGLRenderPassManager *manager)
 {

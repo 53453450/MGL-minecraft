@@ -1700,32 +1700,9 @@ int mglRenderBindingGetDepthStencilState(MGLBindingState * binding_state, void**
     return 0;
 }
 
-void mglRenderBindingSetCullMode(MGLBindingState * binding_state, uint32_t mode) {
-    mgl::BindingState* state = reinterpret_cast<mgl::BindingState*>(static_cast<void*>(binding_state));
-    if (state) state->lastCullMode = static_cast<MTL::CullMode>(mode);
-}
 
-void mglRenderBindingSetWinding(MGLBindingState * binding_state, uint32_t winding) {
-    mgl::BindingState* state = reinterpret_cast<mgl::BindingState*>(static_cast<void*>(binding_state));
-    if (state) state->lastWinding = static_cast<MTL::Winding>(winding);
-}
 
-void mglRenderBindingSetDepthBias(MGLBindingState * binding_state, float bias, float clamp, float slope_scale) {
-    mgl::BindingState* state = reinterpret_cast<mgl::BindingState*>(static_cast<void*>(binding_state));
-    if (!state) return;
-    state->lastDepthBias = bias;
-    state->lastDepthBiasClamp = clamp;
-    state->lastDepthSlopeScale = slope_scale;
-}
 
-void mglRenderBindingSetBlendColor(MGLBindingState * binding_state, float red, float green, float blue, float alpha) {
-    mgl::BindingState* state = reinterpret_cast<mgl::BindingState*>(static_cast<void*>(binding_state));
-    if (!state) return;
-    state->lastBlendColorRed = red;
-    state->lastBlendColorGreen = green;
-    state->lastBlendColorBlue = blue;
-    state->lastBlendColorAlpha = alpha;
-}
 
 int mglRenderBindingSetPipelineIfNeeded(MGLBindingState * binding_state, void* render_encoder, void* pipeline_state) {
     mgl::BindingState* state = reinterpret_cast<mgl::BindingState*>(static_cast<void*>(binding_state));

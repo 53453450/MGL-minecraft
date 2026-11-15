@@ -361,10 +361,6 @@ uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
 
 /* === Layer pixel format helpers === */
 
-bool mglMetalLayerPixelFormatIsSupported(uint32_t pixelFormat)
-{
-    return mglRenderMetalLayerPixelFormatIsSupported(pixelFormat) != 0;
-}
 
 uint32_t mglSRGBPixelFormat(uint32_t fmt)
 {
@@ -376,11 +372,6 @@ uint32_t mglLinearPixelFormat(uint32_t fmt)
     return mglRenderLinearPixelFormat(fmt);
 }
 
-uint32_t mglEffectiveMTLPixelFormatForTexture(uint32_t fmt, Texture *tex)
-{
-    uint32_t decode = tex ? (uint32_t)tex->params.srgb_decode_ext : 0u;
-    return mglRenderEffectiveMTLPixelFormat(fmt, decode);
-}
 
 /* === Moved out of MGLRenderer+Texture.m (P0-1 / T3 sink) ===
  * The three entry points below were Objective-C methods whose bodies were

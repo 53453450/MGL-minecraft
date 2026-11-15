@@ -356,15 +356,12 @@ int mglRenderResolveMappedBufferSlot(int has_metal_binding,
                                      int32_t buffer_base_index,
                                      uint32_t max_slots, uint32_t *out_slot);
 
-int mglRenderBufferMapOffsetValid(int64_t offset);
 
-int mglRenderBufferSizeValid(int64_t size);
 
 uint64_t mglRenderBufferSizeOrZero(int64_t size);
 
 int mglRenderBufferPlanIsStructPacked(uint32_t flags);
 
-int mglRenderIsUniformBufferResource(int spvc_type);
 
 int mglRenderGetQueryVisibilityBuffer(MGLQueryStateOwner *owner, void **visibility_buffer_out);
 

@@ -38,22 +38,7 @@ void MGLCapabilityInit(MGLCapability *cap, void *deviceRef)
     cap->conservativeCPUCacheMode = state.conservative_cpu_cache_mode != 0;
 }
 
-bool MGLCapabilitySupportsSampleCount(MGLCapability *cap, uint64_t samples)
-{
-    if (!cap || samples <= 1) return true;
-    return samples <= cap->maxSampleCount;
-}
 
-uint64_t MGLCapabilityClampSampleCount(MGLCapability *cap, uint64_t requested)
-{
-    if (!cap) return 1;
-    if (requested <= 1) return 1;
-    static const uint64_t candidates[] = { 32u, 16u, 8u, 4u, 2u };
-    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i)
-        if (candidates[i] <= requested && candidates[i] <= cap->maxSampleCount)
-            return candidates[i];
-    return 1;
-}
 
 uint64_t MGLCapabilityTextureAlignment(MGLCapability *cap)
 {

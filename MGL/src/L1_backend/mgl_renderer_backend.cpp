@@ -1724,12 +1724,6 @@ extern "C" void mglRendererBackendDestroy(
  * share the one implementation instead of carrying a second, subtly
  * different copy. */
 
-extern "C" void mglRendererBindBuffer(GLMContext context, Buffer *buffer)
-{
-    MGLBackendLeaseScope lease(context);
-    if (!lease.ok()) return;
-    mglRenderBindBuffer(context, buffer);
-}
 
 extern "C" void mglRendererBindProgram(GLMContext context, Program *program)
 {

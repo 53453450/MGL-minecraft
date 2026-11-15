@@ -7198,19 +7198,6 @@ int mglGLSLUniformLinkCheck(const MGLIRModule *a, const MGLIRModule *b,
     return (int)s.error_count;
 }
 
-MGLIRSymbol *mglIRSymbolNew(const char *name, MGLIRType *type)
-{
-    MGLIRSymbol *is = (MGLIRSymbol *)calloc(1, sizeof(*is));
-    if (!is) {
-        return NULL;
-    }
-    is->name = strdup(name);
-    is->type = type;
-    is->binding = UINT32_MAX;
-    is->location = UINT32_MAX;
-    is->offset = UINT32_MAX;
-    return is;
-}
 
 void mglGLSLSemanticCheckDestroy(MGLSemaError *errors, uint32_t count)
 {

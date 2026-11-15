@@ -1264,28 +1264,6 @@ void mglRenderDestroyCommandBufferSubmission(void** submission_handle) {
     delete submission;
 }
 
-int mglRenderCommandBufferOwnerAppendSync(MGLCommandBufferOwner * owner_handle, Sync* sync) {
-    mgl::CommandBufferOwner* owner =
-        reinterpret_cast<mgl::CommandBufferOwner*>(static_cast<void*>(owner_handle));
-    if (!owner || !sync) return -1;
-    mgl::CommandBufferSyncList& list = owner->syncs;
-    if (list.count >= list.size) {
-        const uint32_t old_size = list.size;
-        const uint32_t new_size =
-            old_size ? (old_size > (UINT32_MAX / 2) ? 0u : old_size * 2u) : 8u;
-        if (new_size == 0u ||
-            new_size > (UINT32_MAX / sizeof(Sync*))) {
-            return -1;
-        }
-        Sync** new_list = (Sync**)realloc(
-            list.list, sizeof(Sync*) * (size_t)new_size);
-        if (!new_list) return -1;
-        list.list = new_list;
-        list.size = new_size;
-    }
-    list.list[list.count++] = sync;
-    return 0;
-}
 
 int mglRenderCommandBufferOwnerBeginCommit(MGLCommandBufferOwner * owner_handle) {
     mgl::CommandBufferOwner* owner =
@@ -2509,11 +2487,6 @@ int mglRenderCreateRenderEncoderOwnerFromState(void* command_buffer, const MGLRe
     return 0;
 }
 
-int mglRenderResetRenderEncoderOwnerFromState(MGLRenderEncoderOwner * owner_handle, void* command_buffer, const MGLRenderPassState* render_pass, void** render_encoder_out) {
-    return mglRenderResetRenderEncoderOwnerImpl(
-        reinterpret_cast<mgl::RenderEncoderOwner*>(static_cast<void*>(owner_handle)),
-        command_buffer, render_pass, render_encoder_out);
-}
 
 void* mglRenderActiveRenderEncoder(MGLRenderEncoderOwner * owner_handle) {
     mgl::RenderEncoderOwner* owner =
@@ -2613,10 +2586,6 @@ int mglRenderEncodeDrawForRenderEncoderOwner(MGLRenderEncoderOwner * render_enco
         plan, err, errcap);
 }
 
-int mglRenderAddCommandBufferRecoveryCompletion(void* command_buffer, MGLCommandBufferRecoveryOwner * recovery_owner) {
-    return addCommandBufferRecoveryCompletion(
-        command_buffer, recovery_owner, nullptr);
-}
 
 MGLRenderPassAttachmentState*
 mglRenderAttachmentForOwner(

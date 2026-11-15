@@ -118,9 +118,6 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
                          MGLSemaError **errors,
                          uint32_t *error_count);
 
-/* Make a variable symbol without a type check (entry/helper). */
-MGLIRSymbol *mglIRSymbolNew(const char *name, MGLIRType *type);
-
 /* Link-time interface matching between a stage `a` and the stage `b` it
  * feeds directly (GL 4.6 §7.4.1): ordinary variables match by location when
  * both declare one, otherwise by name, and matched pairs must have identical

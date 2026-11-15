@@ -1452,33 +1452,6 @@ void mglTextureReUploadArrayLevel(void *renderer, Texture *tex, void *texture,
 }
 
 /* -fillSmallRGBA8TextureWithGradient:tex: */
-void mglTextureFillSmallGradient(void *renderer, void *texture, Texture *tex)
-{
-                            if (mglRenderIsSmallRGBA8(
-                                    (uint32_t)mglPdTextureInfo(texture).width,
-                                    (uint32_t)mglPdTextureInfo(texture).height,
-                                    (uint32_t)tex->internalformat)) {
-
-                                MGL_TEX_UPLOAD_DIAG("MGL INFO: Attempting simple direct color fill for small RGBA8 texture\n");/* The .m ran this fill inside @try/@catch; the C port keeps the same catch
-     * logic through the shell's guarded call (rule 58 (b)). */
-    {
-        char fillFailure[256] = {0};
-        MglUpFillCtx fillCtx = { texture, tex };
-        if (!mglPlatformShellGuardedCallCtxReason(renderer, "small RGBA8 fill",
-                                                  mglUpFillBody, &fillCtx,
-                                                  fillFailure,
-                                                  sizeof(fillFailure))) {
-            MGL_TEX_UPLOAD_DIAG("MGL WARNING: Simple direct fill also failed: %s\n",
-                    fillFailure[0] ? fillFailure : "(null)");
-        }
-    }
-
-                            } else {
-
-                                MGL_TEX_UPLOAD_DIAG("MGL INFO: Skipping complex texture - would use deferred initialization\n");
-
-                            }
-}
 
 /* -reUploadExistingCPUTextureData:... */
 void mglTextureReUploadExisting(void *renderer, Texture *tex, void *texture,
@@ -3772,21 +3745,6 @@ int mglTextureSubImageBytes(void *renderer, GLMContext glm_ctx,
     }
     free(packedUpload);
     return uploaded;
-}
-
-/* -mtlTexSubImage:… (METAL_LOCK is the thread-affinity assertion only, so the
- * C dispatcher links straight to the Locked entry). */
-int mglTextureSubImageDispatch(void *renderer, GLMContext glm_ctx, Texture *tex,
-                               Buffer *buf, uint64_t src_offset,
-                               uint64_t src_pitch, uint64_t src_image_size,
-                               uint64_t src_size, uint32_t slice, uint32_t level,
-                               uint64_t width, uint64_t height, uint64_t depth,
-                               uint64_t xoffset, uint64_t yoffset,
-                               uint64_t zoffset)
-{
-    return mglTextureSubImage(renderer, glm_ctx, tex, buf, src_offset,
-                              src_pitch, src_image_size, src_size, slice, level,
-                              width, height, depth, xoffset, yoffset, zoffset);
 }
 
 /* -traceSampledTextureReadback:glTex:level:program:binding:stage:reason:hit:

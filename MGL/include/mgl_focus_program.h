@@ -43,11 +43,6 @@ extern uint32_t g_mglFocusedLoadingProgramCount;
  * or the list is full (32 entries). */
 void mglFocusLoadingProgram(GLuint programName, const char *reason, uint64_t detail);
 
-/* Observes a draw call against `programName`.  If the same program + count +
- * enabledAttribs pattern repeats 16 times, the program is auto-focused with
- * reason "repeated-draw-pattern".  No-op if programName is 0. */
-void mglObserveProgramDrawForFocus(GLuint programName, GLsizei count, GLuint enabledAttribs);
-
 /* === Hot-path predicate ===
  *
  * Returns true if `programName` is in the focus list.  Inlined because it is

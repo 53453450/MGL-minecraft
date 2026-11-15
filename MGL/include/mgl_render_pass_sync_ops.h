@@ -66,11 +66,6 @@ int mglRenderPassRotateRenderEncoderForCurrentFramebufferLocked(void *renderer);
  * cull/winding, depth bias, polygon fill mode and the viewport/scissor block. */
 void mglRenderPassUpdateCurrentRenderEncoder(void *renderer);
 
-/* -updateViewportAndScissorLocked (log 192).  Resolves the pass dimensions,
- * then applies the scissor rect and the viewport (with the GL-to-Metal origin
- * conversion). */
-void mglRenderPassUpdateViewportAndScissorLocked(void *renderer);
-
 /* The close/entry leaves (log 193).  All of them used to be the last
  * Objective-C methods of MGLRenderer+RenderPass.m. */
 int mglRenderPassRestoreRenderEncoderAfterTextureUpload(void *renderer,

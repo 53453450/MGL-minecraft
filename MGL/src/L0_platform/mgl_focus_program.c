@@ -21,19 +21,6 @@
 GLuint g_mglFocusedLoadingPrograms[32] = {0};
 uint32_t g_mglFocusedLoadingProgramCount = 0;
 
-/* === Private observation table for mglObserveProgramDrawForFocus === */
-
-typedef struct MGLProgramDrawObservation {
-    GLuint program;
-    GLsizei count;
-    GLuint enabledAttribs;
-    uint64_t hits;
-} MGLProgramDrawObservation;
-
-static MGLProgramDrawObservation s_mglProgramDrawObservations[64] = {
-    {0, 0, 0, 0}
-};
-
 /* === Operations === */
 
 void mglFocusLoadingProgram(GLuint programName, const char *reason, uint64_t detail)
@@ -58,39 +45,5 @@ void mglFocusLoadingProgram(GLuint programName, const char *reason, uint64_t det
                     (unsigned)programName,
                     reason ? reason : "(none)",
                     (unsigned long long)detail);
-    }
-}
-
-void mglObserveProgramDrawForFocus(GLuint programName,
-                                   GLsizei count,
-                                   GLuint enabledAttribs)
-{
-    if (programName == 0) {
-        return;
-    }
-
-    for (uint32_t i = 0; i < (uint32_t)(sizeof(s_mglProgramDrawObservations) / sizeof(s_mglProgramDrawObservations[0])); i++) {
-        if (s_mglProgramDrawObservations[i].program == programName ||
-            s_mglProgramDrawObservations[i].program == 0) {
-            if (s_mglProgramDrawObservations[i].program == 0) {
-                s_mglProgramDrawObservations[i].program = programName;
-                s_mglProgramDrawObservations[i].count = count;
-                s_mglProgramDrawObservations[i].enabledAttribs = enabledAttribs;
-            }
-
-            if (s_mglProgramDrawObservations[i].count == count &&
-                s_mglProgramDrawObservations[i].enabledAttribs == enabledAttribs) {
-                s_mglProgramDrawObservations[i].hits++;
-            } else {
-                s_mglProgramDrawObservations[i].count = count;
-                s_mglProgramDrawObservations[i].enabledAttribs = enabledAttribs;
-                s_mglProgramDrawObservations[i].hits = 1;
-            }
-
-            if (s_mglProgramDrawObservations[i].hits == 16ull) {
-                mglFocusLoadingProgram(programName, "repeated-draw-pattern", s_mglProgramDrawObservations[i].hits);
-            }
-            return;
-        }
     }
 }

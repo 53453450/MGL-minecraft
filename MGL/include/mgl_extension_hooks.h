@@ -48,13 +48,6 @@ void mglRegisterExtensionState(GLMContext ctx, uint32_t ext_id,
 void mglRegisterGeometryStage(GLMContext ctx,
                               const MGLGeometryPipelineStage *st);
 
-/* Iterate registered geometry stages (for draw/validate drivers). */
-size_t mglGeometryStageCount(void);
-const MGLGeometryPipelineStage *mglGeometryStageAt(size_t index);
-
-/* True when pending draws read any range of buf (precise hazard query). */
-int mglPendingDrawsReferenceBuffer(GLMContext ctx, struct Buffer *buf);
-
 /* Frame arena (N01); NULL if arena disabled. */
 void *mglFrameArenaAlloc(GLMContext ctx, size_t n);
 
