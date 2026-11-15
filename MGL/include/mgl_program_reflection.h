@@ -30,7 +30,6 @@ GLboolean mglProgramPipelineHasOrphanedLinkedStages(
     Program *const *stage_programs);
 GLboolean mglLinkedProgramPerVertexCompatible(Program *program);
 
-void applyMultiDimArrayUniformNames(Program *program);
 void applyFragmentOutputLocationIndices(Program *program);
 void alignFragmentInputLocationsToVertexOutputs(Program *program);
 

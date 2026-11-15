@@ -54,7 +54,6 @@ static _Atomic uint32_t s_frontend_parse_count;
 static _Atomic uint32_t s_frontend_reuse_count;
 
 #define MGL_MAX_TOKENS 131072
-#define MGL_MAX_DIMS 8
 
 
 /* ----------------------------------------------------------------- */
@@ -2096,7 +2095,6 @@ static int eval_const_builtin(const char *name, uint32_t argc, MGLConstVal *args
     }
 
 #define ARG(i) (args[i])
-#define SCAL(i) (ARG(i).v[0])
 
     if (strcmp(name, "radians") == 0 && argc == 1) {
         *out = ARG(0);

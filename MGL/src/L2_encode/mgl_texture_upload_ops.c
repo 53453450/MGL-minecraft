@@ -210,10 +210,6 @@ static void mglUpMarkTextureLevelMetalFilled(Texture *tex, GLuint level,
 }
 
 
-/* mglUpMax() is an Objective-C header macro; use the C maximum inline. */
-#define mglUpMax(a, b) ((a) > (b) ? (a) : (b))
-
-
 /* mtlPixelFormatForGLTex lives in the Objective-C private header. */
 extern uint32_t mtlPixelFormatForGLTex(Texture *tex);
 

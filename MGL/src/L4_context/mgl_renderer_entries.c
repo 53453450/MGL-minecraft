@@ -136,7 +136,6 @@ extern int mglPlatformShellAutoreleasePoolCall(void *renderer,
                                                int (*body)(void *));
 
 #define mglMexMin(a, b) ((a) < (b) ? (a) : (b))
-#define mglMexMax(a, b) ((a) > (b) ? (a) : (b))
 static void *mglMexBufferContents(void *buffer)
 {
     void *contents = NULL;
@@ -155,8 +154,6 @@ static uint64_t mglMexBufferLength(void *buffer)
     }
     return length;
 }
-
-#define TRACE_FUNCTION()    DEBUG_PRINT("%s\n", __FUNCTION__);
 
 enum {
     MGL_RENDERER_RESOURCE_STORAGE_SHARED = 0u,

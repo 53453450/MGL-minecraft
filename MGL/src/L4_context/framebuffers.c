@@ -44,12 +44,6 @@
 #include "pixel_utils.h"
 #include "utils.h"
 
-/* GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS is defined in GLES but not in desktop
- * GL headers; define it here for FBO completeness checks. */
-#ifndef GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS
-#define GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS 0x8CD9
-#endif
-
 #define RENDBUF_STATE(_val_)    STATE(renderbuffer)->_val_
 
 #ifndef MGL_VERBOSE_FBO_LOGS

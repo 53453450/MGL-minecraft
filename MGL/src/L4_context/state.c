@@ -736,7 +736,6 @@ void mglViewport(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height
     mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
-#define RET_VAR(_VAR_, _DEFAULT_)  return (STATE(var)._VAR_ == _DEFAULT_)
 #define RET_CAP(_CAP_)  *enabled = STATE(caps)._CAP_; return GL_TRUE
 
 GLboolean mglGetCapState(GLMContext ctx, GLenum cap, GLboolean *enabled)

@@ -30,10 +30,7 @@
  * the full GL state header into this leaf utility. */
 #define MGL_STAGE_VERTEX              0
 #define MGL_STAGE_TESS_CONTROL        1
-#define MGL_STAGE_TESS_EVALUATION     2
 #define MGL_STAGE_GEOMETRY            3
-#define MGL_STAGE_FRAGMENT            4
-#define MGL_STAGE_COMPUTE             5
 
 GLboolean mglBufferSlotIsReservedForStage(GLuint slot, int stage)
 {
