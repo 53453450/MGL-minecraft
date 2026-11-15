@@ -1166,7 +1166,6 @@ static int mglPdNewRenderEncoderBody(void *renderer)
 {
     MGLRendererStateView areas;
     mglRendererFillStateView(renderer, &areas);
-    GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
 

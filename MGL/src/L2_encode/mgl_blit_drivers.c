@@ -1297,7 +1297,6 @@ bool mglBlitCopyImageSubDataFormatConversion(
      * renderbuffer sources. */
     MGLRendererStateView areas;
     mglRendererFillStateView(renderer, &areas);
-    MGLRendererCoreState *core = areas.core;
     if (mglBdTextureInfo(src_texture).pixel_format ==
         mglBdTextureInfo(dst_texture).pixel_format) {
         return false;

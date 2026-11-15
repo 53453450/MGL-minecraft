@@ -131,7 +131,6 @@ void *mglSampledSamplerMaterialize(void *renderer, Texture *ptr,
 {
     MGLRendererStateView areas;
     mglRendererFillStateView(renderer, &areas);
-    GLMContext ctx = areas.ctx;
     void *binding_state_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
 

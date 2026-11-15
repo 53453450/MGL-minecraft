@@ -575,7 +575,6 @@ void mglRenderPassUpdateCurrentRenderEncoder(void *renderer)
     GLMContext ctx = areas.ctx;
     GLMState *state = mglRsState(&areas);
     MGLCommandState *commandState = areas.command;
-    const MGLPipelineCacheState *cacheState = areas.pipeline_cache;
     MGLTessellationState *tessellation = areas.tessellation;
     /* areas.binding_state_owner is the ADDRESS of the owner slot (rule 59). */
     void *bindingOwner =
@@ -1381,7 +1380,6 @@ int mglRenderPassRestoreRenderEncoderAfterTextureUpload(void *renderer,
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
-    GLMState *state = mglRsState(&areas);
     MGLCommandState *commandState = areas.command;
     const MGLPipelineCacheState *cacheState = areas.pipeline_cache;
     void *bindingOwner =

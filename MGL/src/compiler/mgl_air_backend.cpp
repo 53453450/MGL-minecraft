@@ -5386,7 +5386,6 @@ static llvm::Value *emitGeometryStreamVertex(Codegen &cg, int32_t stream)
     cg.b->SetInsertPoint(emitBB);
 
     llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
-    llvm::Type *i64 = llvm::Type::getInt64Ty(*cg.ctx);
     llvm::Value *metaBase = cg.b->CreateBitCast(
         cg.geometryXfbMetaPtr, i32->getPointerTo(1));
     /* Stream block offset: MGLAIRGSXFBStreamMeta is 16 bytes, with
@@ -13138,7 +13137,6 @@ static bool emitCallTextureSample(
                 off = coerceScalar(cg, off, MGLIR_SCALAR_INT);
                 gradOffset = emitAirSampleOffset(cg, off);
             }
-            llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
             llvm::Type *vecTy =
                 texel == MGLIR_SCALAR_FLOAT
                     ? (llvm::Type *)llvm::FixedVectorType::get(f32, 4)
@@ -13281,7 +13279,6 @@ static bool emitCallTextureSample(
             lod = emitCombinedLodBias(cg, samplerName, nullptr);
             explicitLod = false;
         }
-        llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
         llvm::Type *vecTy = texel == MGLIR_SCALAR_FLOAT
             ? (llvm::Type *)llvm::FixedVectorType::get(f32, 4)
             : (llvm::Type *)llvm::FixedVectorType::get(i32, 4);
@@ -20828,7 +20825,6 @@ static int fillSubroutineTable(const MGLTranslationUnit *tu,
                                     ? st->uniform_counts[k]
                                     : 1u;
             const char *base = st->uniforms[k];
-            size_t baseLen = strlen(base);
             /* Strip any "[...]" the source already spelled, so the element
              * suffix this loop generates is the only subscript. */
             char baseName[MGL_AIR_SUBROUTINE_NAME_MAX];

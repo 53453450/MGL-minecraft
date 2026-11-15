@@ -573,7 +573,6 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
-    MGLRenderPassManager *manager = areas.render_pass_manager;
     MGLCommandState *commandState = areas.command;
     GLMState *glState = mglPdState(&areas);
 

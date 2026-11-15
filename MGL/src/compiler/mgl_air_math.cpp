@@ -1098,7 +1098,6 @@ llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
         if (!a0->getType()->isVectorTy()) {
             llvm::Value *ef = cg.b->CreateSIToFP(a1, f32);
-            llvm::Type *v2 = llvm::FixedVectorType::get(f32, 2);
             llvm::Value *efv = cg.b->CreateVectorSplat(2, ef);
             llvm::Value *scalev =
                 callFloatIntrinsic(cg, llvm::Intrinsic::exp2, efv);

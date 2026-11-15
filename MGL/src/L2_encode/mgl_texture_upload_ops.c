@@ -2944,10 +2944,6 @@ int mglTextureUploadDirty(void *renderer, Texture *tex, void *texture,
             else
                 region = mglTextureRegion1D(0,width);
 
-            uint64_t bytesPerRow;
-            uint64_t bytesPerImage;
-            bool hasExplicitDataSize = false;
-
             int levelSkipped = 0;
 
             if (tex_type == MGLTextureType3D)
@@ -3024,7 +3020,6 @@ void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex)
 {
     MGLRendererStateView areas;
     mglRendererFillStateView(renderer, &areas);
-    GLMContext ctx = areas.ctx;
     MGL_ASSERT_GL_THREAD();
     mglMetalCountCreate(MGLMetalKindTexture);
     // PROPER FIX: Enhanced pre-creation validation to prevent AGX driver issues

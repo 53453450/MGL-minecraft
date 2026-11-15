@@ -661,9 +661,6 @@ uint8_t* mglRenderCreateRGBA8ExpandedUpload(
         uint8_t* dst_row = dst + row * dst_bytes_per_row;
         for (size_t x = 0; x < width; x++) {
             const uint8_t* src_pixel = src_row + x * src_pixel_bytes;
-            uint32_t packed = mglReadPackedUploadLE(src_pixel,
-                                                       src_pixel_bytes);
-            uint8_t r = 0u, g = 0u, b = 0u, a = 0xffu;
             uint8_t rgba[4];
             mglExpandInternalFormatToRGBA8(internal_format, src_pixel,
                                            (uint32_t)src_pixel_bytes, rgba);

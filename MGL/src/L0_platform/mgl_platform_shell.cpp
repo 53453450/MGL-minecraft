@@ -95,11 +95,8 @@ static Class s_mglRendererClass = Nil;
 
 
 static SEL s_shellSelInit = NULL;
-static SEL s_shellSelView = NULL;
-static SEL s_shellSelSetView = NULL;
 static SEL s_shellSelLayer = NULL;
 static SEL s_shellSelSetLayer = NULL;
-static SEL s_shellSelDrawable = NULL;
 static SEL s_shellSelSetDrawable = NULL;
 static SEL s_shellSelWindow = NULL;
 static SEL s_shellSelIsVisible = NULL;
@@ -320,7 +317,6 @@ static int mglShellSwapInterval(MGLObjectId self, SEL cmd)
 static signed char mglShellShouldSkipPresent(MGLObjectId self, SEL cmd)
 {
     (void)cmd;
-    MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
     /* interval==0 + hidden/occluded window: skip CA present so the drawable
      * pool is not paced by the display. Visible windows still present with
      * displaySyncEnabled=NO. Override with MGL_UNLOCKED_SKIP_PRESENT=0/1. */
@@ -2159,8 +2155,6 @@ static SEL s_selDisableBinaryArchive = NULL;
 static SEL s_selSaveBinaryArchive = NULL;
 static SEL s_selShutdown = NULL;
 static SEL s_selSetDevice = NULL;
-static SEL s_selOldInitRenderer = NULL;
-static SEL s_selOldCreateRenderer = NULL;
 
 static double mglMaxDouble(double a, double b)
 {

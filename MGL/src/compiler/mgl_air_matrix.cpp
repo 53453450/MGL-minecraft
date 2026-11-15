@@ -265,7 +265,6 @@ llvm::Value *emitMatrixBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
         return nullptr;
 
     llvm::Type *elt = llvm::Type::getFloatTy(*cg.ctx);
-    llvm::Constant *zero = llvm::ConstantFP::get(elt, 0.0);
     auto cI = [&](uint32_t v) {
         return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), v);
     };
@@ -318,7 +317,7 @@ llvm::Value *emitMatrixBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
         }
         if (l->getType()->isVectorTy() && rarr) {
             /* v * M: out[c] = dot(v, col_c). */
-            uint32_t cols = colCount(rarr), rows = rowCount(rarr);
+            uint32_t cols = colCount(rarr);
             llvm::Value *out = llvm::UndefValue::get(
                 llvm::FixedVectorType::get(elt, cols));
             for (uint32_t c = 0; c < cols; c++) {
