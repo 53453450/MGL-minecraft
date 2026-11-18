@@ -676,6 +676,14 @@ GLuint getNewName(HashTable *table)
     return name;
 }
 
+int mglHashTableNameIsKnown(HashTable *table, GLuint name)
+{
+    if (!table || name == 0) {
+        return 0;
+    }
+    return name <= table->current_name || searchHashTable(table, name) != NULL;
+}
+
 void *searchHashTable(HashTable *table, GLuint name)
 {
     int found = 0;

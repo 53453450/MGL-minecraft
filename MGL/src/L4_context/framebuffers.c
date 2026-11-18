@@ -938,6 +938,11 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
 
     if(framebuffer)
     {
+        /* §9.2: the name must come from GenFramebuffers (core profile). */
+        if (!mglHashTableNameIsKnown(&STATE(framebuffer_table), framebuffer)) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
         ptr = getFramebuffer(ctx, framebuffer);
         if (!ptr)
             return;

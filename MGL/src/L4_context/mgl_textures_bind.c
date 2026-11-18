@@ -107,6 +107,11 @@ void mglBindTexture(GLMContext ctx, GLenum target, GLuint texture)
 
     if (texture)
     {
+        /* §8.1: the name must come from GenTextures (core profile). */
+        if (!mglHashTableNameIsKnown(&STATE(texture_table), texture)) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
         ptr = getTexture(ctx, target, texture);
         if (!ptr) {
             fprintf(stderr,
@@ -481,7 +486,13 @@ bool mglTextureViewUnlink(GLMContext ctx, Texture *tex);
 
 void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
 {
-    if (!ctx || n <= 0 || !textures)
+    if (!ctx)
+        return;
+    if (n < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (n == 0 || !textures)
         return;
 
     mglFlushPendingDraws(ctx);

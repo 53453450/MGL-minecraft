@@ -55,6 +55,10 @@ typedef struct {
 void initHashTable(HashTable *ptr, GLuint size);
 void destroyHashTable(HashTable *ptr);
 GLuint getNewName(HashTable *table);
+/* Was `name` returned by getNewName, or does it name an object in the table?
+ * Core-profile Bind* commands reject any other non-zero name.  A generated
+ * name that was deleted before an object was created still answers yes. */
+int mglHashTableNameIsKnown(HashTable *table, GLuint name);
 void insertHashElement(HashTable *table, GLuint name, void *data);
 void *searchHashTable(HashTable *table, GLuint name);
 void deleteHashElement(HashTable *table, GLuint name);

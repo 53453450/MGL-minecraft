@@ -1129,28 +1129,28 @@ void mglDrawBuffers(GLMContext ctx, GLsizei n, const GLenum *bufs)
             continue;
         }
 
-        if (buf >= GL_COLOR_ATTACHMENT0 &&
-            buf < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments)))
+        /* GL 4.6 §17.4.1, default framebuffer: an attachment point names
+         * none of its color buffers; FRONT/LEFT/RIGHT/FRONT_AND_BACK may
+         * mean several buffers; BACK only stands alone. */
+        if (buf >= GL_COLOR_ATTACHMENT0 && buf <= GL_COLOR_ATTACHMENT31)
         {
-            if (buf != GL_COLOR_ATTACHMENT0)
-            {
-                ERROR_RETURN(GL_INVALID_ENUM);
-                return;
-            }
-            continue;
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
         }
 
         switch (buf)
         {
-            case GL_FRONT:
             case GL_BACK:
+                if (n != 1)
+                {
+                    ERROR_RETURN(GL_INVALID_OPERATION);
+                    return;
+                }
+                break;
             case GL_FRONT_LEFT:
             case GL_FRONT_RIGHT:
             case GL_BACK_LEFT:
             case GL_BACK_RIGHT:
-            case GL_LEFT:
-            case GL_RIGHT:
-            case GL_FRONT_AND_BACK:
                 break;
 
             default:
@@ -1328,6 +1328,14 @@ void mglReadBuffer(GLMContext ctx, GLenum buf)
             fprintf(stderr, "MGL Error: mglReadBuffer: invalid enum 0x%x\n", buf);
             ERROR_RETURN(GL_INVALID_ENUM);
             return;
+    }
+
+    if (!readFbo && buf >= GL_COLOR_ATTACHMENT0 && buf <= GL_COLOR_ATTACHMENT31)
+    {
+        /* GL 4.6 §18.2.1: an attachment point names none of the default
+         * framebuffer's color buffers. */
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
     if (readFbo &&
