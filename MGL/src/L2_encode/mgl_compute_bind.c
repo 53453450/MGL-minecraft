@@ -43,6 +43,8 @@
 #include "mgl_draw_tess.h"          /* mglTessRequiredBindingBytes */
 #include "mgl_texture_binding_resolve.h" /* sampled-resource lookups */
 #include "mgl_texture_compat.h"    /* mglTextureUnitForSampledResource */
+#include "mgl_sampled_fallback.h"  /* mglSampledFallbackTextureForExpectedType */
+#include "mgl_texture_sampler.h"   /* mglTextureFallbackSamplerState */
 #include "mgl_shader_resource.h"   /* mglMetalResourceSlot */
 #include "mgl_env_flag.h"
 #include "mgl_render_api_buffer.h"
@@ -607,6 +609,20 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                     }
                 }
 
+                const int sampled = !mglRenderComputeTextureBindIsStorage(
+                    (uint32_t)gl_texture_type);
+                /* §11.1.3.5: an incomplete texture samples as (0,0,0,1). */
+                if (ptr && sampled) {
+                    const Sampler *unit_sampler = glUnit < TEXTURE_UNITS
+                        ? state->texture_samplers[glUnit] : NULL;
+                    const TextureParameter *sp =
+                        unit_sampler ? &unit_sampler->params : &ptr->params;
+                    if (!mglTextureSamplingComplete(ptr, sp->min_filter,
+                                                    sp->mag_filter)) {
+                        ptr = NULL;
+                    }
+                }
+
                 if (ptr)
                 {
                     const ImageUnit *image =
@@ -682,6 +698,28 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
 
                     textures_to_be_mapped--;
                 } else {
+                    /* A missing or incomplete texture samples as (0,0,0,1):
+                     * bind the fallback the vertex/fragment spine uses. */
+                    void *fallback = sampled && resource
+                        ? mglSampledFallbackTextureForExpectedType(
+                              renderer,
+                              mglExpectedTextureTypeForResource(
+                                  computeProgram, stage, resource),
+                              mglExpectedTextureDataKindForResource(
+                                  computeProgram, stage, resource))
+                        : NULL;
+                    if (fallback) {
+                        mglComputeBindEmitTexture(&bind, metalBinding, fallback);
+                        if (mglRenderComputeTextureBindNeedsSampler(
+                                (uint32_t)gl_texture_type,
+                                resource->has_combined_sampler)) {
+                            mglComputeBindEmitSampler(
+                                &bind,
+                                mglMetalCombinedSamplerSlotForElement(
+                                    resource, resourceElement),
+                                mglTextureFallbackSamplerState(renderer));
+                        }
+                    }
                     textures_to_be_mapped--;
                 }
             }
