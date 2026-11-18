@@ -45,6 +45,7 @@ void mglShaderModuleBackendClear(struct MGLShaderModuleBackend *module)
         mglSafeReleaseMetalObj(&module->mtl_function_advanced_blend[i]);
         mglSafeReleaseMetalObj(&module->mtl_library_advanced_blend[i]);
     }
+    mglFragmentVariantCacheFree(module->fragment_variants);
     mglSafeReleaseMetalObj(&module->mtl_function);
     mglSafeReleaseMetalObj(&module->mtl_function_compute);
     mglSafeReleaseMetalObj(&module->mtl_library);
@@ -451,6 +452,48 @@ void mglRenderProgramSetModuleAdvancedBlendMetallib(Program *program,
     mglSafeReleaseMetalObj(&mod->mtl_library_advanced_blend[equation_index]);
     mod->metallib_bytes_advanced_blend[equation_index] = bytes;
     mod->metallib_size_advanced_blend[equation_index] = size;
+}
+
+void mglFragmentVariantCacheFree(struct MGLFragmentVariantCache *cache)
+{
+    if (!cache) {
+        return;
+    }
+    free(cache->source);
+    for (int i = 0; i < MGL_BACKEND_LOGIC_OP_SLOTS; i++) {
+        mglSafeReleaseMetalObj(&cache->logic_op[i].function);
+        mglSafeReleaseMetalObj(&cache->logic_op[i].library);
+    }
+    free(cache);
+}
+
+void mglRenderProgramSetModuleVariantSource(Program *program,
+                                            const char *source,
+                                            uint32_t air_flags,
+                                            const void *iface_peers,
+                                            uint32_t sparse_index)
+{
+    struct MGLShaderModuleBackend *mod =
+        mglProgramModuleBackend(program, _FRAGMENT_SHADER);
+    mglFragmentVariantCacheFree(mod->fragment_variants);
+    mod->fragment_variants = NULL;
+    if (!source) {
+        return;
+    }
+    struct MGLFragmentVariantCache *cache =
+        (struct MGLFragmentVariantCache *)calloc(1, sizeof(*cache));
+    if (!cache) {
+        return;
+    }
+    cache->source = strdup(source);
+    if (!cache->source) {
+        free(cache);
+        return;
+    }
+    cache->air_flags = air_flags;
+    cache->iface_peers = iface_peers;
+    cache->sparse_index = sparse_index;
+    mod->fragment_variants = cache;
 }
 
 void mglRenderProgramSetModulePrimitiveIdVaryingMetallib(

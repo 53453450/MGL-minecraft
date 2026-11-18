@@ -57,6 +57,9 @@
 #include "mgl_render_api_binding.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_api_program.h"
+#include "mgl_render_api_lifecycle.h" /* mglRenderLoadAIRMainFunction */
+#include "mgl_program_backend.h"
+#include "mgl_backend_objects.h"
 
 #include "mgl_trace_log.h"
 #include <stdbool.h>
@@ -591,6 +594,14 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             mglCompileArtifactDestroy(&blend_art);
         }
     }
+    /* A logical-operation variant depends on the render target formats, so
+     * it is compiled at draw time (mglProgramLogicOpFragmentFunction) from
+     * the same inputs as this stage. */
+    if (stage == _FRAGMENT_SHADER) {
+        mglRenderProgramSetModuleVariantSource(
+            pptr, compile_src, plan.air_flags, plan.iface_peers,
+            plan.sparse_residency_buffer_index);
+    }
     {
         /* MGL_DUMP_SHADER_DIR=<dir>: keep every linked stage's source,
          * metallib and its LLVM IR as prog<name>_stage<N>.{glsl,metallib,ll},
@@ -748,3 +759,61 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     return 1;
 }
 
+void *mglProgramLogicOpFragmentFunction(Program *program,
+                                        const MGLLogicOpVariant *variant)
+{
+    if (!program || !variant) {
+        return NULL;
+    }
+    struct MGLShaderModuleBackend *mod =
+        mglProgramModuleBackend(program, _FRAGMENT_SHADER);
+    struct MGLFragmentVariantCache *cache =
+        mod ? mod->fragment_variants : NULL;
+    if (!cache || !cache->source) {
+        return NULL;
+    }
+    uint64_t key = (1ull << 63) | (uint64_t)(variant->op & 0xfu);
+    for (int i = 0; i < MGL_LOGIC_OP_MAX_TARGETS; i++) {
+        key |= (uint64_t)(variant->target_class[i] & 0xfu) << (4 + 4 * i);
+    }
+    for (int i = 0; i < MGL_BACKEND_LOGIC_OP_SLOTS; i++) {
+        if (cache->logic_op[i].key == key && cache->logic_op[i].function) {
+            return cache->logic_op[i].function;
+        }
+    }
+    unsigned char *bytes = NULL;
+    size_t size = 0;
+    char err[512];
+    err[0] = '\0';
+    if (mglAirCompileGLSLLogicOpVariant(
+            cache->source, NULL, &bytes, &size, cache->air_flags,
+            (const MGLShaderResourceList *)cache->iface_peers, variant, err,
+            sizeof err, cache->sparse_index) != 0) {
+        fprintf(stderr,
+                "MGL WARNING: logic-op FS variant compile failed program %u "
+                "op %u: %s\n",
+                (unsigned)program->name, (unsigned)variant->op, err);
+        mglShaderFree(bytes);
+        return NULL;
+    }
+    void *library = NULL;
+    void *function = NULL;
+    const int load_rc = mglRenderLoadAIRMainFunction(
+        bytes, size, &library, &function, err, sizeof err);
+    mglShaderFree(bytes);
+    if (load_rc != 0 || !function) {
+        fprintf(stderr,
+                "MGL WARNING: logic-op FS variant load failed program %u: %s\n",
+                (unsigned)program->name, err);
+        mglRenderReleaseMetalObject(function);
+        mglRenderReleaseMetalObject(library);
+        return NULL;
+    }
+    const uint32_t slot = cache->logic_op_next++ % MGL_BACKEND_LOGIC_OP_SLOTS;
+    mglRenderReleaseMetalObject(cache->logic_op[slot].function);
+    mglRenderReleaseMetalObject(cache->logic_op[slot].library);
+    cache->logic_op[slot].key = key;
+    cache->logic_op[slot].function = function;
+    cache->logic_op[slot].library = library;
+    return function;
+}

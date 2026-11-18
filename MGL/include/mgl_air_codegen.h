@@ -200,6 +200,16 @@ struct Codegen {
      * framebuffer value of color 0 ([[color(0)]]) it blends against. */
     int advancedBlendEquation = -1;
     llvm::Value *advancedBlendDst = nullptr;
+    /* Logical-operation variant: GL op minus GL_CLEAR (-1: none) and, per
+     * color output it applies to, the return field, the render target's
+     * MGL_LOGIC_OP_RT_* class and its framebuffer value ([[color(n)]]). */
+    int logicOp = -1;
+    struct LogicOpTarget {
+        uint32_t field;
+        uint8_t targetClass;
+        llvm::Value *dst;
+    };
+    std::vector<LogicOpTarget> logicOpTargets;
     uint32_t cullDistancePassthroughCount = 0; /* VS flat outs / FS ins */
     uint32_t clipDistanceInputCount = 0; /* FS clip varyings (read or emulate) */
     bool pointSize = false;              /* vertex: writes gl_PointSize */

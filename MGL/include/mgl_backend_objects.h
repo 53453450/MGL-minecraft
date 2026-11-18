@@ -40,6 +40,25 @@ struct MGLSyncBackend {
  * matches MGL_ADVANCED_BLEND_EQUATION_COUNT. */
 #define MGL_BACKEND_ADVANCED_BLEND_SLOTS 15
 
+/* Logical-operation FS variants cached per program. */
+#define MGL_BACKEND_LOGIC_OP_SLOTS 4
+
+/* What a fragment stage was compiled from, kept for variants that can only
+ * be compiled at draw time once the render target formats are known, and
+ * the variants built so far (key: logic op and per-target classes). */
+struct MGLFragmentVariantCache {
+    char *source;
+    uint32_t air_flags;
+    const void *iface_peers;
+    uint32_t sparse_index;
+    struct {
+        uint64_t key;
+        void *function;
+        void *library;
+    } logic_op[MGL_BACKEND_LOGIC_OP_SLOTS];
+    uint32_t logic_op_next;
+};
+
 struct MGLShaderModuleBackend {
     unsigned char *metallib_bytes;
     size_t metallib_size;
@@ -75,6 +94,8 @@ struct MGLShaderModuleBackend {
     size_t metallib_size_advanced_blend[MGL_BACKEND_ADVANCED_BLEND_SLOTS];
     void *mtl_function_advanced_blend[MGL_BACKEND_ADVANCED_BLEND_SLOTS];
     void *mtl_library_advanced_blend[MGL_BACKEND_ADVANCED_BLEND_SLOTS];
+    /* FS: inputs and cache for variants compiled at draw time (heap). */
+    struct MGLFragmentVariantCache *fragment_variants;
     uint8_t needs_runtime_array_size_buffer;
     uint8_t needs_sparse_residency;
     uint8_t sparse_residency_buffer_index;

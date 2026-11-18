@@ -54,6 +54,25 @@ void mglRenderProgramSetModuleSamplerReductionMetallib(Program *program,
                                                        int stage,
                                                        unsigned char *bytes,
                                                        size_t size);
+/* The program's fragment function with a logical operation applied against
+ * the render targets (compiled on first use, cached on the program), or NULL
+ * when it cannot be built.  The function stays owned by the program. */
+struct MGLLogicOpVariant;
+void *mglProgramLogicOpFragmentFunction(Program *program,
+                                        const struct MGLLogicOpVariant *variant);
+
+/* Frees a fragment variant cache and releases its Metal objects. */
+struct MGLFragmentVariantCache;
+void mglFragmentVariantCacheFree(struct MGLFragmentVariantCache *cache);
+
+/* Keeps the fragment stage's compile inputs (the source is copied) for
+ * variants compiled at draw time; drops variants built from older inputs. */
+void mglRenderProgramSetModuleVariantSource(Program *program,
+                                            const char *source,
+                                            uint32_t air_flags,
+                                            const void *iface_peers,
+                                            uint32_t sparse_index);
+
 void mglRenderProgramSetModuleAdvancedBlendMetallib(Program *program,
                                                     int equation_index,
                                                     unsigned char *bytes,

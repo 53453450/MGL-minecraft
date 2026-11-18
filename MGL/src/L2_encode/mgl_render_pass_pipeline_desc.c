@@ -49,6 +49,7 @@
 #include "mgl_trace_log.h"         /* mglTraceLog, kMGLDiagnosticStateLogs */
 #include "mgl_gpu_recovery.h"      /* mglRendererRecordGPUError */
 #include "mgl_pso_format_class.h"  /* mglRenderDefaultColorPixelFormat */
+#include "mgl_render_api_program.h" /* mglProgramLogicOpFragmentFunction */
 #include "mgl_render.h"           /* attachment kinds, MS plane adjust */
 #include "mgl_texture_compat.h"   /* mglMetalTextureLevelDimension */
 
@@ -238,9 +239,11 @@ int mglRenderPassGeneratePipelineDescriptorState(
     const struct MGLShaderModuleBackend *fragmentModule = fragmentProgram
         ? mglProgramModuleView(fragmentProgram, _FRAGMENT_SHADER) : NULL;
     void *fragmentFunction = fragmentModule ? fragmentModule->mtl_function : NULL;
-    if (fragmentModule &&
+    const int fragmentCarrierAbi =
+        fragmentModule &&
         (geometryExpansion || tessCompute || tessVertexRender) &&
-        fragmentModule->mtl_tess_capture_function) {
+        fragmentModule->mtl_tess_capture_function;
+    if (fragmentCarrierAbi) {
         /* FS stores its GS/TES primitive-id carrier in the per-stage
          * alternate-function slot; direct VS/native-TES keeps mtl_function. */
         fragmentFunction = fragmentModule->mtl_tess_capture_function;
@@ -632,10 +635,12 @@ int mglRenderPassGeneratePipelineDescriptorState(
             return 0;
         }
         desc->color_write_mask[i] = blend.color_write_mask;
-        /* The advanced-blend FS variant writes the blended color itself. */
+        /* The advanced-blend FS variant writes the blended color itself;
+         * with a logical operation enabled blending is off (§17.3.9). */
         const int shaderBlended =
-            i == 0 && fragmentProgram &&
-            fragmentProgram->active_advanced_blend >= 0;
+            glState->caps.color_logic_op ||
+            (i == 0 && fragmentProgram &&
+             fragmentProgram->active_advanced_blend >= 0);
         desc->blending_enabled_mask |= mglRenderBlendingEnabledMaskBit(
             (glState->caps.blendi[i] && !shaderBlended) ? 1 : 0, i);
         desc->source_rgb_blend_factor[i] = blend.source_rgb_factor;
@@ -676,6 +681,34 @@ int mglRenderPassGeneratePipelineDescriptorState(
                 (unsigned)desc->raster_sample_count);
         fprintf(stderr, "MGL PIPELINE DESC renderTarget[0]=%u\n",
                 (unsigned)desc->color_format[0]);
+    }
+
+    /* GL 4.6 §17.3.9: a fragment variant applies the logical operation
+     * against every render target whose format it affects; COPY writes the
+     * fragment color unchanged. */
+    if (glState->caps.color_logic_op && fragmentProgram && fragmentFunction &&
+        !fragmentCarrierAbi && glState->var.logic_op_mode != GL_COPY) {
+        MGLLogicOpVariant variant;
+        memset(&variant, 0, sizeof variant);
+        variant.op = mglRenderLogicOpIndex((uint32_t)glState->var.logic_op_mode);
+        int affected = 0;
+        for (int i = 0; i < MGL_LOGIC_OP_MAX_TARGETS && i < MAX_COLOR_ATTACHMENTS;
+             i++) {
+            if (desc->color_write_mask[i] == 0u) {
+                continue;
+            }
+            variant.target_class[i] = mglRenderLogicOpTargetClass(
+                desc->color_format[i],
+                glState->caps.framebuffer_srgb ? 1 : 0);
+            affected |= variant.target_class[i] != MGL_LOGIC_OP_RT_PASSTHROUGH;
+        }
+        if (affected) {
+            void *logicFunction =
+                mglProgramLogicOpFragmentFunction(fragmentProgram, &variant);
+            if (logicFunction) {
+                fragmentFunction = logicFunction;
+            }
+        }
     }
 
     functions_out->vertex_function = vertexFunction;

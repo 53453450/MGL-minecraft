@@ -1010,7 +1010,14 @@ int mglRenderPassSyncPipelineState(void *renderer,
                                                 currentFragmentProgram->active_advanced_blend >= 0)
                                                    ? (uint32_t)currentFragmentProgram->active_advanced_blend + 1u
                                                    : 0u)
-                                    << 12));
+                                    << 12)
+                                 /* Logical-operation FS variant: op + 1 (the
+                                  * render target classes follow from the
+                                  * color formats in the descriptor). */
+                                 | ((uint64_t)(state->caps.color_logic_op
+                                                   ? mglRenderLogicOpIndex((uint32_t)state->var.logic_op_mode) + 1u
+                                                   : 0u)
+                                    << 6));
             uint64_t vertexInstance = currentVertexProgram
                 ? mglProgramBackendView(currentVertexProgram)->pipeline_cache_instance_id : 0u;
             if (geometry && geometry->expansionActive && geometry->program) {

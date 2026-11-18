@@ -55,6 +55,14 @@ int mglRenderPipelineFunctionsReady(int has_vs, int has_fs, int rasterizer_disca
  * [[render_target_array_index]]?  It does whenever it writes gl_Layer or
  * gl_ViewportIndex.  Read from the exact per-stage builtin mask. */
 int mglRenderVSWritesLayer(const Program *vertex_program, int stage);
+/* MGL_LOGIC_OP_RT_* class of a color attachment's MTLPixelFormat for the
+ * logical operation: how its stored bits relate to the fragment value.
+ * Floating-point formats, and sRGB ones while FRAMEBUFFER_SRGB converts,
+ * are passthrough (GL 4.6 §17.3.9). */
+uint8_t mglRenderLogicOpTargetClass(uint32_t mtl_pixel_format,
+                                    int framebuffer_srgb);
+/* Index of a GL logic op mode in table 17.3 (GL_CLEAR = 0 ... GL_SET = 15). */
+uint32_t mglRenderLogicOpIndex(uint32_t gl_logic_op);
 uint32_t mglRenderDepthFormatOrFallback(uint32_t format);
 uint32_t mglRenderStencilFormatOrFallback(uint32_t format);
 int mglRenderColorAttachmentBitfieldDone(uint32_t bitfield, int index);

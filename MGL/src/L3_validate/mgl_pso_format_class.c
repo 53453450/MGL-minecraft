@@ -99,6 +99,67 @@ int mglRenderVSWritesLayer(const Program *vertex_program, int stage) {
                                           MGL_AIR_BUILTIN_VIEWPORT_INDEX);
 }
 
+uint32_t mglRenderLogicOpIndex(uint32_t gl_logic_op) {
+    return (gl_logic_op - GL_CLEAR) & 0xfu;
+}
+
+uint8_t mglRenderLogicOpTargetClass(uint32_t mtl_pixel_format,
+                                    int framebuffer_srgb) {
+    switch (mtl_pixel_format) {
+    case 10u:  /* R8Unorm */
+    case 30u:  /* RG8Unorm */
+    case 70u:  /* RGBA8Unorm */
+    case 80u:  /* BGRA8Unorm */
+        return MGL_LOGIC_OP_RT_UNORM8;
+    case 11u:  /* R8Unorm_sRGB */
+    case 31u:  /* RG8Unorm_sRGB */
+    case 71u:  /* RGBA8Unorm_sRGB */
+    case 81u:  /* BGRA8Unorm_sRGB */
+        return framebuffer_srgb ? MGL_LOGIC_OP_RT_PASSTHROUGH
+                                : MGL_LOGIC_OP_RT_UNORM8;
+    case 20u:  /* R16Unorm */
+    case 60u:  /* RG16Unorm */
+    case 110u: /* RGBA16Unorm */
+        return MGL_LOGIC_OP_RT_UNORM16;
+    case 90u:  /* RGB10A2Unorm */
+    case 94u:  /* BGR10A2Unorm */
+        return MGL_LOGIC_OP_RT_UNORM10_10_10_2;
+    case 40u:  /* B5G6R5Unorm */
+        return MGL_LOGIC_OP_RT_UNORM5_6_5;
+    case 41u:  /* A1BGR5Unorm */
+    case 43u:  /* BGR5A1Unorm */
+        return MGL_LOGIC_OP_RT_UNORM5_5_5_1;
+    case 42u:  /* ABGR4Unorm */
+        return MGL_LOGIC_OP_RT_UNORM4_4_4_4;
+    case 13u:  /* R8Uint */
+    case 33u:  /* RG8Uint */
+    case 73u:  /* RGBA8Uint */
+        return MGL_LOGIC_OP_RT_UINT8;
+    case 14u:  /* R8Sint */
+    case 34u:  /* RG8Sint */
+    case 74u:  /* RGBA8Sint */
+        return MGL_LOGIC_OP_RT_SINT8;
+    case 23u:  /* R16Uint */
+    case 63u:  /* RG16Uint */
+    case 113u: /* RGBA16Uint */
+        return MGL_LOGIC_OP_RT_UINT16;
+    case 24u:  /* R16Sint */
+    case 64u:  /* RG16Sint */
+    case 114u: /* RGBA16Sint */
+        return MGL_LOGIC_OP_RT_SINT16;
+    case 53u:  /* R32Uint */
+    case 103u: /* RG32Uint */
+    case 123u: /* RGBA32Uint */
+        return MGL_LOGIC_OP_RT_UINT32;
+    case 54u:  /* R32Sint */
+    case 104u: /* RG32Sint */
+    case 124u: /* RGBA32Sint */
+        return MGL_LOGIC_OP_RT_SINT32;
+    default:
+        return MGL_LOGIC_OP_RT_PASSTHROUGH;
+    }
+}
+
 uint32_t mglRenderDepthFormatOrFallback(uint32_t format) {
     if (format == 0u) {
         return mglRenderDefaultDepthPixelFormat();

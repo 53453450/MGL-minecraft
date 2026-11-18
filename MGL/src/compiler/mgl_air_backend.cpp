@@ -14710,9 +14710,145 @@ static llvm::Value *applyAdvancedBlend(Codegen &cg, llvm::Value *ret)
     return ret;
 }
 
+/* Channel widths of a logical-operation render target class (0: the target
+ * has no such channel and the fragment value passes through). */
+static void logicOpChannelBits(uint8_t cls, uint32_t bits[4])
+{
+    static const uint32_t table[][4] = {
+        {0, 0, 0, 0},       /* PASSTHROUGH */
+        {8, 8, 8, 8},       /* UNORM8 */
+        {16, 16, 16, 16},   /* UNORM16 */
+        {10, 10, 10, 2},    /* UNORM10_10_10_2 */
+        {5, 6, 5, 0},       /* UNORM5_6_5 */
+        {5, 5, 5, 1},       /* UNORM5_5_5_1 */
+        {4, 4, 4, 4},       /* UNORM4_4_4_4 */
+        {8, 8, 8, 8},       /* UINT8 */
+        {16, 16, 16, 16},   /* UINT16 */
+        {32, 32, 32, 32},   /* UINT32 */
+        {8, 8, 8, 8},       /* SINT8 */
+        {16, 16, 16, 16},   /* SINT16 */
+        {32, 32, 32, 32},   /* SINT32 */
+    };
+    const uint8_t c = cls <= MGL_LOGIC_OP_RT_SINT32 ? cls : 0;
+    for (int i = 0; i < 4; i++)
+        bits[i] = table[c][i];
+}
+
+/* GL 4.6 table 17.3 on integer bit patterns (op = mode - GL_CLEAR). */
+static llvm::Value *emitLogicOpBits(llvm::IRBuilder<> &b, int op,
+                                    llvm::Value *s, llvm::Value *d)
+{
+    llvm::Value *zero = llvm::ConstantInt::get(s->getType(), 0);
+    switch (op) {
+    case 0x0: return zero;                                   /* CLEAR */
+    case 0x1: return b.CreateAnd(s, d);                      /* AND */
+    case 0x2: return b.CreateAnd(s, b.CreateNot(d));         /* AND_REVERSE */
+    case 0x3: return s;                                      /* COPY */
+    case 0x4: return b.CreateAnd(b.CreateNot(s), d);         /* AND_INVERTED */
+    case 0x5: return d;                                      /* NOOP */
+    case 0x6: return b.CreateXor(s, d);                      /* XOR */
+    case 0x7: return b.CreateOr(s, d);                       /* OR */
+    case 0x8: return b.CreateNot(b.CreateOr(s, d));          /* NOR */
+    case 0x9: return b.CreateNot(b.CreateXor(s, d));         /* EQUIV */
+    case 0xA: return b.CreateNot(d);                         /* INVERT */
+    case 0xB: return b.CreateOr(s, b.CreateNot(d));          /* OR_REVERSE */
+    case 0xC: return b.CreateNot(s);                         /* COPY_INVERTED */
+    case 0xD: return b.CreateOr(b.CreateNot(s), d);          /* OR_INVERTED */
+    case 0xE: return b.CreateNot(b.CreateAnd(s, d));         /* NAND */
+    default:  return b.CreateNot(zero);                      /* SET */
+    }
+}
+
+/* Applies the logical operation to one color output.  Each channel is taken
+ * to the bit pattern the render target stores (unsigned normalized: the
+ * nearest code; integer: the low `bits` bits), combined with the stored
+ * pattern and returned in the value the target stores back exactly. */
+static llvm::Value *emitLogicOp(Codegen &cg, int op, uint8_t cls,
+                                llvm::Value *src, llvm::Value *dst4)
+{
+    llvm::IRBuilder<> &b = *cg.b;
+    llvm::Type *srcTy = src->getType();
+    const bool isFloat = srcTy->getScalarType()->isFloatTy();
+    const bool clsInt = cls >= MGL_LOGIC_OP_RT_UINT8;
+    const bool clsSigned = cls >= MGL_LOGIC_OP_RT_SINT8;
+    if (cls == MGL_LOGIC_OP_RT_PASSTHROUGH || isFloat == clsInt ||
+        !(srcTy->getScalarType()->isFloatTy() ||
+          srcTy->getScalarType()->isIntegerTy(32)))
+        return src;
+    uint32_t bits[4];
+    logicOpChannelBits(cls, bits);
+    auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(srcTy);
+    const unsigned n = vt ? vt->getNumElements() : 1u;
+    llvm::Type *i32 = b.getInt32Ty();
+    llvm::Type *f32 = b.getFloatTy();
+    llvm::Value *out = src;
+    for (unsigned c = 0; c < n && c < 4; c++) {
+        const uint32_t w = bits[c];
+        if (w == 0)
+            continue;
+        llvm::Value *s = vt ? b.CreateExtractElement(src, (uint64_t)c) : src;
+        llvm::Value *d = b.CreateExtractElement(dst4, (uint64_t)c);
+        const uint32_t mask = w >= 32 ? 0xffffffffu : ((1u << w) - 1u);
+        llvm::Value *r;
+        if (isFloat) {
+            llvm::Value *maxv = llvm::ConstantFP::get(f32, (double)mask);
+            auto toBits = [&](llvm::Value *x) {
+                /* Nearest code of the clamped value: x*max + 0.5 truncated
+                 * (x*max is non-negative). */
+                x = b.CreateIntrinsic(llvm::Intrinsic::maxnum, {f32},
+                                      {x, llvm::ConstantFP::get(f32, 0.0)});
+                x = b.CreateIntrinsic(llvm::Intrinsic::minnum, {f32},
+                                      {x, llvm::ConstantFP::get(f32, 1.0)});
+                x = b.CreateFAdd(b.CreateFMul(x, maxv),
+                                 llvm::ConstantFP::get(f32, 0.5));
+                return b.CreateFPToUI(x, i32);
+            };
+            llvm::Value *rb = b.CreateAnd(
+                emitLogicOpBits(b, op, toBits(s), toBits(d)),
+                llvm::ConstantInt::get(i32, mask));
+            r = b.CreateFDiv(b.CreateUIToFP(rb, f32), maxv);
+        } else {
+            r = emitLogicOpBits(b, op, s, d);
+            if (w < 32) {
+                if (clsSigned) {
+                    llvm::Value *sh = llvm::ConstantInt::get(i32, 32 - w);
+                    r = b.CreateAShr(b.CreateShl(r, sh), sh);
+                } else {
+                    r = b.CreateAnd(r, llvm::ConstantInt::get(i32, mask));
+                }
+            }
+        }
+        out = vt ? b.CreateInsertElement(out, r, (uint64_t)c) : r;
+    }
+    return out;
+}
+
+/* Applies the variant's logical operation to every color output it covers. */
+static llvm::Value *applyLogicOp(Codegen &cg, llvm::Value *ret)
+{
+    if (cg.logicOp < 0 || cg.logicOpTargets.empty() || !ret)
+        return ret;
+    if (!ret->getType()->isStructTy()) {
+        const Codegen::LogicOpTarget &t = cg.logicOpTargets[0];
+        return t.field == 0
+            ? emitLogicOp(cg, cg.logicOp, t.targetClass, ret, t.dst)
+            : ret;
+    }
+    for (const Codegen::LogicOpTarget &t : cg.logicOpTargets) {
+        if (t.field >= ret->getType()->getStructNumElements())
+            continue;
+        llvm::Value *color = cg.b->CreateExtractValue(ret, t.field);
+        ret = cg.b->CreateInsertValue(
+            ret, emitLogicOp(cg, cg.logicOp, t.targetClass, color, t.dst),
+            t.field);
+    }
+    return ret;
+}
+
 static llvm::Value *finishFragReturn(Codegen &cg, llvm::Value *ret)
 {
     ret = applyAdvancedBlend(cg, ret);
+    ret = applyLogicOp(cg, ret);
     if (!cg.emulateClipDiscard || !ret)
         return ret;
     cg.emulateClipDiscard = false;
@@ -15929,6 +16065,8 @@ struct CompileOptions {
     bool fs_clip_emulate = false;
     bool software_sampler_reduction = false;
     int advanced_blend_equation = -1;
+    /* Fragment logical-operation variant, or null. */
+    const MGLLogicOpVariant *logic_op = nullptr;
     const char *const *attrib_names = nullptr;
     uint32_t tessPatchVertices = 0;
     uint32_t sparseResidencyBufferIndex =
@@ -15953,6 +16091,8 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     const bool software_sampler_reduction = opt.software_sampler_reduction;
     const int advancedBlendEquation =
         opt.stage == MGL_STAGE_FRAGMENT ? opt.advanced_blend_equation : -1;
+    const int logicOp = opt.stage == MGL_STAGE_FRAGMENT && opt.logic_op
+        ? (int)(opt.logic_op->op & 0xfu) : -1;
     const char *const *attrib_names = opt.attrib_names;
     const uint32_t tessPatchVertices = opt.tessPatchVertices;
     const uint32_t sparseResidencyBufferIndex =
@@ -16368,6 +16508,14 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     std::vector<llvm::Type *> retElems;
     std::vector<VarSym *> varyings;
     std::vector<VarSym *> fragOutputs;
+    /* Color outputs a logical-operation variant reads back and rewrites. */
+    struct LogicTarget {
+        uint32_t field;
+        uint32_t location;
+        uint8_t targetClass;
+        MGLIRScalar scalar;
+    };
+    std::vector<LogicTarget> logicTargets;
     llvm::Type *retTy = nullptr;
     /* Built-in usage is read from the IR/TU via mglFrontendBuiltinUsed — the
      * precise replacement for the SPIRV-era source-text strstr scans.  The
@@ -16630,6 +16778,29 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                 ? llvmType(fragColorRTType(fragOutputs[0]->type), ctx)
                 : llvm::FixedVectorType::get(
                       llvm::Type::getFloatTy(ctx), 4);
+        }
+        if (logicOp >= 0) {
+            auto addTarget = [&](uint32_t field, uint32_t location,
+                                 const MType &t) {
+                if (location >= MGL_LOGIC_OP_MAX_TARGETS)
+                    return;
+                const uint8_t cls = opt.logic_op->target_class[location];
+                if (cls != MGL_LOGIC_OP_RT_PASSTHROUGH)
+                    logicTargets.push_back({field, location, cls, t.scalar});
+            };
+            if (arrayOutput) {
+                /* Element i is [[color(i)]] (see the render_target nodes). */
+                MType el = arrayOutput->type;
+                el.arr = 0;
+                for (uint32_t i = 0; i < (uint32_t)arrayOutput->type.arr; i++)
+                    addTarget(i, i, el);
+            } else {
+                for (uint32_t k = 0; k < (uint32_t)fragOutputs.size(); k++) {
+                    if (fragOutputs[k]->blendIndex == 0)
+                        addTarget(k, fragOutputs[k]->location,
+                                  fragColorRTType(fragOutputs[k]->type));
+                }
+            }
         }
     }
 
@@ -16954,6 +17125,11 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         if (advancedBlendEquation >= 0)
             paramTys.push_back(llvm::FixedVectorType::get(
                 llvm::Type::getFloatTy(ctx), 4));
+        for (const LogicTarget &t : logicTargets)
+            paramTys.push_back(llvm::FixedVectorType::get(
+                t.scalar == MGLIR_SCALAR_FLOAT ? llvm::Type::getFloatTy(ctx)
+                                               : llvm::Type::getInt32Ty(ctx),
+                4));
     }
     if (isTESCompute)
         paramTys.push_back(llvm::FixedVectorType::get(
@@ -17816,6 +17992,10 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         }
         if (advancedBlendEquation >= 0)
             cg.advancedBlendDst = fn->getArg(argSlot++);
+        cg.logicOp = logicTargets.empty() ? -1 : logicOp;
+        for (const LogicTarget &t : logicTargets)
+            cg.logicOpTargets.push_back(
+                {t.field, t.targetClass, fn->getArg(argSlot++)});
     }
     if (hasSampleVarying && !isVS && !isTES && !isKernel) {
         /* With raster_sample_count==1 (MS array emulation), Metal only
@@ -20013,7 +20193,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             usesSampleID || usesSamplePosition || usesSampleMaskIn ||
             needParamsBuffer || usesFragmentCullDistance ||
             usesFragmentClipDistance || postDepthMaskIn ||
-            advancedBlendEquation >= 0) {
+            advancedBlendEquation >= 0 || !logicTargets.empty()) {
             /* Fragment builtins sit after the varyings and the optional
              * uniform buffer in the arg order; skip that slot once. */
             if (hasBuffer) mArgSlot++;
@@ -20204,6 +20384,25 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                 llvm::MDString::get(ctx, "float4"),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "mgl_blend_dst")}));
+        }
+        for (const LogicTarget &t : logicTargets) {
+            /* Framebuffer fetch of the render target the logical operation
+             * combines with. */
+            const char *typeName = t.scalar == MGLIR_SCALAR_FLOAT ? "float4"
+                                 : t.scalar == MGLIR_SCALAR_UINT  ? "uint4"
+                                                                  : "int4";
+            const std::string argName =
+                "mgl_logic_dst_" + std::to_string(t.location);
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.render_target"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), t.location)),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, typeName),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, argName.c_str())}));
         }
     }
     if (isKernel) {
@@ -21401,13 +21600,14 @@ extern "C" int mglAirReflectGLSLStageInfo(
     return 0;
 }
 
-extern "C" int mglAirCompileGLSLWithReflectInfoEx(
+static int compileGLSLEntry(
     const char *src, int stage, const char *const *attrib_names,
     unsigned char **metallib_out, size_t *size_out,
     MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
     uint32_t flags, const MGLShaderResourceList *iface_location_peers,
     char *err_buf, size_t err_cap, MGLTranslationUnit **tu_out,
-    uint32_t sparse_residency_buffer_index) {
+    uint32_t sparse_residency_buffer_index,
+    const MGLLogicOpVariant *logic_op) {
     bool has_gs = (flags & MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER) != 0;
     bool direct_primitive_id =
         (flags & MGL_AIR_COMPILE_DIRECT_PRIMITIVE_ID) != 0;
@@ -21504,6 +21704,8 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
                     MGL_AIR_COMPILE_ADVANCED_BLEND_SHIFT)
             : -1;
 
+    opt.logic_op = logic_op;
+
     int rc = compileGLSLImpl(sess.src, opt, metallib_out, size_out, err_buf,
                              err_cap);
     if (rc == 0 && stage_info) {
@@ -21518,6 +21720,31 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
         *tu_out = nullptr;
     mglFrontendSessionDestroy(&sess);
     return rc;
+}
+
+extern "C" int mglAirCompileGLSLWithReflectInfoEx(
+    const char *src, int stage, const char *const *attrib_names,
+    unsigned char **metallib_out, size_t *size_out,
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
+    uint32_t flags, const MGLShaderResourceList *iface_location_peers,
+    char *err_buf, size_t err_cap, MGLTranslationUnit **tu_out,
+    uint32_t sparse_residency_buffer_index) {
+    return compileGLSLEntry(src, stage, attrib_names, metallib_out, size_out,
+                            lists, stage_info, flags, iface_location_peers,
+                            err_buf, err_cap, tu_out,
+                            sparse_residency_buffer_index, nullptr);
+}
+
+extern "C" int mglAirCompileGLSLLogicOpVariant(
+    const char *src, const char *const *attrib_names,
+    unsigned char **metallib_out, size_t *size_out, uint32_t flags,
+    const MGLShaderResourceList *iface_location_peers,
+    const MGLLogicOpVariant *variant, char *err_buf, size_t err_cap,
+    uint32_t sparse_residency_buffer_index) {
+    return compileGLSLEntry(src, MGL_STAGE_FRAGMENT, attrib_names,
+                            metallib_out, size_out, nullptr, nullptr, flags,
+                            iface_location_peers, err_buf, err_cap, nullptr,
+                            sparse_residency_buffer_index, variant);
 }
 
 extern "C" int mglAirCompileGLSLWithReflectInfo(

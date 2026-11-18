@@ -489,6 +489,36 @@ static inline uint32_t mglAdvancedBlendCompileFlags(int equation_index)
            ((uint32_t)equation_index << MGL_AIR_COMPILE_ADVANCED_BLEND_SHIFT);
 }
 
+/* GL 4.6 §17.3.9 logical operation.  A fragment variant applies the
+ * operation to every color output against that render target's framebuffer
+ * value; the render target's class says how the stored bits relate to the
+ * shader value.  A passthrough target (floating point, sRGB with
+ * FRAMEBUFFER_SRGB on, or no attachment) keeps the fragment color. */
+enum {
+    MGL_LOGIC_OP_RT_PASSTHROUGH = 0,
+    MGL_LOGIC_OP_RT_UNORM8,
+    MGL_LOGIC_OP_RT_UNORM16,
+    MGL_LOGIC_OP_RT_UNORM10_10_10_2,
+    MGL_LOGIC_OP_RT_UNORM5_6_5,
+    MGL_LOGIC_OP_RT_UNORM5_5_5_1,
+    MGL_LOGIC_OP_RT_UNORM4_4_4_4,
+    MGL_LOGIC_OP_RT_UINT8,
+    MGL_LOGIC_OP_RT_UINT16,
+    MGL_LOGIC_OP_RT_UINT32,
+    MGL_LOGIC_OP_RT_SINT8,
+    MGL_LOGIC_OP_RT_SINT16,
+    MGL_LOGIC_OP_RT_SINT32,
+};
+
+enum { MGL_LOGIC_OP_MAX_TARGETS = 8 };
+
+typedef struct MGLLogicOpVariant {
+    /* GL logic op minus GL_CLEAR (0..15). */
+    uint32_t op;
+    /* MGL_LOGIC_OP_RT_* per fragment output location. */
+    uint8_t target_class[MGL_LOGIC_OP_MAX_TARGETS];
+} MGLLogicOpVariant;
+
 /* Same as above plus stage-composition flags (bit0: location-tagged producer
  * interface; bit9: direct FS takes gl_PrimitiveID from the rasterizer).
  * iface_location_peers: optional producer-stage outputs (typically GS
@@ -502,6 +532,15 @@ int mglAirCompileGLSLWithReflectInfoEx(
     MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
     uint32_t flags, const MGLShaderResourceList *iface_location_peers,
     char *err_buf, size_t err_cap, struct MGLTranslationUnit **tu_out,
+    uint32_t sparse_residency_buffer_index);
+
+/* Fragment variant of mglAirCompileGLSLWithReflectInfoEx that applies a
+ * logical operation (no reflection outputs). */
+int mglAirCompileGLSLLogicOpVariant(
+    const char *src, const char *const *attrib_names,
+    unsigned char **metallib_out, size_t *size_out, uint32_t flags,
+    const MGLShaderResourceList *iface_location_peers,
+    const MGLLogicOpVariant *variant, char *err_buf, size_t err_cap,
     uint32_t sparse_residency_buffer_index);
 
 /* Free bytes returned by mglShaderCompileGLSL. */
