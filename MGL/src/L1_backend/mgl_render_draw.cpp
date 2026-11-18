@@ -227,9 +227,14 @@ uint32_t mglRenderTessControlPointFormat(uint64_t gl_type) {
 extern "C"
 uint32_t mglRenderTessControlPointLocationFormat(uint64_t gl_type) {
     /* One 16-byte location of a control-point input: a matrix type is one
-     * location per column, so the class is that of the column vector. */
+     * location per column, so the class is that of the column vector.  The
+     * TCS writes int/uint/bool slots as float carriers, so those are read
+     * back as floats of the same width. */
+    const uint32_t cls = mglRenderVertexLocationFormatClass(gl_type);
+    const uint32_t kind = mglVertexFormatClassKind(cls);
     return mglRenderVertexFormatClassToMetal(
-        mglRenderVertexLocationFormatClass(gl_type));
+        kind == 2u || kind == 3u ? 1u * 4u + mglVertexFormatClassCount(cls)
+                                 : cls);
 }
 
 

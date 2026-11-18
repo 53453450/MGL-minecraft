@@ -51,10 +51,10 @@ uint32_t mglRenderTessOutputWinding(uint32_t tess_gen_vertex_order);
 uint32_t mglRenderTessControlPointIndexType(int indexed_draw);
 int mglRenderRasterizationEnabled(int rasterizer_discard, int has_fragment);
 int mglRenderPipelineFunctionsReady(int has_vs, int has_fs, int rasterizer_discard);
-/* Does the vertex stage write gl_Layer ([[render_target_array_index]])?  Read
- * from the exact per-stage builtin mask; the previous source-text scan matched
- * comments and longer identifiers too. */
-int mglRenderVSWritesLayer(const Program *vertex_program);
+/* Does the rasterized vertex stage (`stage`: VS, or a native TES) emit
+ * [[render_target_array_index]]?  It does whenever it writes gl_Layer or
+ * gl_ViewportIndex.  Read from the exact per-stage builtin mask. */
+int mglRenderVSWritesLayer(const Program *vertex_program, int stage);
 uint32_t mglRenderDepthFormatOrFallback(uint32_t format);
 uint32_t mglRenderStencilFormatOrFallback(uint32_t format);
 int mglRenderColorAttachmentBitfieldDone(uint32_t bitfield, int index);

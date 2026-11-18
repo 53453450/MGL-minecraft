@@ -91,9 +91,12 @@ int mglRenderPipelineFunctionsReady(int has_vs, int has_fs, int rasterizer_disca
     return has_vs ? 1 : 0;
 }
 
-int mglRenderVSWritesLayer(const Program *vertex_program) {
-    return mglProgramStageUsesBuiltin(vertex_program, _VERTEX_SHADER,
-                                      MGL_AIR_BUILTIN_LAYER);
+int mglRenderVSWritesLayer(const Program *vertex_program, int stage) {
+    /* The AIR backend emits [[render_target_array_index]] together with
+     * [[viewport_array_index]] when either builtin is written. */
+    return mglProgramStageUsesBuiltin(vertex_program, stage,
+                                      MGL_AIR_BUILTIN_LAYER |
+                                          MGL_AIR_BUILTIN_VIEWPORT_INDEX);
 }
 
 uint32_t mglRenderDepthFormatOrFallback(uint32_t format) {

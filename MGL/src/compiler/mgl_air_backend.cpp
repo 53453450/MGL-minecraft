@@ -573,6 +573,24 @@ static MType controlPointLocationType(const MType &t)
     return el;
 }
 
+/* The TCS stores each int/uint/bool slot of the patch record as a float
+ * carrier (varyingNeedsFloatRecordCarrier, applied per array element), so a
+ * native post-tessellation control point declares those slots as float and
+ * extractControlPointField decodes them.  Doubles keep their own encoding. */
+static bool controlPointSlotIsIntCarrier(const MType &slot)
+{
+    return varyingNeedsFloatRecordCarrier(slot) &&
+           slot.scalar != MGLIR_SCALAR_DOUBLE;
+}
+
+/* Record field type of one location of a native post-tessellation control
+ * point. */
+static MType controlPointRecordFieldType(const MType &t)
+{
+    MType el = controlPointLocationType(t);
+    return controlPointSlotIsIntCarrier(el) ? floatCarrierType(el) : el;
+}
+
 /* Metal vertex-attribute expansion for one GLSL attribute.
  *
  * A Metal vertex attribute is at most one 4-component value, whereas a GLSL
@@ -648,7 +666,16 @@ static llvm::Value *extractControlPointField(Codegen &cg, llvm::Value *record,
                                              uint32_t base, const MType &type)
 {
     const uint32_t span = varyingLocationSpan(type);
-    if (span <= 1u) return cg.b->CreateExtractValue(record, base);
+    const MType slotType = controlPointLocationType(type);
+    const bool intCarrier = controlPointSlotIsIntCarrier(slotType);
+    auto slot = [&](uint32_t loc) -> llvm::Value * {
+        llvm::Value *v = cg.b->CreateExtractValue(record, loc);
+        if (intCarrier)
+            v = decodeFloatCarrier(cg, v, slotType.scalar,
+                                   llvmType(slotType, *cg.ctx));
+        return v;
+    };
+    if (span <= 1u) return slot(base);
     llvm::Value *agg = llvm::UndefValue::get(llvmType(type, *cg.ctx));
     if (type.isArray() && type.isMatrix() && type.arr > 0 && type.cols > 0) {
         const MType col = matrixColumnType(type);
@@ -663,10 +690,8 @@ static llvm::Value *extractControlPointField(Codegen &cg, llvm::Value *record,
         }
         return agg;
     }
-    for (uint32_t k = 0; k < span; k++) {
-        agg = cg.b->CreateInsertValue(
-            agg, cg.b->CreateExtractValue(record, base + k), k);
-    }
+    for (uint32_t k = 0; k < span; k++)
+        agg = cg.b->CreateInsertValue(agg, slot(base + k), k);
     return agg;
 }
 
@@ -16444,9 +16469,13 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         (isVS && !isTESVertex &&
          (strstr(esrc, "mgl_gs_output") != nullptr ||
           strstr(esrc, "mgl_tes_output") != nullptr));
+    /* ARB_shader_viewport_layer_array: the last pre-rasterization stage
+     * (VS, or a TES that Metal rasterizes directly) may write gl_Layer /
+     * gl_ViewportIndex. */
     const bool usesLayerViewport =
-        isVS && (mglFrontendBuiltinUsed(&mod, tu, "gl_Layer") ||
-                 mglFrontendBuiltinUsed(&mod, tu, "gl_ViewportIndex"));
+        (isVS || (isTES && !isTESCompute)) &&
+        (mglFrontendBuiltinUsed(&mod, tu, "gl_Layer") ||
+         mglFrontendBuiltinUsed(&mod, tu, "gl_ViewportIndex"));
     /* TES-vertex point_mode draws rasterize MTLPrimitiveTypePoint and must
      * declare [[point_size]]; isolines (line topology) must not. */
     const bool usesPointSize =
@@ -16943,7 +16972,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             llvm::FixedVectorType::get(llvm::Type::getFloatTy(ctx), 4)};
         for (VarSym &v : syms) {
             if (v.kind != VarSym::CONTROL_POINT_INPUT || v.isPatch) continue;
-            const MType loc = controlPointLocationType(v.type);
+            const MType loc = controlPointRecordFieldType(v.type);
             const uint32_t span = varyingLocationSpan(v.type);
             for (uint32_t k = 0; k < span; k++)
                 cpRecordElems.push_back(llvmType(loc, ctx));
@@ -19845,7 +19874,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
              * and the getter struct: a member that is an array or a matrix
              * spans several locations, and declaring the aggregate type once
              * made Metal reject the pipeline ("Unsupported attribute type"). */
-            const MType loc = controlPointLocationType(v.type);
+            const MType loc = controlPointRecordFieldType(v.type);
             const uint32_t span = varyingLocationSpan(v.type);
             const std::string locName = mslTypeName(loc);
             for (uint32_t element = 0; element < span; element++) {

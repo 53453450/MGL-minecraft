@@ -357,12 +357,13 @@ int mglRenderPassGeneratePipelineDescriptorState(
          * drawing triangles linkable (Metal rejects a triangle-class
          * pipeline whose vertex function writes point size).
          *
-         * Exception: VS writing [[render_target_array_index]] (gl_Layer)
-         * requires an explicit topology.  Real AGX often tolerates
-         * Unspecified; Apple Paravirtual rejects with CompilerError. */
+         * Exception: a vertex function emitting [[render_target_array_index]]
+         * (gl_Layer or gl_ViewportIndex) requires an explicit topology; Metal
+         * rejects the pipeline otherwise. */
         const int needsExplicitTopology = mglRenderNeedsExplicitTopology(
             geometryExpansion ? 1 : 0, areas.core->lastDrawPrimitiveMode,
-            vertexProgram ? mglRenderVSWritesLayer(vertexProgram) : 0);
+            vertexProgram ? mglRenderVSWritesLayer(vertexProgram, vertexStage)
+                          : 0);
         if (needsExplicitTopology) {
             /* A geometry expansion emits the geometry shader's output
              * primitive type, not the GL draw mode: a layout(points) geometry
