@@ -149,6 +149,7 @@ void collectStageVarSyms(const MGLIRModule *mod, const MGLTranslationUnit *tu,
         v.location = s->location;
         v.locationExplicit = (s->location != UINT32_MAX);
         v.component = s->component;
+        v.blendIndex = s->index != UINT32_MAX ? s->index : 0u;
         v.stream = s->stream;
         v.blockName = s->block_name ? s->block_name : "";
         uint32_t q = s->qualifiers;

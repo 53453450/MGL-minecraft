@@ -65,6 +65,8 @@ struct VarSym {
     uint32_t location = UINT32_MAX;
     bool locationExplicit = false; /* layout(location=N) in source */
     uint32_t component = 0;      /* layout(component=N) */
+    uint32_t blendIndex = 0;     /* FS output layout(index=N): dual-source
+                                  * blend input 0 or 1 */
     int32_t stream = 0;          /* GS output stream for OUTPUT vars */
     std::string blockName;       /* owning interface block, or empty */
     bool isPatch = false;

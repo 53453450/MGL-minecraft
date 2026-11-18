@@ -16592,7 +16592,9 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         }
         std::sort(fragOutputs.begin(), fragOutputs.end(),
                   [](const VarSym *a, const VarSym *b) {
-                      return a->location < b->location;
+                      return a->location != b->location
+                                 ? a->location < b->location
+                                 : a->blendIndex < b->blendIndex;
                   });
         if (arrayOutput) {
             /* Fragment output arrays (gl_FragData / out T fragOut[N]): flatten
@@ -20426,12 +20428,14 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             }
         } else {
             for (VarSym *out : fragOutputs) {
+                /* [[color(location), index(blendIndex)]]: index 1 is the
+                 * second source of dual-source blending. */
                 outNodes.push_back(llvm::MDNode::get(ctx, {
                     llvm::MDString::get(ctx, "air.render_target"),
                     llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                         llvm::Type::getInt32Ty(ctx), out->location)),
                     llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                        llvm::Type::getInt32Ty(ctx), 0)),
+                        llvm::Type::getInt32Ty(ctx), out->blendIndex)),
                     llvm::MDString::get(ctx, "air.arg_type_name"),
                     llvm::MDString::get(ctx, mslTypeName(fragColorRTType(out->type))),
                     llvm::MDString::get(ctx, "air.arg_name"),
