@@ -143,6 +143,13 @@ uint32_t mglNumComponentsForFormat(uint32_t format) {
         case GL_RGB32I:
         case GL_RGB32UI:
         case GL_RGB565:
+        /* Narrow RGB formats live in RGBA8 / RGB10A2 / RGBA16 storage; the
+         * stored alpha is not GL alpha, so sampling must substitute 1. */
+        case GL_R3_G3_B2:
+        case GL_RGB4:
+        case GL_RGB5:
+        case GL_RGB10:
+        case GL_RGB12:
             return 3u;
 
         case 0x8d75: /* alternate GL_RGB8I */
@@ -172,6 +179,9 @@ uint32_t mglNumComponentsForFormat(uint32_t format) {
         case GL_RGB10_A2UI:
         case GL_RGB5_A1:
         case GL_RGBA4:
+        case GL_RGBA2:
+        case GL_RGBA12:
+        case GL_RGBA16:
             return 4u;
 
         case 0x8d78: /* alternate GL_RGBA8UI */

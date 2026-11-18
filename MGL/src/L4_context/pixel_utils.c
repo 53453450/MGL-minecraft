@@ -2503,9 +2503,8 @@ uint32_t mtlFormatForGLInternalFormat(GLenum internal_format)
 
 GLboolean mglIsColorRenderableInternalFormat(GLint internalformat)
 {
-    /* GL 4.6 required color-renderable formats (Table 8.11).
-     * Matches the list used by the CTS packed_pixels isFBOImageAttachValid
-     * for non-ES contexts.  Unsized base formats are canonicalised first. */
+    /* GL 4.6 §9.4: RED, RG, RGB, RGBA, or a sized format whose Table 8.12
+     * "CR" column is checked.  Unsized base formats are canonicalised first. */
     switch (internalformat)
     {
         /* Unsized base formats - canonicalise to sized equivalents.
@@ -2630,10 +2629,23 @@ GLboolean mglIsColorRenderableInternalFormat(GLint internalformat)
         case GL_RGBA16_SNORM:
             return GL_TRUE;
 
-        /* GL 4.6 Table 8.12: RGB8 is color-renderable.  Metal stores it as
-         * RGBA8Unorm; keep it CR so MSAA texture FBOs used by CTS blit
-         * configs are complete.  SRGB8 stays non-CR (only SRGB8_ALPHA8 is). */
+        /* GL 4.6 Table 8.12 checks CR for every sized RGB/RGBA format except
+         * RGB9_E5.  Metal stores the three-component and narrow formats in
+         * renderable RGBA8 / RGB10A2 / RGBA16 / RGBA8_sRGB / RGBA8-16 integer
+         * textures (mtlFormatForGLInternalFormat). */
         case GL_RGB8:
+        case GL_SRGB8:
+        case GL_RGB8I:
+        case GL_RGB8UI:
+        case GL_RGB16I:
+        case GL_RGB16UI:
+        case GL_RGB10:
+        case GL_RGB12:
+        case GL_R3_G3_B2:
+        case GL_RGB4:
+        case GL_RGB5:
+        case GL_RGBA2:
+        case GL_RGBA12:
             return GL_TRUE;
 
         /* RGB16F / RGB16 are stored as RGBA16Float / RGBA16Unorm, which Metal
@@ -2643,16 +2655,8 @@ GLboolean mglIsColorRenderableInternalFormat(GLint internalformat)
         case GL_RGB16F:
         case GL_RGB16:
             return GL_TRUE;
-        case GL_SRGB8:
-        case GL_RGB8I:
-        case GL_RGB8UI:
-        case GL_RGB16I:
-        case GL_RGB16UI:
-        case GL_RGB10:
-        case GL_RGB12:
-            return GL_FALSE;
 
-        /* GL_RGB9_E5 is NOT color-renderable per GL 4.6 spec table 8.11,
+        /* GL_RGB9_E5 is NOT color-renderable per GL 4.6 spec table 8.12,
          * even though Metal supports it as a render target.  Reporting it
          * as renderable caused FBO completeness to pass when the spec
          * requires GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT. */
@@ -2668,13 +2672,6 @@ GLboolean mglIsColorRenderableInternalFormat(GLint internalformat)
         case GL_RGB32UI:
             return GL_TRUE;
 
-        /* Other non-required formats. */
-        case GL_R3_G3_B2:
-        case GL_RGB4:
-        case GL_RGB5:
-        case GL_RGBA2:
-        case GL_RGBA12:
-            return GL_FALSE;
 
         default:
             return GL_FALSE;
