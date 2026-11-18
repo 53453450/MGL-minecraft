@@ -1867,8 +1867,19 @@ static llvm::Value *insertIndexValue(Codegen &cg, llvm::Value *obj,
                                      const MType &bt, llvm::Value *idx,
                                      llvm::Value *val) {
     /* Dynamic element writes still follow the aggregate's element type:
-     * `float a[N]; a[i] = 1` must not create an i32/float select. */
-    val = coerceScalar(cg, val, bt.scalar);
+     * `float a[N]; a[i] = 1` must not create an i32/float select.  A double
+     * vector or matrix slot is a float carrier (llvmType), so the value is
+     * converted to float rather than expanded to i64 payload bits. */
+    llvm::Type *slotTy = nullptr;
+    if (auto *at = llvm::dyn_cast<llvm::ArrayType>(obj->getType()))
+        slotTy = at->getElementType();
+    else if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(obj->getType()))
+        slotTy = vt->getElementType();
+    MGLIRScalar want = bt.scalar;
+    if (want == MGLIR_SCALAR_DOUBLE && slotTy && slotTy->isFPOrFPVectorTy())
+        want = MGLIR_SCALAR_FLOAT;
+    if (!slotTy || val->getType() != slotTy)
+        val = coerceScalar(cg, val, want);
     /* Arrays-of-matrices: arr takes precedence (same as llvmType). */
     if (bt.isArray() || (!bt.isMatrix() && obj->getType()->isArrayTy())) {
         auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
