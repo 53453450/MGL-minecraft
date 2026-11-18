@@ -449,11 +449,18 @@ int mglBatchTryReplaySimpleBatch(void *renderer, MGLDrawBatch *batch,
     if (!batch || batch->command_count == 0u) return 0;
     Program *batchProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
     const GLenum batchMode = batch->commands[0].mode;
+    /* Either restart switch (PRIMITIVE_RESTART or the fixed-index one) sends
+     * an element batch to the path that splits draws at restart indices. */
+    uint32_t restartIndex = 0u;
+    const int restart =
+        batch->uses_elements &&
+        mglPrimitiveRestartIndexForType(glm_ctx, batch->commands[0].indexType,
+                                        &restartIndex);
     if (!mgl_batch_replay_simple_eligible(
             batch, MGL_RENDER_REPLAY_BATCH_MAX_COMMANDS,
             mglBatchReplayHasActiveEncoder(encCtx) ? 1 : 0,
             (batchProgram && batchProgram->uses_cull_distance) ? 1 : 0,
-            glm_ctx->active_state->caps.primitive_restart ? 1 : 0,
+            restart ? 1 : 0,
             mglPolygonModePointForDrawMode(glm_ctx, batchMode) ? 1 : 0,
             mglRenderDrawModeNeedsEmulate((uint32_t)batchMode) ? 1 : 0))
         return 0;
