@@ -5,6 +5,7 @@ import contextlib
 import importlib.util
 import io
 import pathlib
+import re
 import tempfile
 import unittest
 
@@ -137,6 +138,16 @@ class ArchitectureGateTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "mgl_draw_state_key.c"):
             with contextlib.redirect_stdout(io.StringIO()):
                 invariants.main()
+
+    def test_predefined_glsl_extension_macros_are_advertised(self):
+        cpp = (ROOT / "MGL/src/compiler/mgl_glsl_cpp.c").read_text()
+        table = cpp.split("kMglGLSLExtensionMacros[] = {", 1)[1].split("};", 1)[0]
+        macros = re.findall(r'"(GL_[A-Za-z0-9_]+)"', table)
+        get_c = (ROOT / "MGL/src/L4_context/get.c").read_text()
+        listed = get_c.split("kMglExtensions[] = {", 1)[1].split("};", 1)[0]
+        advertised = set(re.findall(r'^\s*"(GL_[A-Za-z0-9_]+)"', listed, re.M))
+        self.assertTrue(macros)
+        self.assertEqual([m for m in macros if m not in advertised], [])
 
 
 if __name__ == "__main__":

@@ -1820,6 +1820,38 @@ static int source_declares_es(const char *src, size_t len)
     return 0;
 }
 
+/* GLSL 4.60 §3.3: each supported extension defines a macro with its name,
+ * value 1, whether or not the shader enables it (SPIRV-Cross output probes
+ * `#if defined(GL_ARB_gpu_shader_int64)`).  These are the shading-language
+ * extensions of the GL_EXTENSIONS string in get.c; every entry must be
+ * advertised there (checked by test_architecture_gates.py). */
+static const char *const kMglGLSLExtensionMacros[] = {
+    "GL_ARB_arrays_of_arrays",
+    "GL_ARB_compute_shader",
+    "GL_ARB_draw_instanced",
+    "GL_ARB_gpu_shader5",
+    "GL_ARB_gpu_shader_int64",
+    "GL_ARB_post_depth_coverage",
+    "GL_ARB_separate_shader_objects",
+    "GL_ARB_shader_ballot",
+    "GL_ARB_shader_draw_parameters",
+    "GL_ARB_shader_subroutine",
+    "GL_ARB_shader_texture_image_samples",
+    "GL_ARB_shader_viewport_layer_array",
+    "GL_ARB_shading_language_420pack",
+    "GL_ARB_sparse_texture2",
+    "GL_ARB_sparse_texture_clamp",
+    "GL_ARB_tessellation_shader",
+    "GL_ARB_texture_buffer_object",
+    "GL_ARB_texture_cube_map_array",
+    "GL_ARB_texture_query_levels",
+    "GL_ARB_texture_query_lod",
+    "GL_ARB_uniform_buffer_object",
+    "GL_EXT_shader_integer_mix",
+    "GL_EXT_texture_shadow_lod",
+    "GL_KHR_blend_equation_advanced",
+};
+
 char *mglGLSLPreprocess(const char *src, size_t len, char *err, size_t err_cap)
 {
     PP pp;
@@ -1832,13 +1864,19 @@ char *mglGLSLPreprocess(const char *src, size_t len, char *err, size_t err_cap)
         src = "";
         len = 0;
     }
-    if (add_predef(&pp, "__LINE__", 1, "0", 0) != 0 ||
+    int predef_failed =
+        add_predef(&pp, "__LINE__", 1, "0", 0) != 0 ||
         add_predef(&pp, "__FILE__", 2, "0", 0) != 0 ||
         add_predef(&pp, "__VERSION__", 3, "0", 0) != 0 ||
-        add_predef(&pp, "GL_core_profile", 0, "1", 1) != 0 ||
-        /* KHR_blend_equation_advanced: the macro is defined whether or not
-         * the shader names the extension. */
-        add_predef(&pp, "GL_KHR_blend_equation_advanced", 0, "1", 0) != 0) {
+        add_predef(&pp, "GL_core_profile", 0, "1", 1) != 0;
+    for (size_t e = 0; !predef_failed &&
+                       e < sizeof(kMglGLSLExtensionMacros) /
+                               sizeof(kMglGLSLExtensionMacros[0]);
+         e++) {
+        predef_failed =
+            add_predef(&pp, kMglGLSLExtensionMacros[e], 0, "1", 0) != 0;
+    }
+    if (predef_failed) {
         if (err && err_cap) {
             snprintf(err, err_cap, "%s", pp.err);
         }

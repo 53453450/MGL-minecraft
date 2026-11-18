@@ -2477,6 +2477,102 @@ static int eval_const_int(MGLParser *p, const MGLExpr *e, int64_t *value)
     return 1;
 }
 
+/* GLSL 4.60 §4.4: layout-qualifier-ids whose value is an integer (an
+ * integral constant expression, never a float such as 0.0). */
+static int layout_key_takes_int(const char *s, size_t n)
+{
+    return (n == 8 && memcmp(s, "location", 8) == 0) ||
+           (n == 5 && memcmp(s, "index", 5) == 0) ||
+           (n == 9 && memcmp(s, "component", 9) == 0) ||
+           (n == 7 && memcmp(s, "binding", 7) == 0) ||
+           (n == 6 && memcmp(s, "offset", 6) == 0) ||
+           (n == 8 && memcmp(s, "vertices", 8) == 0) ||
+           (n == 12 && memcmp(s, "max_vertices", 12) == 0) ||
+           (n == 11 && memcmp(s, "invocations", 11) == 0) ||
+           (n == 6 && memcmp(s, "stream", 6) == 0) ||
+           (n == 12 && memcmp(s, "local_size_x", 12) == 0) ||
+           (n == 12 && memcmp(s, "local_size_y", 12) == 0) ||
+           (n == 12 && memcmp(s, "local_size_z", 12) == 0);
+}
+
+/* Store the value of an integer layout-qualifier-id on the declaration. */
+static void apply_layout_int(MGLParser *p, MGLDecl *d, const char *s,
+                             size_t n, int64_t value)
+{
+    if (n == 8 && memcmp(s, "location", 8) == 0) {
+        d->layout_location = (int32_t)value;
+    } else if (n == 5 && memcmp(s, "index", 5) == 0) {
+        d->layout_index = (int32_t)value;
+    } else if (n == 9 && memcmp(s, "component", 9) == 0) {
+        d->layout_component = (int32_t)value;
+    } else if (n == 7 && memcmp(s, "binding", 7) == 0) {
+        d->layout_binding = (int32_t)value;
+        if (d->layout_binding < 0) {
+            parse_error(p,
+                "layout(binding) must be >= 0 at line %u",
+                tk_line(p));
+        }
+    } else if (n == 6 && memcmp(s, "offset", 6) == 0) {
+        /* GLSL 4.60 §4.4.2.3: explicit atomic-counter
+         * buffer offset. */
+        d->layout_offset = (int32_t)value;
+    } else if (n == 8 && memcmp(s, "vertices", 8) == 0) {
+        d->layout_vertices = (int32_t)value;
+    } else if (n == 12 && memcmp(s, "max_vertices", 12) == 0) {
+        d->layout_max_vertices = (int32_t)value;
+        if (d->layout_max_vertices < 0) {
+            parse_error(p,
+                "layout(max_vertices) must be >= 0 at line %u",
+                tk_line(p));
+        }
+    } else if (n == 11 && memcmp(s, "invocations", 11) == 0) {
+        d->layout_invocations = (int32_t)value;
+        /* GLSL 4.60 §4.4.1.2: invocations <= 0 is a
+         * compile-time error (not silently defaulted to 1). */
+        if (d->layout_invocations <= 0) {
+            parse_error(p,
+                "layout(invocations) must be greater than zero at line %u",
+                tk_line(p));
+        }
+    } else if (n == 6 && memcmp(s, "stream", 6) == 0) {
+        d->layout_stream = (int32_t)value;
+    } else if (n == 12 && memcmp(s, "local_size_x", 12) == 0) {
+        d->layout_local_size_x = (int32_t)value;
+    } else if (n == 12 && memcmp(s, "local_size_y", 12) == 0) {
+        d->layout_local_size_y = (int32_t)value;
+    } else if (n == 12 && memcmp(s, "local_size_z", 12) == 0) {
+        d->layout_local_size_z = (int32_t)value;
+    }
+}
+
+/* GLSL 4.40 §4.4 (ARB_enhanced_layouts): an integer layout value may be any
+ * integral constant expression, e.g. `local_size_x = (4)`.  Earlier
+ * versions take an integer literal only.  A lone literal keeps the literal
+ * path; a value starting with an identifier is left to it as well. */
+static int layout_value_is_expression(MGLParser *p)
+{
+    if (!p->tu || p->tu->version < 440) {
+        return 0;
+    }
+    if (ops_at(p, "(")) {
+        return 1;
+    }
+    return at_num(p) && !at_peek_punct(p, 1, ",") && !at_peek_punct(p, 1, ")");
+}
+
+static int parse_layout_const_int(MGLParser *p, int64_t *value)
+{
+    MGLExpr *e = parse_assignment(p);
+    MGLConstVal cv;
+    const int ok = e && eval_const_val(p, e, &cv) && cv.size == 1 &&
+                   (cv.base == MGL_AST_TYPE_INT || cv.base == MGL_AST_TYPE_UINT);
+    if (ok) {
+        *value = const_val_to_int(&cv);
+    }
+    free_expr(e);
+    return ok;
+}
+
 static uint32_t parse_array_extent(MGLParser *p)
 {
     if (ops_at(p, "]")) {
@@ -3077,69 +3173,28 @@ more_qualifiers:
 
             if (has_value) {
                 expect_punct(p, "=");
-                if (at_num(p)) {
-                    /* GLSL 4.60 §4.4: binding/location/offset/etc. take an
-                     * integer-constant-expression, not a float like 0.0. */
-                    int need_int =
-                        (n == 8 && memcmp(s, "location", 8) == 0) ||
-                        (n == 5 && memcmp(s, "index", 5) == 0) ||
-                        (n == 9 && memcmp(s, "component", 9) == 0) ||
-                        (n == 7 && memcmp(s, "binding", 7) == 0) ||
-                        (n == 6 && memcmp(s, "offset", 6) == 0) ||
-                        (n == 8 && memcmp(s, "vertices", 8) == 0) ||
-                        (n == 12 && memcmp(s, "max_vertices", 12) == 0) ||
-                        (n == 11 && memcmp(s, "invocations", 11) == 0) ||
-                        (n == 6 && memcmp(s, "stream", 6) == 0) ||
-                        (n == 12 && memcmp(s, "local_size_x", 12) == 0) ||
-                        (n == 12 && memcmp(s, "local_size_y", 12) == 0) ||
-                        (n == 12 && memcmp(s, "local_size_z", 12) == 0);
+                const int need_int = layout_key_takes_int(s, n);
+                if (need_int && layout_value_is_expression(p)) {
+                    int64_t value = 0;
+                    if (!parse_layout_const_int(p, &value)) {
+                        parse_error(p,
+                            "layout(%.*s) requires an integer constant "
+                            "expression at line %u",
+                            (int)n, s, tk_line(p));
+                    } else if (value < 0) {
+                        parse_error(p,
+                            "layout(%.*s) must be >= 0 at line %u",
+                            (int)n, s, tk_line(p));
+                    } else {
+                        apply_layout_int(p, d, s, n, value);
+                    }
+                } else if (at_num(p)) {
                     if (need_int && !at_int_num(p)) {
                         parse_error(p,
                             "layout(%.*s) requires an integer constant at line %u",
                             n, s, tk_line(p));
-                    } else if (n == 8 && memcmp(s, "location", 8) == 0) {
-                        d->layout_location = (int32_t)cur_double(p);
-                    } else if (n == 5 && memcmp(s, "index", 5) == 0) {
-                        d->layout_index = (int32_t)cur_double(p);
-                    } else if (n == 9 && memcmp(s, "component", 9) == 0) {
-                        d->layout_component = (int32_t)cur_double(p);
-                    } else if (n == 7 && memcmp(s, "binding", 7) == 0) {
-                        d->layout_binding = (int32_t)cur_double(p);
-                        if (d->layout_binding < 0) {
-                            parse_error(p,
-                                "layout(binding) must be >= 0 at line %u",
-                                tk_line(p));
-                        }
-                    } else if (n == 6 && memcmp(s, "offset", 6) == 0) {
-                        /* GLSL 4.60 §4.4.2.3: explicit atomic-counter
-                         * buffer offset. */
-                        d->layout_offset = (int32_t)cur_double(p);
-                    } else if (n == 8 && memcmp(s, "vertices", 8) == 0) {
-                        d->layout_vertices = (int32_t)cur_double(p);
-                    } else if (n == 12 && memcmp(s, "max_vertices", 12) == 0) {
-                        d->layout_max_vertices = (int32_t)cur_double(p);
-                        if (d->layout_max_vertices < 0) {
-                            parse_error(p,
-                                "layout(max_vertices) must be >= 0 at line %u",
-                                tk_line(p));
-                        }
-                    } else if (n == 11 && memcmp(s, "invocations", 11) == 0) {
-                        d->layout_invocations = (int32_t)cur_double(p);
-                        /* GLSL 4.60 §4.4.1.2: invocations <= 0 is a
-                         * compile-time error (not silently defaulted to 1). */
-                        if (d->layout_invocations <= 0) {
-                            parse_error(p,
-                                "layout(invocations) must be greater than zero at line %u",
-                                tk_line(p));
-                        }
-                    } else if (n == 6 && memcmp(s, "stream", 6) == 0) {
-                        d->layout_stream = (int32_t)cur_double(p);
-                    } else if (n == 12 && memcmp(s, "local_size_x", 12) == 0) {
-                        d->layout_local_size_x = (int32_t)cur_double(p);
-                    } else if (n == 12 && memcmp(s, "local_size_y", 12) == 0) {
-                        d->layout_local_size_y = (int32_t)cur_double(p);
-                    } else if (n == 12 && memcmp(s, "local_size_z", 12) == 0) {
-                        d->layout_local_size_z = (int32_t)cur_double(p);
+                    } else if (need_int) {
+                        apply_layout_int(p, d, s, n, (int64_t)cur_double(p));
                     }
                     advance(p);
                 } else if (n == 7 && memcmp(s, "binding", 7) == 0 &&

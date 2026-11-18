@@ -13,6 +13,7 @@
  *     MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c \
  *     -o build/test_mglsema
  */
+#include "mgl_glsl_cpp.h"
 #include "mgl_glsl_parser.h"
 #include "mgl_glsl_sema.h"
 #include "mgl_ir.h"
@@ -856,6 +857,107 @@ static void test_compute_compile_errors(void)
     teardown();
 }
 
+/* GLSL 4.60 §4.3.4: a member of an anonymous input block is a read-only
+ * global input, like a plain `in`; an `in` parameter stays writable. */
+static void test_input_block_member_readonly(void)
+{
+    analyze_ex("#version 400\n"
+               "in inputBlock { vec4 data; };\n"
+               "out vec4 result;\n"
+               "void main() { data += vec4(1.0); result = data; }\n",
+               MGL_STAGE_FRAGMENT, &module, &errors, &error_count);
+    CHECK(has_error("cannot write to in variable 'data'"),
+          "write to anonymous input block member rejected");
+    teardown();
+    analyze_ex("#version 400\n"
+               "in inputBlock { vec4 data; };\n"
+               "out vec4 result;\n"
+               "void f(inout vec4 v) { v += vec4(1.0); }\n"
+               "void main() { f(data); result = data; }\n",
+               MGL_STAGE_FRAGMENT, &module, &errors, &error_count);
+    CHECK(has_error("cannot pass 'data' to an out/inout parameter"),
+          "anonymous input block member rejected as inout argument");
+    teardown();
+    analyze_ex("#version 400\n"
+               "in inputBlock { vec4 data; };\n"
+               "out vec4 result;\n"
+               "vec4 f(in vec4 v) { v += vec4(1.0); return v; }\n"
+               "void main() { result = f(data); }\n",
+               MGL_STAGE_FRAGMENT, &module, &errors, &error_count);
+    CHECK(error_count == 0, "in parameter stays writable");
+    teardown();
+}
+
+/* `uniform struct S { ... } s;` declares a struct uniform in the default
+ * block, exactly like `struct S { ... }; uniform S s;`; only
+ * `uniform Block { ... }` is an interface block. */
+static void test_inline_struct_uniform(void)
+{
+    analyze("#version 450 core\n"
+            "uniform struct S { float a; vec2 b; } s;\n"
+            "uniform struct N { struct I { float i; } o; } n[2];\n"
+            "struct T { float a; };\n"
+            "uniform T t;\n"
+            "layout(std140) uniform Block { float c; } blk;\n"
+            "void main() { gl_Position = vec4(s.a + n[1].o.i + t.a + blk.c); }\n");
+    CHECK(error_count == 0, "inline struct uniforms clean");
+    MGLIRSymbol *si = find_sym("s");
+    MGLIRSymbol *ni = find_sym("n");
+    MGLIRSymbol *ti = find_sym("t");
+    MGLIRSymbol *bi = find_sym("blk");
+    CHECK(si && !si->is_interface_block, "inline struct uniform is not a block");
+    CHECK(ni && !ni->is_interface_block,
+          "nested inline struct uniform array is not a block");
+    CHECK(ti && !ti->is_interface_block, "named struct uniform is not a block");
+    CHECK(bi && bi->is_interface_block, "uniform block is a block");
+    teardown();
+}
+
+/* GLSL 4.40 §4.4: integer layout values are integral constant
+ * expressions; earlier versions take a literal only. */
+static void test_layout_constant_expression(void)
+{
+    const char *src440 = "#version 440 core\n"
+                         "layout(local_size_x = (4), local_size_y = 2 * 3) in;\n"
+                         "void main() {}\n";
+    MGLTranslationUnit *tu = mglGLSLParse(src440, strlen(src440));
+    CHECK(tu && !tu->error && tu->layout_local_size_x == 4 &&
+              tu->layout_local_size_y == 6,
+          "layout(local_size_x = (4)) parses at 440");
+    if (tu) mglGLSLTranslationUnitDestroy(tu);
+    const char *src430 = "#version 430 core\n"
+                         "layout(local_size_x = (4)) in;\n"
+                         "void main() {}\n";
+    tu = mglGLSLParse(src430, strlen(src430));
+    CHECK(tu && tu->error, "layout(local_size_x = (4)) rejected at 430");
+    if (tu) mglGLSLTranslationUnitDestroy(tu);
+    const char *neg = "#version 450 core\n"
+                      "layout(location = (0 - 1)) in vec4 v;\n"
+                      "void main() {}\n";
+    tu = mglGLSLParse(neg, strlen(neg));
+    CHECK(tu && tu->error, "negative layout(location) expression rejected");
+    if (tu) mglGLSLTranslationUnitDestroy(tu);
+}
+
+/* GLSL 4.60 §3.3: a supported extension's macro is defined without an
+ * #extension directive (SPIRV-Cross output probes it with #if defined). */
+static void test_extension_macros_predefined(void)
+{
+    const char *src = "#version 450\n"
+                      "#if !defined(GL_ARB_gpu_shader_int64) || "
+                      "GL_ARB_gpu_shader_int64 != 1\n"
+                      "#error missing\n"
+                      "#endif\n"
+                      "#ifdef GL_ARB_gpu_shader_fp64\n"
+                      "#error unadvertised extension defined\n"
+                      "#endif\n"
+                      "void main() {}\n";
+    char err[256] = {0};
+    char *out = mglGLSLPreprocess(src, strlen(src), err, sizeof err);
+    CHECK(out != NULL, "advertised extension macro predefined");
+    free(out);
+}
+
 int main(void)
 {
     printf("MGLGLSL sema skeleton tests\n");
@@ -881,6 +983,10 @@ int main(void)
     test_interface_mismatch();
     test_interface_abi_qualifiers();
     test_interface_blocks();
+    test_input_block_member_readonly();
+    test_inline_struct_uniform();
+    test_layout_constant_expression();
+    test_extension_macros_predefined();
     printf("\n%d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
 }

@@ -251,9 +251,23 @@ typedef struct Sym {
     uint32_t qualifiers;     /* MGL_AST_Q_* */
     const char *image_format; /* static; image layout format or NULL */
     MGLIRSymbol *ir;         /* module symbol of a global variable, or NULL */
+    /* Member of an anonymous in/out block: a global interface variable that
+     * has no `ir` of its own (the block's members are flattened into
+     * separate module symbols). */
+    int anon_block_member;
     struct Sym *next;        /* scope chain link */
     struct Sym *next_all;    /* global teardown chain link */
 } Sym;
+
+/* GLSL 4.60 §4.3.4: a global `in` (an input variable or a member of an
+ * input block) is read-only.  A function parameter declared `in` is a
+ * writable local; parameters carry no module symbol. */
+static int sym_is_global_input(const Sym *sym)
+{
+    return (sym->qualifiers & MGL_AST_Q_IN) &&
+           !(sym->qualifiers & MGL_AST_Q_OUT) &&
+           (sym->ir != NULL || sym->anon_block_member);
+}
 
 /* Flat scope stack: entries push/pop at block boundaries.  `top` points at
  * the innermost scope; lookup walks the chain. */
@@ -4162,17 +4176,11 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                     uint32_t q = as->qualifiers;
                     /* GLSL 4.60 §6.1.1: a function parameter (in/out/inout)
                      * is an l-value and may be passed to an out/inout
-                     * parameter. const/readonly must always be rejected, and a
-                     * *global* `in` qualifier (interface/varying/uniform
-                     * symbols, which carry a module IR symbol, as->ir != NULL)
-                     * must be rejected too. Function parameters never get
-                     * as->ir assigned (see the param-decl paths near :4840
-                     * and :4894), so as->ir == NULL cleanly distinguishes a
-                     * parameter from a global `in`, letting legal in/inout
-                     * parameters through while keeping the illegal cases. */
+                     * parameter.  const/readonly and a global `in` (see
+                     * sym_is_global_input) must be rejected. */
                     int disqualified =
                         (q & (MGL_AST_Q_CONST | MGL_AST_Q_READONLY)) ||
-                        ((q & MGL_AST_Q_IN) && as->ir != NULL);
+                        sym_is_global_input(as);
                     if (disqualified) {
                         sema_error(s, e->line,
                                    "cannot pass '%s' to an out/inout parameter",
@@ -4732,12 +4740,9 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 }
                 Sym *ls = symtab_lookup(tab, ln);
                 /* GLSL 4.60 §6.1.1: explicit `in` parameters are writable
-                 * local l-values.  Only a global `in` interface is immutable;
-                 * parameters have no module IR symbol (ls->ir == NULL). */
+                 * local l-values.  Only a global `in` is immutable. */
                 if (ls) {
-                    int in_only = (ls->qualifiers & MGL_AST_Q_IN) &&
-                                  !(ls->qualifiers & MGL_AST_Q_OUT) &&
-                                  ls->ir != NULL;
+                    int in_only = sym_is_global_input(ls);
                     if ((ls->qualifiers & (MGL_AST_Q_READONLY |
                                            MGL_AST_Q_CONST)) ||
                         in_only) {
@@ -5826,10 +5831,13 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
                                   ? (uint32_t)d->layout_component
                                   : 0u;
             isym->stream = d->layout_stream;
-            /* Interface blocks (`uniform Block { ... }`) vs named struct
-             * uniforms (`struct S{...}; uniform S s`) — only the former
-             * become Metal UBO arguments. */
-            if (d->struct_members && d->struct_member_count > 0 &&
+            /* Interface blocks (`uniform Block { ... }`) vs struct
+             * uniforms (`struct S{...}; uniform S s` or the inline
+             * `uniform struct S {...} s`) — only the former become Metal
+             * UBO arguments.  An inline struct definition also carries
+             * struct_members, so is_block is what tells them apart. */
+            if (d->is_block && d->struct_members &&
+                d->struct_member_count > 0 &&
                 (d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
                 isym->is_interface_block = 1;
             } else if (d->is_block &&
@@ -5950,6 +5958,7 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
                         msym->type = ms->type;
                         msym->type_owned = 0;
                         msym->qualifiers = d->qualifiers;
+                        msym->anon_block_member = 1;
                         /* Member-level memory quals (readonly/writeonly)
                          * augment the block's. */
                         const MGLDecl *mdecl = nth_expanded_member(
