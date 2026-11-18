@@ -59,6 +59,11 @@ static const char *kMglExtensions[] = {
     "GL_EXT_texture_filter_minmax",
     "GL_ARB_texture_filter_minmax",
     "GL_ARB_post_depth_coverage",
+    /* Advanced equations composite color 0 in a framebuffer-fetch FS
+     * variant; Apple GPUs order framebuffer fetch per sample in submission
+     * order, which is the coherent guarantee. */
+    "GL_KHR_blend_equation_advanced",
+    "GL_KHR_blend_equation_advanced_coherent",
     "GL_ARB_shader_subroutine",
     "GL_ARB_arrays_of_arrays",
     "GL_ARB_gpu_shader_int64",

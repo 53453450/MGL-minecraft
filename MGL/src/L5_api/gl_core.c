@@ -7491,6 +7491,14 @@ void glTextureBarrier()
     ctx->dispatch.texture_barrier(ctx);
 }
 
+/* KHR_blend_equation_advanced */
+void glBlendBarrierKHR(void)
+{
+    GLMContext ctx = GET_CONTEXT();
+
+    ctx->dispatch.blend_barrier(ctx);
+}
+
 void glSpecializeShader(GLuint shader, const GLchar *pEntryPoint, GLuint numSpecializationConstants, const GLuint *pConstantIndex, const GLuint *pConstantValue)
 {
     GLMContext ctx = GET_CONTEXT();

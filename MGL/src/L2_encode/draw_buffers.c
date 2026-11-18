@@ -46,6 +46,9 @@
 #include "vertex_arrays.h"
 #include "mgl_render_api_query.h" /* mglRenderIsEmulatedMSPlaneTarget */
 #include "mgl_render_api_draw.h"  /* mglRenderCheckedProduct (AUDIT-059) */
+#include "mgl_render_api_binding.h" /* mglResolveProgramForStageFromState */
+#include "mgl_draw_buffer.h"        /* mglMetalDrawBufferCount / At */
+#include "mgl_shader_abi.h"         /* mglAdvancedBlendEquationIndex */
 
 extern void mglInvalidateColorShadowsForDraw(GLMContext ctx);
 extern Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
@@ -493,6 +496,36 @@ static bool program_missing_tes_for_patches(GLMContext ctx, GLenum mode)
     return false;
 }
 
+/* KHR_blend_equation_advanced draw-time rules.  When a non-NONE draw buffer
+ * with blending enabled uses an advanced equation, the draw is
+ * INVALID_OPERATION if draw buffer 0 selects several color buffers
+ * (FRONT_AND_BACK) or any other draw buffer is not NONE, or if the fragment
+ * shader lacks the matching blend_support_* qualifier. */
+static bool mglAdvancedBlendDrawAllowed(GLMContext ctx)
+{
+    GLMState *st = ctx ? ctx->active_state : NULL;
+    if (!st || !st->caps.blend)
+        return true;
+    const GLsizei count = mglMetalDrawBufferCount(ctx);
+    int equation = -1;
+    for (GLsizei i = 0; i < count && equation < 0; i++) {
+        if (st->caps.blendi[i] &&
+            !mglDrawBufferIsNone((uint32_t)mglMetalDrawBufferAt(ctx, (GLuint)i)))
+            equation = mglAdvancedBlendEquationIndex(st->var.blend_equation_rgb[i]);
+    }
+    if (equation < 0)
+        return true;
+    if (count > 0 &&
+        mglDrawBufferIsFrontAndBack((uint32_t)mglMetalDrawBufferAt(ctx, 0u)))
+        return false;
+    for (GLsizei i = 1; i < count; i++) {
+        if (!mglDrawBufferIsNone((uint32_t)mglMetalDrawBufferAt(ctx, (GLuint)i)))
+            return false;
+    }
+    Program *fs = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
+    return fs && (fs->fragment_blend_support & (1u << equation)) != 0u;
+}
+
 bool validate_program(GLMContext ctx, GLenum mode)
 {
     GLMState *st = ctx ? ctx->active_state : NULL;
@@ -522,6 +555,10 @@ bool validate_program(GLMContext ctx, GLenum mode)
                 pipeline->stage_programs)) {
             return false;
         }
+    }
+
+    if (!mglAdvancedBlendDrawAllowed(ctx)) {
+        return false;
     }
 
     if (program_missing_tes_for_patches(ctx, mode)) {

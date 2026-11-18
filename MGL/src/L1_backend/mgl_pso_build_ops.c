@@ -1003,7 +1003,14 @@ int mglRenderPassSyncPipelineState(void *renderer,
                                      (currentFragmentProgram &&
                                       currentFragmentProgram->active_sampler_reduction))
                                         ? (1ull << 17)
-                                        : 0ull));
+                                        : 0ull)
+                                 /* Advanced-blend FS variant: equation + 1
+                                  * (0 when the ordinary FS is bound). */
+                                 | ((uint64_t)((currentFragmentProgram &&
+                                                currentFragmentProgram->active_advanced_blend >= 0)
+                                                   ? (uint32_t)currentFragmentProgram->active_advanced_blend + 1u
+                                                   : 0u)
+                                    << 12));
             uint64_t vertexInstance = currentVertexProgram
                 ? mglProgramBackendView(currentVertexProgram)->pipeline_cache_instance_id : 0u;
             if (geometry && geometry->expansionActive && geometry->program) {

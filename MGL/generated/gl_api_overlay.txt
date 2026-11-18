@@ -9,6 +9,7 @@ glAreTexturesResident
 glArrayElement
 glBegin
 glBitmap
+glBlendBarrierKHR
 glBufferPageCommitmentARB
 glCallList
 glCallLists

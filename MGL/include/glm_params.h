@@ -162,6 +162,8 @@ typedef struct GLMCaps_t {
     GLboolean program_point_size;
     GLboolean primitive_restart;
     GLboolean primitive_restart_fixed_index;
+    /* KHR_blend_equation_advanced_coherent; enabled by default. */
+    GLboolean blend_advanced_coherent;
     
     GLboolean blendi[MAX_COLOR_ATTACHMENTS];
     GLboolean scissor_testi[MGL_MAX_VIEWPORTS];

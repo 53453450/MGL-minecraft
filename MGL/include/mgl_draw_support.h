@@ -55,6 +55,11 @@ void mglDrawApplyPolygonOffset(void *renderer, uint32_t mode);
 /* True when `mode`'s primitives are all culled by the current cull state. */
 int mglDrawModeIsFullyCulled(void *renderer, uint32_t mode);
 
+/* KHR_blend_equation_advanced equation index the current draw applies to
+ * color output 0 (mglAdvancedBlendEquationIndex), or -1 when draw buffer 0
+ * blends with a fixed-function equation or not at all. */
+int mglDrawAdvancedBlendEquation(GLMContext ctx);
+
 /* True when the current fragment program needs per-sample MS values. */
 int mglDrawFragmentNeedsPerSampleMSValues(GLMContext ctx);
 

@@ -42,6 +42,7 @@
 #include "error.h"                /* mglDispatchError */
 #include "mgl_program_resource.h"  /* mglProgramStageUsesBuiltin */
 #include "mgl_shader_abi.h"
+#include "mgl_draw_buffer.h"        /* mglMetalDrawBufferAt */
 
 #include <math.h>
 #include <stdio.h>
@@ -303,6 +304,17 @@ static int mglDrawSampleShadingRequiresPerSampleMS(GLMContext ctx)
         unique = samples;
     }
     return unique > 1;
+}
+
+int mglDrawAdvancedBlendEquation(GLMContext ctx)
+{
+    const GLMState *st = ctx ? ctx->active_state : NULL;
+    /* Draw validation limits an advanced equation to draw buffer 0. */
+    if (!st || !st->caps.blendi[0] ||
+        mglDrawBufferIsNone((uint32_t)mglMetalDrawBufferAt(ctx, 0u))) {
+        return -1;
+    }
+    return mglAdvancedBlendEquationIndex(st->var.blend_equation_rgb[0]);
 }
 
 /* Body of the former -[MGLRenderer fragmentNeedsPerSampleMSValuesForContext:].

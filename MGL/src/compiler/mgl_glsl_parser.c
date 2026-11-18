@@ -488,6 +488,32 @@ static int skip_layout_before_subroutine(MGLParser *p, int *out_location,
     return 0;
 }
 
+/* KHR_blend_equation_advanced fragment output qualifiers, in
+ * mglAdvancedBlendEquationIndex order. */
+static const char *const kBlendSupportQualifiers[MGL_AST_BLEND_SUPPORT_EQUATION_COUNT] = {
+    "blend_support_multiply",      "blend_support_screen",
+    "blend_support_overlay",       "blend_support_darken",
+    "blend_support_lighten",       "blend_support_colordodge",
+    "blend_support_colorburn",     "blend_support_hardlight",
+    "blend_support_softlight",     "blend_support_difference",
+    "blend_support_exclusion",     "blend_support_hsl_hue",
+    "blend_support_hsl_saturation", "blend_support_hsl_color",
+    "blend_support_hsl_luminosity",
+};
+
+/* MGL_AST_BLEND_SUPPORT_* bits for a blend_support_* identifier, 0 otherwise. */
+static uint32_t blend_support_layout_bits(const char *s, size_t n)
+{
+    if (n == 27 && memcmp(s, "blend_support_all_equations", 27) == 0)
+        return MGL_AST_BLEND_SUPPORT_ALL;
+    for (uint32_t i = 0; i < MGL_AST_BLEND_SUPPORT_EQUATION_COUNT; i++) {
+        const char *q = kBlendSupportQualifiers[i];
+        if (strlen(q) == n && memcmp(s, q, n) == 0)
+            return 1u << i;
+    }
+    return 0u;
+}
+
 static int at_num(MGLParser *p)
 {
     MGLGLSLTokenKind k = (MGLGLSLTokenKind)tk(p, 0)->kind;
@@ -2969,6 +2995,7 @@ more_qualifiers:
                 (n == 19 && memcmp(s, "triangles_adjacency", 19) == 0) ||
                 (n == 20 && memcmp(s, "early_fragment_tests", 20) == 0) ||
                 (n == 19 && memcmp(s, "post_depth_coverage", 19) == 0) ||
+                blend_support_layout_bits(s, n) != 0u ||
                 is_image_format_layout(s, n);
             int has_value = at_peek_punct(p, 1, "=");
 
@@ -3022,6 +3049,16 @@ more_qualifiers:
                 d->layout_early_fragment_tests = 1;
             } else if (n == 19 && memcmp(s, "post_depth_coverage", 19) == 0) {
                 d->layout_post_depth_coverage = 1;
+            } else if (blend_support_layout_bits(s, n) != 0u) {
+                /* GLSL ES 3.20 §4.4.2.3 / KHR_blend_equation_advanced: only
+                 * valid once the extension is enabled. */
+                if (!p->tu || p->tu->ext_blend_equation_advanced != 1u) {
+                    parse_error(p,
+                        "'%.*s' requires #extension "
+                        "GL_KHR_blend_equation_advanced at line %u",
+                        (int)n, s, tk_line(p));
+                }
+                d->layout_blend_support |= blend_support_layout_bits(s, n);
             } else if (match_image_format_layout(s, n)) {
                 d->layout_image_format = match_image_format_layout(s, n);
             } else if (n == 6 && memcmp(s, "points", 6) == 0) {
@@ -3203,6 +3240,7 @@ more_qualifiers:
         if (d->layout_point_mode)             tu->layout_point_mode = 1;
         if (d->layout_early_fragment_tests)   tu->layout_early_fragment_tests = 1;
         if (d->layout_post_depth_coverage)    tu->layout_post_depth_coverage = 1;
+        tu->layout_blend_support |= d->layout_blend_support;
         if (d->layout_local_size_x >= 0) {
             if (tu->layout_local_size_x >= 0 &&
                 tu->layout_local_size_x != d->layout_local_size_x) {
@@ -3963,6 +4001,7 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
                 static const char kIntMix[] = "GL_EXT_shader_integer_mix";
                 static const char kCompute[] = "GL_ARB_compute_shader";
                 static const char kArrays[] = "GL_ARB_arrays_of_arrays";
+                static const char kAdvBlend[] = "GL_KHR_blend_equation_advanced";
                 while (i < n && (d[i] == ' ' || d[i] == '\t')) {
                     i++;
                 }
@@ -4025,6 +4064,25 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
                     } else if (i + 7 <= n &&
                                memcmp(d + i, "disable", 7) == 0) {
                         tu->ext_arrays_of_arrays = 0;
+                    }
+                } else if (i + sizeof(kAdvBlend) - 1 <= n &&
+                           memcmp(d + i, kAdvBlend, sizeof(kAdvBlend) - 1) == 0 &&
+                           (i + sizeof(kAdvBlend) - 1 == n ||
+                            d[i + sizeof(kAdvBlend) - 1] == ' ' ||
+                            d[i + sizeof(kAdvBlend) - 1] == '\t' ||
+                            d[i + sizeof(kAdvBlend) - 1] == ':')) {
+                    i += sizeof(kAdvBlend) - 1;
+                    while (i < n &&
+                           (d[i] == ' ' || d[i] == '\t' || d[i] == ':')) {
+                        i++;
+                    }
+                    if ((i + 7 <= n && memcmp(d + i, "require", 7) == 0) ||
+                        (i + 6 <= n && memcmp(d + i, "enable", 6) == 0) ||
+                        (i + 4 <= n && memcmp(d + i, "warn", 4) == 0)) {
+                        tu->ext_blend_equation_advanced = 1;
+                    } else if (i + 7 <= n &&
+                               memcmp(d + i, "disable", 7) == 0) {
+                        tu->ext_blend_equation_advanced = 2;
                     }
                 }
             }

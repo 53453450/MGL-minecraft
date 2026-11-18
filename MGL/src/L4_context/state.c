@@ -18,6 +18,7 @@
  *
  */
 
+#include "mgl_shader_abi.h"  /* mglAdvancedBlendEquationIndex */
 #include "mgl.h"
 #include "glm_context.h"
 #include "mgl_safety.h"
@@ -176,6 +177,7 @@ void mglDisable(GLMContext ctx, GLenum cap)
         case GL_DEBUG_OUTPUT_SYNCHRONOUS: DISABLE_CAP(debug_output_synchronous);
         case GL_DEBUG_OUTPUT: DISABLE_CAP(debug_output);
         case GL_PROGRAM_POINT_SIZE: DISABLE_CAP(program_point_size);
+        case GL_BLEND_ADVANCED_COHERENT_KHR: DISABLE_CAP(blend_advanced_coherent);
         default:
             ERROR_RETURN(GL_INVALID_ENUM);
             return;
@@ -241,6 +243,7 @@ void mglEnable(GLMContext ctx, GLenum cap)
         case GL_PRIMITIVE_RESTART_FIXED_INDEX: ENABLE_CAP(primitive_restart_fixed_index);
         case GL_DEBUG_OUTPUT_SYNCHRONOUS: ENABLE_CAP(debug_output_synchronous);
         case GL_DEBUG_OUTPUT: ENABLE_CAP(debug_output);
+        case GL_BLEND_ADVANCED_COHERENT_KHR: ENABLE_CAP(blend_advanced_coherent);
         default:
             ERROR_RETURN(GL_INVALID_ENUM);
             return;
@@ -776,6 +779,7 @@ GLboolean mglGetCapState(GLMContext ctx, GLenum cap, GLboolean *enabled)
         case GL_STENCIL_TEST: RET_CAP(stencil_test);
         case GL_TEXTURE_CUBE_MAP_SEAMLESS: RET_CAP(texture_cube_map_seamless);
         case GL_RASTERIZER_DISCARD: RET_CAP(rasterizer_discard);
+        case GL_BLEND_ADVANCED_COHERENT_KHR: RET_CAP(blend_advanced_coherent);
     }
 
     return GL_FALSE;
@@ -909,20 +913,30 @@ void mglBlendColor(GLMContext ctx, GLfloat red, GLfloat green, GLfloat blue, GLf
     mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
 }
 
-void mglBlendEquation(GLMContext ctx, GLenum mode)
+/* KHR_blend_equation_advanced extends BlendEquation(i) only; the
+ * BlendEquationSeparate(i) <modeRGB>/<modeAlpha> lists are unchanged. */
+static GLboolean mglIsBlendEquationMode(GLenum mode)
 {
-    switch(mode)
+    switch (mode)
     {
         case GL_FUNC_ADD:
         case GL_FUNC_SUBTRACT:
         case GL_FUNC_REVERSE_SUBTRACT:
         case GL_MIN:
         case GL_MAX:
-            break;
-
+            return GL_TRUE;
         default:
-            ERROR_RETURN(GL_INVALID_ENUM);
-            return;
+            return mglAdvancedBlendEquationIndex(mode) >= 0 ? GL_TRUE
+                                                            : GL_FALSE;
+    }
+}
+
+void mglBlendEquation(GLMContext ctx, GLenum mode)
+{
+    if (!mglIsBlendEquationMode(mode))
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
     }
 
     for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
@@ -936,18 +950,10 @@ void mglBlendEquation(GLMContext ctx, GLenum mode)
 
 void mglBlendEquationi(GLMContext ctx, GLuint buf, GLenum mode)
 {
-    switch(mode)
+    if (!mglIsBlendEquationMode(mode))
     {
-        case GL_FUNC_ADD:
-        case GL_FUNC_SUBTRACT:
-        case GL_FUNC_REVERSE_SUBTRACT:
-        case GL_MIN:
-        case GL_MAX:
-            break;
-
-        default:
-            ERROR_RETURN(GL_INVALID_ENUM);
-            return;
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
     }
 
     ERROR_CHECK_RETURN(buf >=0 && buf < MAX_COLOR_ATTACHMENTS, GL_INVALID_VALUE);

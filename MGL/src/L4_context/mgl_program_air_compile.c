@@ -383,6 +383,8 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     /* Publish this stage's exact builtin usage (the reflected resource lists
      * filter every gl_ builtin out, so callers used to scan the source). */
     pptr->air_builtin_mask[stage] = stage_info.builtin_mask;
+    if (stage == _FRAGMENT_SHADER)
+        pptr->fragment_blend_support = stage_info.blend_support;
 
     /* Capture variants must see the same bindAttribLocation map as the
      * reflected VS, or sparse locations (CTS enable_disable) misalign
@@ -557,6 +559,36 @@ int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
                     "MGL WARNING: sampler-reduction metallib emit failed "
                     "program %u stage %d: %s\n",
                     pptr->name, (int)stage, red_err);
+        }
+    }
+    /* KHR_blend_equation_advanced: one framebuffer-fetch FS per equation
+     * the shader declares with blend_support_*.  Draws without an advanced
+     * equation keep the ordinary function and Metal fixed-function blending. */
+    if (stage == _FRAGMENT_SHADER && stage_info.blend_support != 0u) {
+        for (int eq = 0; eq < MGL_ADVANCED_BLEND_EQUATION_COUNT; eq++) {
+            if (!(stage_info.blend_support & (1u << eq)))
+                continue;
+            MGLCompilePlan blend_plan = plan;
+            blend_plan.air_flags |= mglAdvancedBlendCompileFlags(eq);
+            MGLCompileArtifact blend_art;
+            mglCompileArtifactInit(&blend_art);
+            char blend_err[512];
+            blend_err[0] = '\0';
+            if (mglCompileArtifactFromPlan(&blend_plan, &blend_art, blend_err,
+                                           sizeof blend_err) == 0 &&
+                blend_art.complete) {
+                mglRenderProgramSetModuleAdvancedBlendMetallib(
+                    pptr, eq, blend_art.metallib_bytes,
+                    blend_art.metallib_size);
+                blend_art.metallib_bytes = NULL;
+                blend_art.metallib_size = 0;
+            } else {
+                fprintf(stderr,
+                        "MGL WARNING: advanced-blend metallib emit failed "
+                        "program %u equation %d: %s\n",
+                        pptr->name, eq, blend_err);
+            }
+            mglCompileArtifactDestroy(&blend_art);
         }
     }
     {

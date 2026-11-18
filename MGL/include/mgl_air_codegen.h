@@ -194,6 +194,10 @@ struct Codegen {
     bool emulateClipDiscard = false;     /* FS discards interpolated clip < 0 */
     /* Emit ARB_texture_filter_minmax software footprint (select-based). */
     bool softwareSamplerReduction = false;
+    /* KHR_blend_equation_advanced variant: equation index (-1: none) and the
+     * framebuffer value of color 0 ([[color(0)]]) it blends against. */
+    int advancedBlendEquation = -1;
+    llvm::Value *advancedBlendDst = nullptr;
     uint32_t cullDistancePassthroughCount = 0; /* VS flat outs / FS ins */
     uint32_t clipDistanceInputCount = 0; /* FS clip varyings (read or emulate) */
     bool pointSize = false;              /* vertex: writes gl_PointSize */

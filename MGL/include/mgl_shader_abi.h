@@ -149,6 +149,8 @@ typedef struct MGLAIRStageInfo {
     uint32_t needs_runtime_array_size_buffer;
     uint32_t needs_sparse_residency;
     uint32_t sparse_residency_buffer_index;
+    /* FS: blend_support_* qualifiers (MGL_AST_BLEND_SUPPORT_* bits). */
+    uint32_t blend_support;
     /* GS multi-stream (GL 4.6 §11.1.3.4): stream 0 is rasterized; streams
      * 1..3 feed transform feedback only and require points output.  The
      * per-stream XFB capture record is position (16B) + that stream's
@@ -445,7 +447,47 @@ enum {
      * Ordinary programs omit it; bind the reduction variant only when a
      * MIN/MAX sampler is active. */
     MGL_AIR_COMPILE_SOFTWARE_SAMPLER_REDUCTION = 1u << 10,
+    /* Fragment variant that applies one KHR_blend_equation_advanced equation
+     * against the framebuffer value of color 0.  The equation index
+     * (mglAdvancedBlendEquationIndex) sits in the bits at
+     * MGL_AIR_COMPILE_ADVANCED_BLEND_SHIFT. */
+    MGL_AIR_COMPILE_ADVANCED_BLEND = 1u << 11,
+    MGL_AIR_COMPILE_ADVANCED_BLEND_SHIFT = 12,
+    MGL_AIR_COMPILE_ADVANCED_BLEND_MASK = 0xfu << 12,
 };
+
+enum { MGL_ADVANCED_BLEND_EQUATION_COUNT = 15 };
+
+/* KHR_blend_equation_advanced equations in table X.1/X.2 order; the index is
+ * the blend_support_* qualifier bit (MGL_AST_BLEND_SUPPORT_*) and the
+ * per-equation fragment variant.  Returns -1 for any other blend equation. */
+static inline int mglAdvancedBlendEquationIndex(uint32_t mode)
+{
+    switch (mode) {
+    case 0x9294u: return 0;   /* MULTIPLY_KHR */
+    case 0x9295u: return 1;   /* SCREEN_KHR */
+    case 0x9296u: return 2;   /* OVERLAY_KHR */
+    case 0x9297u: return 3;   /* DARKEN_KHR */
+    case 0x9298u: return 4;   /* LIGHTEN_KHR */
+    case 0x9299u: return 5;   /* COLORDODGE_KHR */
+    case 0x929Au: return 6;   /* COLORBURN_KHR */
+    case 0x929Bu: return 7;   /* HARDLIGHT_KHR */
+    case 0x929Cu: return 8;   /* SOFTLIGHT_KHR */
+    case 0x929Eu: return 9;   /* DIFFERENCE_KHR */
+    case 0x92A0u: return 10;  /* EXCLUSION_KHR */
+    case 0x92ADu: return 11;  /* HSL_HUE_KHR */
+    case 0x92AEu: return 12;  /* HSL_SATURATION_KHR */
+    case 0x92AFu: return 13;  /* HSL_COLOR_KHR */
+    case 0x92B0u: return 14;  /* HSL_LUMINOSITY_KHR */
+    default: return -1;
+    }
+}
+
+static inline uint32_t mglAdvancedBlendCompileFlags(int equation_index)
+{
+    return MGL_AIR_COMPILE_ADVANCED_BLEND |
+           ((uint32_t)equation_index << MGL_AIR_COMPILE_ADVANCED_BLEND_SHIFT);
+}
 
 /* Same as above plus stage-composition flags (bit0: location-tagged producer
  * interface; bit9: direct FS takes gl_PrimitiveID from the rasterizer).

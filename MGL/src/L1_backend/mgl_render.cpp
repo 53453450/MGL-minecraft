@@ -1849,8 +1849,12 @@ int mglRenderRepairBlendEquation(uint32_t *value) {
     if (!value) {
         return 0;
     }
-    return mglRenderApplyBlendRepair(mglRenderIsValidGLBlendEquation(*value),
-                                     value, GL_FUNC_ADD);
+    /* KHR_blend_equation_advanced equations are valid GL state; the
+     * fragment shader variant applies them, not a Metal blend operation. */
+    return mglRenderApplyBlendRepair(
+        mglRenderIsValidGLBlendEquation(*value) ||
+            mglAdvancedBlendEquationIndex(*value) >= 0,
+        value, GL_FUNC_ADD);
 }
 
 uint32_t mglRenderRepairDepthFunc(uint32_t func) {

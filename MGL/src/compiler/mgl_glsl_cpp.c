@@ -1549,7 +1549,8 @@ static int handle_extension(PP *pp, const TokList *tl, const char *raw_line)
      * extension's name (value 1).  CTS and apps probe this with #ifndef. */
     if (!ident_eq(&tl->t[0], "all") &&
         (strcmp(beh, "require") == 0 || strcmp(beh, "enable") == 0 ||
-         strcmp(beh, "warn") == 0)) {
+         strcmp(beh, "warn") == 0) &&
+        !find_macro(pp, tl->t[0].s)) {
         if (add_predef(pp, tl->t[0].s, 0, "1", 0) != 0)
             return -1;
     }
@@ -1834,7 +1835,10 @@ char *mglGLSLPreprocess(const char *src, size_t len, char *err, size_t err_cap)
     if (add_predef(&pp, "__LINE__", 1, "0", 0) != 0 ||
         add_predef(&pp, "__FILE__", 2, "0", 0) != 0 ||
         add_predef(&pp, "__VERSION__", 3, "0", 0) != 0 ||
-        add_predef(&pp, "GL_core_profile", 0, "1", 1) != 0) {
+        add_predef(&pp, "GL_core_profile", 0, "1", 1) != 0 ||
+        /* KHR_blend_equation_advanced: the macro is defined whether or not
+         * the shader names the extension. */
+        add_predef(&pp, "GL_KHR_blend_equation_advanced", 0, "1", 0) != 0) {
         if (err && err_cap) {
             snprintf(err, err_cap, "%s", pp.err);
         }

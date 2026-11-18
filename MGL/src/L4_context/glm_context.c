@@ -461,6 +461,7 @@ GLMContext createGLMContextProfile(int profile_es, GLenum format, GLenum type,
     STATE(caps.depth_test) = false;
     STATE(caps.stencil_test) = false;
     STATE(caps.dither) = true;
+    STATE(caps.blend_advanced_coherent) = true;
     STATE(caps.scissor_test) = false;
     STATE(caps.color_logic_op) = false;
     STATE(caps.polygon_offset_point) = false;

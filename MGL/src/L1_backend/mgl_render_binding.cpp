@@ -791,6 +791,25 @@ int mglRenderBindAIRProgram(Program* program,
                 return MGL_RENDER_AIR_PROGRAM_ERROR;
             }
         }
+        for (int eq = 0; eq < MGL_BACKEND_ADVANCED_BLEND_SLOTS; eq++) {
+            if (!spirv->metallib_bytes_advanced_blend[eq] ||
+                spirv->metallib_size_advanced_blend[eq] == 0u ||
+                (spirv->mtl_library_advanced_blend[eq] &&
+                 spirv->mtl_function_advanced_blend[eq])) {
+                continue;
+            }
+            mgl::releaseBridgedObject(&spirv->mtl_function_advanced_blend[eq]);
+            mgl::releaseBridgedObject(&spirv->mtl_library_advanced_blend[eq]);
+            if (mgl::loadAIRMainFunction(
+                    device, spirv->metallib_bytes_advanced_blend[eq],
+                    spirv->metallib_size_advanced_blend[eq],
+                    &spirv->mtl_library_advanced_blend[eq],
+                    &spirv->mtl_function_advanced_blend[eq], err,
+                    errcap) != 0) {
+                if (failed_stage_out) *failed_stage_out = stage;
+                return MGL_RENDER_AIR_PROGRAM_ERROR;
+            }
+        }
         if (spirv->metallib_bytes_sampler_reduction &&
             spirv->metallib_size_sampler_reduction > 0u &&
             (!spirv->mtl_library_sampler_reduction ||

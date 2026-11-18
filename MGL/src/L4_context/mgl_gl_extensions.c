@@ -8928,9 +8928,11 @@ void mglViewportIndexedfv(GLMContext ctx, GLuint index, const GLfloat *v)
 
 void  mglBlendBarrier(GLMContext ctx)
 {
-    // Unimplemented function
-    mgl_unimplemented(ctx, __FUNCTION__);
-
+    /* KHR_blend_equation_advanced: advanced equations read the destination
+     * through framebuffer fetch, which Apple GPUs order per sample in
+     * primitive submission order, so every blend is already coherent and a
+     * barrier has nothing to separate. */
+    (void)ctx;
 }
 
 void mglPrimitiveBoundingBox(GLMContext ctx, GLfloat minX, GLfloat minY, GLfloat minZ, GLfloat minW, GLfloat maxX, GLfloat maxY, GLfloat maxZ, GLfloat maxW)

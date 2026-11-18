@@ -36,6 +36,10 @@ struct MGLSyncBackend {
 /* Program: what the AIR backend built for one linked stage.  The metallib
  * bytes are the serialized output of the compile; the Metal functions and
  * libraries are created from them on first use. */
+/* KHR_blend_equation_advanced equation count; mgl_shader_abi.h asserts it
+ * matches MGL_ADVANCED_BLEND_EQUATION_COUNT. */
+#define MGL_BACKEND_ADVANCED_BLEND_SLOTS 15
+
 struct MGLShaderModuleBackend {
     unsigned char *metallib_bytes;
     size_t metallib_size;
@@ -65,6 +69,12 @@ struct MGLShaderModuleBackend {
     size_t metallib_size_sampler_reduction;
     void *mtl_function_sampler_reduction;
     void *mtl_library_sampler_reduction;
+    /* FS: one framebuffer-fetch variant per KHR_blend_equation_advanced
+     * equation the shader declares (indexed by mglAdvancedBlendEquationIndex). */
+    unsigned char *metallib_bytes_advanced_blend[MGL_BACKEND_ADVANCED_BLEND_SLOTS];
+    size_t metallib_size_advanced_blend[MGL_BACKEND_ADVANCED_BLEND_SLOTS];
+    void *mtl_function_advanced_blend[MGL_BACKEND_ADVANCED_BLEND_SLOTS];
+    void *mtl_library_advanced_blend[MGL_BACKEND_ADVANCED_BLEND_SLOTS];
     uint8_t needs_runtime_array_size_buffer;
     uint8_t needs_sparse_residency;
     uint8_t sparse_residency_buffer_index;

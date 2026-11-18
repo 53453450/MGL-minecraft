@@ -118,6 +118,14 @@ enum {
     MGL_AST_WINDING_CCW     = 2,
 };
 
+/* KHR_blend_equation_advanced fragment output qualifiers
+ * (blend_support_<mode>).  Bit i is equation i of
+ * mglAdvancedBlendEquationIndex; blend_support_all_equations sets them all. */
+enum {
+    MGL_AST_BLEND_SUPPORT_EQUATION_COUNT = 15,
+    MGL_AST_BLEND_SUPPORT_ALL = (1u << MGL_AST_BLEND_SUPPORT_EQUATION_COUNT) - 1u,
+};
+
 /* Precision qualifiers (GLSL ES / desktop 4.30+). */
 enum {
     MGL_AST_PRECISION_NONE = 0,
@@ -352,6 +360,7 @@ struct MGLDecl {
     uint32_t layout_point_mode;     /* TES: point_mode flag */
     uint32_t layout_early_fragment_tests; /* FS: early_fragment_tests */
     uint32_t layout_post_depth_coverage; /* FS: post_depth_coverage */
+    uint32_t layout_blend_support; /* FS: MGL_AST_BLEND_SUPPORT_* bits */
     /* Image format layout qualifier (e.g. "rgba32f"); NULL if absent.
      * Points at a static string from the parser format table. */
     const char *layout_image_format;
@@ -431,6 +440,10 @@ typedef struct MGLTranslationUnit {
     uint32_t ext_compute_shader;
     /* 1 if #extension GL_ARB_arrays_of_arrays : enable/require/warn. */
     uint32_t ext_arrays_of_arrays;
+    /* GL_KHR_blend_equation_advanced #extension behaviour: 0 = not named
+     * (the layout qualifiers are rejected), 1 = enable/require/warn,
+     * 2 = disable. */
+    uint32_t ext_blend_equation_advanced;
     MGLDecl **decls;
     uint32_t decl_count;
     /* GLSL 4.0 subroutine metadata, filled by the parser (see above). */
@@ -455,6 +468,9 @@ typedef struct MGLTranslationUnit {
     uint32_t layout_point_mode;    /* TES: point_mode flag */
     uint32_t layout_early_fragment_tests; /* FS: early_fragment_tests */
     uint32_t layout_post_depth_coverage; /* FS: post_depth_coverage */
+    /* FS: union of KHR_blend_equation_advanced blend_support_* qualifiers,
+     * one MGL_AST_BLEND_SUPPORT_* bit per equation. */
+    uint32_t layout_blend_support;
     /* Default block packing from `layout(std430) buffer;` /
      * `layout(std140) uniform;` — applied when a later block omits an
      * explicit packing qualifier (GL 4.6 §4.4.5). */

@@ -23,6 +23,7 @@
 #include "mgl_buffer_map.h"           /* map / dirty base buffers */
 #include "mgl_texture_bind.h"          /* mglRendererBindMTLTexture */
 #include "mgl_draw_buffer.h"          /* Metal draw-buffer mapping */
+#include "mgl_draw_support.h"         /* mglDrawAdvancedBlendEquation */
 #include "mgl_sync.h"                 /* MGLMetalAttachmentSubresource */
 #include "mgl_renderer_backend.h"     /* default draw buffer attachments */
 #include "mgl_renderer_binding_ops.h"  /* mglRendererBindActiveTexturesToMTL */
@@ -128,6 +129,8 @@ int mglRenderPassGeneratePipelineDescriptorState(
             fragmentProgram->active_sampler_reduction =
                 need_reduction ? GL_TRUE : GL_FALSE;
     }
+    if (fragmentProgram)
+        fragmentProgram->active_advanced_blend = mglDrawAdvancedBlendEquation(ctx);
     const GLuint renderProgramKey = mglCurrentRenderProgramKey(ctx);
     const GLuint vertexProgramName = vertexProgram ? vertexProgram->name : 0u;
     const GLuint fragmentProgramName =
@@ -241,6 +244,23 @@ int mglRenderPassGeneratePipelineDescriptorState(
         /* FS stores its GS/TES primitive-id carrier in the per-stage
          * alternate-function slot; direct VS/native-TES keeps mtl_function. */
         fragmentFunction = fragmentModule->mtl_tess_capture_function;
+    } else if (fragmentProgram && fragmentProgram->active_advanced_blend >= 0) {
+        /* The blend variant composites color 0 in the shader; it is compiled
+         * without the MIN/MAX sampler-reduction footprint. */
+        void *blendFunction =
+            fragmentModule
+                ? fragmentModule->mtl_function_advanced_blend
+                      [fragmentProgram->active_advanced_blend]
+                : NULL;
+        if (blendFunction) {
+            fragmentFunction = blendFunction;
+        } else {
+            fprintf(stderr,
+                    "MGL WARN: advanced blend equation %d has no FS variant "
+                    "program=%u\n",
+                    fragmentProgram->active_advanced_blend,
+                    (unsigned)fragmentProgram->name);
+        }
     } else if (fragmentProgram && fragmentProgram->active_sampler_reduction) {
         if (fragmentModule &&
             fragmentModule->mtl_function_sampler_reduction) {
@@ -611,8 +631,12 @@ int mglRenderPassGeneratePipelineDescriptorState(
             return 0;
         }
         desc->color_write_mask[i] = blend.color_write_mask;
+        /* The advanced-blend FS variant writes the blended color itself. */
+        const int shaderBlended =
+            i == 0 && fragmentProgram &&
+            fragmentProgram->active_advanced_blend >= 0;
         desc->blending_enabled_mask |= mglRenderBlendingEnabledMaskBit(
-            glState->caps.blendi[i] ? 1 : 0, i);
+            (glState->caps.blendi[i] && !shaderBlended) ? 1 : 0, i);
         desc->source_rgb_blend_factor[i] = blend.source_rgb_factor;
         desc->destination_rgb_blend_factor[i] = blend.destination_rgb_factor;
         desc->source_alpha_blend_factor[i] = blend.source_alpha_factor;

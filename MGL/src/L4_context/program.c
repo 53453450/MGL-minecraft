@@ -247,6 +247,7 @@ Program *newProgram(GLMContext ctx, GLuint program)
                                   memory_order_relaxed));
     ptr->legacy_clip_plane_loc = -1;
     ptr->legacy_clip_plane_enabled_loc = -1;
+    ptr->active_advanced_blend = -1;
     for (GLuint i = 0; i < TEXTURE_UNITS; i++) {
         ptr->sampler_units[i] = -1;
     }

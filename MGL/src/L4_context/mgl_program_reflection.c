@@ -7,6 +7,7 @@
  * See LICENSE and LICENSING.md.
  */
 
+#include "mgl_shader_abi.h"   /* MGL_ADVANCED_BLEND_EQUATION_COUNT */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,10 @@ _Static_assert(sizeof(((struct MGLProgramBackend *)0)->modules) <=
 _Static_assert(MGL_PROGRAM_BACKEND_STAGES == _MAX_SHADER_TYPES,
                "program backend stage count must match shader types");
 
+_Static_assert(MGL_BACKEND_ADVANCED_BLEND_SLOTS ==
+                   MGL_ADVANCED_BLEND_EQUATION_COUNT,
+               "one backend slot per advanced blend equation");
+
 void mglShaderModuleBackendClear(struct MGLShaderModuleBackend *module)
 {
     if (!module) {
@@ -35,6 +40,11 @@ void mglShaderModuleBackendClear(struct MGLShaderModuleBackend *module)
     free(module->metallib_cull_capture_bytes);
     free(module->metallib_bytes_tes_compute);
     free(module->metallib_bytes_sampler_reduction);
+    for (int i = 0; i < MGL_BACKEND_ADVANCED_BLEND_SLOTS; i++) {
+        free(module->metallib_bytes_advanced_blend[i]);
+        mglSafeReleaseMetalObj(&module->mtl_function_advanced_blend[i]);
+        mglSafeReleaseMetalObj(&module->mtl_library_advanced_blend[i]);
+    }
     mglSafeReleaseMetalObj(&module->mtl_function);
     mglSafeReleaseMetalObj(&module->mtl_function_compute);
     mglSafeReleaseMetalObj(&module->mtl_library);
@@ -422,6 +432,25 @@ void mglRenderProgramSetModuleSamplerReductionMetallib(Program *program,
     mod->metallib_size_sampler_reduction = size;
     mod->mtl_function_sampler_reduction = NULL;
     mod->mtl_library_sampler_reduction = NULL;
+}
+
+void mglRenderProgramSetModuleAdvancedBlendMetallib(Program *program,
+                                                    int equation_index,
+                                                    unsigned char *bytes,
+                                                    size_t size)
+{
+    if (equation_index < 0 ||
+        equation_index >= MGL_BACKEND_ADVANCED_BLEND_SLOTS) {
+        free(bytes);
+        return;
+    }
+    struct MGLShaderModuleBackend *mod =
+        mglProgramModuleBackend(program, _FRAGMENT_SHADER);
+    free(mod->metallib_bytes_advanced_blend[equation_index]);
+    mglSafeReleaseMetalObj(&mod->mtl_function_advanced_blend[equation_index]);
+    mglSafeReleaseMetalObj(&mod->mtl_library_advanced_blend[equation_index]);
+    mod->metallib_bytes_advanced_blend[equation_index] = bytes;
+    mod->metallib_size_advanced_blend[equation_index] = size;
 }
 
 void mglRenderProgramSetModulePrimitiveIdVaryingMetallib(

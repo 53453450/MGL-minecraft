@@ -417,6 +417,11 @@ typedef struct Program_t {
     /* Draw-time: bound samplers include MIN/MAX reduction — use the
      * software-reduction metallib variant for VS/FS. */
     GLboolean active_sampler_reduction;
+    /* KHR_blend_equation_advanced: blend_support_* qualifiers of the linked
+     * FS (MGL_AST_BLEND_SUPPORT_* bits), and the equation index whose
+     * framebuffer-fetch FS variant the current draw binds (-1: none). */
+    uint32_t fragment_blend_support;
+    int32_t active_advanced_blend;
     /* IR-level reflection cache for mglBufferSlotConflictsForProgram.
      * Computed lazily on first call during link-time resource binding, then
      * reused for all subsequent slot checks.  Invalidated at link start. */

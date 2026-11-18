@@ -54,6 +54,10 @@ void mglRenderProgramSetModuleSamplerReductionMetallib(Program *program,
                                                        int stage,
                                                        unsigned char *bytes,
                                                        size_t size);
+void mglRenderProgramSetModuleAdvancedBlendMetallib(Program *program,
+                                                    int equation_index,
+                                                    unsigned char *bytes,
+                                                    size_t size);
 void mglRenderProgramSetModulePrimitiveIdVaryingMetallib(
     Program *program, int stage, unsigned char *bytes, size_t size);
 void mglRenderProgramSetModuleNeedsRuntimeArraySizeBuffer(Program *program,

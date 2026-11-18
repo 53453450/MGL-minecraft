@@ -14481,8 +14481,202 @@ static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
  * when the clear is opaque (e.g. (0,0,0,1)): clipped fragments must leave
  * the framebuffer unchanged.  Force [[sample_mask]] = 0 instead (Metal
  * honours it even on non-MSAA targets). */
+/* KHR_blend_equation_advanced: blend the premultiplied source color `src`
+ * with the framebuffer value `dst` using equation `eq`
+ * (mglAdvancedBlendEquationIndex), per the extension's "Advanced Blend
+ * Equations" section:
+ *   RGB = f(Cs',Cd')*p0 + Cs'*p1 + Cd'*p2,  A = p0 + p1 + p2
+ * with p0 = As*Ad, p1 = As*(1-Ad), p2 = Ad*(1-As) and C' the colors divided
+ * by their alpha (0 when alpha is 0).  Every equation has X = Y = Z = 1. */
+static llvm::Value *emitAdvancedBlend(Codegen &cg, int eq, llvm::Value *src,
+                                      llvm::Value *dst) {
+    llvm::IRBuilder<> &b = *cg.b;
+    llvm::Type *f32 = b.getFloatTy();
+    auto cf = [&](float v) -> llvm::Value * {
+        return llvm::ConstantFP::get(f32, v);
+    };
+    auto fmin = [&](llvm::Value *x, llvm::Value *y) {
+        return b.CreateIntrinsic(llvm::Intrinsic::minnum, {f32}, {x, y});
+    };
+    auto fmax = [&](llvm::Value *x, llvm::Value *y) {
+        return b.CreateIntrinsic(llvm::Intrinsic::maxnum, {f32}, {x, y});
+    };
+    auto sel = [&](llvm::Value *c, llvm::Value *x, llvm::Value *y) {
+        return b.CreateSelect(c, x, y);
+    };
+    auto comp = [&](llvm::Value *v, uint64_t i) {
+        return b.CreateExtractElement(v, i);
+    };
+    llvm::Value *as = comp(src, 3), *ad = comp(dst, 3);
+    llvm::Value *cs[3], *cd[3];
+    for (uint64_t i = 0; i < 3; i++) {
+        cs[i] = sel(b.CreateFCmpOEQ(as, cf(0.f)), cf(0.f),
+                    b.CreateFDiv(comp(src, i), as));
+        cd[i] = sel(b.CreateFCmpOEQ(ad, cf(0.f)), cf(0.f),
+                    b.CreateFDiv(comp(dst, i), ad));
+    }
+
+    /* Per-component equations of table X.1. */
+    auto separable = [&](llvm::Value *s, llvm::Value *d) -> llvm::Value * {
+        llvm::Value *one = cf(1.f), *two = cf(2.f), *half = cf(0.5f);
+        auto mul = [&](llvm::Value *x, llvm::Value *y) { return b.CreateFMul(x, y); };
+        auto add = [&](llvm::Value *x, llvm::Value *y) { return b.CreateFAdd(x, y); };
+        auto subf = [&](llvm::Value *x, llvm::Value *y) { return b.CreateFSub(x, y); };
+        /* 1 - 2*(1-s)*(1-d) */
+        llvm::Value *screen2 =
+            subf(one, mul(two, mul(subf(one, s), subf(one, d))));
+        switch (eq) {
+        case 0: /* MULTIPLY */
+            return mul(s, d);
+        case 1: /* SCREEN */
+            return subf(add(s, d), mul(s, d));
+        case 2: /* OVERLAY */
+            return sel(b.CreateFCmpOLE(d, half), mul(two, mul(s, d)), screen2);
+        case 3: /* DARKEN */
+            return fmin(s, d);
+        case 4: /* LIGHTEN */
+            return fmax(s, d);
+        case 5: /* COLORDODGE */
+            return sel(b.CreateFCmpOLE(d, cf(0.f)), cf(0.f),
+                       sel(b.CreateFCmpOLT(s, one),
+                           fmin(one, b.CreateFDiv(d, subf(one, s))), one));
+        case 6: /* COLORBURN */
+            return sel(b.CreateFCmpOGE(d, one), one,
+                       sel(b.CreateFCmpOGT(s, cf(0.f)),
+                           subf(one, fmin(one, b.CreateFDiv(subf(one, d), s))),
+                           cf(0.f)));
+        case 7: /* HARDLIGHT */
+            return sel(b.CreateFCmpOLE(s, half), mul(two, mul(s, d)), screen2);
+        case 8: { /* SOFTLIGHT */
+            llvm::Value *k = subf(mul(two, s), one);
+            llvm::Value *low = subf(d, mul(subf(one, mul(two, s)),
+                                           mul(d, subf(one, d))));
+            llvm::Value *poly =
+                add(mul(subf(mul(cf(16.f), d), cf(12.f)), d), cf(3.f));
+            llvm::Value *darkD = add(d, mul(k, mul(d, poly)));
+            llvm::Value *sq = b.CreateIntrinsic(llvm::Intrinsic::sqrt, {f32}, {d});
+            llvm::Value *lightD = add(d, mul(k, subf(sq, d)));
+            return sel(b.CreateFCmpOLE(s, half), low,
+                       sel(b.CreateFCmpOLE(d, cf(0.25f)), darkD, lightD));
+        }
+        case 9: /* DIFFERENCE */
+            return b.CreateIntrinsic(llvm::Intrinsic::fabs, {f32}, {subf(d, s)});
+        case 10: /* EXCLUSION */
+            return subf(add(s, d), mul(two, mul(s, d)));
+        default:
+            return s;
+        }
+    };
+
+    /* Table X.2 helpers on 3-component colors. */
+    auto minv3 = [&](llvm::Value *const c[3]) {
+        return fmin(fmin(c[0], c[1]), c[2]);
+    };
+    auto maxv3 = [&](llvm::Value *const c[3]) {
+        return fmax(fmax(c[0], c[1]), c[2]);
+    };
+    auto lumv3 = [&](llvm::Value *const c[3]) {
+        return b.CreateFAdd(b.CreateFAdd(b.CreateFMul(c[0], cf(0.30f)),
+                                         b.CreateFMul(c[1], cf(0.59f))),
+                            b.CreateFMul(c[2], cf(0.11f)));
+    };
+    auto clipColor = [&](llvm::Value *c[3]) {
+        llvm::Value *lum = lumv3(c);
+        llvm::Value *mn = minv3(c);
+        llvm::Value *mx = maxv3(c);
+        for (int i = 0; i < 3; i++) {
+            llvm::Value *rel = b.CreateFSub(c[i], lum);
+            llvm::Value *lo = b.CreateFAdd(
+                lum, b.CreateFDiv(b.CreateFMul(rel, lum), b.CreateFSub(lum, mn)));
+            c[i] = sel(b.CreateFCmpOLT(mn, cf(0.f)), lo, c[i]);
+        }
+        /* The second clip uses the color after the first, as in the spec's
+         * sequential pseudocode. */
+        llvm::Value *lum2 = lumv3(c);
+        (void)lum2;
+        for (int i = 0; i < 3; i++) {
+            llvm::Value *rel = b.CreateFSub(c[i], lum);
+            llvm::Value *hi = b.CreateFAdd(
+                lum, b.CreateFDiv(b.CreateFMul(rel, b.CreateFSub(cf(1.f), lum)),
+                                  b.CreateFSub(mx, lum)));
+            c[i] = sel(b.CreateFCmpOGT(mx, cf(1.f)), hi, c[i]);
+        }
+    };
+    auto setLum = [&](llvm::Value *const base[3], llvm::Value *const lumc[3],
+                      llvm::Value *out[3]) {
+        llvm::Value *diff = b.CreateFSub(lumv3(lumc), lumv3(base));
+        for (int i = 0; i < 3; i++)
+            out[i] = b.CreateFAdd(base[i], diff);
+        clipColor(out);
+    };
+    auto setLumSat = [&](llvm::Value *const base[3], llvm::Value *const satc[3],
+                         llvm::Value *const lumc[3], llvm::Value *out[3]) {
+        llvm::Value *minbase = minv3(base);
+        llvm::Value *sbase = b.CreateFSub(maxv3(base), minbase);
+        llvm::Value *ssat = b.CreateFSub(maxv3(satc), minv3(satc));
+        llvm::Value *tmp[3];
+        for (int i = 0; i < 3; i++) {
+            llvm::Value *scaled = b.CreateFDiv(
+                b.CreateFMul(b.CreateFSub(base[i], minbase), ssat), sbase);
+            tmp[i] = sel(b.CreateFCmpOGT(sbase, cf(0.f)), scaled, cf(0.f));
+        }
+        setLum(tmp, lumc, out);
+    };
+
+    llvm::Value *f[3];
+    switch (eq) {
+    case 11: setLumSat(cs, cd, cd, f); break; /* HSL_HUE */
+    case 12: setLumSat(cd, cs, cd, f); break; /* HSL_SATURATION */
+    case 13: setLum(cs, cd, f); break;        /* HSL_COLOR */
+    case 14: setLum(cd, cs, f); break;        /* HSL_LUMINOSITY */
+    default:
+        for (int i = 0; i < 3; i++)
+            f[i] = separable(cs[i], cd[i]);
+        break;
+    }
+
+    llvm::Value *p0 = b.CreateFMul(as, ad);
+    llvm::Value *p1 = b.CreateFMul(as, b.CreateFSub(cf(1.f), ad));
+    llvm::Value *p2 = b.CreateFMul(ad, b.CreateFSub(cf(1.f), as));
+    llvm::Value *out = llvm::UndefValue::get(src->getType());
+    for (uint64_t i = 0; i < 3; i++) {
+        llvm::Value *v = b.CreateFAdd(
+            b.CreateFAdd(b.CreateFMul(f[i], p0), b.CreateFMul(cs[i], p1)),
+            b.CreateFMul(cd[i], p2));
+        out = b.CreateInsertElement(out, v, i);
+    }
+    return b.CreateInsertElement(out, b.CreateFAdd(b.CreateFAdd(p0, p1), p2),
+                                 (uint64_t)3);
+}
+
+/* Applies the variant's advanced blend equation to color output 0. */
+static llvm::Value *applyAdvancedBlend(Codegen &cg, llvm::Value *ret)
+{
+    if (cg.advancedBlendEquation < 0 || !cg.advancedBlendDst || !ret)
+        return ret;
+    auto isVec4F = [](llvm::Type *t) {
+        auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t);
+        return vt && vt->getNumElements() == 4 &&
+               vt->getElementType()->isFloatTy();
+    };
+    if (isVec4F(ret->getType()))
+        return emitAdvancedBlend(cg, cg.advancedBlendEquation, ret,
+                                 cg.advancedBlendDst);
+    if (ret->getType()->isStructTy() &&
+        ret->getType()->getStructNumElements() > 0 &&
+        isVec4F(ret->getType()->getStructElementType(0))) {
+        llvm::Value *color = cg.b->CreateExtractValue(ret, 0);
+        return cg.b->CreateInsertValue(
+            ret, emitAdvancedBlend(cg, cg.advancedBlendEquation, color,
+                                   cg.advancedBlendDst),
+            0);
+    }
+    return ret;
+}
+
 static llvm::Value *finishFragReturn(Codegen &cg, llvm::Value *ret)
 {
+    ret = applyAdvancedBlend(cg, ret);
     if (!cg.emulateClipDiscard || !ret)
         return ret;
     cg.emulateClipDiscard = false;
@@ -15698,6 +15892,7 @@ struct CompileOptions {
     bool clip_depth_zero_to_one = false;
     bool fs_clip_emulate = false;
     bool software_sampler_reduction = false;
+    int advanced_blend_equation = -1;
     const char *const *attrib_names = nullptr;
     uint32_t tessPatchVertices = 0;
     uint32_t sparseResidencyBufferIndex =
@@ -15720,6 +15915,8 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
     const bool clip_depth_zero_to_one = opt.clip_depth_zero_to_one;
     const bool fs_clip_emulate = opt.fs_clip_emulate;
     const bool software_sampler_reduction = opt.software_sampler_reduction;
+    const int advancedBlendEquation =
+        opt.stage == MGL_STAGE_FRAGMENT ? opt.advanced_blend_equation : -1;
     const char *const *attrib_names = opt.attrib_names;
     const uint32_t tessPatchVertices = opt.tessPatchVertices;
     const uint32_t sparseResidencyBufferIndex =
@@ -16712,6 +16909,9 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             paramTys.push_back(postDepthTextureType(ctx, true));
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
         }
+        if (advancedBlendEquation >= 0)
+            paramTys.push_back(llvm::FixedVectorType::get(
+                llvm::Type::getFloatTy(ctx), 4));
     }
     if (isTESCompute)
         paramTys.push_back(llvm::FixedVectorType::get(
@@ -16875,6 +17075,7 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
         usesFragmentClipDistance ? activeClipCount : 0u;
     cg.emulateClipDiscard = fs_clip_emulate && usesFragmentClipDistance;
     cg.softwareSamplerReduction = software_sampler_reduction;
+    cg.advancedBlendEquation = advancedBlendEquation;
     cg.controlPointGetter = controlPointGetter;
     struct OwnedIRTypes {
         std::vector<MGLIRType *> v;
@@ -17571,6 +17772,8 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                 }
             }
         }
+        if (advancedBlendEquation >= 0)
+            cg.advancedBlendDst = fn->getArg(argSlot++);
     }
     if (hasSampleVarying && !isVS && !isTES && !isKernel) {
         /* With raster_sample_count==1 (MS array emulation), Metal only
@@ -19767,7 +19970,8 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
             usesPrimitiveId || usesLayer || usesViewportIndex ||
             usesSampleID || usesSamplePosition || usesSampleMaskIn ||
             needParamsBuffer || usesFragmentCullDistance ||
-            usesFragmentClipDistance) {
+            usesFragmentClipDistance || postDepthMaskIn ||
+            advancedBlendEquation >= 0) {
             /* Fragment builtins sit after the varyings and the optional
              * uniform buffer in the arg order; skip that slot once. */
             if (hasBuffer) mArgSlot++;
@@ -19944,6 +20148,20 @@ static int compileGLSLImpl(const char *src, const CompileOptions &opt,
                 llvm::MDString::get(ctx, "device uchar*"),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "mgl_post_depth_params")}));
+        }
+        if (advancedBlendEquation >= 0) {
+            /* Framebuffer fetch of color 0, the destination the advanced
+             * blend equation reads. */
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.render_target"),
+                llvm::ConstantAsMetadata::get(
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0)),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "float4"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "mgl_blend_dst")}));
         }
     }
     if (isKernel) {
@@ -20982,6 +21200,8 @@ static int fillStageInfo(const MGLTranslationUnit *tu,
     if (stage == MGL_STAGE_FRAGMENT && tu->layout_post_depth_coverage &&
         mglFrontendBuiltinUsed(mod, tu, "gl_SampleMaskIn"))
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_POST_DEPTH_COVERAGE;
+    if (stage == MGL_STAGE_FRAGMENT)
+        stage_info->blend_support = tu->layout_blend_support;
     if (stage_info->uses_tess_level)
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_TESS_LEVEL;
     if (stage == MGL_STAGE_TESS_CONTROL && tu->layout_vertices > 0)
@@ -21234,6 +21454,11 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     opt.fs_clip_emulate = (flags & MGL_AIR_COMPILE_FS_CLIP_INTERP) != 0;
     opt.software_sampler_reduction =
         (flags & MGL_AIR_COMPILE_SOFTWARE_SAMPLER_REDUCTION) != 0;
+    opt.advanced_blend_equation =
+        (flags & MGL_AIR_COMPILE_ADVANCED_BLEND)
+            ? (int)((flags & MGL_AIR_COMPILE_ADVANCED_BLEND_MASK) >>
+                    MGL_AIR_COMPILE_ADVANCED_BLEND_SHIFT)
+            : -1;
 
     int rc = compileGLSLImpl(sess.src, opt, metallib_out, size_out, err_buf,
                              err_cap);
