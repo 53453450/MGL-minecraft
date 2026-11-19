@@ -80,6 +80,11 @@ extern void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GL
 #include "mgl_trace_log.h"
 #include "mgl_readback_policy.h" /* mglRenderMSAAArrayLayerStride */
 #include "mgl_frame_activity.h"  /* MGL_PERF_INC invalidate counter */
+
+/* GLES defines this legacy completeness status; GL core headers do not. */
+#ifndef GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS
+#define GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS 0x8CD9
+#endif
 extern void mglBlitStencilShadow(GLMContext ctx,
                                  GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
                                  GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1);
