@@ -110,7 +110,8 @@ make test              # 交互式 GLFW 冒烟（test_mgl），不是 CI 门禁
 
 ## 现状
 
-- Minecraft 1.20.1-1.21.11可正常运行，现在目标是补充CTS扩展与性能优化。
+- Minecraft 1.20.1-1.21.11 可正常运行。
+- GL46[CTS](docs/CTS_REPORT.md)
 
 ## 项目结构
 

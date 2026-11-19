@@ -120,7 +120,8 @@ Point them at the MGL-minecraft build products. Only if something still
 
 ## Current Status
 
-- Minecraft 1.20.1–1.21.11 runs. Current focus is filling out CTS coverage for remaining extensions and performance work.
+- Minecraft 1.20.1–1.21.11 runs.
+- GL46[CTS](docs/CTS_REPORT.md)
 
 ## Project Structure
 
