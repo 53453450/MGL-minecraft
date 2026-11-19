@@ -303,11 +303,12 @@ void mglRendererTextureBarrier(GLMContext context);
 #define MGL_RENDERER_CLEAR_MASKED 1u
 void mglRendererClearBuffer(GLMContext context, uint32_t flags, uint32_t mask);
 /* glClearBuffer*: clears one draw buffer (or depth / stencil) with the given
- * values through a draw, honouring scissor and write masks. color_bits holds
- * the raw values for integer color buffers. */
+ * values through a draw, honouring scissor and write masks. color holds the
+ * passed values exactly (float, int32 and uint32 all fit a double); color_bits
+ * holds the raw values for integer color buffers. */
 typedef struct MGLRendererClearValues {
     int draw_buffer;
-    float color[4];
+    double color[4];
     uint32_t color_bits[4];
     float depth;
     uint32_t stencil;

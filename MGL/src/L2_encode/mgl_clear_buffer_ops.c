@@ -480,8 +480,8 @@ static void mglPdClearRectDraw(void *renderer, GLMContext glm_ctx,
     const uint32_t stencilClearValue = values->stencil & 0xffu;
 
     MGLPdClearRectParams params;
-    params.color = (vector_float4){values->color[0], values->color[1],
-                                   values->color[2], values->color[3]};
+    params.color = (vector_float4){(float)values->color[0], (float)values->color[1],
+                                   (float)values->color[2], (float)values->color[3]};
     params.depth = values->depth;
     params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
 

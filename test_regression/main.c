@@ -63,7 +63,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 236
+#define MAX_TESTS 237
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -26952,6 +26952,136 @@ static int test_clear_buffer_forms(unsigned char *pixels, const char *out_path)
     return fail ? 1 : 0;
 }
 
+/* glClearBuffer{i,ui}v writes the passed integers bit-exactly into 32-bit
+ * integer color buffers, whether the clear covers the whole attachment or a
+ * scissor box.  Values such as 0x0F0F0F0F or 0x7FFFFFFF are not representable
+ * as float, so a clear that goes through a float value rounds them. */
+static int clear_int_check(const char *what, GLenum att, int is_signed,
+                           int comps, int x, int y, const GLuint *want)
+{
+    GLuint v[4] = {0, 0, 0, 0};
+    glReadBuffer(att);
+    glReadPixels(x, y, 1, 1, GL_RGBA_INTEGER,
+                 is_signed ? GL_INT : GL_UNSIGNED_INT, v);
+    for (int i = 0; i < comps; i++) {
+        if (v[i] != want[i]) {
+            fprintf(stderr,
+                    "clear_buffer_integer_exact: %s (%d,%d) got %08x,%08x,%08x,%08x "
+                    "want %08x,%08x,%08x,%08x\n",
+                    what, x, y, v[0], v[1], v[2], v[3], want[0], want[1],
+                    want[2], want[3]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int test_clear_buffer_integer_exact(unsigned char *pixels,
+                                           const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const struct {
+        const char *name;
+        GLenum ifmt;
+        int comps;
+        int is_signed;
+    } fmts[] = {
+        {"R32UI", GL_R32UI, 1, 0},
+        {"R32I", GL_R32I, 1, 1},
+        {"RGBA32UI", GL_RGBA32UI, 4, 0},
+        {"RGBA32I", GL_RGBA32I, 4, 1},
+    };
+    static const GLuint vals[3][4] = {
+        {0x0F0F0F0Fu, 0xFFFFFFFFu, 0x80000001u, 0x7FFFFFFFu},
+        {0xFFFFFFFFu, 0x80000000u, 0x01000001u, 0xFFFFFFFEu},
+        {0x80000001u, 0x0F0F0F0Fu, 0x00FFFFFFu, 0x12345679u},
+    };
+    static const GLuint zero[4] = {0, 0, 0, 0};
+    int fail = 0;
+    GLuint tex = 0, fbo = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    for (size_t f = 0; f < sizeof fmts / sizeof fmts[0]; f++) {
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexStorage2D(GL_TEXTURE_2D, 1, fmts[f].ifmt, 16, 16);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, tex, 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            fail |= 1 << (int)(f * 4);
+            glDeleteTextures(1, &tex);
+            continue;
+        }
+        glViewport(0, 0, 16, 16);
+        for (int v = 0; v < 3; v++) {
+            /* 0: whole attachment, 1: scissor box over the left half,
+             * 2: scissor box covering the whole attachment. */
+            for (int mode = 0; mode < 3; mode++) {
+                if (fmts[f].is_signed)
+                    glClearBufferiv(GL_COLOR, 0, (const GLint *)zero);
+                else
+                    glClearBufferuiv(GL_COLOR, 0, zero);
+                if (mode != 0) {
+                    glEnable(GL_SCISSOR_TEST);
+                    glScissor(0, 0, mode == 1 ? 8 : 16, 16);
+                }
+                if (fmts[f].is_signed)
+                    glClearBufferiv(GL_COLOR, 0, (const GLint *)vals[v]);
+                else
+                    glClearBufferuiv(GL_COLOR, 0, vals[v]);
+                glDisable(GL_SCISSOR_TEST);
+                if (clear_int_check(fmts[f].name, GL_COLOR_ATTACHMENT0,
+                                    fmts[f].is_signed, fmts[f].comps, 2, 2,
+                                    vals[v]) ||
+                    clear_int_check(fmts[f].name, GL_COLOR_ATTACHMENT0,
+                                    fmts[f].is_signed, fmts[f].comps, 13, 13,
+                                    mode == 1 ? zero : vals[v]))
+                    fail |= 1 << (int)(f * 4 + (size_t)mode);
+            }
+        }
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, 0, 0);
+        glDeleteTextures(1, &tex);
+    }
+
+    /* Draw buffer 1 of a float + integer pair, cleared through the DSA entry
+     * point, leaves draw buffer 0 alone. */
+    GLuint pair[2] = {0, 0};
+    glGenTextures(2, pair);
+    glBindTexture(GL_TEXTURE_2D, pair[0]);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 16, 16);
+    glBindTexture(GL_TEXTURE_2D, pair[1]);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32UI, 16, 16);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           pair[0], 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D,
+                           pair[1], 0);
+    static const GLenum bufs[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+    glDrawBuffers(2, bufs);
+    static const GLfloat greenf[4] = {0, 1, 0, 1};
+    glClearBufferfv(GL_COLOR, 0, greenf);
+    glClearNamedFramebufferuiv(fbo, GL_COLOR, 1, vals[0]);
+    unsigned char rgba[4] = {0, 0, 0, 0};
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glReadPixels(5, 5, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    if (rgba[0] != 0 || rgba[1] != 255 || rgba[2] != 0 || rgba[3] != 255)
+        fail |= 1 << 16;
+    if (clear_int_check("MRT RGBA32UI", GL_COLOR_ATTACHMENT1, 0, 4, 5, 5,
+                        vals[0]))
+        fail |= 1 << 17;
+    glDeleteTextures(2, pair);
+
+    if (glGetError() != GL_NO_ERROR) fail |= 1 << 18;
+    glReadBuffer(GL_BACK);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "clear_buffer_integer_exact: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 typedef struct { float d; GLuint s; } PackedDS32;
 
 static void packed_ds_fill(int c, void *dst, int w, int y0, int h, float d, GLuint s)
@@ -31626,6 +31756,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("color_write_mask", test_color_write_mask),
     SELF_CHECK_TEST("clear_write_mask", test_clear_write_mask),
     SELF_CHECK_TEST("clear_buffer_forms", test_clear_buffer_forms),
+    SELF_CHECK_TEST("clear_buffer_integer_exact", test_clear_buffer_integer_exact),
     SELF_CHECK_TEST("get_tex_image_depth_types", test_get_tex_image_depth_types),
     SELF_CHECK_TEST("stencil_texturing", test_stencil_texturing),
     SELF_CHECK_TEST("get_tex_image_swap_bytes", test_get_tex_image_swap_bytes),

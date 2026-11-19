@@ -911,7 +911,6 @@ void mglClearBufferColor(GLMContext ctx, const MGLRendererClearValues *values)
     }
 
     Framebuffer *fbo = STATE(framebuffer);
-    GLfloat *clearColor = NULL;
     if (fbo) {
         GLuint attachmentIndex = 0u;
         if (!mglResolveDrawBufferSlotToColorAttachment(ctx, slot, &attachmentIndex) ||
@@ -920,15 +919,16 @@ void mglClearBufferColor(GLMContext ctx, const MGLRendererClearValues *values)
             return;
         FBOAttachment *att = &fbo->color_attachments[attachmentIndex];
         att->clear_bitmask |= GL_COLOR_BUFFER_BIT;
-        clearColor = att->clear_color;
+        for (int i = 0; i < 4; i++)
+            att->clear_color[i] = values->color[i];
     } else {
         if (slot != 0)
             return;
+        /* The default framebuffer has no integer color buffer. */
         STATE(default_fbo_clear_bitmask) |= GL_COLOR_BUFFER_BIT;
-        clearColor = STATE(default_clear_color);
+        for (int i = 0; i < 4; i++)
+            STATE(default_clear_color)[i] = (GLfloat)values->color[i];
     }
-    for (int i = 0; i < 4; i++)
-        clearColor[i] = values->color[i];
     mglMarkRendererDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE);
     mglRendererClearBuffer(ctx, 0, GL_COLOR_BUFFER_BIT);
 }

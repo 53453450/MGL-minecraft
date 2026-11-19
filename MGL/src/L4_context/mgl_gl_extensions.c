@@ -2323,7 +2323,7 @@ void mglClearBufferiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLi
 			values.draw_buffer = drawbuffer;
 			for (int i = 0; i < 4; i++)
 			{
-				values.color[i] = (GLfloat)value[i];
+				values.color[i] = (double)value[i];
 				values.color_bits[i] = (uint32_t)value[i];
 			}
 			mglClearBufferColor(ctx, &values);
@@ -2367,7 +2367,7 @@ void mglClearBufferuiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GL
 		values.draw_buffer = drawbuffer;
 		for (int i = 0; i < 4; i++)
 		{
-			values.color[i] = (GLfloat)value[i];
+			values.color[i] = (double)value[i];
 			values.color_bits[i] = value[i];
 		}
 		mglClearBufferColor(ctx, &values);

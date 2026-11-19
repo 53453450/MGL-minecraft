@@ -46,7 +46,11 @@ typedef struct FBOAttachment_t {
     GLuint layer;
     GLboolean layered;
     GLbitfield clear_bitmask;
-    GLfloat clear_color[4];
+    /* Pending clear value, handed to Metal as MTLClearColor (double).  Kept
+     * as double so 32-bit integer values from glClearBuffer{i,ui}v reach an
+     * integer attachment exactly; a float rounds them (0x0F0F0F0F would
+     * clear to 0x0F0F0F10). */
+    GLdouble clear_color[4];
     union {
         Texture *tex;
         Renderbuffer *rbo;
