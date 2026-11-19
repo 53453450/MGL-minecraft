@@ -1827,6 +1827,16 @@ typedef enum {
     BI_ARG_BVEC,      /* bool/bvec2/3/4 */
     BI_ARG_OUT_GENI,  /* out int/uint genType (lvalue; same match as GENI) */
     BI_ARG_OUT_GENF,  /* out float genType (lvalue; same match as GENF) */
+    BI_ARG_I3D,       /* gimage3D */
+    BI_ARG_IRECT,     /* gimage2DRect */
+    BI_ARG_ICUBE,     /* gimageCube */
+    BI_ARG_I2DA,      /* gimage2DArray */
+    BI_ARG_ICUBEA,    /* gimageCubeArray */
+    BI_ARG_I2DMS,     /* gimage2DMS */
+    BI_ARG_I2DMSA,    /* gimage2DMSArray */
+    BI_ARG_OUT_GVEC4, /* out vec4/ivec4/uvec4 matching arg 0's storage */
+    BI_ARG_OUT_FLOAT, /* out float */
+    BI_ARG_OUT_VEC4,  /* out vec4 */
 } BiArgKind;
 
 typedef enum {
@@ -2392,6 +2402,208 @@ static const BiFn kBuiltins[] = {
     { "EndStreamPrimitive",  1, { BI_ARG_INT,  BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
 };
 
+/* Optional trailing argument of a sparse / clamp overload (the spec's
+ * bracketed "[, float bias]" and "[, int comp]"). */
+typedef enum {
+    BI_OPT_NONE,
+    BI_OPT_BIAS, /* float bias: fragment shader only, as for texture() */
+    BI_OPT_COMP, /* int comp (gather) */
+} BiOptArg;
+
+typedef struct {
+    const char *name;
+    uint32_t argc; /* without the optional trailing argument */
+    const BiArgKind args[7];
+    BiOptArg opt;
+    BiRetKind ret;
+} BiTexFn;
+
+/* ARB_sparse_texture2 and ARB_sparse_texture_clamp, exactly as listed in
+ * the extension specs.  Sparse variants exist only for targets with sparse
+ * storage (no 1D, 1D-array or buffer samplers, no Proj forms); they return
+ * the residency code and write the texel through an out parameter placed
+ * after the non-sparse arguments and before the optional bias / comp.
+ * Clamp variants add a float lodClamp after the coordinate, offset and
+ * gradient arguments and have no rect, multisample or buffer overloads. */
+static const BiTexFn kSparseClampBuiltins[] = {
+    { "sparseTexelsResidentARB", 1, { BI_ARG_INT }, BI_OPT_NONE, BI_RET_BOOL },
+
+    { "sparseTextureARB", 3, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureARB", 3, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureARB", 3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureARB", 3, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3, BI_ARG_OUT_FLOAT }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureARB", 3, { BI_ARG_SCUBE_SHADOW, BI_ARG_VEC4, BI_ARG_OUT_FLOAT }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureARB", 3, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureARB", 3, { BI_ARG_SCUBEA, BI_ARG_VEC4, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureARB", 3, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC4, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureARB", 3, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureARB", 3, { BI_ARG_SRECT_SHADOW, BI_ARG_VEC3, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureARB", 4, { BI_ARG_SCUBEA_SHADOW, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+
+    { "sparseTextureLodARB", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureLodARB", 4, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureLodARB", 4, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureLodARB", 4, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureLodARB", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureLodARB", 4, { BI_ARG_SCUBEA, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+
+    { "sparseTextureOffsetARB", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureOffsetARB", 4, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_IVEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureOffsetARB", 4, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureOffsetARB", 4, { BI_ARG_SRECT_SHADOW, BI_ARG_VEC3, BI_ARG_IVEC2, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureOffsetARB", 4, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3, BI_ARG_IVEC2, BI_ARG_OUT_FLOAT }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureOffsetARB", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureOffsetARB", 4, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC4, BI_ARG_IVEC2, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+
+    { "sparseTexelFetchARB", 4, { BI_ARG_S2D, BI_ARG_IVEC2, BI_ARG_INT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTexelFetchARB", 4, { BI_ARG_S3D, BI_ARG_IVEC3, BI_ARG_INT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTexelFetchARB", 3, { BI_ARG_SRECT, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTexelFetchARB", 4, { BI_ARG_S2DA, BI_ARG_IVEC3, BI_ARG_INT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTexelFetchARB", 4, { BI_ARG_S2DMS, BI_ARG_IVEC2, BI_ARG_INT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTexelFetchARB", 4, { BI_ARG_S2DMSA, BI_ARG_IVEC3, BI_ARG_INT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+
+    { "sparseTexelFetchOffsetARB", 5, { BI_ARG_S2D, BI_ARG_IVEC2, BI_ARG_INT, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTexelFetchOffsetARB", 5, { BI_ARG_S3D, BI_ARG_IVEC3, BI_ARG_INT, BI_ARG_IVEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTexelFetchOffsetARB", 4, { BI_ARG_SRECT, BI_ARG_IVEC2, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTexelFetchOffsetARB", 5, { BI_ARG_S2DA, BI_ARG_IVEC3, BI_ARG_INT, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+
+    { "sparseTextureLodOffsetARB", 5, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureLodOffsetARB", 5, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_IVEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureLodOffsetARB", 5, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_IVEC2, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureLodOffsetARB", 5, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+
+    { "sparseTextureGradARB", 5, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradARB", 5, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradARB", 5, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradARB", 5, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradARB", 5, { BI_ARG_SRECT_SHADOW, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradARB", 5, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradARB", 5, { BI_ARG_SCUBE_SHADOW, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradARB", 5, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradARB", 5, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradARB", 5, { BI_ARG_SCUBEA, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+
+    { "sparseTextureGradOffsetARB", 6, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradOffsetARB", 6, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_IVEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradOffsetARB", 6, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradOffsetARB", 6, { BI_ARG_SRECT_SHADOW, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradOffsetARB", 6, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradOffsetARB", 6, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradOffsetARB", 6, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+
+    { "sparseTextureGatherARB", 3, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_COMP, BI_RET_INT },
+    { "sparseTextureGatherARB", 3, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_COMP, BI_RET_INT },
+    { "sparseTextureGatherARB", 3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_COMP, BI_RET_INT },
+    { "sparseTextureGatherARB", 3, { BI_ARG_SCUBEA, BI_ARG_VEC4, BI_ARG_OUT_GVEC4 }, BI_OPT_COMP, BI_RET_INT },
+    { "sparseTextureGatherARB", 3, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_COMP, BI_RET_INT },
+    { "sparseTextureGatherARB", 4, { BI_ARG_S2D_SHADOW, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_OUT_VEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGatherARB", 4, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_OUT_VEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGatherARB", 4, { BI_ARG_SCUBE_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_OUT_VEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGatherARB", 4, { BI_ARG_SCUBEA_SHADOW, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_OUT_VEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGatherARB", 4, { BI_ARG_SRECT_SHADOW, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_OUT_VEC4 }, BI_OPT_NONE, BI_RET_INT },
+
+    { "sparseTextureGatherOffsetARB", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_COMP, BI_RET_INT },
+    { "sparseTextureGatherOffsetARB", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_COMP, BI_RET_INT },
+    { "sparseTextureGatherOffsetARB", 4, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_COMP, BI_RET_INT },
+    { "sparseTextureGatherOffsetARB", 5, { BI_ARG_S2D_SHADOW, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_IVEC2, BI_ARG_OUT_VEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGatherOffsetARB", 5, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_IVEC2, BI_ARG_OUT_VEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGatherOffsetARB", 5, { BI_ARG_SRECT_SHADOW, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_IVEC2, BI_ARG_OUT_VEC4 }, BI_OPT_NONE, BI_RET_INT },
+
+    { "sparseTextureGatherOffsetsARB", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_IVEC2_ARR4, BI_ARG_OUT_GVEC4 }, BI_OPT_COMP, BI_RET_INT },
+    { "sparseTextureGatherOffsetsARB", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_IVEC2_ARR4, BI_ARG_OUT_GVEC4 }, BI_OPT_COMP, BI_RET_INT },
+    { "sparseTextureGatherOffsetsARB", 4, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_IVEC2_ARR4, BI_ARG_OUT_GVEC4 }, BI_OPT_COMP, BI_RET_INT },
+    { "sparseTextureGatherOffsetsARB", 5, { BI_ARG_S2D_SHADOW, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_IVEC2_ARR4, BI_ARG_OUT_VEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGatherOffsetsARB", 5, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_IVEC2_ARR4, BI_ARG_OUT_VEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGatherOffsetsARB", 5, { BI_ARG_SRECT_SHADOW, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_IVEC2_ARR4, BI_ARG_OUT_VEC4 }, BI_OPT_NONE, BI_RET_INT },
+
+    { "sparseImageLoadARB", 3, { BI_ARG_I2D, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseImageLoadARB", 3, { BI_ARG_I3D, BI_ARG_IVEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseImageLoadARB", 3, { BI_ARG_IRECT, BI_ARG_IVEC2, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseImageLoadARB", 3, { BI_ARG_ICUBE, BI_ARG_IVEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseImageLoadARB", 3, { BI_ARG_I2DA, BI_ARG_IVEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseImageLoadARB", 3, { BI_ARG_ICUBEA, BI_ARG_IVEC3, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseImageLoadARB", 4, { BI_ARG_I2DMS, BI_ARG_IVEC2, BI_ARG_INT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseImageLoadARB", 4, { BI_ARG_I2DMSA, BI_ARG_IVEC3, BI_ARG_INT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+
+    { "sparseTextureClampARB", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureClampARB", 4, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureClampARB", 4, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureClampARB", 4, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_OUT_FLOAT }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureClampARB", 4, { BI_ARG_SCUBE_SHADOW, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_OUT_FLOAT }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureClampARB", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureClampARB", 4, { BI_ARG_SCUBEA, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureClampARB", 4, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureClampARB", 5, { BI_ARG_SCUBEA_SHADOW, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+
+    { "textureClampARB", 3, { BI_ARG_S1D, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_SAMP },
+    { "textureClampARB", 3, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_SAMP },
+    { "textureClampARB", 3, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_SAMP },
+    { "textureClampARB", 3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_SAMP },
+    { "textureClampARB", 3, { BI_ARG_S1D_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_FLOAT },
+    { "textureClampARB", 3, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_FLOAT },
+    { "textureClampARB", 3, { BI_ARG_SCUBE_SHADOW, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_FLOAT },
+    { "textureClampARB", 3, { BI_ARG_S1DA, BI_ARG_VEC2, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_SAMP },
+    { "textureClampARB", 3, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_SAMP },
+    { "textureClampARB", 3, { BI_ARG_SCUBEA, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_SAMP },
+    { "textureClampARB", 3, { BI_ARG_S1DA_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_FLOAT },
+    { "textureClampARB", 3, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_FLOAT },
+    { "textureClampARB", 4, { BI_ARG_SCUBEA_SHADOW, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_FLOAT },
+
+    { "sparseTextureOffsetClampARB", 5, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureOffsetClampARB", 5, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_IVEC3, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureOffsetClampARB", 5, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3, BI_ARG_IVEC2, BI_ARG_FLOAT, BI_ARG_OUT_FLOAT }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureOffsetClampARB", 5, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_IVEC2, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_BIAS, BI_RET_INT },
+    { "sparseTextureOffsetClampARB", 5, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC4, BI_ARG_IVEC2, BI_ARG_FLOAT, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+
+    { "textureOffsetClampARB", 4, { BI_ARG_S1D, BI_ARG_FLOAT, BI_ARG_INT, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_SAMP },
+    { "textureOffsetClampARB", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_SAMP },
+    { "textureOffsetClampARB", 4, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_IVEC3, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_SAMP },
+    { "textureOffsetClampARB", 4, { BI_ARG_S1D_SHADOW, BI_ARG_VEC3, BI_ARG_INT, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_FLOAT },
+    { "textureOffsetClampARB", 4, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3, BI_ARG_IVEC2, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_FLOAT },
+    { "textureOffsetClampARB", 4, { BI_ARG_S1DA, BI_ARG_VEC2, BI_ARG_INT, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_SAMP },
+    { "textureOffsetClampARB", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_IVEC2, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_SAMP },
+    { "textureOffsetClampARB", 4, { BI_ARG_S1DA_SHADOW, BI_ARG_VEC3, BI_ARG_INT, BI_ARG_FLOAT }, BI_OPT_BIAS, BI_RET_FLOAT },
+    { "textureOffsetClampARB", 4, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC4, BI_ARG_IVEC2, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_FLOAT },
+
+    { "sparseTextureGradClampARB", 6, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradClampARB", 6, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradClampARB", 6, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradClampARB", 6, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradClampARB", 6, { BI_ARG_SCUBE_SHADOW, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradClampARB", 6, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradClampARB", 6, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradClampARB", 6, { BI_ARG_SCUBEA, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+
+    { "textureGradClampARB", 5, { BI_ARG_S1D, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_SAMP },
+    { "textureGradClampARB", 5, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_SAMP },
+    { "textureGradClampARB", 5, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_SAMP },
+    { "textureGradClampARB", 5, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_SAMP },
+    { "textureGradClampARB", 5, { BI_ARG_S1D_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_FLOAT },
+    { "textureGradClampARB", 5, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_FLOAT },
+    { "textureGradClampARB", 5, { BI_ARG_SCUBE_SHADOW, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_FLOAT },
+    { "textureGradClampARB", 5, { BI_ARG_S1DA, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_SAMP },
+    { "textureGradClampARB", 5, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_SAMP },
+    { "textureGradClampARB", 5, { BI_ARG_S1DA_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_FLOAT },
+    { "textureGradClampARB", 5, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_FLOAT },
+    { "textureGradClampARB", 5, { BI_ARG_SCUBEA, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_SAMP },
+
+    { "sparseTextureGradOffsetClampARB", 7, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradOffsetClampARB", 7, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_IVEC3, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradOffsetClampARB", 7, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_FLOAT, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradOffsetClampARB", 7, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_FLOAT, BI_ARG_OUT_GVEC4 }, BI_OPT_NONE, BI_RET_INT },
+    { "sparseTextureGradOffsetClampARB", 7, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_FLOAT, BI_ARG_OUT_FLOAT }, BI_OPT_NONE, BI_RET_INT },
+
+    { "textureGradOffsetClampARB", 6, { BI_ARG_S1D, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_INT, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_SAMP },
+    { "textureGradOffsetClampARB", 6, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_SAMP },
+    { "textureGradOffsetClampARB", 6, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_IVEC3, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_SAMP },
+    { "textureGradOffsetClampARB", 6, { BI_ARG_S1D_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_INT, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_FLOAT },
+    { "textureGradOffsetClampARB", 6, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_FLOAT },
+    { "textureGradOffsetClampARB", 6, { BI_ARG_S1DA, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_INT, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_SAMP },
+    { "textureGradOffsetClampARB", 6, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_SAMP },
+    { "textureGradOffsetClampARB", 6, { BI_ARG_S1DA_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_INT, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_FLOAT },
+    { "textureGradOffsetClampARB", 6, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2, BI_ARG_FLOAT }, BI_OPT_NONE, BI_RET_FLOAT },
+};
+
 /* Does `t` satisfy a BI_ARG_GENF parameter?  Sets *gen_dim to the matched
  * dimensionality on success.  Numeric int/uint scalars implicitly convert
  * to float here, mirroring GLSL argument conversion. */
@@ -2554,6 +2766,24 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
         return t->kind == MGLIR_TYPE_IMAGE &&
                t->tex_kind == MGLIR_TEX_2D_ARRAY &&
                t->tex_storage == MGLIR_SCALAR_UINT;
+    case BI_ARG_I3D:
+        return t->kind == MGLIR_TYPE_IMAGE && t->tex_kind == MGLIR_TEX_3D;
+    case BI_ARG_IRECT:
+        return t->kind == MGLIR_TYPE_IMAGE &&
+               t->tex_kind == MGLIR_TEX_2D_RECT;
+    case BI_ARG_ICUBE:
+        return t->kind == MGLIR_TYPE_IMAGE && t->tex_kind == MGLIR_TEX_CUBE;
+    case BI_ARG_I2DA:
+        return t->kind == MGLIR_TYPE_IMAGE &&
+               t->tex_kind == MGLIR_TEX_2D_ARRAY;
+    case BI_ARG_ICUBEA:
+        return t->kind == MGLIR_TYPE_IMAGE &&
+               t->tex_kind == MGLIR_TEX_CUBE_ARRAY;
+    case BI_ARG_I2DMS:
+        return t->kind == MGLIR_TYPE_IMAGE && t->tex_kind == MGLIR_TEX_2D_MS;
+    case BI_ARG_I2DMSA:
+        return t->kind == MGLIR_TYPE_IMAGE &&
+               t->tex_kind == MGLIR_TEX_2D_MS_ARRAY;
     case BI_ARG_IMAGE:
         return t->kind == MGLIR_TYPE_IMAGE &&
                t->tex_storage == MGLIR_SCALAR_FLOAT;
@@ -2640,6 +2870,94 @@ static int bif_is_frag_bias_overload(const BiFn *f)
     return 0;
 }
 
+/* Argument match for kSparseClampBuiltins.  `tex` is the call's first
+ * argument (the sampler or image), whose storage fixes the gvec4 texel. */
+static int sparse_clamp_arg_matches(const MGLIRType *t, BiArgKind k,
+                                    const MGLIRType *tex)
+{
+    uint32_t unused = 0;
+    if (!t) {
+        return 0;
+    }
+    switch (k) {
+    case BI_ARG_VEC2:
+    case BI_ARG_VEC3:
+    case BI_ARG_VEC4: {
+        /* GLSL 4.60 §4.1.10: an int or uint vector converts implicitly to
+         * the float vector of the same size. */
+        const uint32_t n = k == BI_ARG_VEC2 ? 2u : k == BI_ARG_VEC3 ? 3u : 4u;
+        return t->kind == MGLIR_TYPE_VECTOR && t->cols == n &&
+               (t->scalar == MGLIR_SCALAR_FLOAT ||
+                t->scalar == MGLIR_SCALAR_INT ||
+                t->scalar == MGLIR_SCALAR_UINT);
+    }
+    case BI_ARG_OUT_GVEC4:
+        return tex && t->kind == MGLIR_TYPE_VECTOR && t->cols == 4 &&
+               t->scalar == tex->tex_storage;
+    case BI_ARG_OUT_FLOAT:
+        return t->kind == MGLIR_TYPE_SCALAR && t->scalar == MGLIR_SCALAR_FLOAT;
+    case BI_ARG_OUT_VEC4:
+        return t->kind == MGLIR_TYPE_VECTOR && t->cols == 4 &&
+               t->scalar == MGLIR_SCALAR_FLOAT;
+    default:
+        return bif_arg_matches(t, k, &unused);
+    }
+}
+
+/* Resolve an ARB_sparse_texture2 / ARB_sparse_texture_clamp call against
+ * kSparseClampBuiltins.  Returns the result type (caller owns it) or NULL;
+ * *known is set when `name` belongs to the table. */
+static MGLIRType *sparse_clamp_call_type(const char *name,
+                                         const MGLIRType *const *arg_types,
+                                         uint32_t argc, int stage, int *known)
+{
+    const size_t n = sizeof(kSparseClampBuiltins) /
+                     sizeof(kSparseClampBuiltins[0]);
+    for (size_t i = 0; i < n; i++) {
+        const BiTexFn *f = &kSparseClampBuiltins[i];
+        if (strcmp(f->name, name) != 0) {
+            continue;
+        }
+        *known = 1;
+        const int with_opt = f->opt != BI_OPT_NONE && argc == f->argc + 1u;
+        if (argc != f->argc && !with_opt) {
+            continue;
+        }
+        if (with_opt) {
+            uint32_t unused = 0;
+            const MGLIRType *last = arg_types[argc - 1u];
+            if (f->opt == BI_OPT_BIAS &&
+                (stage != MGL_STAGE_FRAGMENT ||
+                 !bif_arg_matches(last, BI_ARG_FLOAT, &unused))) {
+                continue;
+            }
+            if (f->opt == BI_OPT_COMP &&
+                !bif_arg_matches(last, BI_ARG_INT, &unused)) {
+                continue;
+            }
+        }
+        const MGLIRType *tex = arg_types[0];
+        int ok = 1;
+        for (uint32_t j = 0; j < f->argc && ok; j++) {
+            ok = sparse_clamp_arg_matches(arg_types[j], f->args[j], tex);
+        }
+        if (!ok) {
+            continue;
+        }
+        switch (f->ret) {
+        case BI_RET_BOOL:
+            return mglIRTypeScalar(MGLIR_SCALAR_BOOL);
+        case BI_RET_FLOAT:
+            return mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
+        case BI_RET_SAMP:
+            return mglIRTypeVector(tex->tex_storage, 4);
+        default:
+            return mglIRTypeScalar(MGLIR_SCALAR_INT);
+        }
+    }
+    return NULL;
+}
+
 /* Match a builtin call.  On success returns a new MGLIRType for the result
  * (caller owns it), on failure returns NULL and sets *known (1 = the name is
  * a builtin but no signature matched, 0 = unknown name). */
@@ -2676,61 +2994,11 @@ static MGLIRType *builtin_call_type(const char *name,
             return NULL;
         return ir_type_clone(value);
     }
-    /* ARB_sparse_texture2 / ARB_sparse_texture_clamp: accept the sparse*
-     * and *ClampARB families without enumerating every sampler overload.
-     * Codegen lowers them to the non-sparse twin plus a residency code. */
-    if (name && strcmp(name, "sparseTexelsResidentARB") == 0) {
-        *known = 1;
-        if (argc == 1)
-            return mglIRTypeScalar(MGLIR_SCALAR_BOOL);
-        return NULL;
-    }
-    if (name && strncmp(name, "sparse", 6) == 0 && strstr(name, "ARB")) {
-        *known = 1;
-        if (argc < 2)
-            return NULL;
-        /* GLSL §8.9 / ARB_sparse_texture2: optional bias on sparseTexture*
-         * and sparseTextureOffset* is fragment-shader only (same rule as
-         * texture* bias).  Detect by trailing float beyond the out-texel
-         * arity: Texture=3, TextureOffset=4. */
-        const int cube_array_shadow = arg_types && arg_types[0] &&
-            arg_types[0]->kind == MGLIR_TYPE_SAMPLER &&
-            arg_types[0]->tex_kind == MGLIR_TEX_CUBE_ARRAY &&
-            arg_types[0]->tex_depth;
-        if (stage != MGL_STAGE_FRAGMENT && !cube_array_shadow &&
-            arg_types && arg_types[argc - 1u] &&
-            arg_types[argc - 1u]->kind == MGLIR_TYPE_SCALAR &&
-            arg_types[argc - 1u]->scalar == MGLIR_SCALAR_FLOAT) {
-            int base = 0;
-            if (strcmp(name, "sparseTextureARB") == 0)
-                base = 3;
-            else if (strcmp(name, "sparseTextureOffsetARB") == 0)
-                base = 4;
-            if (base && (int)argc > base)
-                return NULL;
-        }
-        return mglIRTypeScalar(MGLIR_SCALAR_INT);
-    }
-    if (name && strstr(name, "ClampARB") &&
-        (strncmp(name, "texture", 7) == 0 ||
-         strncmp(name, "sparseTexture", 13) == 0)) {
-        *known = 1;
-        if (argc < 2)
-            return NULL;
-        if (strncmp(name, "sparse", 6) == 0)
-            return mglIRTypeScalar(MGLIR_SCALAR_INT);
-        {
-            /* Shadow *ClampARB returns float (same as texture*). */
-            if (arg_types && arg_types[0] &&
-                arg_types[0]->kind == MGLIR_TYPE_SAMPLER &&
-                arg_types[0]->tex_depth)
-                return mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
-            MGLIRScalar st = MGLIR_SCALAR_FLOAT;
-            if (arg_types && arg_types[0] &&
-                (arg_types[0]->kind == MGLIR_TYPE_SAMPLER ||
-                 arg_types[0]->kind == MGLIR_TYPE_IMAGE))
-                st = arg_types[0]->tex_storage;
-            return mglIRTypeVector(st, 4);
+    if (name) {
+        MGLIRType *st = sparse_clamp_call_type(name, arg_types, argc, stage,
+                                               known);
+        if (*known) {
+            return st;
         }
     }
     for (size_t i = 0; i < sizeof(kBuiltins) / sizeof(kBuiltins[0]); i++) {
