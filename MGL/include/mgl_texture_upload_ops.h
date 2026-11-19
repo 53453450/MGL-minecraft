@@ -20,6 +20,7 @@
 #include "glm_context.h"
 #include "mgl_region_value.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -93,7 +94,8 @@ int mglTextureUploadDirtyNon3DLevel(void *renderer, Texture *tex, void *texture,
 
 
 /* -createMTLTextureFromGLTexture: moved in log 197. */
-void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex);
+void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex,
+                                    bool *out_contents_undefined);
 
 
 /* The texSubImage trio moved in log 198. */

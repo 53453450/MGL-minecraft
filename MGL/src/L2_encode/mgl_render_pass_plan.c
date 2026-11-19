@@ -221,7 +221,7 @@ int mglRenderPassPlanLoadStore(const MGLRenderPassLoadStoreInput *in,
             return 0;
         }
         if (in->dontcare_enabled && in->texture_present &&
-            in->first_use_this_frame && !in->blend_enabled) {
+            in->contents_undefined && !in->blend_enabled) {
             out->load_action = MGLLoadActionDontCare;
         }
         return 0;

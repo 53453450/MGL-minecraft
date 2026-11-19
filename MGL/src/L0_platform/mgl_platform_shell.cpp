@@ -2246,12 +2246,6 @@ static void mglShellCreateAndBind(MGLObjectId self, SEL cmd, GLMContext glm_ctx,
     mglPassManagerSetRuntimeContext((MGLRenderPassManager *)ivars->_renderPassManager,
                                     glm_ctx);
 
-    /* start the DontCare frame generation at 1 so it never matches a
-     * texture's zero-initialized mtl_rt_frame_generation stamp until that
-     * texture is actually written this frame. */
-    mglPassManagerSetDontCareFrameGeneration(
-        (MGLRenderPassManager *)ivars->_renderPassManager, 1u);
-
     const signed char psoDedupEnabled =
         mglEnvFlagEnabledDefaultOn("MGL_PSO_DEDUP") ? 1 : 0;
     const signed char depthStencilCacheEnabled =

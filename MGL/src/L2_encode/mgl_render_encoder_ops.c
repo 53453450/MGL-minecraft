@@ -646,19 +646,6 @@ void mglRenderPassEnsureTransientDepthForDefaultFramebuffer(void *renderer)
     }
 }
 
-void mglRenderPassMarkAttachmentContentsUndefined(Texture *texture)
-{
-    /* rt_frame_generation is per-Texture, not per-level/layer.  Resetting it
-     * lets load planning DontCare the next use of this texture as an RT
-     * (including mipmapped FBOs).  Trade-off: if another level of the same
-     * texture is also an RT later this frame, that level may look like
-     * first-use too. Prefer correct invalidate over skipping all multi-mip
-     * attachments. */
-    if (texture) {
-        mglTextureSetRtGeneration(texture, 0u);
-    }
-}
-
 static void mglCountLoadAction(uint32_t load_action)
 {
     if (load_action == (uint32_t)MGLLoadActionClear) {
@@ -719,7 +706,8 @@ static void mglPdClearOtherDepthStencilPlanes(const MGLCommandState *commandStat
 /* -configureUserFBOLoadStoreActionsLocked:fboColorClearMask:
  *  fboColorAttachment0ClearMask: */
 void mglRenderPassConfigureUserFBOLoadStoreActions(
-    void *renderer, unsigned int *outFboColorClearCount,
+    void *renderer, uint32_t undefinedColorSlots,
+    unsigned int *outFboColorClearCount,
     unsigned int *outFboColorClearMask,
     unsigned int *outFboColorAttachment0ClearMask)
 {
@@ -759,19 +747,6 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
 
         Texture *attachmentTextureForClear =
             mglRendererAttachmentTextureFor(ctx, att);
-        /* stamp this attachment's frame generation on EVERY render-target use
-         * (clear/load/dontcare), capturing whether this is its first use this
-         * frame BEFORE stamping. A clear-then-resume within one frame must
-         * record the clear as a use so the resume is not mistaken for a first
-         * use (which would wrongly DontCare and discard the cleared+drawn
-         * content). */
-        int colorFirstUseThisFrame = 0;
-        if (dontCareLoadEnabled && attachmentTextureForClear) {
-            colorFirstUseThisFrame =
-                (mglTextureRtGeneration(attachmentTextureForClear) !=
-                 commandState->dontCareFrameGeneration);
-            mglTextureSetRtGeneration(attachmentTextureForClear, commandState->dontCareFrameGeneration);
-        }
         MGLRenderPassLoadStoreInput loadStore = {0};
         loadStore.attachment_kind = MGL_RP_ATTACHMENT_COLOR;
         loadStore.attachment_present = 1;
@@ -782,7 +757,7 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
                 ? 1
                 : 0;
         loadStore.dontcare_enabled = dontCareLoadEnabled ? 1 : 0;
-        loadStore.first_use_this_frame = colorFirstUseThisFrame ? 1 : 0;
+        loadStore.contents_undefined = (undefinedColorSlots >> colorSlot) & 1u;
         loadStore.blend_enabled =
             (ctx && glState->caps.blend) ? 1 : 0;
         MGLRenderPassLoadStorePlan loadStorePlan = {0};
@@ -1222,9 +1197,13 @@ static int mglPdNewRenderEncoderBody(void *renderer)
         return 0;
     }
 
-    /* Configure color/depth/stencil attachments based on FBO type */
+    /* Only allocation during setup of this pass can prove a color attachment
+     * has no contents to load. Previously materialized textures may have
+     * been written even if they have never been used as render targets. */
+    uint32_t undefinedColorSlots = 0u;
     if (glState->framebuffer) {
-        if (!mglRenderPassConfigureUserFBOAttachments(renderer)) {
+        if (!mglRenderPassConfigureUserFBOAttachments(renderer,
+                                                       &undefinedColorSlots)) {
             fprintf(stderr, "failure %s:%d\n", __func__, __LINE__);
             return 0;
         }
@@ -1250,7 +1229,8 @@ static int mglPdNewRenderEncoderBody(void *renderer)
 
     if (fbo) {
         mglRenderPassConfigureUserFBOLoadStoreActions(
-            renderer, &fboColorClearCount, &fboColorClearMask,
+            renderer, undefinedColorSlots, &fboColorClearCount,
+            &fboColorClearMask,
             &fboColorAttachment0ClearMask);
     } else {
         mglRenderPassConfigureDefaultFramebufferLoadStoreActions(renderer);

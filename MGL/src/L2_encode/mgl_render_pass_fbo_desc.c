@@ -394,8 +394,10 @@ void mglPdSetPersistentDimensions(const MGLCommandState *commandState,
 uint64_t mglPdMin(uint64_t a, uint64_t b) { return a < b ? a : b; }
 
 /* -configureUserFBOAttachmentsLocked. */
-bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
+bool mglRenderPassConfigureUserFBOAttachments(
+    void *renderer, uint32_t *out_undefined_color_slots)
 {
+    *out_undefined_color_slots = 0u;
     MGLRendererStateView areas;
     mglRendererFillStateView(renderer, &areas);
     GLMContext ctx = areas.ctx;
@@ -446,12 +448,17 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
 
             /* Ensure attachment textures are created with RenderTarget usage. */
             tex->is_render_target = 1;
-            if (!mglRendererBindMTLTexture(renderer, tex)) {
+            bool contents_undefined = false;
+            if (!mglRendererBindMTLTextureForAttachment(
+                    renderer, tex, &contents_undefined)) {
                 fprintf(stderr, "failure %s:%d\n", __func__, __LINE__);
                 return false;
             }
             if (!mglTextureMtl(tex)) {
                 continue;
+            }
+            if (contents_undefined) {
+                *out_undefined_color_slots |= 1u << colorSlot;
             }
             mglRenderTargetMarkGPUAuthoritative(tex);
 

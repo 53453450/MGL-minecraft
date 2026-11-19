@@ -111,17 +111,6 @@ static inline void mglTextureBumpWriteVersion(Texture *texture)
     mglTextureBackendEnsure(texture)->render_target_write_version++;
 }
 
-static inline uint32_t mglTextureRtGeneration(const Texture *texture)
-{
-    return (texture && texture->backend) ? texture->backend->rt_frame_generation
-                                         : 0u;
-}
-
-static inline void mglTextureSetRtGeneration(Texture *texture, uint32_t value)
-{
-    mglTextureBackendEnsure(texture)->rt_frame_generation = value;
-}
-
 /* Forget the Metal handle without releasing it (the caller has already handed
  * it to the renderer's deferred deletion, or knows it is already gone). */
 static inline void mglTextureForgetMtlData(Texture *texture)

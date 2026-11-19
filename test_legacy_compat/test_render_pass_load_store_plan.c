@@ -74,6 +74,8 @@ static void test_color_load_store(void)
 
     in = color_input();
     in.has_clear_pending = 1;
+    in.dontcare_enabled = 1;
+    in.contents_undefined = 1;
     CHECK(mglRenderPassPlanLoadStore(&in, &plan) == 0, "color clear plan");
     CHECK(plan.load_action == MGLLoadActionClear, "pending clear wins");
     CHECK(plan.set_store_action == 1 &&
@@ -82,15 +84,15 @@ static void test_color_load_store(void)
 
     in = color_input();
     in.dontcare_enabled = 1;
-    in.first_use_this_frame = 1;
+    in.contents_undefined = 1;
     CHECK(mglRenderPassPlanLoadStore(&in, &plan) == 0, "color dontcare plan");
     CHECK(plan.load_action == MGLLoadActionDontCare,
-          "first use with a texture may discard");
+          "a texture with provably undefined contents may skip loading");
     CHECK(plan.set_store_action == 0, "dontcare does not touch the store");
 
     in = color_input();
     in.dontcare_enabled = 1;
-    in.first_use_this_frame = 1;
+    in.contents_undefined = 1;
     in.blend_enabled = 1;
     CHECK(mglRenderPassPlanLoadStore(&in, &plan) == 0, "color blend plan");
     CHECK(plan.load_action == MGLLoadActionLoad,
@@ -98,19 +100,19 @@ static void test_color_load_store(void)
 
     in = color_input();
     in.dontcare_enabled = 1;
-    CHECK(mglRenderPassPlanLoadStore(&in, &plan) == 0, "color reuse plan");
+    CHECK(mglRenderPassPlanLoadStore(&in, &plan) == 0, "color preserve plan");
     CHECK(plan.load_action == MGLLoadActionLoad,
-          "a later use this frame keeps the contents");
+          "preserve color contents even with DontCare enabled");
 
     in = color_input();
-    in.first_use_this_frame = 1;
+    in.contents_undefined = 1;
     CHECK(mglRenderPassPlanLoadStore(&in, &plan) == 0, "color flag-off plan");
     CHECK(plan.load_action == MGLLoadActionLoad,
           "discarding needs the env flag");
 
     in = color_input();
     in.dontcare_enabled = 1;
-    in.first_use_this_frame = 1;
+    in.contents_undefined = 1;
     in.texture_present = 0;
     CHECK(mglRenderPassPlanLoadStore(&in, &plan) == 0, "color no-texture plan");
     CHECK(plan.load_action == MGLLoadActionLoad,

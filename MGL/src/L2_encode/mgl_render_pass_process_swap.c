@@ -1319,11 +1319,6 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
     }
     mglTraceNoteFrameBoundary();
     MGL_FRAME_STORE(g_mglSwapCallCount, swapCall);
-    /* advance the DontCare frame generation. Any color attachment written
-     * before this point belongs to the previous frame, so its next write this
-     * frame is a "first use" that may skip loading prior contents.  Skips 0 so
-     * a zero-initialized texture stamp never matches. */
-    mglPassManagerIncrementDontCareFrameGenerationWithWrap(manager);
     MGL_FRAME_STORE(g_mglLastSwapSeconds, swapStartSeconds);
     if (swapCall <= 20ull || (swapCall % 60ull) == 0ull) {
         mglTraceLog(

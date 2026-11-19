@@ -37,6 +37,11 @@ extern "C" {
  * so -[MGLRenderer bindMTLTexture:] keeps it and calls straight in. */
 bool mglRendererBindMTLTexture(void *renderer, Texture *tex);
 
+/* Reports undefined contents only for storage just allocated without any
+ * initialization in this call. Valid only for the pass being built. */
+bool mglRendererBindMTLTextureForAttachment(void *renderer, Texture *tex,
+                                            bool *out_contents_undefined);
+
 #ifdef __cplusplus
 }
 #endif

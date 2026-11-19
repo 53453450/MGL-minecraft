@@ -170,7 +170,7 @@ static bool mglTextureBindBPTCFloatCloneStorage(void *renderer, Texture *tex,
         mglTextureBackendEnsure(tex)->view_parent = NULL;
     }
 
-    void *cloned = mglTextureCreateFromGLTexture(renderer, tex);
+    void *cloned = mglTextureCreateFromGLTexture(renderer, tex, NULL);
     if (!cloned) {
         view_lvl->data = 0;
         view_lvl->data_size = 0u;
@@ -310,8 +310,12 @@ static bool mglTextureBindViewStorage(void *renderer, Texture *tex)
     return true;
 }
 
-bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
+static bool mglRendererBindMTLTextureImpl(void *renderer, Texture *tex,
+                                         bool *out_contents_undefined)
 {
+    if (out_contents_undefined) {
+        *out_contents_undefined = false;
+    }
     if (!renderer || !tex) {
         return false;
     }
@@ -447,7 +451,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
              * DIRTY_TEXTURE_DATA so that createMTLTextureFromGLTexture
              * skips CPU data upload — we'll blit GPU data instead. */
             void *newTexture =
-                mglTextureCreateFromGLTexture(renderer, tex);
+                mglTextureCreateFromGLTexture(renderer, tex, NULL);
             MGLRenderTextureInfo newInfo = {0};
             bool dimensionsMatch = newTexture &&
                 mglRenderGetTextureInfo(newTexture, &newInfo) == 0 &&
@@ -604,7 +608,8 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
 
     if (mglTextureMtl(tex) == NULL)
     {
-        mglTextureBackendEnsure(tex)->mtl_data = mglTextureCreateFromGLTexture(renderer, tex);
+        mglTextureBackendEnsure(tex)->mtl_data = mglTextureCreateFromGLTexture(
+            renderer, tex, out_contents_undefined);
 
         /* AGX-SAFE: Handle NULL texture gracefully when in GPU recovery mode */
         if (!mglTextureMtl(tex)) {
@@ -738,4 +743,15 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
     }
 
     return true;
+}
+
+bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
+{
+    return mglRendererBindMTLTextureImpl(renderer, tex, NULL);
+}
+
+bool mglRendererBindMTLTextureForAttachment(void *renderer, Texture *tex,
+                                            bool *out_contents_undefined)
+{
+    return mglRendererBindMTLTextureImpl(renderer, tex, out_contents_undefined);
 }

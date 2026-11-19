@@ -41,7 +41,8 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
 /* -configureUserFBOAttachmentsLocked is C now (log 170): the renderer state
  * areas carry the command state and the context, and every helper it needs
  * is already C. */
-bool mglRenderPassConfigureUserFBOAttachments(void *renderer);
+bool mglRenderPassConfigureUserFBOAttachments(
+    void *renderer, uint32_t *out_undefined_color_slots);
 /* -finalizeRenderPassDescriptorLocked:traceRenderEncoder: is C now
  * (log 171): it had no self sends at all, only render-pass-state twins. */
 /* -generatePipelineDescriptorState:vertexFunction:fragmentFunction: is C

@@ -79,7 +79,6 @@ extern void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, co
 extern void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil);
 #include "mgl_trace_log.h"
 #include "mgl_readback_policy.h" /* mglRenderMSAAArrayLayerStride */
-#include "mgl_render_encoder_ops.h" /* mglRenderPassMarkAttachmentContentsUndefined */
 #include "mgl_frame_activity.h"  /* MGL_PERF_INC invalidate counter */
 extern void mglBlitStencilShadow(GLMContext ctx,
                                  GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
@@ -3599,66 +3598,17 @@ static GLboolean mglValidateInvalidateFramebufferAttachments(GLMContext ctx,
     return GL_TRUE;
 }
 
-/* A whole-attachment invalidate makes the attachment contents undefined.
- * Color load planning treats rt_frame_generation != current frame as
- * first-use → DontCare when MGL_ENABLE_DONTCARE_LOAD is on; reset the
- * generation so a later pass this frame can discard. Depth/stencil planning
- * still Loads unless cleared.  glInvalidateSubFramebuffer must NOT use this
- * helper: Metal load/store actions are whole-attachment, so a partial
- * invalidate cannot become a DontCare load without losing pixels outside
- * the invalidated rect. */
-static void mglMarkFboAttachmentContentsUndefined(GLMContext ctx,
-                                                  FBOAttachment *att)
+/* Invalidate is a hint. Keep draw ordering, but do not carry a discard
+ * decision to a later pass: uploads, copies, or writes through texture
+ * views can redefine the invalidated image before that pass begins. */
+static void mglFlushForFramebufferInvalidate(GLMContext ctx,
+                                             GLsizei numAttachments)
 {
-    Texture *tex = mglTraceAttachmentTexture(ctx, att);
-    if (tex) {
-        /* Layer boundary: the FE TU must not touch the Metal backend accessor
-         * directly; the render-pass layer owns the generation stamp. */
-        mglRenderPassMarkAttachmentContentsUndefined(tex);
-    }
-}
-
-static void mglApplyInvalidateFramebufferAttachments(GLMContext ctx,
-                                                     Framebuffer *fbo,
-                                                     GLsizei numAttachments,
-                                                     const GLenum *attachments)
-{
-    /* GL 4.6 §17.4.4: numAttachments is the length of the attachments list.
-     * An empty list invalidates nothing (no-op).  Callers already reject
-     * numAttachments < 0 and (numAttachments > 0 && !attachments). */
-    if (numAttachments == 0 || !attachments) {
+    if (numAttachments == 0) {
         return;
     }
     MGL_PERF_INC(g_mglInvalidateFramebufferSinceSwap);
-    /* Finish deferred draws into these attachments before discarding. */
     mglFlushPendingDraws(ctx);
-    if (!fbo) {
-        /* Default framebuffer has no Texture* generation to reset. */
-        return;
-    }
-    for (GLsizei i = 0; i < numAttachments; ++i) {
-        const GLenum a = attachments[i];
-        GLuint index = 0u;
-        switch (a) {
-            case GL_DEPTH_ATTACHMENT:
-                mglMarkFboAttachmentContentsUndefined(ctx, &fbo->depth);
-                break;
-            case GL_STENCIL_ATTACHMENT:
-                mglMarkFboAttachmentContentsUndefined(ctx, &fbo->stencil);
-                break;
-            case GL_DEPTH_STENCIL_ATTACHMENT:
-                mglMarkFboAttachmentContentsUndefined(ctx, &fbo->depth);
-                mglMarkFboAttachmentContentsUndefined(ctx, &fbo->stencil);
-                break;
-            default:
-                if (mglColorAttachmentIndex(ctx, a, &index) &&
-                    index < MAX_COLOR_ATTACHMENTS) {
-                    mglMarkFboAttachmentContentsUndefined(
-                        ctx, &fbo->color_attachments[index]);
-                }
-                break;
-        }
-    }
 }
 
 void mglInvalidateFramebuffer(GLMContext ctx, GLenum target, GLsizei numAttachments, const GLenum *attachments)
@@ -3682,8 +3632,7 @@ void mglInvalidateFramebuffer(GLMContext ctx, GLenum target, GLsizei numAttachme
         return;
     }
 
-    mglApplyInvalidateFramebufferAttachments(
-        ctx, currentFBOForType(ctx, target), numAttachments, attachments);
+    mglFlushForFramebufferInvalidate(ctx, numAttachments);
 }
 
 void mglInvalidateSubFramebuffer(GLMContext ctx, GLenum target, GLsizei numAttachments, const GLenum *attachments, GLint x, GLint y, GLsizei width, GLsizei height)
@@ -3711,15 +3660,7 @@ void mglInvalidateSubFramebuffer(GLMContext ctx, GLenum target, GLsizei numAttac
     (void)y;
     (void)width;
     (void)height;
-    /* Partial invalidate cannot become a DontCare load (Metal actions are
-     * whole-attachment), but still flush deferred draws so ordering matches
-     * InvalidateFramebuffer / apps that treat invalidate as an implicit
-     * barrier.  Empty attachment lists remain a no-op. */
-    if (numAttachments == 0) {
-        return;
-    }
-    MGL_PERF_INC(g_mglInvalidateFramebufferSinceSwap);
-    mglFlushPendingDraws(ctx);
+    mglFlushForFramebufferInvalidate(ctx, numAttachments);
 }
 
 void mglCreateFramebuffers(GLMContext ctx, GLsizei n, GLuint *framebuffers)
@@ -4069,8 +4010,7 @@ void mglInvalidateNamedFramebufferData(GLMContext ctx, GLuint framebuffer, GLsiz
                                           attachments)) {
         return;
     }
-    mglApplyInvalidateFramebufferAttachments(ctx, fbo, numAttachments,
-                                             attachments);
+    mglFlushForFramebufferInvalidate(ctx, numAttachments);
 }
 
 void mglInvalidateNamedFramebufferSubData(GLMContext ctx, GLuint framebuffer, GLsizei numAttachments, const GLenum *attachments, GLint x, GLint y, GLsizei width, GLsizei height)
@@ -4094,13 +4034,7 @@ void mglInvalidateNamedFramebufferSubData(GLMContext ctx, GLuint framebuffer, GL
     (void)y;
     (void)width;
     (void)height;
-    /* See mglInvalidateSubFramebuffer: no DontCare load, but flush for
-     * ordering parity with the non-Sub path. */
-    if (numAttachments == 0) {
-        return;
-    }
-    MGL_PERF_INC(g_mglInvalidateFramebufferSinceSwap);
-    mglFlushPendingDraws(ctx);
+    mglFlushForFramebufferInvalidate(ctx, numAttachments);
 }
 
 void mglClearNamedFramebufferiv(GLMContext ctx, GLuint framebuffer, GLenum buffer, GLint drawbuffer, const GLint *value)

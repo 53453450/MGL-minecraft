@@ -3016,8 +3016,12 @@ static int mglUpCreateTextureBody(void *renderer, void *rawCtx)
 
 /* -createMTLTextureFromGLTexture: (log 197).  Every callee it had is already C,
  * which is why the move is a pure translation. */
-void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex)
+void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex,
+                                    bool *out_contents_undefined)
 {
+    if (out_contents_undefined) {
+        *out_contents_undefined = false;
+    }
     MGLRendererStateView areas;
     mglRendererFillStateView(renderer, &areas);
     MGL_ASSERT_GL_THREAD();
@@ -3265,6 +3269,9 @@ void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex)
                       (unsigned)tex->is_render_target,
                       (unsigned long)pixelFormat,
                       (unsigned long long)hit);
+            }
+            if (out_contents_undefined) {
+                *out_contents_undefined = true;
             }
         } else {
             mglTextureFillSafeInitialContents(renderer, texture, tex,

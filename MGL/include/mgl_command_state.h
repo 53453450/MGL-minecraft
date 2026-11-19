@@ -40,7 +40,6 @@ typedef struct MGLCommandState_t {
     GLenum renderPassDrawBuffers[MAX_COLOR_ATTACHMENTS];
     uint64_t traceReplayFlushId;
     uint32_t traceReplayBatchIndex;
-    GLuint dontCareFrameGeneration;
     MGLCommandBufferOwner *_Nullable currentCommandBufferOwner;
     void *_Nullable detachedCommandBufferSubmission;
     MGLMDIScratchOwner *_Nullable mdiArgsScratchOwner;

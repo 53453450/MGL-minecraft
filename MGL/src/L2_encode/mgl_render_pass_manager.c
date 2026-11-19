@@ -455,27 +455,6 @@ void mglPassManagerClearFboMatchCache(MGLRenderPassManager *manager)
     mglRenderClearFboMatchCache(manager->state->renderPassIdentityOwner);
 }
 
-void mglPassManagerSetDontCareFrameGeneration(MGLRenderPassManager *manager,
-                                              uint32_t generation)
-{
-    if (!manager) {
-        return;
-    }
-    manager->state->dontCareFrameGeneration = generation;
-}
-
-void mglPassManagerIncrementDontCareFrameGenerationWithWrap(
-    MGLRenderPassManager *manager)
-{
-    if (!manager) {
-        return;
-    }
-    if (++manager->state->dontCareFrameGeneration == 0u) {
-        /* skip 0 (texture stamp init) and the wrap sentinel. */
-        manager->state->dontCareFrameGeneration = 2u;
-    }
-}
-
 void mglPassManagerShutdown(MGLRenderPassManager *manager)
 {
     if (!manager) {

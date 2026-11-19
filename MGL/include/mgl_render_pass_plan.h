@@ -113,10 +113,10 @@ typedef struct MGLRenderPassLoadStoreInput {
     int attachment_present;    /* color: the draw slot resolved to an attached
                                 * attachment; depth/stencil: unused */
     int has_clear_pending;     /* the framebuffer's clear bit for it */
-    int texture_present;       /* depth/stencil: an attachment texture exists */
+    int texture_present;       /* an attachment texture exists */
     int dontcare_enabled;      /* MGL_ENABLE_DONTCARE_LOAD */
-    int first_use_this_frame;  /* color: the frame generation said first use */
-    int blend_enabled;         /* color: blending forbids DontCare */
+    int contents_undefined;    /* color: this pass can prove there is no content to load */
+    int blend_enabled;         /* keep the conservative load path for blending */
 } MGLRenderPassLoadStoreInput;
 
 typedef struct MGLRenderPassLoadStorePlan {

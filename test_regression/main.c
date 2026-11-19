@@ -35,6 +35,7 @@
 
 #include "draw_command.h"
 #include "glm_context.h"
+#include "MGLContext.h"         /* MGLswapBuffers */
 #include "mgl_platform_shell_result.h"
 #include "mgl_env_flag.h"
 #include "mgl_pso_build_ops.h"   /* mglRenderPassForceSafeFallbackForTest */
@@ -63,7 +64,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 237
+#define MAX_TESTS 238
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -31522,6 +31523,112 @@ static int test_subroutine_dispatch(unsigned char *pixels, const char *out_path)
     return changed ? 0 : 11;
 }
 
+/* Minecraft's atlas animation: a small, unblended draw in a new frame
+ * must keep the neighboring texels, including those in the touched tile. */
+static int test_dontcare_load_preserves_color(unsigned char *pixels,
+                                             const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    const char *old_flag = getenv("MGL_ENABLE_DONTCARE_LOAD");
+    char *saved_flag = old_flag ? strdup(old_flag) : NULL;
+    if ((old_flag && !saved_flag) || setenv("MGL_ENABLE_DONTCARE_LOAD", "1", 1)) {
+        free(saved_flag);
+        return 1;
+    }
+    mgl_env_flag_cache_invalidate();
+
+    const GLuint prog = link_program(
+        "#version 330 core\n"
+        "void main() {\n"
+        "    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n"
+        "    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
+        "}\n",
+        "#version 330 core\n"
+        "out vec4 color;\n"
+        "void main() { color = vec4(0.0, 1.0, 0.0, 1.0); }\n");
+    GLuint fbo = 0, tex = 0, vao = 0;
+    int fail = 0;
+    if (!prog) {
+        fail = 2;
+        goto cleanup;
+    }
+
+    enum { size = 64 };
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, size, size);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tex, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fail = 3;
+        goto cleanup;
+    }
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glUseProgram(prog);
+    glViewport(0, 0, size, size);
+    const GLfloat red[4] = {1, 0, 0, 1};
+    glClearBufferfv(GL_COLOR, 0, red);
+    glFinish();
+    MGLswapBuffers(NULL);
+
+    unsigned char blue[size * size * 4];
+    for (size_t i = 0; i < sizeof(blue); i += 4) {
+        blue[i] = blue[i + 1] = 0;
+        blue[i + 2] = blue[i + 3] = 255;
+    }
+    /* Also verify that an explicit invalidate cannot discard a subsequent
+     * upload. The upload defines every texel before the second small draw. */
+    for (int stage = 0; stage < 2; ++stage) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        if (stage == 1) {
+            const GLenum attachment = GL_COLOR_ATTACHMENT0;
+            glInvalidateFramebuffer(GL_FRAMEBUFFER, 1, &attachment);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, size, size,
+                            GL_RGBA, GL_UNSIGNED_BYTE, blue);
+        }
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(0, 0, 4, 4);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDisable(GL_SCISSOR_TEST);
+        unsigned char drawn[4] = {0}, neighbor[4] = {0};
+        const unsigned char green[4] = {0, 255, 0, 255};
+        const unsigned char preserved[4] = {stage == 0 ? 255 : 0, 0,
+                                           stage == 1 ? 255 : 0, 255};
+        glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, drawn);
+        glReadPixels(5, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, neighbor);
+        if (memcmp(drawn, green, sizeof(drawn)) != 0 ||
+            memcmp(neighbor, preserved, sizeof(neighbor)) != 0) {
+            fprintf(stderr, "dontcare_load: stage %d draw=%u,%u,%u,%u "
+                    "neighbor=%u,%u,%u,%u\n", stage, drawn[0], drawn[1],
+                    drawn[2], drawn[3], neighbor[0], neighbor[1],
+                    neighbor[2], neighbor[3]);
+            fail |= 4 << stage;
+        }
+    }
+    if (glGetError() != GL_NO_ERROR) fail |= 16;
+
+cleanup:
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    glDeleteProgram(prog);
+    if (saved_flag) {
+        setenv("MGL_ENABLE_DONTCARE_LOAD", saved_flag, 1);
+    } else {
+        unsetenv("MGL_ENABLE_DONTCARE_LOAD");
+    }
+    free(saved_flag);
+    mgl_env_flag_cache_invalidate();
+    return fail;
+}
+
 static const TestCase TESTS[] = {
     SELF_CHECK_TEST("gl_clip_planes",     test_gl_clip_planes),
     SELF_CHECK_TEST("legacy_clip_vertex", test_legacy_clip_vertex),
@@ -31532,6 +31639,8 @@ static const TestCase TESTS[] = {
     GOLDEN_TEST("multi_draw_elements",    test_multi_draw_elements),
     GOLDEN_TEST("draw_arrays_indirect",   test_draw_arrays_indirect),
     GOLDEN_TEST("fbo_switch",             test_fbo_switch),
+    SELF_CHECK_TEST("dontcare_load_preserves_color",
+                    test_dontcare_load_preserves_color),
     GOLDEN_TEST("transform_feedback",     test_transform_feedback),
     GOLDEN_TEST("conditional_render",     test_conditional_render),
     GOLDEN_TEST("ubo_range_switch",       test_ubo_range_switch),
