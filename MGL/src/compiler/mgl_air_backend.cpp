@@ -9565,16 +9565,20 @@ static bool emitCallTexelFetch(
             coord = cg.b->CreateShuffleVector(
                 coord, llvm::UndefValue::get(coord->getType()),
                 {0, 1});
-        } else if (texKind == MGLIR_TEX_3D || texKind == MGLIR_TEX_CUBE) {
+        } else if (texKind == MGLIR_TEX_3D) {
             if (coord->getType() != v3i32) {
                 cg.err = 1;
-                cg.errmsg = texKind == MGLIR_TEX_3D
-                                ? "codegen: texelFetch on a sampler3D "
-                                  "expects ivec3 coordinates"
-                                : "codegen: texelFetch on a samplerCube "
-                                  "expects ivec3 coordinates";
+                cg.errmsg = "codegen: texelFetch on a sampler3D "
+                            "expects ivec3 coordinates";
                 return true;
             }
+        } else if (texKind == MGLIR_TEX_CUBE ||
+                   texKind == MGLIR_TEX_CUBE_ARRAY) {
+            /* GLSL 4.60 §8.9.2 / ARB_sparse_texture2: no cube overload. */
+            cg.err = 1;
+            cg.errmsg = "codegen: texelFetch has no samplerCube or "
+                        "samplerCubeArray overload";
+            return true;
         } else {
             if (coord->getType()->isIntegerTy()) {
                 coord = toIvec2XY0(coord);
@@ -9637,20 +9641,6 @@ static bool emitCallTexelFetch(
                     cg, readIntrinsic("air.read_texture_3d.v4f32").c_str(),
                     retTy,
                     {t, fetchRdSmp, coord, fetchOff3, lodOrSample,
-                     cg.b->getInt32(3)});
-            } else if (texKind == MGLIR_TEX_CUBE) {
-                /* Cube face packed as array layer (same as imageLoad). */
-                llvm::Value *face = cg.b->CreateExtractElement(
-                    coord, cg.b->getInt32(2));
-                llvm::Value *xy = cg.b->CreateShuffleVector(
-                    coord, llvm::UndefValue::get(coord->getType()),
-                    {0, 1});
-                r = callAirFn(
-                    cg,
-                    readIntrinsic("air.read_texture_2d_array.v4f32")
-                        .c_str(),
-                    retTy,
-                    {t, fetchRdSmp, xy, face, fetchOff2, lodOrSample,
                      cg.b->getInt32(3)});
             } else {
                 llvm::Value *level =

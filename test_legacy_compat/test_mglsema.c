@@ -958,6 +958,485 @@ static void test_extension_macros_predefined(void)
     free(out);
 }
 
+/* GLSL 4.60 §8.9.2: texelFetch / texelFetchOffset exist for every
+ * non-shadow gsampler except cube and cube-array; rect and buffer take no
+ * lod, and the rect offset form is (P, offset). */
+static void test_texel_fetch_overloads(void)
+{
+    analyze_ex("#version 450 core\n"
+               "uniform sampler1D s1; uniform isampler2D s2;\n"
+               "uniform usampler3D s3; uniform sampler2DRect sr;\n"
+               "uniform isampler1DArray s1a; uniform usampler2DArray s2a;\n"
+               "uniform samplerBuffer sb; uniform isamplerBuffer isb;\n"
+               "uniform sampler2DMS sms; uniform usampler2DMSArray smsa;\n"
+               "uniform usampler2DRect usr;\n"
+               "out vec4 f;\n"
+               "void main() {\n"
+               "    vec4 a = texelFetch(s1, 1, 0);\n"
+               "    ivec4 b = texelFetch(s2, ivec2(1), 0);\n"
+               "    uvec4 c = texelFetch(s3, ivec3(1), 0);\n"
+               "    vec4 d = texelFetch(sr, ivec2(1));\n"
+               "    ivec4 e = texelFetch(s1a, ivec2(1), 0);\n"
+               "    uvec4 g = texelFetch(s2a, ivec3(1), 0);\n"
+               "    vec4 h = texelFetch(sb, 3);\n"
+               "    ivec4 i = texelFetch(isb, 3);\n"
+               "    vec4 j = texelFetch(sms, ivec2(1), 2);\n"
+               "    uvec4 k = texelFetch(smsa, ivec3(1), 2);\n"
+               "    vec4 l = texelFetchOffset(s1, 1, 0, 1);\n"
+               "    ivec4 m = texelFetchOffset(s2, ivec2(1), 0, ivec2(1));\n"
+               "    uvec4 n = texelFetchOffset(s3, ivec3(1), 0, ivec3(1));\n"
+               "    vec4 o = texelFetchOffset(sr, ivec2(1), ivec2(1));\n"
+               "    ivec4 p = texelFetchOffset(s1a, ivec2(1), 0, 1);\n"
+               "    uvec4 q = texelFetchOffset(s2a, ivec3(1), 0, ivec2(1));\n"
+               "    uvec4 r = texelFetchOffset(usr, ivec2(1), ivec2(-1));\n"
+               "    f = a + vec4(b) + vec4(c) + d + vec4(e) + vec4(g) + h +\n"
+               "        vec4(i) + j + vec4(k) + l + vec4(m) + vec4(n) + o +\n"
+               "        vec4(p) + vec4(q) + vec4(r);\n"
+               "}\n",
+               MGL_STAGE_FRAGMENT, &module, &errors, &error_count);
+    CHECK(error_count == 0, "texelFetch/texelFetchOffset legal overloads clean");
+    teardown();
+
+    static const struct {
+        const char *decl;
+        const char *call;
+        const char *label;
+    } bad[] = {
+        { "samplerCube", "texelFetch(t, ivec3(1, 1, 0), 0)",
+          "texelFetch(samplerCube) rejected" },
+        { "isamplerCube", "vec4(texelFetch(t, ivec3(0), 0))",
+          "texelFetch(isamplerCube) rejected" },
+        { "samplerCubeArray", "texelFetch(t, ivec4(0), 0)",
+          "texelFetch(samplerCubeArray) rejected" },
+        { "samplerCubeShadow", "vec4(texelFetch(t, ivec3(0), 0))",
+          "texelFetch(samplerCubeShadow) rejected" },
+        { "samplerCubeArrayShadow", "vec4(texelFetch(t, ivec4(0), 0))",
+          "texelFetch(samplerCubeArrayShadow) rejected" },
+        { "sampler1DShadow", "vec4(texelFetch(t, 0, 0))",
+          "texelFetch(sampler1DShadow) rejected" },
+        { "sampler2DShadow", "vec4(texelFetch(t, ivec2(0), 0))",
+          "texelFetch(sampler2DShadow) rejected" },
+        { "sampler2DRectShadow", "vec4(texelFetch(t, ivec2(0)))",
+          "texelFetch(sampler2DRectShadow) rejected" },
+        { "sampler1DArrayShadow", "vec4(texelFetch(t, ivec2(0), 0))",
+          "texelFetch(sampler1DArrayShadow) rejected" },
+        { "sampler2DArrayShadow", "vec4(texelFetch(t, ivec3(0), 0))",
+          "texelFetch(sampler2DArrayShadow) rejected" },
+        { "samplerBuffer", "texelFetch(t, 0, 0)",
+          "texelFetch(samplerBuffer) with lod rejected" },
+        { "sampler2DRect", "texelFetch(t, ivec2(0), 0)",
+          "texelFetch(sampler2DRect) with lod rejected" },
+        { "sampler2D", "texelFetch(t, ivec2(0))",
+          "texelFetch(sampler2D) without lod rejected" },
+        { "sampler2D", "texelFetch(t, ivec3(0), 0)",
+          "texelFetch(sampler2D, ivec3) rejected" },
+        { "sampler2D", "texelFetch(t, 0, 0)",
+          "texelFetch(sampler2D, int) rejected" },
+        { "sampler2D", "texelFetch(t, vec2(0.0), 0)",
+          "texelFetch(sampler2D, vec2) rejected" },
+        { "sampler2D", "texelFetch(t, uvec2(0u), 0)",
+          "texelFetch(sampler2D, uvec2) rejected" },
+        { "sampler1D", "texelFetch(t, ivec2(0), 0)",
+          "texelFetch(sampler1D, ivec2) rejected" },
+        { "sampler2DMS", "texelFetch(t, ivec3(0), 0)",
+          "texelFetch(sampler2DMS, ivec3) rejected" },
+        { "sampler2DRect", "texelFetch(t, 0)",
+          "texelFetch(sampler2DRect, int) rejected" },
+        { "samplerCube", "texelFetchOffset(t, ivec3(0), 0, ivec3(0))",
+          "texelFetchOffset(samplerCube) rejected" },
+        { "sampler2DMS", "texelFetchOffset(t, ivec2(0), 0, ivec2(0))",
+          "texelFetchOffset(sampler2DMS) rejected" },
+        { "samplerBuffer", "texelFetchOffset(t, 0, 0)",
+          "texelFetchOffset(samplerBuffer) rejected" },
+        { "sampler2DShadow",
+          "vec4(texelFetchOffset(t, ivec2(0), 0, ivec2(0)))",
+          "texelFetchOffset(sampler2DShadow) rejected" },
+        { "sampler2DRect", "texelFetchOffset(t, ivec2(0), 0, ivec2(0))",
+          "texelFetchOffset(sampler2DRect) with lod rejected" },
+        { "sampler2D", "texelFetchOffset(t, ivec2(0), 0, ivec3(0))",
+          "texelFetchOffset(sampler2D, ivec3 offset) rejected" },
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char src[512];
+        snprintf(src, sizeof src,
+                 "#version 400 core\n"
+                 "uniform %s t;\n"
+                 "out vec4 f;\n"
+                 "void main() { f = vec4(%s); }\n",
+                 bad[i].decl, bad[i].call);
+        analyze_ex(src, MGL_STAGE_FRAGMENT, &module, &errors, &error_count);
+        CHECK(error_count >= 1 &&
+                  (has_error("no matching overload of builtin 'texelFetch'") ||
+                   has_error("no matching overload of builtin "
+                             "'texelFetchOffset'")),
+              bad[i].label);
+        teardown();
+    }
+}
+
+/* Shared body for the sparse / clamp cases: `decl` declares the uniform
+ * `t`, `stmt` is the call under test; v / iv / uv / d / o4 are the texel
+ * and offset arguments. */
+static void analyze_sparse_case(const char *decl, const char *stmt, int stage)
+{
+    char src[1024];
+    snprintf(src, sizeof src,
+             "#version 450 core\n"
+             "%s t;\n"
+             "out vec4 f;\n"
+             "void main() {\n"
+             "    vec4 v = vec4(0.0); ivec4 iv = ivec4(0); uvec4 uv = uvec4(0u);\n"
+             "    float d = 0.0;\n"
+             "    ivec2 o4[4] = ivec2[4](ivec2(0), ivec2(1), ivec2(2), ivec2(3));\n"
+             "    %s\n"
+             "    f = v + vec4(iv) + vec4(uv) + vec4(d);\n"
+             "}\n",
+             decl, stmt);
+    analyze_ex(src, stage, &module, &errors, &error_count);
+}
+
+/* ARB_sparse_texture2 / ARB_sparse_texture_clamp: every overload listed in
+ * the extension specs resolves, and calls outside that set (targets without
+ * sparse storage, cube texel fetches, wrong coordinate / texel types or
+ * argument order, bias outside the fragment stage) are rejected. */
+static void test_sparse_clamp_overloads(void)
+{
+    static const struct {
+        const char *decl;
+        const char *stmt;
+    } good[] = {
+        { "uniform sampler2D", "bool r = sparseTexelsResidentARB(0);" },
+
+        { "uniform sampler2D", "int c = sparseTextureARB(t, vec2(0), v);" },
+        { "uniform sampler2D", "int c = sparseTextureARB(t, vec2(0), v, 1.0);" },
+        { "uniform isampler3D", "int c = sparseTextureARB(t, vec3(0), iv, 0.5);" },
+        { "uniform usamplerCube", "int c = sparseTextureARB(t, vec3(1), uv);" },
+        { "uniform sampler2DShadow", "int c = sparseTextureARB(t, vec3(0), d, 1.0);" },
+        { "uniform samplerCubeShadow", "int c = sparseTextureARB(t, vec4(1), v.x);" },
+        { "uniform isampler2DArray", "int c = sparseTextureARB(t, vec3(0), iv, 1.0);" },
+        { "uniform samplerCubeArray", "int c = sparseTextureARB(t, vec4(1), v);" },
+        { "uniform sampler2DArrayShadow", "int c = sparseTextureARB(t, vec4(0), d);" },
+        { "uniform usampler2DRect", "int c = sparseTextureARB(t, ivec2(3), uv);" },
+        { "uniform sampler2DRectShadow", "int c = sparseTextureARB(t, vec3(0), d);" },
+        { "uniform samplerCubeArrayShadow", "int c = sparseTextureARB(t, vec4(1), 0.5, d);" },
+
+        { "uniform sampler2D", "int c = sparseTextureLodARB(t, vec2(0), 1.0, v);" },
+        { "uniform isampler3D", "int c = sparseTextureLodARB(t, vec3(0), 0, iv);" },
+        { "uniform samplerCube", "int c = sparseTextureLodARB(t, vec3(1), 0.0, v);" },
+        { "uniform sampler2DShadow", "int c = sparseTextureLodARB(t, vec3(0), 0.0, d);" },
+        { "uniform usampler2DArray", "int c = sparseTextureLodARB(t, vec3(0), 2.0, uv);" },
+        { "uniform samplerCubeArray", "int c = sparseTextureLodARB(t, vec4(1), 1.0, v);" },
+
+        { "uniform sampler2D", "int c = sparseTextureOffsetARB(t, vec2(0), ivec2(1), v, 1.0);" },
+        { "uniform isampler3D", "int c = sparseTextureOffsetARB(t, vec3(0), ivec3(1), iv);" },
+        { "uniform sampler2DRect", "int c = sparseTextureOffsetARB(t, vec2(0), ivec2(1), v);" },
+        { "uniform sampler2DRectShadow", "int c = sparseTextureOffsetARB(t, vec3(0), ivec2(1), d);" },
+        { "uniform sampler2DShadow", "int c = sparseTextureOffsetARB(t, vec3(0), ivec2(0), d, 0.5);" },
+        { "uniform usampler2DArray", "int c = sparseTextureOffsetARB(t, vec3(0), ivec2(0), uv, 0.5);" },
+        { "uniform sampler2DArrayShadow", "int c = sparseTextureOffsetARB(t, vec4(0), ivec2(0), d);" },
+
+        { "uniform sampler2D", "int c = sparseTexelFetchARB(t, ivec2(0), 0, v);" },
+        { "uniform usampler3D", "int c = sparseTexelFetchARB(t, ivec3(0), 1, uv);" },
+        { "uniform isampler2DRect", "int c = sparseTexelFetchARB(t, ivec2(0), iv);" },
+        { "uniform sampler2DArray", "int c = sparseTexelFetchARB(t, ivec3(0), 0, v);" },
+        { "uniform isampler2DMS", "int c = sparseTexelFetchARB(t, ivec2(0), 3, iv);" },
+        { "uniform sampler2DMSArray", "int c = sparseTexelFetchARB(t, ivec3(0), 1, v);" },
+
+        { "uniform sampler2D", "int c = sparseTexelFetchOffsetARB(t, ivec2(0), 0, ivec2(1), v);" },
+        { "uniform isampler3D", "int c = sparseTexelFetchOffsetARB(t, ivec3(0), 0, ivec3(1), iv);" },
+        { "uniform usampler2DRect", "int c = sparseTexelFetchOffsetARB(t, ivec2(0), ivec2(1), uv);" },
+        { "uniform sampler2DArray", "int c = sparseTexelFetchOffsetARB(t, ivec3(0), 0, ivec2(1), v);" },
+
+        { "uniform sampler2D", "int c = sparseTextureLodOffsetARB(t, vec2(0), 0.0, ivec2(1), v);" },
+        { "uniform usampler3D", "int c = sparseTextureLodOffsetARB(t, vec3(0), 1.0, ivec3(0), uv);" },
+        { "uniform sampler2DShadow", "int c = sparseTextureLodOffsetARB(t, vec3(0), 0.0, ivec2(0), d);" },
+        { "uniform isampler2DArray", "int c = sparseTextureLodOffsetARB(t, vec3(0), 0.0, ivec2(0), iv);" },
+
+        { "uniform sampler2D", "int c = sparseTextureGradARB(t, vec2(0), vec2(0), vec2(0), v);" },
+        { "uniform isampler3D", "int c = sparseTextureGradARB(t, vec3(0), vec3(0), vec3(0), iv);" },
+        { "uniform samplerCube", "int c = sparseTextureGradARB(t, vec3(1), vec3(0), vec3(0), v);" },
+        { "uniform sampler2DRect", "int c = sparseTextureGradARB(t, ivec2(1), vec2(0), vec2(0), v);" },
+        { "uniform sampler2DRectShadow", "int c = sparseTextureGradARB(t, vec3(0), vec2(0), vec2(0), d);" },
+        { "uniform sampler2DShadow", "int c = sparseTextureGradARB(t, vec3(0), vec2(0), vec2(0), d);" },
+        { "uniform samplerCubeShadow", "int c = sparseTextureGradARB(t, vec4(1), vec3(0), vec3(0), d);" },
+        { "uniform usampler2DArray", "int c = sparseTextureGradARB(t, vec3(0), vec2(0), vec2(0), uv);" },
+        { "uniform sampler2DArrayShadow", "int c = sparseTextureGradARB(t, vec4(0), vec2(0), vec2(0), d);" },
+        { "uniform samplerCubeArray", "int c = sparseTextureGradARB(t, vec4(1), vec3(0), vec3(0), v);" },
+
+        { "uniform sampler2D", "int c = sparseTextureGradOffsetARB(t, vec2(0), vec2(0), vec2(0), ivec2(0), v);" },
+        { "uniform usampler3D", "int c = sparseTextureGradOffsetARB(t, vec3(0), vec3(0), vec3(0), ivec3(0), uv);" },
+        { "uniform sampler2DRect", "int c = sparseTextureGradOffsetARB(t, vec2(0), vec2(0), vec2(0), ivec2(0), v);" },
+        { "uniform sampler2DRectShadow", "int c = sparseTextureGradOffsetARB(t, vec3(0), vec2(0), vec2(0), ivec2(0), d);" },
+        { "uniform sampler2DShadow", "int c = sparseTextureGradOffsetARB(t, vec3(0), vec2(0), vec2(0), ivec2(0), d);" },
+        { "uniform isampler2DArray", "int c = sparseTextureGradOffsetARB(t, vec3(0), vec2(0), vec2(0), ivec2(0), iv);" },
+        { "uniform sampler2DArrayShadow", "int c = sparseTextureGradOffsetARB(t, vec4(0), vec2(0), vec2(0), ivec2(0), d);" },
+
+        { "uniform sampler2D", "int c = sparseTextureGatherARB(t, vec2(0), v);" },
+        { "uniform sampler2D", "int c = sparseTextureGatherARB(t, vec2(0), v, 1);" },
+        { "uniform isampler2DArray", "int c = sparseTextureGatherARB(t, vec3(0), iv, 2);" },
+        { "uniform usamplerCube", "int c = sparseTextureGatherARB(t, vec3(1), uv);" },
+        { "uniform samplerCubeArray", "int c = sparseTextureGatherARB(t, vec4(1), v, 3);" },
+        { "uniform isampler2DRect", "int c = sparseTextureGatherARB(t, ivec2(0), iv, 0);" },
+        { "uniform sampler2DShadow", "int c = sparseTextureGatherARB(t, vec2(0), 0.5, v);" },
+        { "uniform sampler2DArrayShadow", "int c = sparseTextureGatherARB(t, vec3(0), 0.5, v);" },
+        { "uniform samplerCubeShadow", "int c = sparseTextureGatherARB(t, vec3(1), 0.5, v);" },
+        { "uniform samplerCubeArrayShadow", "int c = sparseTextureGatherARB(t, vec4(1), 0.5, v);" },
+        { "uniform sampler2DRectShadow", "int c = sparseTextureGatherARB(t, vec2(0), 0.5, v);" },
+
+        { "uniform sampler2D", "int c = sparseTextureGatherOffsetARB(t, vec2(0), ivec2(0), v);" },
+        { "uniform isampler2DArray", "int c = sparseTextureGatherOffsetARB(t, vec3(0), ivec2(0), iv, 1);" },
+        { "uniform usampler2DRect", "int c = sparseTextureGatherOffsetARB(t, vec2(0), ivec2(0), uv, 2);" },
+        { "uniform sampler2DShadow", "int c = sparseTextureGatherOffsetARB(t, vec2(0), 0.5, ivec2(0), v);" },
+        { "uniform sampler2DArrayShadow", "int c = sparseTextureGatherOffsetARB(t, vec3(0), 0.5, ivec2(0), v);" },
+        { "uniform sampler2DRectShadow", "int c = sparseTextureGatherOffsetARB(t, vec2(0), 0.5, ivec2(0), v);" },
+
+        { "uniform sampler2D", "int c = sparseTextureGatherOffsetsARB(t, vec2(0), o4, v, 0);" },
+        { "uniform usampler2DArray", "int c = sparseTextureGatherOffsetsARB(t, vec3(0), o4, uv);" },
+        { "uniform isampler2DRect", "int c = sparseTextureGatherOffsetsARB(t, vec2(0), o4, iv);" },
+        { "uniform sampler2DShadow", "int c = sparseTextureGatherOffsetsARB(t, vec2(0), 0.5, o4, v);" },
+        { "uniform sampler2DArrayShadow", "int c = sparseTextureGatherOffsetsARB(t, vec3(0), 0.5, o4, v);" },
+        { "uniform sampler2DRectShadow", "int c = sparseTextureGatherOffsetsARB(t, vec2(0), 0.5, o4, v);" },
+
+        { "layout(rgba32f) readonly uniform image2D", "int c = sparseImageLoadARB(t, ivec2(0), v);" },
+        { "layout(rgba32i) readonly uniform iimage3D", "int c = sparseImageLoadARB(t, ivec3(0), iv);" },
+        { "layout(rgba32ui) readonly uniform uimage2DRect", "int c = sparseImageLoadARB(t, ivec2(0), uv);" },
+        { "layout(rgba32f) readonly uniform imageCube", "int c = sparseImageLoadARB(t, ivec3(0), v);" },
+        { "layout(rgba32i) readonly uniform iimage2DArray", "int c = sparseImageLoadARB(t, ivec3(0), iv);" },
+        { "layout(rgba32f) readonly uniform imageCubeArray", "int c = sparseImageLoadARB(t, ivec3(0), v);" },
+        { "layout(rgba32f) readonly uniform image2DMS", "int c = sparseImageLoadARB(t, ivec2(0), 1, v);" },
+        { "layout(rgba32ui) readonly uniform uimage2DMSArray", "int c = sparseImageLoadARB(t, ivec3(0), 0, uv);" },
+
+        { "uniform sampler2D", "int c = sparseTextureClampARB(t, vec2(0), 1.0, v);" },
+        { "uniform sampler2D", "int c = sparseTextureClampARB(t, vec2(0), 1.0, v, 0.5);" },
+        { "uniform isampler3D", "int c = sparseTextureClampARB(t, vec3(0), 1, iv);" },
+        { "uniform usamplerCube", "int c = sparseTextureClampARB(t, vec3(1), 1.0, uv, 0.5);" },
+        { "uniform sampler2DShadow", "int c = sparseTextureClampARB(t, vec3(0), 1.0, d, 0.5);" },
+        { "uniform samplerCubeShadow", "int c = sparseTextureClampARB(t, vec4(1), 1.0, d);" },
+        { "uniform isampler2DArray", "int c = sparseTextureClampARB(t, vec3(0), 1.0, iv);" },
+        { "uniform samplerCubeArray", "int c = sparseTextureClampARB(t, vec4(1), 1.0, v, 0.5);" },
+        { "uniform sampler2DArrayShadow", "int c = sparseTextureClampARB(t, vec4(0), 1.0, d);" },
+        { "uniform samplerCubeArrayShadow", "int c = sparseTextureClampARB(t, vec4(1), 0.5, 1.0, d);" },
+
+        { "uniform sampler1D", "vec4 r = textureClampARB(t, 0.5, 1.0);" },
+        { "uniform isampler2D", "ivec4 r = textureClampARB(t, vec2(0), 1.0, 0.5);" },
+        { "uniform usampler3D", "uvec4 r = textureClampARB(t, vec3(0), 1.0);" },
+        { "uniform samplerCube", "vec4 r = textureClampARB(t, vec3(1), 1.0);" },
+        { "uniform sampler1DShadow", "float r = textureClampARB(t, vec3(0), 1.0, 0.5);" },
+        { "uniform sampler2DShadow", "float r = textureClampARB(t, vec3(0), 1.0);" },
+        { "uniform samplerCubeShadow", "float r = textureClampARB(t, vec4(1), 1.0);" },
+        { "uniform isampler1DArray", "ivec4 r = textureClampARB(t, vec2(0), 1.0);" },
+        { "uniform sampler2DArray", "vec4 r = textureClampARB(t, vec3(0), 1.0, 0.5);" },
+        { "uniform usamplerCubeArray", "uvec4 r = textureClampARB(t, vec4(1), 1.0);" },
+        { "uniform sampler1DArrayShadow", "float r = textureClampARB(t, vec3(0), 1.0);" },
+        { "uniform sampler2DArrayShadow", "float r = textureClampARB(t, vec4(0), 1.0);" },
+        { "uniform samplerCubeArrayShadow", "float r = textureClampARB(t, vec4(1), 0.5, 1.0);" },
+
+        { "uniform sampler2D", "int c = sparseTextureOffsetClampARB(t, vec2(0), ivec2(0), 1.0, v, 0.5);" },
+        { "uniform usampler3D", "int c = sparseTextureOffsetClampARB(t, vec3(0), ivec3(0), 1.0, uv);" },
+        { "uniform sampler2DShadow", "int c = sparseTextureOffsetClampARB(t, vec3(0), ivec2(0), 1.0, d);" },
+        { "uniform isampler2DArray", "int c = sparseTextureOffsetClampARB(t, vec3(0), ivec2(0), 1.0, iv, 0.5);" },
+        { "uniform sampler2DArrayShadow", "int c = sparseTextureOffsetClampARB(t, vec4(0), ivec2(0), 1.0, d);" },
+
+        { "uniform sampler1D", "vec4 r = textureOffsetClampARB(t, 0.5, 1, 1.0);" },
+        { "uniform isampler2D", "ivec4 r = textureOffsetClampARB(t, vec2(0), ivec2(1), 1.0, 0.5);" },
+        { "uniform sampler3D", "vec4 r = textureOffsetClampARB(t, vec3(0), ivec3(1), 1.0);" },
+        { "uniform sampler1DShadow", "float r = textureOffsetClampARB(t, vec3(0), 1, 1.0);" },
+        { "uniform sampler2DShadow", "float r = textureOffsetClampARB(t, vec3(0), ivec2(1), 1.0, 0.5);" },
+        { "uniform usampler1DArray", "uvec4 r = textureOffsetClampARB(t, vec2(0), 1, 1.0);" },
+        { "uniform sampler2DArray", "vec4 r = textureOffsetClampARB(t, vec3(0), ivec2(1), 1.0);" },
+        { "uniform sampler1DArrayShadow", "float r = textureOffsetClampARB(t, vec3(0), 1, 1.0);" },
+        { "uniform sampler2DArrayShadow", "float r = textureOffsetClampARB(t, vec4(0), ivec2(1), 1.0);" },
+
+        { "uniform sampler2D", "int c = sparseTextureGradClampARB(t, vec2(0), vec2(0), vec2(0), 1.0, v);" },
+        { "uniform isampler3D", "int c = sparseTextureGradClampARB(t, vec3(0), vec3(0), vec3(0), 1.0, iv);" },
+        { "uniform samplerCube", "int c = sparseTextureGradClampARB(t, vec3(1), vec3(0), vec3(0), 1.0, v);" },
+        { "uniform sampler2DShadow", "int c = sparseTextureGradClampARB(t, vec3(0), vec2(0), vec2(0), 1.0, d);" },
+        { "uniform samplerCubeShadow", "int c = sparseTextureGradClampARB(t, vec4(1), vec3(0), vec3(0), 1.0, d);" },
+        { "uniform usampler2DArray", "int c = sparseTextureGradClampARB(t, vec3(0), vec2(0), vec2(0), 1.0, uv);" },
+        { "uniform sampler2DArrayShadow", "int c = sparseTextureGradClampARB(t, vec4(0), vec2(0), vec2(0), 1.0, d);" },
+        { "uniform samplerCubeArray", "int c = sparseTextureGradClampARB(t, vec4(1), vec3(0), vec3(0), 1.0, v);" },
+
+        { "uniform sampler1D", "vec4 r = textureGradClampARB(t, 0.5, 0.0, 0.0, 1.0);" },
+        { "uniform sampler2D", "vec4 r = textureGradClampARB(t, vec2(0), vec2(0), vec2(0), 1.0);" },
+        { "uniform isampler3D", "ivec4 r = textureGradClampARB(t, vec3(0), vec3(0), vec3(0), 1.0);" },
+        { "uniform samplerCube", "vec4 r = textureGradClampARB(t, vec3(1), vec3(0), vec3(0), 1.0);" },
+        { "uniform sampler1DShadow", "float r = textureGradClampARB(t, vec3(0), 0.0, 0.0, 1.0);" },
+        { "uniform sampler2DShadow", "float r = textureGradClampARB(t, vec3(0), vec2(0), vec2(0), 1.0);" },
+        { "uniform samplerCubeShadow", "float r = textureGradClampARB(t, vec4(1), vec3(0), vec3(0), 1.0);" },
+        { "uniform sampler1DArray", "vec4 r = textureGradClampARB(t, vec2(0), float(0), float(0), 0);" },
+        { "uniform usampler2DArray", "uvec4 r = textureGradClampARB(t, vec3(0), vec2(0), vec2(0), 1.0);" },
+        { "uniform sampler1DArrayShadow", "float r = textureGradClampARB(t, vec3(0), 0.0, 0.0, 1.0);" },
+        { "uniform sampler2DArrayShadow", "float r = textureGradClampARB(t, vec4(0), vec2(0), vec2(0), 1.0);" },
+        { "uniform samplerCubeArray", "vec4 r = textureGradClampARB(t, vec4(1), vec3(0), vec3(0), 1.0);" },
+
+        { "uniform sampler2D", "int c = sparseTextureGradOffsetClampARB(t, vec2(0), vec2(0), vec2(0), ivec2(0), 1.0, v);" },
+        { "uniform usampler3D", "int c = sparseTextureGradOffsetClampARB(t, vec3(0), vec3(0), vec3(0), ivec3(0), 1.0, uv);" },
+        { "uniform sampler2DShadow", "int c = sparseTextureGradOffsetClampARB(t, vec3(0), vec2(0), vec2(0), ivec2(0), 1.0, d);" },
+        { "uniform isampler2DArray", "int c = sparseTextureGradOffsetClampARB(t, vec3(0), vec2(0), vec2(0), ivec2(0), 1.0, iv);" },
+        { "uniform sampler2DArrayShadow", "int c = sparseTextureGradOffsetClampARB(t, vec4(0), vec2(0), vec2(0), ivec2(0), 1.0, d);" },
+
+        { "uniform sampler1D", "vec4 r = textureGradOffsetClampARB(t, 0.5, 0.0, 0.0, 1, 1.0);" },
+        { "uniform isampler2D", "ivec4 r = textureGradOffsetClampARB(t, vec2(0), vec2(0), vec2(0), ivec2(0), 1.0);" },
+        { "uniform sampler3D", "vec4 r = textureGradOffsetClampARB(t, vec3(0), vec3(0), vec3(0), ivec3(0), 1.0);" },
+        { "uniform sampler1DShadow", "float r = textureGradOffsetClampARB(t, vec3(0), 0.0, 0.0, 1, 1.0);" },
+        { "uniform sampler2DShadow", "float r = textureGradOffsetClampARB(t, vec3(0), vec2(0), vec2(0), ivec2(0), 1.0);" },
+        { "uniform usampler1DArray", "uvec4 r = textureGradOffsetClampARB(t, vec2(0), 0.0, 0.0, 1, 1.0);" },
+        { "uniform sampler2DArray", "vec4 r = textureGradOffsetClampARB(t, vec3(0), vec2(0), vec2(0), ivec2(0), 1.0);" },
+        { "uniform sampler1DArrayShadow", "float r = textureGradOffsetClampARB(t, vec3(0), 0.0, 0.0, 1, 1.0);" },
+        { "uniform sampler2DArrayShadow", "float r = textureGradOffsetClampARB(t, vec4(0), vec2(0), vec2(0), ivec2(0), 1.0);" },
+    };
+    for (size_t i = 0; i < sizeof(good) / sizeof(good[0]); i++) {
+        char label[256];
+        analyze_sparse_case(good[i].decl, good[i].stmt, MGL_STAGE_FRAGMENT);
+        snprintf(label, sizeof label, "accepted: %s / %s", good[i].decl,
+                 good[i].stmt);
+        CHECK(error_count == 0, label);
+        if (error_count != 0) {
+            printf("    first error: %s\n", errors[0].message);
+        }
+        teardown();
+    }
+
+    /* Bias-free overloads are not stage-restricted; the CTS lookup tests
+     * call them from compute shaders. */
+    static const struct {
+        const char *decl;
+        const char *stmt;
+    } good_vs[] = {
+        { "uniform sampler2D", "int c = sparseTextureARB(t, vec2(0), v);" },
+        { "uniform sampler2D", "int c = sparseTextureClampARB(t, vec2(0), 1.0, v);" },
+        { "uniform samplerCubeArrayShadow", "int c = sparseTextureARB(t, vec4(1), 0.5, d);" },
+        { "uniform samplerCube", "vec4 r = textureClampARB(t, vec3(1), 1.0);" },
+    };
+    for (size_t i = 0; i < sizeof(good_vs) / sizeof(good_vs[0]); i++) {
+        char label[256];
+        analyze_sparse_case(good_vs[i].decl, good_vs[i].stmt,
+                            MGL_STAGE_VERTEX);
+        snprintf(label, sizeof label, "accepted in VS: %s", good_vs[i].stmt);
+        CHECK(error_count == 0, label);
+        teardown();
+    }
+
+    static const struct {
+        const char *decl;
+        const char *stmt;
+        const char *fn;
+        int stage;
+    } bad[] = {
+        /* sparseTexelFetchARB: 2D / 3D / rect / 2D-array / MS only. */
+        { "uniform samplerCube", "int c = sparseTexelFetchARB(t, ivec3(0), 0, v);", "sparseTexelFetchARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerCubeArray", "int c = sparseTexelFetchARB(t, ivec4(0), 0, v);", "sparseTexelFetchARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler1D", "int c = sparseTexelFetchARB(t, 0, 0, v);", "sparseTexelFetchARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerBuffer", "int c = sparseTexelFetchARB(t, 0, v);", "sparseTexelFetchARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DShadow", "int c = sparseTexelFetchARB(t, ivec2(0), 0, d);", "sparseTexelFetchARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "int c = sparseTexelFetchARB(t, vec2(0), 0, v);", "sparseTexelFetchARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "int c = sparseTexelFetchARB(t, ivec2(0), v);", "sparseTexelFetchARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DRect", "int c = sparseTexelFetchARB(t, ivec2(0), 0, v);", "sparseTexelFetchARB", MGL_STAGE_FRAGMENT },
+        { "uniform isampler2D", "int c = sparseTexelFetchARB(t, ivec2(0), 0, v);", "sparseTexelFetchARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "int c = sparseTexelFetchARB(t, ivec2(0), 0, d);", "sparseTexelFetchARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "int c = sparseTexelFetchARB(t, ivec2(0), v, 0);", "sparseTexelFetchARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DMS", "int c = sparseTexelFetchOffsetARB(t, ivec2(0), 0, ivec2(0), v);", "sparseTexelFetchOffsetARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerCube", "int c = sparseTexelFetchOffsetARB(t, ivec3(0), 0, ivec3(0), v);", "sparseTexelFetchOffsetARB", MGL_STAGE_FRAGMENT },
+
+        /* Gather: 2D / 2D-array / cube / cube-array / rect only. */
+        { "uniform sampler1D", "int c = sparseTextureGatherARB(t, 0.5, v);", "sparseTextureGatherARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler3D", "int c = sparseTextureGatherARB(t, vec3(0), v);", "sparseTextureGatherARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DShadow", "int c = sparseTextureGatherARB(t, vec2(0), 0.5, d);", "sparseTextureGatherARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "int c = sparseTextureGatherARB(t, vec2(0), v, 0.5);", "sparseTextureGatherARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DShadow", "int c = sparseTextureGatherARB(t, vec2(0), v, 0);", "sparseTextureGatherARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerCube", "int c = sparseTextureGatherOffsetARB(t, vec3(0), ivec2(0), v);", "sparseTextureGatherOffsetARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerCubeArray", "int c = sparseTextureGatherOffsetsARB(t, vec4(0), o4, v);", "sparseTextureGatherOffsetsARB", MGL_STAGE_FRAGMENT },
+
+        /* No sparse variants for 1D, 1D-array, buffer or multisample
+         * lookups; per-sampler coordinate sizes, bias and argument order. */
+        { "uniform sampler1D", "int c = sparseTextureARB(t, 0.5, v);", "sparseTextureARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler1DArray", "int c = sparseTextureARB(t, vec2(0), v);", "sparseTextureARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler1DShadow", "int c = sparseTextureARB(t, vec3(0), d);", "sparseTextureARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DMS", "int c = sparseTextureARB(t, vec2(0), v);", "sparseTextureARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "int c = sparseTextureARB(t, vec3(0), v);", "sparseTextureARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DArrayShadow", "int c = sparseTextureARB(t, vec4(0), d, 1.0);", "sparseTextureARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DRect", "int c = sparseTextureARB(t, vec2(0), v, 1.0);", "sparseTextureARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerCubeArrayShadow", "int c = sparseTextureARB(t, vec4(0), 0.5, v);", "sparseTextureARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "int c = sparseTextureARB(t, vec2(0), v, 1.0);", "sparseTextureARB", MGL_STAGE_VERTEX },
+        { "uniform sampler2D", "int c = sparseTextureARB(t, vec2(0), uv);", "sparseTextureARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DRect", "int c = sparseTextureLodARB(t, vec2(0), 0.0, v);", "sparseTextureLodARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DArrayShadow", "int c = sparseTextureLodARB(t, vec4(0), 0.0, d);", "sparseTextureLodARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerCubeShadow", "int c = sparseTextureLodARB(t, vec4(0), 0.0, d);", "sparseTextureLodARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "int c = sparseTextureLodARB(t, vec2(0), v, 0.0);", "sparseTextureLodARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerCube", "int c = sparseTextureOffsetARB(t, vec3(0), ivec3(0), v);", "sparseTextureOffsetARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "int c = sparseTextureOffsetARB(t, vec2(0), ivec3(0), v);", "sparseTextureOffsetARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DRectShadow", "int c = sparseTextureOffsetARB(t, vec3(0), ivec2(0), d, 1.0);", "sparseTextureOffsetARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "int c = sparseTextureOffsetARB(t, vec2(0), ivec2(0), v, 1.0);", "sparseTextureOffsetARB", MGL_STAGE_VERTEX },
+        { "uniform samplerCube", "int c = sparseTextureLodOffsetARB(t, vec3(0), 0.0, ivec3(0), v);", "sparseTextureLodOffsetARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DArrayShadow", "int c = sparseTextureLodOffsetARB(t, vec4(0), 0.0, ivec2(0), d);", "sparseTextureLodOffsetARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DMS", "int c = sparseTextureGradARB(t, vec2(0), vec2(0), vec2(0), v);", "sparseTextureGradARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerCubeArrayShadow", "int c = sparseTextureGradARB(t, vec4(0), vec3(0), vec3(0), d);", "sparseTextureGradARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "int c = sparseTextureGradARB(t, vec2(0), vec3(0), vec3(0), v);", "sparseTextureGradARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerCube", "int c = sparseTextureGradOffsetARB(t, vec3(0), vec3(0), vec3(0), ivec3(0), v);", "sparseTextureGradOffsetARB", MGL_STAGE_FRAGMENT },
+
+        /* sparseImageLoadARB: no 1D, buffer or 1D-array images. */
+        { "layout(rgba32f) readonly uniform image1D", "int c = sparseImageLoadARB(t, 0, v);", "sparseImageLoadARB", MGL_STAGE_FRAGMENT },
+        { "layout(rgba32f) readonly uniform imageBuffer", "int c = sparseImageLoadARB(t, 0, v);", "sparseImageLoadARB", MGL_STAGE_FRAGMENT },
+        { "layout(rgba32f) readonly uniform image1DArray", "int c = sparseImageLoadARB(t, ivec2(0), v);", "sparseImageLoadARB", MGL_STAGE_FRAGMENT },
+        { "layout(rgba32f) readonly uniform image2D", "int c = sparseImageLoadARB(t, ivec3(0), v);", "sparseImageLoadARB", MGL_STAGE_FRAGMENT },
+        { "layout(rgba32i) readonly uniform iimage2D", "int c = sparseImageLoadARB(t, ivec2(0), v);", "sparseImageLoadARB", MGL_STAGE_FRAGMENT },
+        { "layout(rgba32f) readonly uniform image2DMS", "int c = sparseImageLoadARB(t, ivec2(0), v);", "sparseImageLoadARB", MGL_STAGE_FRAGMENT },
+
+        { "uniform sampler2D", "bool r = sparseTexelsResidentARB(vec2(0));", "sparseTexelsResidentARB", MGL_STAGE_FRAGMENT },
+
+        /* Clamp: no rect, multisample or buffer overloads. */
+        { "uniform sampler2DRect", "int c = sparseTextureClampARB(t, vec2(0), 1.0, v);", "sparseTextureClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler1D", "int c = sparseTextureClampARB(t, 0.5, 1.0, v);", "sparseTextureClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "int c = sparseTextureClampARB(t, vec2(0), v, 1.0);", "sparseTextureClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerCubeArrayShadow", "int c = sparseTextureClampARB(t, vec4(0), 1.0, d);", "sparseTextureClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "int c = sparseTextureClampARB(t, vec2(0), 1.0, v, 0.5);", "sparseTextureClampARB", MGL_STAGE_VERTEX },
+        { "uniform sampler2DRect", "vec4 r = textureClampARB(t, vec2(0), 1.0);", "textureClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DMS", "vec4 r = textureClampARB(t, vec2(0), 1.0);", "textureClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerBuffer", "vec4 r = textureClampARB(t, 0.5, 1.0);", "textureClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DArrayShadow", "float r = textureClampARB(t, vec4(0), 1.0, 0.5);", "textureClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "vec4 r = textureClampARB(t, vec3(0), 1.0);", "textureClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "vec4 r = textureClampARB(t, vec2(0), 1.0, 0.5);", "textureClampARB", MGL_STAGE_VERTEX },
+        { "uniform samplerCube", "vec4 r = textureOffsetClampARB(t, vec3(0), ivec3(0), 1.0);", "textureOffsetClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DRect", "vec4 r = textureOffsetClampARB(t, vec2(0), ivec2(0), 1.0);", "textureOffsetClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerCube", "int c = sparseTextureOffsetClampARB(t, vec3(0), ivec3(0), 1.0, v);", "sparseTextureOffsetClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler1D", "int c = sparseTextureOffsetClampARB(t, 0.5, 0, 1.0, v);", "sparseTextureOffsetClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DRect", "vec4 r = textureGradClampARB(t, vec2(0), vec2(0), vec2(0), 1.0);", "textureGradClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerCubeArrayShadow", "float r = textureGradClampARB(t, vec4(0), vec3(0), vec3(0), 1.0);", "textureGradClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2DRect", "int c = sparseTextureGradClampARB(t, vec2(0), vec2(0), vec2(0), 1.0, v);", "sparseTextureGradClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerCubeArrayShadow", "int c = sparseTextureGradClampARB(t, vec4(0), vec3(0), vec3(0), 1.0, d);", "sparseTextureGradClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerCube", "vec4 r = textureGradOffsetClampARB(t, vec3(0), vec3(0), vec3(0), ivec3(0), 1.0);", "textureGradOffsetClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform samplerCube", "int c = sparseTextureGradOffsetClampARB(t, vec3(0), vec3(0), vec3(0), ivec3(0), 1.0, v);", "sparseTextureGradOffsetClampARB", MGL_STAGE_FRAGMENT },
+        { "uniform sampler2D", "int c = sparseTextureGradOffsetClampARB(t, vec2(0), vec2(0), vec2(0), ivec2(0), 1.0, uv);", "sparseTextureGradOffsetClampARB", MGL_STAGE_FRAGMENT },
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char want[128];
+        char label[256];
+        analyze_sparse_case(bad[i].decl, bad[i].stmt, bad[i].stage);
+        snprintf(want, sizeof want, "no matching overload of builtin '%s'",
+                 bad[i].fn);
+        snprintf(label, sizeof label, "rejected%s: %s / %s",
+                 bad[i].stage == MGL_STAGE_VERTEX ? " in VS" : "",
+                 bad[i].decl, bad[i].stmt);
+        CHECK(error_count >= 1 && has_error(want), label);
+        teardown();
+    }
+
+    /* Names outside the two extensions are not builtins. */
+    static const char *const unknown[] = {
+        "int c = sparseTextureProjARB(t, vec3(0), v);",
+        "vec4 r = textureProjClampARB(t, vec3(0), 1.0);",
+        "vec4 r = textureLodClampARB(t, vec2(0), 0.0, 1.0);",
+    };
+    for (size_t i = 0; i < sizeof(unknown) / sizeof(unknown[0]); i++) {
+        char label[256];
+        analyze_sparse_case("uniform sampler2D", unknown[i],
+                            MGL_STAGE_FRAGMENT);
+        snprintf(label, sizeof label, "undeclared: %s", unknown[i]);
+        CHECK(has_error("call to undeclared function"), label);
+        teardown();
+    }
+}
+
 int main(void)
 {
     printf("MGLGLSL sema skeleton tests\n");
@@ -974,6 +1453,8 @@ int main(void)
     test_integer_vector_types();
     test_matrix_arith();
     test_builtins();
+    test_texel_fetch_overloads();
+    test_sparse_clamp_overloads();
     test_image2d_array_store();
     test_constructors();
     test_invalid_vs_inputs();
