@@ -958,6 +958,122 @@ static void test_extension_macros_predefined(void)
     free(out);
 }
 
+/* GLSL 4.60 §8.9.2: texelFetch / texelFetchOffset exist for every
+ * non-shadow gsampler except cube and cube-array; rect and buffer take no
+ * lod, and the rect offset form is (P, offset). */
+static void test_texel_fetch_overloads(void)
+{
+    analyze_ex("#version 450 core\n"
+               "uniform sampler1D s1; uniform isampler2D s2;\n"
+               "uniform usampler3D s3; uniform sampler2DRect sr;\n"
+               "uniform isampler1DArray s1a; uniform usampler2DArray s2a;\n"
+               "uniform samplerBuffer sb; uniform isamplerBuffer isb;\n"
+               "uniform sampler2DMS sms; uniform usampler2DMSArray smsa;\n"
+               "uniform usampler2DRect usr;\n"
+               "out vec4 f;\n"
+               "void main() {\n"
+               "    vec4 a = texelFetch(s1, 1, 0);\n"
+               "    ivec4 b = texelFetch(s2, ivec2(1), 0);\n"
+               "    uvec4 c = texelFetch(s3, ivec3(1), 0);\n"
+               "    vec4 d = texelFetch(sr, ivec2(1));\n"
+               "    ivec4 e = texelFetch(s1a, ivec2(1), 0);\n"
+               "    uvec4 g = texelFetch(s2a, ivec3(1), 0);\n"
+               "    vec4 h = texelFetch(sb, 3);\n"
+               "    ivec4 i = texelFetch(isb, 3);\n"
+               "    vec4 j = texelFetch(sms, ivec2(1), 2);\n"
+               "    uvec4 k = texelFetch(smsa, ivec3(1), 2);\n"
+               "    vec4 l = texelFetchOffset(s1, 1, 0, 1);\n"
+               "    ivec4 m = texelFetchOffset(s2, ivec2(1), 0, ivec2(1));\n"
+               "    uvec4 n = texelFetchOffset(s3, ivec3(1), 0, ivec3(1));\n"
+               "    vec4 o = texelFetchOffset(sr, ivec2(1), ivec2(1));\n"
+               "    ivec4 p = texelFetchOffset(s1a, ivec2(1), 0, 1);\n"
+               "    uvec4 q = texelFetchOffset(s2a, ivec3(1), 0, ivec2(1));\n"
+               "    uvec4 r = texelFetchOffset(usr, ivec2(1), ivec2(-1));\n"
+               "    f = a + vec4(b) + vec4(c) + d + vec4(e) + vec4(g) + h +\n"
+               "        vec4(i) + j + vec4(k) + l + vec4(m) + vec4(n) + o +\n"
+               "        vec4(p) + vec4(q) + vec4(r);\n"
+               "}\n",
+               MGL_STAGE_FRAGMENT, &module, &errors, &error_count);
+    CHECK(error_count == 0, "texelFetch/texelFetchOffset legal overloads clean");
+    teardown();
+
+    static const struct {
+        const char *decl;
+        const char *call;
+        const char *label;
+    } bad[] = {
+        { "samplerCube", "texelFetch(t, ivec3(1, 1, 0), 0)",
+          "texelFetch(samplerCube) rejected" },
+        { "isamplerCube", "vec4(texelFetch(t, ivec3(0), 0))",
+          "texelFetch(isamplerCube) rejected" },
+        { "samplerCubeArray", "texelFetch(t, ivec4(0), 0)",
+          "texelFetch(samplerCubeArray) rejected" },
+        { "samplerCubeShadow", "vec4(texelFetch(t, ivec3(0), 0))",
+          "texelFetch(samplerCubeShadow) rejected" },
+        { "samplerCubeArrayShadow", "vec4(texelFetch(t, ivec4(0), 0))",
+          "texelFetch(samplerCubeArrayShadow) rejected" },
+        { "sampler1DShadow", "vec4(texelFetch(t, 0, 0))",
+          "texelFetch(sampler1DShadow) rejected" },
+        { "sampler2DShadow", "vec4(texelFetch(t, ivec2(0), 0))",
+          "texelFetch(sampler2DShadow) rejected" },
+        { "sampler2DRectShadow", "vec4(texelFetch(t, ivec2(0)))",
+          "texelFetch(sampler2DRectShadow) rejected" },
+        { "sampler1DArrayShadow", "vec4(texelFetch(t, ivec2(0), 0))",
+          "texelFetch(sampler1DArrayShadow) rejected" },
+        { "sampler2DArrayShadow", "vec4(texelFetch(t, ivec3(0), 0))",
+          "texelFetch(sampler2DArrayShadow) rejected" },
+        { "samplerBuffer", "texelFetch(t, 0, 0)",
+          "texelFetch(samplerBuffer) with lod rejected" },
+        { "sampler2DRect", "texelFetch(t, ivec2(0), 0)",
+          "texelFetch(sampler2DRect) with lod rejected" },
+        { "sampler2D", "texelFetch(t, ivec2(0))",
+          "texelFetch(sampler2D) without lod rejected" },
+        { "sampler2D", "texelFetch(t, ivec3(0), 0)",
+          "texelFetch(sampler2D, ivec3) rejected" },
+        { "sampler2D", "texelFetch(t, 0, 0)",
+          "texelFetch(sampler2D, int) rejected" },
+        { "sampler2D", "texelFetch(t, vec2(0.0), 0)",
+          "texelFetch(sampler2D, vec2) rejected" },
+        { "sampler2D", "texelFetch(t, uvec2(0u), 0)",
+          "texelFetch(sampler2D, uvec2) rejected" },
+        { "sampler1D", "texelFetch(t, ivec2(0), 0)",
+          "texelFetch(sampler1D, ivec2) rejected" },
+        { "sampler2DMS", "texelFetch(t, ivec3(0), 0)",
+          "texelFetch(sampler2DMS, ivec3) rejected" },
+        { "sampler2DRect", "texelFetch(t, 0)",
+          "texelFetch(sampler2DRect, int) rejected" },
+        { "samplerCube", "texelFetchOffset(t, ivec3(0), 0, ivec3(0))",
+          "texelFetchOffset(samplerCube) rejected" },
+        { "sampler2DMS", "texelFetchOffset(t, ivec2(0), 0, ivec2(0))",
+          "texelFetchOffset(sampler2DMS) rejected" },
+        { "samplerBuffer", "texelFetchOffset(t, 0, 0)",
+          "texelFetchOffset(samplerBuffer) rejected" },
+        { "sampler2DShadow",
+          "vec4(texelFetchOffset(t, ivec2(0), 0, ivec2(0)))",
+          "texelFetchOffset(sampler2DShadow) rejected" },
+        { "sampler2DRect", "texelFetchOffset(t, ivec2(0), 0, ivec2(0))",
+          "texelFetchOffset(sampler2DRect) with lod rejected" },
+        { "sampler2D", "texelFetchOffset(t, ivec2(0), 0, ivec3(0))",
+          "texelFetchOffset(sampler2D, ivec3 offset) rejected" },
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char src[512];
+        snprintf(src, sizeof src,
+                 "#version 400 core\n"
+                 "uniform %s t;\n"
+                 "out vec4 f;\n"
+                 "void main() { f = vec4(%s); }\n",
+                 bad[i].decl, bad[i].call);
+        analyze_ex(src, MGL_STAGE_FRAGMENT, &module, &errors, &error_count);
+        CHECK(error_count >= 1 &&
+                  (has_error("no matching overload of builtin 'texelFetch'") ||
+                   has_error("no matching overload of builtin "
+                             "'texelFetchOffset'")),
+              bad[i].label);
+        teardown();
+    }
+}
+
 int main(void)
 {
     printf("MGLGLSL sema skeleton tests\n");
@@ -974,6 +1090,7 @@ int main(void)
     test_integer_vector_types();
     test_matrix_arith();
     test_builtins();
+    test_texel_fetch_overloads();
     test_image2d_array_store();
     test_constructors();
     test_invalid_vs_inputs();
